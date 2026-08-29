@@ -121,6 +121,16 @@ bounded. The fuzz target in `fuzz/` exists to find the rest.
 
 ---
 
+## Measuring coverage
+
+`cargo llvm-cov nextest --workspace` cannot merge the profile of a test whose
+subprocess aborts on purpose, and two of them do. Exclude those two:
+
+```
+cargo llvm-cov nextest --workspace --summary-only \
+    -E 'not (test(killing_the_process) + test(a_save_that_runs_out_of_room))'
+```
+
 ## Where Coffer departs from SPEC.md
 
 **The master password lives as long as the vault does.** `SPEC.md` says it is
