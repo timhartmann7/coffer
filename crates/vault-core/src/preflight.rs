@@ -14,6 +14,7 @@
 //! all.
 
 use crate::error::VaultError;
+use crate::kdf::Work;
 
 /// The four bytes every KeePass file begins with.
 const SIGNATURE: [u8; 4] = [0x03, 0xd9, 0xa2, 0x9a];
@@ -84,6 +85,38 @@ const KDF_ARGON2D: [u8; 16] = [
 const KDF_ARGON2ID: [u8; 16] = [
     0x9e, 0x29, 0x8b, 0x19, 0x56, 0xdb, 0x47, 0x73, 0xb2, 0x3d, 0xfc, 0x3e, 0xc6, 0xf0, 0xa1, 0xe6,
 ];
+
+/// Whether key derivation parameters are ones Coffer is willing to run.
+///
+/// The one rule, called from both sides of it: the check every file passes on
+/// its way in, and the check the calibration's answer passes on its way out. A
+/// database Coffer wrote and then refused to open would be a vault nobody could
+/// get back into, and it is this function being shared that makes that
+/// impossible rather than unlikely.
+pub(crate) fn acceptable(work: Work) -> Result<(), VaultError> {
+    let total = work.memory.saturating_mul(work.iterations);
+
+    if work.memory > MAX_ARGON2_MEMORY
+        || work.iterations == 0
+        || work.iterations > MAX_ARGON2_ITERATIONS
+        || work.parallelism == 0
+        || work.parallelism > MAX_PARALLELISM
+        || total > MAX_ARGON2_WORK
+    {
+        return Err(VaultError::AbsurdKeyDerivation);
+    }
+
+    Ok(())
+}
+
+/// The most passes Coffer will accept at this much memory.
+///
+/// The product ceiling binds long before the count ceiling does: at sixty-four
+/// megabytes it is a thousand and twenty-four passes, and at a gigabyte it is
+/// sixty-four.
+pub(crate) fn max_iterations(memory: u64) -> u64 {
+    MAX_ARGON2_ITERATIONS.min(MAX_ARGON2_WORK / memory.max(1))
+}
 
 /// Checks that a file's outer header is one the parser can walk safely, and
 /// that its key derivation parameters are ones Coffer is willing to run before
@@ -270,21 +303,11 @@ fn check_key_derivation(dictionary: &Dictionary<'_>) -> Result<(), VaultError> {
     let argon2 = uuid.is_some_and(|id| id == KDF_ARGON2D || id == KDF_ARGON2ID);
 
     if argon2 {
-        let memory = memory.ok_or(VaultError::DamagedHeader)?;
-        let iterations = iterations.ok_or(VaultError::DamagedHeader)?;
-        let parallelism = parallelism.ok_or(VaultError::DamagedHeader)?;
-
-        let work = memory.saturating_mul(iterations);
-
-        if memory > MAX_ARGON2_MEMORY
-            || iterations == 0
-            || iterations > MAX_ARGON2_ITERATIONS
-            || parallelism == 0
-            || parallelism > MAX_PARALLELISM
-            || work > MAX_ARGON2_WORK
-        {
-            return Err(VaultError::AbsurdKeyDerivation);
-        }
+        acceptable(Work {
+            memory: memory.ok_or(VaultError::DamagedHeader)?,
+            iterations: iterations.ok_or(VaultError::DamagedHeader)?,
+            parallelism: parallelism.ok_or(VaultError::DamagedHeader)?,
+        })?;
     } else if let Some(rounds) = rounds
         && rounds > MAX_AES_ROUNDS
     {

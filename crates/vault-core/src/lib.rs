@@ -18,6 +18,7 @@
 
 pub mod error;
 pub mod generate;
+pub mod kdf;
 pub mod key;
 pub mod model;
 pub mod scrub;
