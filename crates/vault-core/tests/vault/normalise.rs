@@ -147,9 +147,19 @@ fn parse(xml: &str) -> Node {
                 }
             }
             Event::Text(text) => {
-                let decoded = text.decode().expect("the export is UTF-8").into_owned();
                 if let Some(top) = stack.last_mut() {
-                    top.text.push_str(&decoded);
+                    top.text.push_str(&text);
+                }
+            }
+            // An entity arrives as an event of its own rather than inside the
+            // text around it. Dropped, `&amp;` would be missing from both sides
+            // of the diff and a value that lost its ampersand would compare
+            // equal, so the reference is put back exactly as it was written.
+            Event::GeneralRef(reference) => {
+                if let Some(top) = stack.last_mut() {
+                    top.text.push('&');
+                    top.text.push_str(&reference);
+                    top.text.push(';');
                 }
             }
             _ => {}
@@ -164,20 +174,20 @@ fn parse(xml: &str) -> Node {
     })
 }
 
-fn node_of(name: &[u8], attributes: quick_xml::events::attributes::Attributes<'_>) -> Node {
+fn node_of(name: &str, attributes: quick_xml::events::attributes::Attributes<'_>) -> Node {
     let mut collected: Vec<(String, String)> = attributes
         .flatten()
         .map(|attribute| {
             (
-                String::from_utf8_lossy(attribute.key.as_ref()).into_owned(),
-                String::from_utf8_lossy(&attribute.value).into_owned(),
+                attribute.key.as_ref().to_owned(),
+                attribute.value.clone().into_owned(),
             )
         })
         .collect();
     collected.sort();
 
     Node {
-        name: String::from_utf8_lossy(name).into_owned(),
+        name: name.to_owned(),
         attributes: collected,
         text: String::new(),
         children: Vec::new(),
