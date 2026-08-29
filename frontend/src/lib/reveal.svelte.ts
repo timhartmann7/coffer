@@ -13,6 +13,22 @@ import { reveal } from './ipc';
  * it is set to the same half minute in `app.css`. */
 const SECONDS = 30;
 
+/**
+ * Writes a value into the node that shows it, and wipes it again with `''`.
+ *
+ * A field being edited is an input and a field being read is a span. Either
+ * way the value is a property of one DOM node and of nothing else. Every screen
+ * that puts a secret on the screen goes through here, so there is one place
+ * that knows what "on the screen and nowhere else" means.
+ */
+export function place(node: HTMLElement, value: string): void {
+	if (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement) {
+		node.value = value;
+	} else {
+		node.textContent = value;
+	}
+}
+
 export class Revealed {
 	/** Whether a value is on the screen right now. */
 	showing = $state(false);
@@ -25,10 +41,21 @@ export class Revealed {
 	 * has moved on has nowhere to go. */
 	#asked = 0;
 
-	/** Puts the value into `node` and starts counting down. */
-	async show(node: HTMLElement, entry: string, field: string): Promise<void> {
+	/**
+	 * Puts the value into `node` and starts counting down.
+	 *
+	 * `read` is what fetches it: a reveal of the entry as it is, or of one of
+	 * its previous versions. Whatever it is, the value goes straight into the
+	 * node and is never held anywhere this class can be asked for it.
+	 */
+	async show(
+		node: HTMLElement,
+		entry: string,
+		field: string,
+		read: (entry: string, field: string) => Promise<string> = reveal
+	): Promise<void> {
 		const asked = ++this.#asked;
-		const value = await reveal(entry, field);
+		const value = await read(entry, field);
 
 		// Hidden, or asked again, while this one was in flight: the node it was
 		// going into may already be off the screen, and writing there would
@@ -37,7 +64,7 @@ export class Revealed {
 
 		this.hide();
 		this.#asked = asked;
-		node.textContent = value;
+		place(node, value);
 		this.#node = node;
 		this.showing = true;
 		this.left = SECONDS;
@@ -60,7 +87,7 @@ export class Revealed {
 			this.#countdown = null;
 		}
 		if (this.#node) {
-			this.#node.textContent = '';
+			place(this.#node, '');
 			this.#node = null;
 		}
 		this.showing = false;

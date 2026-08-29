@@ -6,7 +6,7 @@
  * not follow shows up as a test that no longer describes reality.
  */
 
-import type { Entry, EntryRow, Field, Group } from './model';
+import type { Attachment, Entry, EntryRow, Field, Group, Version } from './model';
 
 let next = 0;
 
@@ -45,9 +45,27 @@ export function field(over: Partial<Field> = {}): Field {
 	return {
 		name: 'Title',
 		kind: 'title',
+		protected: false,
 		value: '',
 		empty: true,
 		openable: false,
+		...over
+	};
+}
+
+export function attachment(over: Partial<Attachment> = {}): Attachment {
+	return {
+		name: 'id_ed25519',
+		size: 411,
+		fileName: 'id_ed25519',
+		...over
+	};
+}
+
+export function version(over: Partial<Version> = {}): Version {
+	return {
+		index: 0,
+		modified: '2026-03-12T18:42:00Z',
 		...over
 	};
 }
@@ -56,6 +74,7 @@ export function entry(over: Partial<Entry> = {}): Entry {
 	return {
 		id: id(),
 		group: 'group',
+		versions: 0,
 		fields: [],
 		attachments: [],
 		tags: [],

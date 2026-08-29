@@ -7,7 +7,18 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import type { Database, Entry, Failure, Group, Snapshot, Status } from './model';
+import type {
+	Alphabet,
+	Database,
+	Entry,
+	Failure,
+	Group,
+	Made,
+	Rival,
+	Snapshot,
+	Status,
+	Version
+} from './model';
 
 export function status(): Promise<Status> {
 	return invoke('status');
@@ -74,6 +85,139 @@ export function snapshots(): Promise<Snapshot[]> {
 /** Points Coffer at one of those snapshots instead. */
 export function chooseSnapshot(index: number): Promise<Database> {
 	return invoke('choose_snapshot', { index });
+}
+
+/** Makes an entry in a folder and answers with the tree it changed. */
+export function createEntry(group: string): Promise<Made> {
+	return invoke('create_entry', { group });
+}
+
+export function deleteEntry(entry: string): Promise<Group> {
+	return invoke('delete_entry', { entry });
+}
+
+export function createGroup(parent: string, name: string): Promise<Group> {
+	return invoke('create_group', { parent, name });
+}
+
+export function renameGroup(group: string, name: string): Promise<Group> {
+	return invoke('rename_group', { group, name });
+}
+
+export function deleteGroup(group: string): Promise<Group> {
+	return invoke('delete_group', { group });
+}
+
+export function emptyRecycleBin(): Promise<Group> {
+	return invoke('empty_recycle_bin');
+}
+
+/**
+ * Writes one field.
+ *
+ * `protect` is what the screen read off the field it is editing. Sending it
+ * back is what keeps a value the database protects from being written into the
+ * file as plain text.
+ */
+export function setField(
+	entry: string,
+	field: string,
+	value: string,
+	protect: boolean
+): Promise<Entry> {
+	return invoke('set_field', { entry, field, value, protect });
+}
+
+export function removeField(entry: string, field: string): Promise<Entry> {
+	return invoke('remove_field', { entry, field });
+}
+
+export function setTags(entry: string, tags: string[]): Promise<Entry> {
+	return invoke('set_tags', { entry, tags });
+}
+
+/** Opens the system's file picker and puts what it chose on the entry. The
+ * bytes are read in Rust and never come near here. */
+export function addAttachment(entry: string): Promise<Entry> {
+	return invoke('add_attachment', { entry });
+}
+
+/** Opens the system's save panel and writes the file out from Rust. */
+export function exportAttachment(entry: string, name: string): Promise<void> {
+	return invoke('export_attachment', { entry, name });
+}
+
+export function removeAttachment(entry: string, name: string): Promise<Entry> {
+	return invoke('remove_attachment', { entry, name });
+}
+
+export function versions(entry: string): Promise<Version[]> {
+	return invoke('versions', { entry });
+}
+
+/** One previous version, read the way an entry is read. */
+export function version(entry: string, index: number): Promise<Entry> {
+	return invoke('version', { entry, index });
+}
+
+/** One field of one version, once - the same terms as a reveal. */
+export function revealVersion(entry: string, index: number, field: string): Promise<string> {
+	return invoke('reveal_version', { entry, index, field });
+}
+
+export function restoreVersion(entry: string, index: number): Promise<Entry> {
+	return invoke('restore_version', { entry, index });
+}
+
+export function deleteVersion(entry: string, index: number): Promise<Version[]> {
+	return invoke('delete_version', { entry, index });
+}
+
+export function clearHistory(entry: string): Promise<Version[]> {
+	return invoke('clear_history', { entry });
+}
+
+/**
+ * Makes a password.
+ *
+ * It comes back the way a revealed value does, and it is treated the same way:
+ * it goes into the node that shows it and into the field it was made for, and
+ * it is not kept anywhere else.
+ */
+export function generatePassword(
+	length: number,
+	alphabets: Alphabet[],
+	similar: boolean
+): Promise<string> {
+	return invoke('generate_password', { length, alphabets, similar });
+}
+
+/** Writes the database back. Rejects with `externalChange` when the file is not
+ * the one the window opened. */
+export function save(): Promise<void> {
+	return invoke('save');
+}
+
+/** Writes over a file somebody else changed. What was there goes into the first
+ * snapshot on the way. */
+export function saveOver(): Promise<void> {
+	return invoke('save_over');
+}
+
+/** Writes what is in the window to a file of its own. */
+export function saveCopy(): Promise<Database | null> {
+	return invoke('save_copy');
+}
+
+/** Throws away what is in the window and reads the file again. */
+export function reload(): Promise<Group> {
+	return invoke('reload');
+}
+
+/** What the file on disk holds. Reading it means decrypting it, so it is asked
+ * for when there is a decision to make and never on a timer. */
+export function rival(): Promise<Rival> {
+	return invoke('rival');
 }
 
 /**

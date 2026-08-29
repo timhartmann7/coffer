@@ -180,4 +180,60 @@
 		stroke-linejoin="round"
 		><rect x="4" y="4" width="16" height="16" rx="2.5" /><path d="M8 4v6h8V4M9 15.5h6" /></symbol
 	>
+	<symbol
+		id="i-plus"
+		viewBox="0 0 24 24"
+		fill="none"
+		stroke="currentColor"
+		stroke-width="1.6"
+		stroke-linecap="round"><path d="M12 5.5v13M5.5 12h13" /></symbol
+	>
+	<symbol
+		id="i-export"
+		viewBox="0 0 24 24"
+		fill="none"
+		stroke="currentColor"
+		stroke-width="1.5"
+		stroke-linecap="round"
+		stroke-linejoin="round"><path d="M12 4v10.5M8 11l4 4 4-4M4.5 19.5h15" /></symbol
+	>
+	<symbol
+		id="i-refresh"
+		viewBox="0 0 24 24"
+		fill="none"
+		stroke="currentColor"
+		stroke-width="1.5"
+		stroke-linecap="round"
+		stroke-linejoin="round"
+		><path d="M20 12a8 8 0 1 1-2.6-5.9" /><path d="M20.2 4.2v4.2H16" /></symbol
+	>
+	<symbol
+		id="i-check"
+		viewBox="0 0 24 24"
+		fill="none"
+		stroke="currentColor"
+		stroke-width="1.8"
+		stroke-linecap="round"
+		stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7" /></symbol
+	>
+	<symbol
+		id="i-x"
+		viewBox="0 0 24 24"
+		fill="none"
+		stroke="currentColor"
+		stroke-width="1.6"
+		stroke-linecap="round"><path d="m6.5 6.5 11 11M17.5 6.5l-11 11" /></symbol
+	>
+	<symbol
+		id="i-eye-off"
+		viewBox="0 0 24 24"
+		fill="none"
+		stroke="currentColor"
+		stroke-width="1.5"
+		stroke-linecap="round"
+		stroke-linejoin="round"
+		><path d="M4 4.5 20 19.5" /><path
+			d="M9.6 6.6A9.7 9.7 0 0 1 12 6.2c6 0 9.5 5.8 9.5 5.8a17 17 0 0 1-3.3 3.9M6.3 8.4A17 17 0 0 0 2.5 12S6 17.8 12 17.8c1 0 1.9-.2 2.7-.4"
+		/></symbol
+	>
 </svg>

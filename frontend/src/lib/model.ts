@@ -17,6 +17,12 @@ export interface Database {
 export interface Status {
 	database: Database | null;
 	unlocked: boolean;
+	/** How many entries the vault holds, the recycle bin's included. */
+	entries: number;
+	/** Whether there is a change in the window the file does not have. */
+	dirty: boolean;
+	/** Whether this database can be written back at all. */
+	readOnly: boolean;
 }
 
 /** A snapshot Coffer took before one of its own saves. */
@@ -30,6 +36,12 @@ export interface Snapshot {
 export interface Field {
 	/** The name the file holds, and the name a reveal asks for. */
 	name: string;
+	/**
+	 * Whether the database keeps this value protected. It goes back with an
+	 * edit: rewriting a protected field as an open one would put a password
+	 * into the file as plain text.
+	 */
+	protected: boolean;
 	/** Which of an entry's fields this is. Everything the format does not name
 	 * is a custom field, whatever it is called. */
 	kind: 'title' | 'username' | 'password' | 'url' | 'notes' | 'custom';
@@ -64,20 +76,61 @@ export interface Group {
 	entries: EntryRow[];
 }
 
-interface Attachment {
+export interface Attachment {
+	/**
+	 * As the file holds it. It may be anything at all, `/` and `..` included,
+	 * so nothing here builds a path out of it.
+	 */
 	name: string;
 	size: number;
+	/**
+	 * What the save panel will call it. Worked out in Rust, so the name on the
+	 * button is the name the reader gets.
+	 */
+	fileName: string;
 }
 
 export interface Entry {
 	id: string;
 	group: string;
+	/** How many previous versions the entry keeps. */
+	versions: number;
 	fields: Field[];
 	attachments: Attachment[];
 	tags: string[];
 	created: string | null;
 	modified: string | null;
 }
+
+/** One previous version of an entry, as the versions block lists them. */
+export interface Version {
+	/**
+	 * Its position in the entry's history, which is how it is addressed. Two
+	 * versions written in the same second share a date, so nothing else
+	 * identifies one.
+	 */
+	index: number;
+	modified: string | null;
+}
+
+/** What a command that changed the shape of the vault hands back. */
+export interface Made {
+	tree: Group;
+	entry: string;
+}
+
+/** What the file on disk holds, for the dialog that asks which version to keep. */
+export interface Rival {
+	modified: string | null;
+	/**
+	 * Nothing when the file will not open with the password this window used:
+	 * whoever wrote it may have changed that too.
+	 */
+	entries: number | null;
+}
+
+/** The kinds of character the generator draws from. */
+export type Alphabet = 'lower' | 'upper' | 'digits' | 'symbols';
 
 /** Everything a command can fail with. The message is already the sentence the
  * screen shows; the code is what the screen branches on. */
@@ -88,6 +141,8 @@ export interface Failure {
 		| 'unsupportedFormat'
 		| 'damaged'
 		| 'heldByAnother'
+		| 'externalChange'
+		| 'readOnly'
 		| 'gone'
 		| 'tooLarge'
 		| 'noVault'

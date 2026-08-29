@@ -5,7 +5,20 @@ import Vault from './Vault.svelte';
 
 const ipc = vi.hoisted(() => ({
 	entry: vi.fn(),
+	setField: vi.fn(),
 	copy: vi.fn(),
+	createEntry: vi.fn(),
+	createGroup: vi.fn(),
+	deleteEntry: vi.fn(),
+	deleteGroup: vi.fn(),
+	renameGroup: vi.fn(),
+	emptyRecycleBin: vi.fn(),
+	versions: vi.fn(),
+	save: vi.fn(),
+	saveOver: vi.fn(),
+	saveCopy: vi.fn(),
+	reload: vi.fn(),
+	rival: vi.fn(),
 	// The same reading the real one does: a command rejects with the value Rust
 	// serialised, and anything else is not one.
 	asFailure: (thrown: unknown) =>
@@ -36,14 +49,19 @@ beforeEach(() => {
 	host = document.createElement('div');
 	document.body.appendChild(host);
 	ipc.copy.mockResolvedValue(60);
+	ipc.versions.mockResolvedValue([]);
+	ipc.save.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
 	host.remove();
 });
 
-function open() {
-	return mount(Vault, { target: host, props: { database, root } });
+function open(over: { readOnly?: boolean; onTree?: (tree: typeof root) => void } = {}) {
+	return mount(Vault, {
+		target: host,
+		props: { database, root, readOnly: false, onTree: vi.fn(), ...over }
+	});
 }
 
 /** What the pane reads as, with the whitespace of the template collapsed the
@@ -135,7 +153,7 @@ it('opens an entry and shows it beside the list', async () => {
 	await vi.waitFor(() => expect(ipc.entry).toHaveBeenCalledWith(kept.id));
 	flushSync();
 
-	expect(host.querySelector('h1')?.textContent?.trim()).toBe('node-3');
+	expect((host.querySelector('h1 input') as HTMLInputElement | null)?.value).toBe('node-3');
 
 	return unmount(component);
 });
@@ -240,6 +258,8 @@ it('says a copy failed without dressing it as one that worked', async () => {
 		// A copy that works while the failure is still up keeps its own message
 		// for its own minute: the failure's timer must not take it away.
 		ipc.copy.mockResolvedValue(60);
+		ipc.versions.mockResolvedValue([]);
+		ipc.save.mockResolvedValue(undefined);
 		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', metaKey: true }));
 		await vi.advanceTimersByTimeAsync(0);
 		flushSync();
@@ -265,6 +285,136 @@ it('puts the reader in the search field on the shortcut the field advertises', a
 	await tick();
 
 	expect(document.activeElement).toBe(search());
+
+	return unmount(component);
+});
+
+/**
+ * The one thing a vault with two clients has to get right. The save is refused
+ * before anything is written, and each of the three ways out keeps something:
+ * the version on disk, both, or this one - with what was there going into the
+ * snapshot chain on the way.
+ */
+it('asks which version to keep when the file changed underneath it', async () => {
+	ipc.entry.mockResolvedValue(
+		entry({
+			id: kept.id,
+			group: root.id,
+			fields: [field({ name: 'Title', kind: 'title', value: 'node-3', empty: false })]
+		})
+	);
+	ipc.save.mockRejectedValue({
+		code: 'externalChange',
+		message: 'the database changed on disk after Coffer opened it'
+	});
+	ipc.rival.mockResolvedValue({ modified: '2026-08-29T18:47:00Z', entries: 49 });
+	ipc.setField.mockResolvedValue(entry({ id: kept.id, group: root.id }));
+
+	const component = open();
+	flushSync();
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('node-3'))
+		?.click();
+	await vi.waitFor(() => expect(ipc.entry).toHaveBeenCalled());
+	flushSync();
+
+	// An edit, which is what triggers a save.
+	const title = host.querySelector('h1 input') as HTMLInputElement;
+	title.value = 'node-4';
+	title.dispatchEvent(new Event('blur'));
+
+	await vi.waitFor(() =>
+		expect(host.textContent).toContain('The file changed while you were working')
+	);
+	flushSync();
+
+	// Both sides are named, and the one that cannot be read says so rather than
+	// showing a number nobody can stand behind.
+	expect(host.textContent).toContain('49 entries');
+
+	// The safe outcome is the accent one; the destructive one is the red one and
+	// it is last.
+	const named = [...host.querySelectorAll('button')]
+		.map((each) => each.textContent?.trim())
+		.filter((each) => each === 'Take the version on disk' || each === 'Keep mine');
+	expect(named).toEqual(['Take the version on disk', 'Keep mine']);
+
+	return unmount(component);
+});
+
+it('takes the version on disk when that is what the reader chose', async () => {
+	ipc.save.mockRejectedValue({ code: 'externalChange', message: 'the database changed on disk' });
+	ipc.rival.mockResolvedValue({ modified: null, entries: null });
+	ipc.reload.mockResolvedValue(root);
+	ipc.createEntry.mockResolvedValue({ tree: root, entry: kept.id });
+	ipc.entry.mockResolvedValue(entry({ id: kept.id, group: root.id }));
+	ipc.versions.mockResolvedValue([]);
+
+	const onTree = vi.fn();
+	const component = open({ onTree });
+	flushSync();
+
+	// Making an entry is a change like any other, and it saves.
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Entry')
+		?.click();
+	await vi.waitFor(() => expect(host.textContent).toContain('The file changed'));
+	flushSync();
+
+	// A file that will not open with this password says so rather than claiming
+	// a number.
+	expect(host.textContent).toContain('will not open with this password');
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Take the version on disk')
+		?.click();
+	await vi.waitFor(() => expect(ipc.reload).toHaveBeenCalledTimes(1));
+	flushSync();
+
+	expect(host.textContent).not.toContain('The file changed');
+	expect(onTree).toHaveBeenCalledWith(root);
+
+	return unmount(component);
+});
+
+it('keeps this version and writes over the file when asked to', async () => {
+	ipc.save.mockRejectedValue({ code: 'externalChange', message: 'the database changed on disk' });
+	ipc.rival.mockResolvedValue({ modified: null, entries: 3 });
+	ipc.saveOver.mockResolvedValue(undefined);
+	ipc.createEntry.mockResolvedValue({ tree: root, entry: kept.id });
+	ipc.entry.mockResolvedValue(entry({ id: kept.id, group: root.id }));
+
+	const component = open();
+	flushSync();
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Entry')
+		?.click();
+	await vi.waitFor(() => expect(host.textContent).toContain('The file changed'));
+	flushSync();
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Keep mine')
+		?.click();
+	await vi.waitFor(() => expect(ipc.saveOver).toHaveBeenCalledTimes(1));
+	flushSync();
+
+	expect(host.textContent).not.toContain('The file changed');
+
+	return unmount(component);
+});
+
+/** A vault Coffer will not write back offers nothing that would only be
+ * refused. */
+it('offers no change at all on a database it cannot write', () => {
+	const component = open({ readOnly: true });
+	flushSync();
+
+	const named = [...host.querySelectorAll('button')].map((each) => each.textContent?.trim());
+	expect(named).not.toContain('Entry');
+	expect(host.querySelector('[aria-label="New folder"]')).toBeNull();
+	expect(host.textContent).toContain('Read only');
 
 	return unmount(component);
 });

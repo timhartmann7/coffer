@@ -1,9 +1,26 @@
 <script lang="ts">
 	import { SvelteSet } from 'svelte/reactivity';
-	import { asFailure, copy as copyToClipboard, entry as loadEntry } from '$lib/ipc';
-	import type { Database, Entry, EntryRow, Group } from '$lib/model';
+	import {
+		asFailure,
+		copy as copyToClipboard,
+		createEntry,
+		createGroup,
+		deleteEntry,
+		deleteGroup,
+		emptyRecycleBin,
+		entry as loadEntry,
+		reload,
+		renameGroup,
+		rival,
+		save,
+		saveCopy,
+		saveOver,
+		versions as loadVersions
+	} from '$lib/ipc';
+	import type { Database, Entry, EntryRow, Group, Rival, Version } from '$lib/model';
 	import { index, search } from '$lib/search';
-	import { liveEntries, pathTo, recycleBin, shownEntries } from '$lib/tree';
+	import { entriesOf, liveEntries, pathTo, recycleBin, shownEntries } from '$lib/tree';
+	import Conflict from './Conflict.svelte';
 	import Empty from './Empty.svelte';
 	import EntryList from './EntryList.svelte';
 	import EntryListCompact from './EntryListCompact.svelte';
@@ -12,14 +29,35 @@
 	import Toast from './Toast.svelte';
 	import Tree from './Tree.svelte';
 
-	let { database, root }: { database: Database; root: Group } = $props();
+	let {
+		database,
+		root,
+		readOnly,
+		onTree
+	}: {
+		database: Database;
+		root: Group;
+		/** A snapshot, or a format Coffer reads and does not write. Nothing on
+		 * the screen offers a change it would only be refused. */
+		readOnly: boolean;
+		onTree: (tree: Group) => void;
+	} = $props();
 
 	/** The group being shown, or `null` for everything the vault holds. */
 	let group = $state<string | null>(null);
 	let expanded = new SvelteSet<string>();
 	let query = $state('');
 	let opened = $state<Entry | null>(null);
+	let versions = $state<Version[]>([]);
 	let field = $state<HTMLInputElement>();
+	let naming = $state(false);
+	let named = $state<HTMLInputElement>();
+	let renaming = $state(false);
+	let emptying = $state(false);
+	let deleting = $state(false);
+	let saving = $state(false);
+	let conflict = $state<Rival | null>(null);
+	let changedAt = $state<Date | null>(null);
 	let notice = $state<{ message: string; kind: 'copied' | 'failed' } | null>(null);
 	let countdown: ReturnType<typeof setInterval> | null = null;
 	let fading: ReturnType<typeof setTimeout> | null = null;
@@ -41,6 +79,10 @@
 	const found = $derived(search(indexed, query));
 	const bin = $derived(recycleBin(root));
 	const path = $derived(opened ? (pathTo(root, opened.group) ?? []).slice(1) : []);
+	/** Where a new folder or entry goes: the folder being shown, or the top of
+	 * the vault when the list is showing everything. */
+	const inside = $derived(group === null ? root.id : shown.id);
+	const inBin = $derived(bin !== null && group === bin.id);
 
 	function findGroup(group: Group, id: string): Group | null {
 		if (group.id === id) return group;
@@ -55,13 +97,184 @@
 		group = id;
 		opened = null;
 		query = '';
+		naming = false;
+		renaming = false;
+		emptying = false;
+		deleting = false;
 	}
 
 	async function open(id: string) {
 		try {
 			opened = await loadEntry(id);
+			versions = await loadVersions(id);
 		} catch (thrown) {
 			failed(thrown);
+		}
+	}
+
+	/**
+	 * Writes the vault back after a change.
+	 *
+	 * There is no save button, so this is what one means: the change is already
+	 * in the window, and this is the moment it reaches the file. A file somebody
+	 * else wrote in the meantime stops here and asks.
+	 */
+	async function persist() {
+		saving = true;
+		try {
+			await save();
+		} catch (thrown) {
+			if (asFailure(thrown).code === 'externalChange') {
+				conflict = await rival().catch(() => ({ modified: null, entries: null }));
+			} else {
+				failed(thrown);
+			}
+		} finally {
+			saving = false;
+		}
+	}
+
+	/** An entry came back changed. */
+	function changed(entry: Entry) {
+		opened = entry;
+		changedAt = new Date();
+		void refreshVersions(entry.id);
+		void persist();
+	}
+
+	async function refreshVersions(id: string) {
+		try {
+			versions = await loadVersions(id);
+		} catch (thrown) {
+			failed(thrown);
+		}
+	}
+
+	/** The tree came back changed. */
+	function reshaped(tree: Group) {
+		onTree(tree);
+		changedAt = new Date();
+		void persist();
+	}
+
+	async function addEntry() {
+		try {
+			const made = await createEntry(inside);
+			onTree(made.tree);
+			changedAt = new Date();
+			await open(made.entry);
+			await persist();
+		} catch (thrown) {
+			failed(thrown);
+		}
+	}
+
+	async function removeEntry() {
+		if (!opened) return;
+		const id = opened.id;
+		try {
+			const tree = await deleteEntry(id);
+			opened = null;
+			versions = [];
+			reshaped(tree);
+		} catch (thrown) {
+			failed(thrown);
+		}
+	}
+
+	function addFolder() {
+		naming = true;
+		queueMicrotask(() => named?.focus());
+	}
+
+	async function makeFolder() {
+		if (!named) return;
+		const name = named.value.trim();
+		named.value = '';
+		naming = false;
+		if (name === '') return;
+		try {
+			reshaped(await createGroup(inside, name));
+		} catch (thrown) {
+			failed(thrown);
+		}
+	}
+
+	async function rename(name: string) {
+		renaming = false;
+		if (group === null || name.trim() === '') return;
+		try {
+			reshaped(await renameGroup(group, name.trim()));
+		} catch (thrown) {
+			failed(thrown);
+		}
+	}
+
+	async function removeFolder() {
+		deleting = false;
+		if (group === null) return;
+		try {
+			const tree = await deleteGroup(group);
+			select(null);
+			reshaped(tree);
+		} catch (thrown) {
+			failed(thrown);
+		}
+	}
+
+	async function empty() {
+		emptying = false;
+		try {
+			const tree = await emptyRecycleBin();
+			opened = null;
+			reshaped(tree);
+		} catch (thrown) {
+			failed(thrown);
+		}
+	}
+
+	async function takeTheirs() {
+		try {
+			saving = true;
+			const tree = await reload();
+			onTree(tree);
+			opened = null;
+			versions = [];
+			changedAt = null;
+			conflict = null;
+		} catch (thrown) {
+			failed(thrown);
+		} finally {
+			saving = false;
+		}
+	}
+
+	async function keepBoth() {
+		try {
+			saving = true;
+			const beside = await saveCopy();
+			if (!beside) return;
+			conflict = null;
+			notice = { message: `Kept as ${beside.name}`, kind: 'copied' };
+			copies += 1;
+			fade();
+			await takeTheirs();
+		} catch (thrown) {
+			failed(thrown);
+		} finally {
+			saving = false;
+		}
+	}
+
+	async function keepOurs() {
+		try {
+			saving = true;
+			await saveOver();
+			conflict = null;
+		} catch (thrown) {
+			failed(thrown);
+		} finally {
+			saving = false;
 		}
 	}
 
@@ -104,10 +317,14 @@
 	function failed(thrown: unknown) {
 		clear();
 		notice = { message: asFailure(thrown).message, kind: 'failed' };
+		fade();
+	}
+
+	function fade() {
 		fading = setTimeout(() => {
 			notice = null;
 			fading = null;
-		}, 4000);
+		}, 6000);
 	}
 
 	function clear() {
@@ -163,9 +380,100 @@
 		: 'grid-cols-[228px_1fr]'}"
 >
 	<aside class="flex flex-col overflow-hidden border-r border-hairline bg-surface2">
-		<div class="shrink-0 px-4 py-3 font-mono text-label tracking-label text-txt3 uppercase">
-			Folders
+		<div class="flex shrink-0 items-center gap-1 px-4 py-3">
+			<span class="flex-1 font-mono text-label tracking-label text-txt3 uppercase">Folders</span>
+			{#if !readOnly}
+				{#if group !== null && !inBin}
+					<button
+						type="button"
+						onclick={() => (renaming = true)}
+						class="text-txt4 transition-colors hover:text-txt2"
+						aria-label="Rename this folder"
+					>
+						<Icon name="check" class="h-4 w-4" />
+					</button>
+					<button
+						type="button"
+						onclick={() => (deleting = true)}
+						class="text-txt4 transition-colors hover:text-danger"
+						aria-label="Delete this folder"
+					>
+						<Icon name="trash" class="h-4 w-4" />
+					</button>
+				{/if}
+				<button
+					type="button"
+					onclick={addFolder}
+					class="text-txt4 transition-colors hover:text-txt2"
+					aria-label="New folder"
+				>
+					<Icon name="plus" class="h-4 w-4" />
+				</button>
+			{/if}
 		</div>
+
+		{#if naming}
+			<input
+				bind:this={named}
+				type="text"
+				autocomplete="off"
+				spellcheck="false"
+				aria-label="The name of the new folder"
+				placeholder="What is it called?"
+				onblur={makeFolder}
+				onkeydown={(event) => {
+					if (event.key === 'Escape') naming = false;
+					if (event.key === 'Enter') {
+						event.preventDefault();
+						makeFolder();
+					}
+				}}
+				class="mx-2 mb-2 shrink-0 rounded-sm border border-accent bg-surface px-2 py-1.5 text-body text-txt ring-4 ring-accent/15 outline-none placeholder:text-txt4"
+			/>
+		{/if}
+
+		{#if renaming && group !== null}
+			<input
+				type="text"
+				autocomplete="off"
+				spellcheck="false"
+				aria-label="A new name for this folder"
+				value={shown.name}
+				onblur={(event) => rename(event.currentTarget.value)}
+				onkeydown={(event) => {
+					if (event.key === 'Escape') renaming = false;
+					if (event.key === 'Enter') {
+						event.preventDefault();
+						rename(event.currentTarget.value);
+					}
+				}}
+				class="mx-2 mb-2 shrink-0 rounded-sm border border-accent bg-surface px-2 py-1.5 text-body text-txt ring-4 ring-accent/15 outline-none"
+			/>
+		{/if}
+
+		{#if deleting && group !== null}
+			<div class="mx-2 mb-2 shrink-0 rounded-sm border border-hairline bg-surface p-3">
+				<p class="text-fine leading-relaxed text-txt2">
+					Delete “{shown.name}” and everything in it?
+				</p>
+				<div class="mt-3 flex gap-2">
+					<button
+						type="button"
+						onclick={() => (deleting = false)}
+						class="h-9 rounded-full px-3 text-small text-txt3 transition-colors hover:text-txt2"
+					>
+						Keep it
+					</button>
+					<button
+						type="button"
+						onclick={removeFolder}
+						class="h-9 rounded-full px-3 text-small text-danger transition-colors hover:bg-dangerwash"
+					>
+						Delete
+					</button>
+				</div>
+			</div>
+		{/if}
 
 		<div class="flex-1 overflow-y-auto px-2 pb-2 text-body">
 			<button
@@ -222,6 +530,40 @@
 					<span class="flex-1 text-left">{deleted.name}</span>
 					<span class="font-mono text-meta text-txt4">{shownEntries(deleted).length}</span>
 				</button>
+
+				{#if inBin && !readOnly && shownEntries(deleted).length > 0}
+					{#if emptying}
+						<div class="mt-2 rounded-sm border border-hairline bg-surface p-3">
+							<p class="text-fine leading-relaxed text-txt2">
+								Take all of it out of the file? This is the one deletion nothing comes back from.
+							</p>
+							<div class="mt-3 flex gap-2">
+								<button
+									type="button"
+									onclick={() => (emptying = false)}
+									class="h-9 rounded-full px-3 text-small text-txt3 transition-colors hover:text-txt2"
+								>
+									Keep it
+								</button>
+								<button
+									type="button"
+									onclick={empty}
+									class="h-9 rounded-full px-3 text-small text-danger transition-colors hover:bg-dangerwash"
+								>
+									Empty it
+								</button>
+							</div>
+						</div>
+					{:else}
+						<button
+							type="button"
+							onclick={() => (emptying = true)}
+							class="mt-1 w-full rounded-sm px-2 py-1.5 text-left text-fine text-txt4 transition-colors hover:text-txt3"
+						>
+							Empty the bin
+						</button>
+					{/if}
+				{/if}
 			</div>
 		{/if}
 	</aside>
@@ -239,6 +581,7 @@
 					autocomplete="off"
 					spellcheck="false"
 					placeholder="Title, login, address, tag"
+					aria-label="Filter the list"
 					class="min-w-0 flex-1 bg-transparent text-body text-txt outline-none placeholder:text-txt4"
 				/>
 				<kbd
@@ -247,6 +590,15 @@
 					⌘F
 				</kbd>
 			</span>
+			{#if !readOnly && !inBin}
+				<button
+					type="button"
+					onclick={addEntry}
+					class="flex h-9 shrink-0 items-center gap-2 rounded-full border border-hairline px-4 text-small text-txt2 transition-colors hover:border-txt4 hover:text-txt"
+				>
+					<Icon name="plus" class="h-4 w-4" /> Entry
+				</button>
+			{/if}
 		</div>
 
 		{#if found.length === 0 && query !== ''}
@@ -270,8 +622,20 @@
 				icon="folder"
 				title="This vault has nothing in it yet"
 				detail="Entries added in Coffer or in any other KeePass client show up here."
-			/>
-		{:else if found.length === 0 && bin && group === bin.id}
+			>
+				{#snippet action()}
+					{#if !readOnly}
+						<button
+							type="button"
+							onclick={addEntry}
+							class="h-9 rounded-full border border-hairline px-5 text-small text-txt transition-colors hover:border-txt3"
+						>
+							Add an entry
+						</button>
+					{/if}
+				{/snippet}
+			</Empty>
+		{:else if found.length === 0 && inBin}
 			<Empty
 				icon="trash"
 				title="The recycle bin is empty"
@@ -282,7 +646,19 @@
 				icon="folder"
 				title="There is nothing in “{shown.name}” yet"
 				detail="Entries live in folders. This one has none of its own."
-			/>
+			>
+				{#snippet action()}
+					{#if !readOnly}
+						<button
+							type="button"
+							onclick={addEntry}
+							class="h-9 rounded-full border border-hairline px-5 text-small text-txt transition-colors hover:border-txt3"
+						>
+							Add an entry
+						</button>
+					{/if}
+				{/snippet}
+			</Empty>
 		{:else if opened}
 			<EntryListCompact rows={found} open={opened.id} onOpen={open} />
 		{:else}
@@ -291,7 +667,30 @@
 	</div>
 
 	{#if opened}
-		<EntryView entry={opened} {path} {now} onCopy={copy} onFailure={failed} />
+		<EntryView
+			entry={opened}
+			{path}
+			{versions}
+			{now}
+			onCopy={copy}
+			onChanged={changed}
+			onVersions={(found) => (versions = found)}
+			onDelete={removeEntry}
+			onFailure={failed}
+		/>
+	{/if}
+
+	{#if conflict}
+		<Conflict
+			rival={conflict}
+			entries={entriesOf(root).length}
+			{changedAt}
+			{now}
+			busy={saving}
+			onReload={takeTheirs}
+			onCopy={keepBoth}
+			onOverwrite={keepOurs}
+		/>
 	{/if}
 
 	{#if notice}
@@ -309,4 +708,9 @@
 		{found.length === 1 ? 'entry' : 'entries'} here · {live.length} in the vault
 	</span>
 	<span class="truncate">{database.path}</span>
+	{#if saving}
+		<span class="ml-auto shrink-0 text-txt3">Saving…</span>
+	{:else if readOnly}
+		<span class="ml-auto shrink-0 text-txt3">Read only</span>
+	{/if}
 </div>

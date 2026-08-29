@@ -7,6 +7,7 @@
 
 	let database = $state<Database | null>(null);
 	let root = $state<Group | null>(null);
+	let readOnly = $state(false);
 	let ready = $state(false);
 
 	// The window opens locked. Nothing is asked of the vault until a password
@@ -30,7 +31,9 @@
 	 * and then will not answer is reported where the reader is looking. */
 	async function opened() {
 		root = await tree();
-		database = (await status()).database;
+		const now = await status();
+		database = now.database;
+		readOnly = now.readOnly;
 	}
 
 	async function lock() {
@@ -47,7 +50,7 @@
 	/>
 
 	{#if root && database}
-		<Vault {database} {root} />
+		<Vault {database} {root} {readOnly} onTree={(tree) => (root = tree)} />
 	{:else if ready}
 		<Unlock {database} onChoose={(picked) => (database = picked)} onUnlocked={opened} />
 	{/if}
