@@ -55,8 +55,8 @@ fn body(after: &str) -> String {
 const CROWD: usize = 600;
 
 /// A database with the needle in every entry, protected and open.
-fn crowded(directory: &Path, protected: &str, plain: &str) -> std::path::PathBuf {
-    built(directory, "crowded.kdbx", |database| {
+fn crowded(directory: &Path, name: &str, protected: &str, plain: &str) -> std::path::PathBuf {
+    built(directory, name, |database| {
         for index in 0..CROWD {
             database.root_mut().add_entry().edit(|entry| {
                 entry.set_unprotected(fields::TITLE, format!("entry {index}"));
@@ -110,7 +110,7 @@ fn nothing_of_a_database_survives_it_being_dropped() {
     let directory = tempfile::tempdir().expect("a scratch directory");
     let protected = protected_value();
     let plain = open_value();
-    let path = crowded(directory.path(), &protected, &plain);
+    let path = crowded(directory.path(), "crowded.kdbx", &protected, &plain);
 
     open_and_drop(&path, BUILT_PASSWORD);
     vault_core::scrub::stack();
@@ -132,7 +132,7 @@ fn a_hundred_opens_and_closes_leave_nothing_behind() {
     let directory = tempfile::tempdir().expect("a scratch directory");
     let protected = protected_value();
     let plain = open_value();
-    let path = crowded(directory.path(), &protected, &plain);
+    let path = crowded(directory.path(), "crowded.kdbx", &protected, &plain);
 
     for _ in 0..100 {
         open_and_drop(&path, BUILT_PASSWORD);
@@ -143,4 +143,59 @@ fn a_hundred_opens_and_closes_leave_nothing_behind() {
         let mut sweep = Sweep::for_needle(needle.into_bytes());
         assert_eq!(sweep.hits(), 0, "a hundred cycles left a value behind");
     }
+}
+
+/// Reloading throws away one whole tree and reads another. It assigns into the
+/// field rather than dropping the vault, which is the path a destructor on the
+/// vault itself would never have seen.
+#[test]
+fn reloading_leaves_none_of_the_tree_it_replaced() {
+    let directory = tempfile::tempdir().expect("a scratch directory");
+    let gone = protected_value();
+    let staying = open_value();
+
+    let path = crowded(directory.path(), "reloaded.kdbx", &gone, &gone);
+    let mut vault = open(&path, BUILT_PASSWORD);
+
+    // Somebody else writes the file, and Coffer is asked to take their version.
+    let replacement = crowded(directory.path(), "replacement.kdbx", &staying, &staying);
+    std::fs::copy(&replacement, &path).expect("the replacement lands on the database");
+    vault
+        .reload()
+        .expect("the replacement opens with the same password");
+
+    let mut sweep = Sweep::for_needle(gone.into_bytes());
+    assert_eq!(
+        sweep.hits(),
+        0,
+        "the tree the reload replaced is still in memory"
+    );
+    drop(vault);
+}
+
+/// Reading what is on disk to answer the conflict dialog decrypts a second
+/// whole database and throws it away. That copy is nobody's vault and is wiped
+/// on the same terms.
+#[test]
+fn reading_the_file_on_disk_leaves_none_of_it() {
+    let directory = tempfile::tempdir().expect("a scratch directory");
+    let held = protected_value();
+    let written = open_value();
+
+    let path = crowded(directory.path(), "held.kdbx", &held, &held);
+    let vault = open(&path, BUILT_PASSWORD);
+
+    let replacement = crowded(directory.path(), "written.kdbx", &written, &written);
+    std::fs::copy(&replacement, &path).expect("the replacement lands on the database");
+
+    let found = vault.rival();
+    assert!(found.entries.is_some(), "the file on disk opens");
+
+    let mut sweep = Sweep::for_needle(written.into_bytes());
+    assert_eq!(
+        sweep.hits(),
+        0,
+        "the version on disk is still in memory after being read"
+    );
+    drop(vault);
 }

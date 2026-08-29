@@ -30,6 +30,7 @@ mod history;
 mod preflight;
 mod text;
 mod vault;
+mod wipe;
 
 pub use crate::error::VaultError;
 pub use crate::key::MasterKey;

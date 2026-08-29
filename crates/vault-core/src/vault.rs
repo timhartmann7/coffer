@@ -19,6 +19,7 @@ use crate::storage::lock::{Lock, Outcome};
 use crate::storage::watch::{Change, Stamp};
 use crate::storage::{atomic, snapshot, watch};
 use crate::text;
+use crate::wipe;
 
 /// The largest file Coffer will read into memory to try to open.
 ///
@@ -75,7 +76,9 @@ pub enum NewValue {
 /// database is unlocked is not a choice: KeePass derives a fresh key on every
 /// save, so a vault that can save is a vault that still has the password.
 pub struct Vault {
-    database: Database,
+    /// Declared first so that it is dropped first: the tree is emptied, and
+    /// only then is the lock file beside the database let go.
+    database: Held,
     path: PathBuf,
     key: MasterKey,
     source: Source,
@@ -92,6 +95,36 @@ impl std::fmt::Debug for Vault {
             .field("path", &self.path)
             .field("source", &self.source)
             .finish_non_exhaustive()
+    }
+}
+
+/// A decrypted database, emptied when it goes.
+///
+/// The wrapper is what carries the destructor, and it carries it here rather
+/// than on [`Vault`] for three reasons. Reloading assigns into this field, which
+/// drops a `Database` and not a `Vault`. Reading the rival file builds a whole
+/// second database and throws it away without a vault ever existing. And a type
+/// with a `Drop` cannot have a field moved out of it, which would make `Vault`
+/// harder to work with for nothing.
+struct Held(Database);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        wipe::database(&mut self.0);
+    }
+}
+
+impl std::ops::Deref for Held {
+    type Target = Database;
+
+    fn deref(&self) -> &Database {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Held {
+    fn deref_mut(&mut self) -> &mut Database {
+        &mut self.0
     }
 }
 
@@ -1040,7 +1073,7 @@ fn encrypt(
     Ok(counted.written)
 }
 
-fn read(path: &Path, key: &MasterKey) -> Result<Database, VaultError> {
+fn read(path: &Path, key: &MasterKey) -> Result<Held, VaultError> {
     use std::io::Read;
 
     let file = std::fs::File::open(path)?;
@@ -1056,7 +1089,7 @@ fn read(path: &Path, key: &MasterKey) -> Result<Database, VaultError> {
     preflight::check(&bytes)?;
 
     let database_key = key.to_database_key()?;
-    parse_without_dying(&bytes, database_key)
+    parse_without_dying(&bytes, database_key).map(Held)
 }
 
 /// Parses a database, turning a panic inside the parser into an error.
