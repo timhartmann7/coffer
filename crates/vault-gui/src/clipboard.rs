@@ -176,6 +176,18 @@ mod tests {
             Board::Named(self.0.name().to_string())
         }
 
+        /// What is on this pasteboard, read back.
+        ///
+        /// Reading is only ever done here, and only on a pasteboard the test
+        /// made: reading the general one programmatically raises an alert on
+        /// macOS 15.4 and later, which is why nothing outside these tests does.
+        fn value(&self) -> Option<String> {
+            // SAFETY: reading an AppKit constant declared in an `extern "C"`
+            // block.
+            let plain: &NSPasteboardType = unsafe { NSPasteboardTypeString };
+            self.0.stringForType(plain).map(|value| value.to_string())
+        }
+
         fn types(&self) -> Vec<String> {
             self.0
                 .types()
@@ -195,9 +207,11 @@ mod tests {
     }
 
     #[test]
-    fn a_copied_secret_is_marked_as_one() {
+    fn a_copied_secret_is_marked_as_one_and_is_the_secret() {
         let private = Private::new();
         write(&private.0, "hunter2");
+
+        assert_eq!(private.value().as_deref(), Some("hunter2"));
 
         let types = private.types();
         assert!(
@@ -225,7 +239,7 @@ mod tests {
     fn the_secret_can_be_taken_back_before_its_timer_runs() {
         let private = Private::new();
         copy_to(private.board(), "hunter2", Duration::from_secs(600));
-        assert!(!private.types().is_empty());
+        assert_eq!(private.value().as_deref(), Some("hunter2"));
 
         revoke_pending();
         assert!(private.types().is_empty());
@@ -239,7 +253,7 @@ mod tests {
     fn the_timer_takes_the_secret_off_the_clipboard() {
         let private = Private::new();
         copy_to(private.board(), "hunter2", Duration::from_millis(20));
-        assert!(!private.types().is_empty());
+        assert_eq!(private.value().as_deref(), Some("hunter2"));
 
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while !private.types().is_empty() && std::time::Instant::now() < deadline {
@@ -274,13 +288,14 @@ mod tests {
             "\u{202e}drawkcab",
             "line\nbreak\ttab",
             "ユニコード 🔐 é\u{301}",
+            "\u{301}\u{301}\u{301}\u{301}",
         ] {
             write(&private.0, secret);
-            assert!(!private.types().is_empty(), "{secret:?}");
+            assert_eq!(private.value().as_deref(), Some(secret), "{secret:?}");
         }
 
         let long = "a".repeat(10 * 1024 * 1024);
         write(&private.0, &long);
-        assert!(!private.types().is_empty());
+        assert_eq!(private.value().map(|value| value.len()), Some(long.len()));
     }
 }

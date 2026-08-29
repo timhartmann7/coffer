@@ -141,6 +141,12 @@ Two things follow from that, and both are traps:
 - **The policy is not enforced in `tauri dev`.** With `devUrl` set, the window
   loads the Vite server directly and Tauri's asset handler, which is what adds
   the header, never runs. A policy bug only appears in a real build.
+- **The two bars that drain are CSS animations of a fixed length, and their
+  lengths are written twice.** `--animate-drain-reveal` in `app.css` is the
+  thirty seconds of `SECONDS` in `reveal.svelte.ts`; `--animate-drain-clipboard`
+  is the sixty of `clipboard::CLEAR_AFTER` in Rust. Neither pair can share a
+  value, because the only way to set a duration from script is an inline style
+  and the policy below forbids one. Change one and change the other.
 - **Nothing in the window may use an inline style.** `style-src 'self'` covers
   `style` attributes as well as `<style>` elements, and Tauri's nonce only
   reaches elements that are in the HTML at build time. This is why the sprite is

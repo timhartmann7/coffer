@@ -3,7 +3,7 @@
 	import { asFailure, copy as copyToClipboard, entry as loadEntry } from '$lib/ipc';
 	import type { Database, Entry, EntryRow, Group } from '$lib/model';
 	import { index, search } from '$lib/search';
-	import { entriesOf, liveEntries, pathTo, recycleBin } from '$lib/tree';
+	import { liveEntries, pathTo, recycleBin, shownEntries } from '$lib/tree';
 	import Empty from './Empty.svelte';
 	import EntryList from './EntryList.svelte';
 	import EntryListCompact from './EntryListCompact.svelte';
@@ -22,6 +22,10 @@
 	let field = $state<HTMLInputElement>();
 	let notice = $state<{ message: string; kind: 'copied' | 'failed' } | null>(null);
 	let countdown: ReturnType<typeof setInterval> | null = null;
+	let fading: ReturnType<typeof setTimeout> | null = null;
+	/** Which copy the toast is about. The bar that drains is a CSS animation and
+	 * an animation does not start again on its own, so the toast is rebuilt. */
+	let copies = $state(0);
 
 	// Timestamps are written against the moment the vault was opened rather than
 	// against a clock that ticks, so that a list of a thousand rows is not
@@ -32,7 +36,7 @@
 	// Walked once. The tree is the whole vault, and three walks of fifty
 	// thousand entries to draw one screen is three too many.
 	const live = $derived(liveEntries(root));
-	const rows = $derived(group === null ? live : entriesOf(shown));
+	const rows = $derived(group === null ? live : shownEntries(shown));
 	const indexed = $derived(index(rows));
 	const found = $derived(search(indexed, query));
 	const bin = $derived(recycleBin(root));
@@ -78,6 +82,7 @@
 	 * message counts the same seconds down. */
 	function announce(seconds: number) {
 		clear();
+		copies += 1;
 		let left = seconds;
 		notice = { message: message(left), kind: 'copied' };
 		countdown = setInterval(() => {
@@ -99,8 +104,9 @@
 	function failed(thrown: unknown) {
 		clear();
 		notice = { message: asFailure(thrown).message, kind: 'failed' };
-		setTimeout(() => {
+		fading = setTimeout(() => {
 			notice = null;
+			fading = null;
 		}, 4000);
 	}
 
@@ -108,6 +114,10 @@
 		if (countdown !== null) {
 			clearInterval(countdown);
 			countdown = null;
+		}
+		if (fading !== null) {
+			clearTimeout(fading);
+			fading = null;
 		}
 	}
 
@@ -210,7 +220,7 @@
 					{/if}
 					<Icon name="trash" class="h-4 w-4 shrink-0" />
 					<span class="flex-1 text-left">{deleted.name}</span>
-					<span class="font-mono text-meta text-txt4">{entriesOf(deleted).length}</span>
+					<span class="font-mono text-meta text-txt4">{shownEntries(deleted).length}</span>
 				</button>
 			</div>
 		{/if}
@@ -285,7 +295,9 @@
 	{/if}
 
 	{#if notice}
-		<Toast message={notice.message} kind={notice.kind} />
+		{#key copies}
+			<Toast message={notice.message} kind={notice.kind} />
+		{/key}
 	{/if}
 </div>
 

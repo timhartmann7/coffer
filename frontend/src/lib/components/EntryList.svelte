@@ -62,7 +62,11 @@
 			</span>
 
 			<span class="flex min-w-0 gap-1.5 overflow-hidden">
-				{#each row.tags.slice(0, SHOWN) as tag (tag)}
+				<!-- Keyed by position, not by the tag: a file may hold the same tag
+				     twice, or two empty ones, and a duplicate key throws the whole
+				     list away. A tag is a value; its place in the row is its
+				     identity. -->
+				{#each row.tags.slice(0, SHOWN) as tag, at (at)}
 					<em
 						class="truncate rounded-full bg-surface2 px-2 py-[3px] font-mono text-label tracking-label text-txt3 uppercase not-italic"
 					>
@@ -84,7 +88,7 @@
 				<button
 					type="button"
 					onclick={() => onCopy(row, 'UserName')}
-					disabled={!row.username}
+					disabled={row.username === ''}
 					class="rounded-sm p-1 text-txt4 transition-colors hover:bg-surface2 hover:text-txt disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-txt4"
 					aria-label="Copy login"
 					title="Copy login · ⌘B"

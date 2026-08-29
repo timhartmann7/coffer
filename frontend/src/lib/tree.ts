@@ -27,6 +27,18 @@ export function liveEntries(root: Group): EntryRow[] {
 	return found;
 }
 
+/**
+ * The entries a folder shows when it is the one being drawn.
+ *
+ * The recycle bin is a group like any other in the file and a client may put it
+ * anywhere, including inside a project. Deleted entries belong to the bin's own
+ * screen and to no other, so a project holding one does not show its contents -
+ * unless the bin itself is the folder that was chosen.
+ */
+export function shownEntries(group: Group): EntryRow[] {
+	return group.isRecycleBin ? entriesOf(group) : liveEntries(group);
+}
+
 export function recycleBin(root: Group): Group | null {
 	if (root.isRecycleBin) return root;
 	for (const section of root.sections) {
@@ -77,7 +89,7 @@ export function visible(root: Group, expanded: Set<string>): Line[] {
 		.reverse();
 
 	for (let here = pending.pop(); here !== undefined; here = pending.pop()) {
-		lines.push({ ...here, entries: entriesOf(here.group).length });
+		lines.push({ ...here, entries: shownEntries(here.group).length });
 
 		if (!expanded.has(here.group.id)) continue;
 		for (let at = here.group.sections.length - 1; at >= 0; at -= 1) {

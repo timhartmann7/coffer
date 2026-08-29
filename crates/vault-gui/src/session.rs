@@ -359,6 +359,26 @@ mod tests {
         );
     }
 
+    /// The unlock screen tells a database somebody else has open apart from a
+    /// password that did not fit, and it does that on the code alone.
+    #[test]
+    fn a_database_another_process_holds_is_its_own_answer() {
+        let (_scratch, database) = scratch(RICH);
+        let holding = Session::new(Some(database.clone()));
+        holding
+            .unlock(password(SECRET))
+            .expect("the first one opens");
+
+        let second = Session::new(Some(database));
+        let failure = second
+            .unlock(password(SECRET))
+            .expect_err("the second one is refused");
+
+        let payload = serde_json::to_value(&failure).expect("a failure serialises");
+        assert_eq!(payload["code"], "heldByAnother");
+        assert!(!second.is_unlocked());
+    }
+
     #[test]
     fn a_field_comes_out_one_at_a_time() {
         let (_scratch, session) = unlocked(RICH);
@@ -371,6 +391,36 @@ mod tests {
 
         assert!(session.reveal(entry.id, "no such field").is_err());
         assert!(session.reveal(entry.id, "").is_err());
+    }
+
+    /// The end of the boundary, from a real database to the bytes the webview
+    /// would receive: the password of an entry the screen is drawing is not in
+    /// them.
+    #[test]
+    fn nothing_the_screen_is_sent_carries_a_password() {
+        let (_scratch, session) = unlocked(RICH);
+        let entry = entry_titled(&session, "basic");
+
+        let secret = session
+            .reveal(entry.id, fields::PASSWORD)
+            .expect("the password comes back");
+        let secret = secret.expose_str().expect("it is text").to_owned();
+
+        let drawn = serde_json::to_string(&crate::dto::Entry::of(&entry)).expect("it serialises");
+        let listed = serde_json::to_string(&crate::dto::Group::of(
+            &session.tree().expect("the tree comes back"),
+        ))
+        .expect("it serialises");
+
+        assert!(!secret.is_empty());
+        assert!(
+            !drawn.contains(&secret),
+            "the entry payload carries the password"
+        );
+        assert!(
+            !listed.contains(&secret),
+            "the tree payload carries the password"
+        );
         assert!(
             session
                 .reveal(EntryId::from_uuid(uuid::Uuid::nil()), fields::PASSWORD)

@@ -110,13 +110,8 @@ impl Entry {
         self.fields.iter().find(|field| field.name == name)
     }
 
-    /// The entry's title, empty when it has none. Every other named accessor
-    /// goes through the same path, so there is one rule for what a field name
-    /// means.
-    pub fn title(&self) -> &str {
-        self.open(fields::TITLE)
-    }
-
+    /// The entry's login, empty when it has none. Every named accessor goes
+    /// through the same path, so there is one rule for what a field name means.
     pub fn username(&self) -> &str {
         self.open(fields::USERNAME)
     }

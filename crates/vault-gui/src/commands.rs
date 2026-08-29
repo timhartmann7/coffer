@@ -59,6 +59,10 @@ pub async fn choose_database(
         picker = picker.set_directory(directory);
     }
 
+    if session.is_unlocked() {
+        return Err(Failure::refused("lock the vault before opening another"));
+    }
+
     let Some(chosen) = picker.blocking_pick_file() else {
         return Ok(None);
     };
@@ -85,17 +89,7 @@ pub async fn choose_database(
 /// could have written down on the way.
 #[tauri::command]
 pub async fn unlock(request: Request<'_>, session: Held<'_>) -> Result<(), Failure> {
-    // A JSON body means the webview's IPC fell back to `postMessage`, where the
-    // password would have travelled through a JavaScript string and a JSON
-    // document. Refusing is the only safe answer: accepting it would make a
-    // broken Content-Security-Policy invisible.
-    let InvokeBody::Raw(password) = request.body() else {
-        return Err(Failure::refused(
-            "the master password must be sent as bytes",
-        ));
-    };
-
-    let password = Zeroizing::new(password.clone());
+    let password = password_of(request.body())?;
     let session = Arc::clone(&session);
 
     // Key derivation is a second of work by design. It happens on a thread that
@@ -103,6 +97,22 @@ pub async fn unlock(request: Request<'_>, session: Held<'_>) -> Result<(), Failu
     tauri::async_runtime::spawn_blocking(move || session.unlock(password))
         .await
         .map_err(|_| Failure::internal("the database could not be opened"))?
+}
+
+/// The master password out of a message, and only out of a message that
+/// carried it as bytes.
+///
+/// A JSON body means the webview's IPC fell back to `postMessage`, where the
+/// password would have travelled through a JavaScript string and a JSON
+/// document. Refusing is the only safe answer: accepting it would make a broken
+/// Content-Security-Policy invisible, and a broken one is silent.
+fn password_of(body: &InvokeBody) -> Result<Zeroizing<Vec<u8>>, Failure> {
+    match body {
+        InvokeBody::Raw(password) => Ok(Zeroizing::new(password.clone())),
+        InvokeBody::Json(_) => Err(Failure::refused(
+            "the master password must be sent as bytes",
+        )),
+    }
 }
 
 /// Wipes the decrypted database out of memory.
@@ -126,10 +136,7 @@ pub fn entry(id: String, session: Held<'_>) -> Result<Entry, Failure> {
 #[tauri::command]
 pub fn reveal(entry: String, field: String, session: Held<'_>) -> Result<Revealed, Failure> {
     let secret = session.reveal(dto::entry_id(&entry)?, &field)?;
-    secret
-        .expose_str()
-        .map(Revealed::new)
-        .ok_or_else(|| Failure::refused("that value is not text"))
+    Ok(Revealed::new(text(&secret)?))
 }
 
 /// Copies one field's value to the clipboard. Nothing comes back but the number
@@ -137,12 +144,19 @@ pub fn reveal(entry: String, field: String, session: Held<'_>) -> Result<Reveale
 #[tauri::command]
 pub fn copy(entry: String, field: String, session: Held<'_>) -> Result<u64, Failure> {
     let secret = session.reveal(dto::entry_id(&entry)?, &field)?;
-    let value = secret
-        .expose_str()
-        .ok_or_else(|| Failure::refused("that value is not text"))?;
 
-    clipboard::copy(value, clipboard::CLEAR_AFTER);
+    clipboard::copy(text(&secret)?, clipboard::CLEAR_AFTER);
     Ok(clipboard::CLEAR_AFTER.as_secs())
+}
+
+/// A revealed value as text.
+///
+/// Every field value in a KeePass file is text, so the refusal is for the day
+/// something that is not - an attachment - comes through the same door.
+fn text(secret: &vault_core::SecretValue) -> Result<&str, Failure> {
+    secret
+        .expose_str()
+        .ok_or_else(|| Failure::refused("that value is not text"))
 }
 
 /// Opens an entry's address.
@@ -182,6 +196,10 @@ pub fn snapshots(session: Held<'_>) -> Result<Vec<Snapshot>, Failure> {
 /// the user chose, so no message from the screen can name a file.
 #[tauri::command]
 pub fn choose_snapshot(index: u32, session: Held<'_>) -> Result<Database, Failure> {
+    if session.is_unlocked() {
+        return Err(Failure::refused("lock the vault before opening another"));
+    }
+
     let database = session.database().ok_or_else(Failure::no_vault)?;
     let path = snapshot::slot(&database, index).map_err(Failure::io)?;
 
@@ -191,4 +209,39 @@ pub fn choose_snapshot(index: u32, session: Held<'_>) -> Result<Database, Failur
 
     session.choose(path.clone());
     Ok(Database::of(&path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The whole point of the raw body. A number array is what Tauri produces
+    /// when the custom-protocol IPC is blocked and it falls back to
+    /// `postMessage`, and taking one would mean the password had already been a
+    /// JavaScript string and a JSON document by the time it arrived.
+    #[test]
+    fn a_password_that_did_not_arrive_as_bytes_is_refused() {
+        let numbers = serde_json::json!([104, 117, 110, 116, 101, 114, 50]);
+        let failure = password_of(&InvokeBody::Json(numbers)).expect_err("a JSON body is refused");
+        assert!(format!("{failure:?}").contains("must be sent as bytes"));
+
+        let text = serde_json::json!("hunter2");
+        assert!(password_of(&InvokeBody::Json(text)).is_err());
+
+        let object = serde_json::json!({ "password": "hunter2" });
+        assert!(password_of(&InvokeBody::Json(object)).is_err());
+    }
+
+    #[test]
+    fn a_password_that_arrived_as_bytes_is_taken_whole() {
+        for password in [
+            b"".to_vec(),
+            b"correct horse battery staple".to_vec(),
+            vec![0xff, 0xfe, 0x00, 0x41],
+            vec![b'a'; 10 * 1024 * 1024],
+        ] {
+            let taken = password_of(&InvokeBody::Raw(password.clone())).expect("bytes are taken");
+            assert_eq!(taken.as_slice(), password.as_slice());
+        }
+    }
 }

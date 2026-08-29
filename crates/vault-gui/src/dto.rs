@@ -293,8 +293,6 @@ mod tests {
 
     use super::*;
 
-    const SECRET: &str = "hunter2-not-in-any-payload";
-
     fn open(name: &str, value: &str) -> Field {
         Field {
             name: name.to_owned(),
@@ -337,7 +335,6 @@ mod tests {
         ]));
 
         let payload = json(&entry);
-        assert!(!payload.contains(SECRET));
         assert!(
             payload.contains(r#""name":"Password","kind":"password","value":null,"empty":false"#)
         );
@@ -473,13 +470,14 @@ mod tests {
     /// password, and the screen still has to ask for it one reveal at a time.
     #[test]
     fn a_password_the_database_left_open_still_does_not_cross() {
-        let entry = Entry::of(&entry_of(vec![open(fields::PASSWORD, SECRET)]));
+        let secret = "hunter2-not-in-any-payload";
+        let entry = Entry::of(&entry_of(vec![open(fields::PASSWORD, secret)]));
         let password = entry.fields.first().expect("the field is there");
 
         assert_eq!(password.kind, FieldKind::Password);
         assert_eq!(password.value, None);
         assert!(!password.empty);
-        assert!(!json(&entry).contains(SECRET));
+        assert!(!json(&entry).contains(secret));
     }
 
     #[test]

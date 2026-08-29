@@ -6,7 +6,12 @@ import Vault from './Vault.svelte';
 const ipc = vi.hoisted(() => ({
 	entry: vi.fn(),
 	copy: vi.fn(),
-	asFailure: (thrown: unknown) => ({ code: 'other', message: String(thrown) })
+	// The same reading the real one does: a command rejects with the value Rust
+	// serialised, and anything else is not one.
+	asFailure: (thrown: unknown) =>
+		thrown && typeof (thrown as { message?: unknown }).message === 'string'
+			? (thrown as { code: string; message: string })
+			: { code: 'other', message: 'Coffer could not finish that.' }
 }));
 vi.mock('$lib/ipc', () => ipc);
 
@@ -199,6 +204,56 @@ it('leaves a copy the reader selected alone', async () => {
 	await vi.waitFor(() => expect(ipc.copy).toHaveBeenCalledWith(kept.id, 'Password'));
 
 	return unmount(component);
+});
+
+/** A copy that failed is not a copy. It must not be drawn as one, and the
+ * message it puts up must not outlive a copy that follows it. */
+it('says a copy failed without dressing it as one that worked', async () => {
+	vi.useFakeTimers();
+	try {
+		ipc.entry.mockResolvedValue(
+			entry({
+				id: kept.id,
+				group: root.id,
+				fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+			})
+		);
+		ipc.copy.mockRejectedValueOnce({ code: 'noVault', message: 'no database is open' });
+
+		const component = open();
+		flushSync();
+		[...host.querySelectorAll('button')]
+			.find((each) => each.textContent?.includes('node-3'))
+			?.click();
+		await vi.advanceTimersByTimeAsync(0);
+		flushSync();
+
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', metaKey: true }));
+		await vi.advanceTimersByTimeAsync(0);
+		flushSync();
+
+		const toast = () => host.querySelector('[data-notice]');
+		expect(toast()?.textContent).toContain('no database is open');
+		expect(toast()?.querySelector('use[href="#i-warn"]')).not.toBeNull();
+		expect(toast()?.querySelector('use[href="#i-copy"]')).toBeNull();
+
+		// A copy that works while the failure is still up keeps its own message
+		// for its own minute: the failure's timer must not take it away.
+		ipc.copy.mockResolvedValue(60);
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', metaKey: true }));
+		await vi.advanceTimersByTimeAsync(0);
+		flushSync();
+		expect(toast()?.textContent).toContain('Copied. Clipboard clears in 1:00');
+		expect(toast()?.querySelector('use[href="#i-copy"]')).not.toBeNull();
+
+		await vi.advanceTimersByTimeAsync(4_000);
+		flushSync();
+		expect(toast()?.textContent).toContain('Copied. Clipboard clears in 0:56');
+
+		await unmount(component);
+	} finally {
+		vi.useRealTimers();
+	}
 });
 
 it('puts the reader in the search field on the shortcut the field advertises', async () => {

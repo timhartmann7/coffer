@@ -117,3 +117,61 @@ impl From<VaultError> for Failure {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn code_of(error: VaultError) -> String {
+        let payload = serde_json::to_value(Failure::from(error)).expect("a failure serialises");
+        payload["code"]
+            .as_str()
+            .expect("a code is a string")
+            .to_owned()
+    }
+
+    /// The screen decides what to offer from the code alone: a snapshot for a
+    /// file that will not open, a red field for a password that did not fit.
+    /// Nothing else pins these strings, and moving one is silent.
+    #[test]
+    fn every_failure_keeps_the_code_the_screen_branches_on() {
+        use std::io;
+
+        for (error, expected) in [
+            (VaultError::WrongCredentials, "wrongCredentials"),
+            (VaultError::NotADatabase, "notADatabase"),
+            (VaultError::UnsupportedFormat, "unsupportedFormat"),
+            (VaultError::DamagedHeader, "damaged"),
+            (VaultError::DamagedPayload, "damaged"),
+            (VaultError::DamagedContent, "damaged"),
+            (VaultError::DatabaseGone, "gone"),
+            (VaultError::TooLarge, "tooLarge"),
+            (VaultError::NoSuchEntry, "noSuchEntry"),
+            (VaultError::UnwritableText, "refused"),
+            (VaultError::PasswordNotUtf8, "refused"),
+            (VaultError::AbsurdKeyDerivation, "refused"),
+            (VaultError::ReadOnlyKdb, "other"),
+            (VaultError::ReadOnlyKdbx3Attachments, "other"),
+            (VaultError::ExternalChange, "other"),
+            (VaultError::Io(io::Error::other("a disk")), "io"),
+        ] {
+            let message = error.to_string();
+            assert_eq!(code_of(error), expected, "{message}");
+        }
+    }
+
+    /// Every message the screen shows comes from `vault-core`, and none of them
+    /// repeats what was in the database.
+    #[test]
+    fn a_failure_says_what_broke_and_nothing_about_the_contents() {
+        let payload = serde_json::to_string(&Failure::from(VaultError::WrongCredentials))
+            .expect("a failure serialises");
+        assert_eq!(
+            payload,
+            r#"{"code":"wrongCredentials","message":"wrong password or key file"}"#
+        );
+
+        let stale = serde_json::to_string(&Failure::stale()).expect("a failure serialises");
+        assert!(stale.contains(r#""code":"noVault""#), "{stale}");
+    }
+}

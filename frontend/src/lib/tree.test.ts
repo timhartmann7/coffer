@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { group, row } from './fixtures';
-import { entriesOf, liveEntries, pathTo, projects, recycleBin, visible } from './tree';
+import {
+	entriesOf,
+	liveEntries,
+	pathTo,
+	projects,
+	recycleBin,
+	shownEntries,
+	visible
+} from './tree';
 
 describe('walking the tree', () => {
 	it('gathers the entries of a group and of everything under it', () => {
@@ -32,6 +40,17 @@ describe('walking the tree', () => {
 
 		expect(liveEntries(tree).map((entry) => entry.title)).toEqual(['kept']);
 		expect(entriesOf(tree)).toHaveLength(3);
+	});
+
+	/** A client may put the recycle bin inside a project. Its entries are still
+	 * deleted, and the project they sit under is not where they are shown. */
+	it('keeps a bin nested in a project out of that project', () => {
+		const bin = group({ name: 'Recycle Bin', isRecycleBin: true, entries: [row()] });
+		const work = group({ name: 'Work', entries: [row(), row()], sections: [bin] });
+
+		expect(shownEntries(work)).toHaveLength(2);
+		expect(shownEntries(bin)).toHaveLength(1);
+		expect(entriesOf(work)).toHaveLength(3);
 	});
 
 	it('finds the recycle bin wherever the file puts it', () => {

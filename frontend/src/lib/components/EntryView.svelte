@@ -51,13 +51,16 @@
 		<div class="block">
 			<span class="font-mono text-label tracking-label text-txt3 uppercase">Login</span>
 			<span class="mt-1.5 flex items-center gap-2">
-				<span class="min-w-0 flex-1 truncate font-mono text-body text-txt select-text">
-					{#if username && username.value === null}
-						<Mask />
-					{:else}
+				{#if username && username.value === null && !username.empty}
+					<!-- A database may protect any field, the login included. It comes
+					     back the same way a protected custom field does: one reveal at
+					     a time. -->
+					<ProtectedValue entry={entry.id} field={username.name} {onFailure} />
+				{:else}
+					<span class="min-w-0 flex-1 truncate font-mono text-body text-txt select-text">
 						{username?.value ?? ''}
-					{/if}
-				</span>
+					</span>
+				{/if}
 				{#if username && !username.empty}
 					<button
 						type="button"
@@ -93,7 +96,9 @@
 						{url.value}
 					</button>
 				{:else if url.value === null}
-					<span class="mt-1.5 block"><Mask /></span>
+					<span class="mt-1.5 flex items-center gap-2">
+						<ProtectedValue entry={entry.id} field={url.name} {onFailure} />
+					</span>
 				{:else}
 					<!-- An address Coffer will not open is a value on a screen and
 					     nothing more. Nothing here can be clicked into a browser. -->
@@ -108,7 +113,8 @@
 			<div class="mt-5">
 				<span class="font-mono text-label tracking-label text-txt3 uppercase">Tags</span>
 				<div class="mt-2 flex flex-wrap gap-1.5">
-					{#each entry.tags as tag (tag)}
+					<!-- Keyed by position: a file may hold the same tag twice. -->
+					{#each entry.tags as tag, at (at)}
 						<span
 							class="rounded-full bg-surface2 px-2.5 py-1 font-mono text-label tracking-label text-txt3 uppercase"
 						>
@@ -122,9 +128,15 @@
 		{#if notes && !notes.empty}
 			<div class="mt-6 border-t border-line pt-5">
 				<div class="font-mono text-label tracking-label text-txt3 uppercase">Notes</div>
-				<p class="mt-3 text-small leading-relaxed whitespace-pre-wrap text-txt2 select-text">
-					{notes.value}
-				</p>
+				{#if notes.value === null}
+					<div class="mt-3 flex items-center gap-3">
+						<ProtectedValue entry={entry.id} field={notes.name} {onFailure} />
+					</div>
+				{:else}
+					<p class="mt-3 text-small leading-relaxed whitespace-pre-wrap text-txt2 select-text">
+						{notes.value}
+					</p>
+				{/if}
 			</div>
 		{/if}
 

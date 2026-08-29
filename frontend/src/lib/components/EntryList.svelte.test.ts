@@ -100,11 +100,38 @@ it('opens an entry that has no title at all', () => {
 
 	const opener = host.querySelector('button');
 	if (!opener) throw new Error('the row has nothing to click');
-	expect(opener.getBoundingClientRect).toBeDefined();
 	opener.click();
 	flushSync();
 
 	expect(onOpen).toHaveBeenCalledWith(untitled.id);
+
+	return unmount(component);
+});
+
+it('draws a row whose tags repeat', () => {
+	const component = draw([row({ tags: ['prod', 'prod', '', ''] })], {});
+	flushSync();
+
+	expect([...host.querySelectorAll('em')].map((each) => each.textContent?.trim())).toEqual([
+		'prod',
+		'prod',
+		'+2'
+	]);
+
+	return unmount(component);
+});
+
+/** A login the database protects is masked in the row, and copying it still
+ * works: the copy happens in Rust, by field name, whether or not the value ever
+ * crossed. */
+it('still offers to copy a login it is only allowed to mask', () => {
+	const component = draw([row({ username: null, hasPassword: true })], {});
+	flushSync();
+
+	const copies = [...host.querySelectorAll('button')].filter((each) =>
+		each.getAttribute('aria-label')?.startsWith('Copy')
+	);
+	expect(copies.map((each) => each.disabled)).toEqual([false, false]);
 
 	return unmount(component);
 });

@@ -142,6 +142,86 @@ it('drops a value that arrives after the pane has gone', async () => {
 	expect(document.body.textContent).not.toContain(SECRET);
 });
 
+/** Thirty seconds is the only bound on how long a password stays on the screen
+ * when nobody hides it. */
+it('takes the value off the screen when its half minute is up', async () => {
+	vi.useFakeTimers();
+	try {
+		const component = show({
+			fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+		});
+		flushSync();
+
+		const target = host.querySelector('[data-value]');
+		if (!target) throw new Error('the pane has nowhere to show a value');
+
+		button('Show').click();
+		await Promise.resolve();
+		await Promise.resolve();
+		flushSync();
+		expect(target.textContent).toBe(SECRET);
+
+		vi.advanceTimersByTime(29_000);
+		flushSync();
+		expect(target.textContent).toBe(SECRET);
+
+		vi.advanceTimersByTime(1_000);
+		flushSync();
+		expect(target.textContent).toBe('');
+		expect(host.textContent).not.toContain('Hides in');
+
+		await unmount(component);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+/** A database may protect any field. The login, the address and the notes then
+ * arrive the same way a protected custom field does, and the pane has to offer
+ * the same way in. */
+it('offers a reveal for a login the database protects', async () => {
+	const component = show({
+		fields: [field({ name: 'UserName', kind: 'username', value: null, empty: false })]
+	});
+	flushSync();
+
+	const eye = host.querySelector('[aria-label="Show UserName"]');
+	expect(eye).not.toBeNull();
+	expect(host.querySelector('use[href="#redact"]')).not.toBeNull();
+
+	(eye as HTMLButtonElement).click();
+	await vi.waitFor(() => expect(host.textContent).toContain(SECRET));
+	expect(ipc.reveal).toHaveBeenCalledWith(expect.any(String), 'UserName');
+
+	return unmount(component);
+});
+
+it('offers a reveal for notes the database protects', async () => {
+	const component = show({
+		fields: [field({ name: 'Notes', kind: 'notes', value: null, empty: false })]
+	});
+	flushSync();
+
+	const eye = host.querySelector('[aria-label="Show Notes"]');
+	expect(eye).not.toBeNull();
+
+	(eye as HTMLButtonElement).click();
+	await vi.waitFor(() => expect(host.textContent).toContain(SECRET));
+
+	return unmount(component);
+});
+
+/** A file may hold the same tag twice, and a list keyed by the tag throws the
+ * whole pane away when it does. */
+it('draws an entry whose tags repeat', () => {
+	const component = show({ tags: ['prod', 'prod', '', ''] });
+	flushSync();
+
+	expect(host.querySelectorAll('span.rounded-full')).toHaveLength(4);
+
+	return unmount(component);
+});
+
 it('asks for a password once per reveal and never on its own', async () => {
 	const component = show({
 		fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
