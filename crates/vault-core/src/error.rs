@@ -61,6 +61,12 @@ pub enum VaultError {
     #[error("the database asks for key derivation Coffer will not perform")]
     AbsurdKeyDerivation,
 
+    /// The file is larger than any database anybody made. It is read into
+    /// memory whole to be decrypted, so its own size is the ceiling on what
+    /// opening it costs.
+    #[error("this file is too large to be a KeePass database")]
+    TooLarge,
+
     /// The entry asked for is not in this database.
     #[error("there is no such entry in this database")]
     NoSuchEntry,

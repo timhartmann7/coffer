@@ -300,7 +300,7 @@ fn read(path: &Path, key: &MasterKey) -> Result<Database, VaultError> {
     let file = std::fs::File::open(path)?;
 
     if file.metadata()?.len() > MAX_DATABASE_BYTES {
-        return Err(VaultError::NotADatabase);
+        return Err(VaultError::TooLarge);
     }
 
     let mut bytes = Vec::new();
@@ -309,7 +309,36 @@ fn read(path: &Path, key: &MasterKey) -> Result<Database, VaultError> {
 
     preflight::check(&bytes)?;
 
-    Ok(Database::parse(&bytes, key.to_database_key()?)?)
+    let database_key = key.to_database_key()?;
+    parse_without_dying(&bytes, database_key)
+}
+
+/// Parses a database, turning a panic inside the parser into an error.
+///
+/// The pre-flight stops everything it can reach before the file has been
+/// authenticated, but the parser has reachable panics inside the decrypted body
+/// as well - a timestamp shorter than eight bytes is one - and a vault that
+/// dies on a corrupt file is a vault that cannot offer the user their backup.
+/// Nothing has been written at this point, so there is no half-finished state
+/// to unwind into.
+fn parse_without_dying(bytes: &[u8], key: keepass::DatabaseKey) -> Result<Database, VaultError> {
+    silence_panics();
+
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Database::parse(bytes, key)))
+        .map_err(|_| VaultError::DamagedContent)?
+        .map_err(VaultError::from)
+}
+
+/// Stops the runtime printing panic messages.
+///
+/// A panic inside the parser quotes the document it failed on, and that document
+/// is the user's passwords. The default hook writes it to standard error, where
+/// a terminal, a log or a crash reporter can pick it up. Coffer would rather
+/// lose the diagnostic than print the vault, so the hook is replaced the first
+/// time a database is opened and never restored.
+fn silence_panics() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| std::panic::set_hook(Box::new(|_| {})));
 }
 
 fn classify(database: &Database) -> Source {

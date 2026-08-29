@@ -723,3 +723,44 @@ fn another_client_writing_the_file_is_noticed_in_either_order() {
         Some("written elsewhere")
     );
 }
+
+#[test]
+fn no_short_header_field_can_take_the_process_down() {
+    // Every known KDBX 4 header field, given a value shorter than the parser
+    // might read from it. The pre-flight stops what it can name; anything it
+    // lets through has to come back as an error rather than a panic, which is
+    // what the parse is wrapped for.
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let mut caught = 0;
+
+    for id in 1..=12u8 {
+        for length in [0usize, 1, 3, 7, 15] {
+            let bytes = Header::kdbx4().field(id, &vec![0u8; length]).end();
+            let path = write_bytes(scratch.path(), "short.kdbx", &bytes);
+
+            if library_panics(&bytes) {
+                caught += 1;
+            }
+
+            let error = open_error(&path, SECRET);
+            assert!(
+                matches!(
+                    error,
+                    VaultError::NotADatabase
+                        | VaultError::UnsupportedFormat
+                        | VaultError::DamagedHeader
+                        | VaultError::DamagedPayload
+                        | VaultError::DamagedContent
+                        | VaultError::WrongCredentials
+                        | VaultError::AbsurdKeyDerivation
+                ),
+                "header field {id} of {length} bytes gave {error:?}"
+            );
+        }
+    }
+
+    assert!(
+        caught > 0,
+        "none of these inputs panics the library any more, so this test is no longer testing anything"
+    );
+}

@@ -15,4 +15,7 @@ all = { level = "deny", priority = -1 }
 strip = true
 lto = true
 codegen-units = 1
-panic = "abort"
+
+# Unwinding is kept on purpose. The parser has reachable panics on a corrupt
+# database, and vault-core turns them into an error rather than letting a
+# damaged file take the application down with the user's unsaved work.
