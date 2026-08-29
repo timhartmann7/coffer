@@ -530,7 +530,7 @@ fn another_client_writing_the_file_is_noticed_in_either_order() {
     // Whatever happened, the other client's database is the one on disk.
     drop(vault);
     assert_eq!(
-        open(&path, BUILT_PASSWORD).tree().entries[0].title(),
-        "written elsewhere"
+        open(&path, BUILT_PASSWORD).tree().entries[0].title.open(),
+        Some("written elsewhere")
     );
 }

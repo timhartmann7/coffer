@@ -134,6 +134,7 @@ fn observe(vault: &vault_core::Vault) -> Vec<String> {
         let mut entries: Vec<String> = group
             .entries
             .iter()
+            .filter_map(|summary| vault.entry(summary.id))
             .map(|entry| {
                 let mut parts = vec![format!("tags {:?}", entry.tags)];
                 for field in &entry.fields {

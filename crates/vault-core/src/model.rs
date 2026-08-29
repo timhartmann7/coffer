@@ -29,7 +29,33 @@ pub struct Project {
     /// The entries held directly by this group. Entry history is not here: a
     /// previous version belongs to its entry and never appears in a tree, a
     /// list or a search.
-    pub entries: Vec<Entry>,
+    pub entries: Vec<EntrySummary>,
+}
+
+/// What a tree or a list may know about an entry.
+///
+/// The screen that shows one entry asks for the whole of it. A list of a
+/// thousand gets the four things it filters on and nothing else: notes and
+/// custom field values are the user's data and have no business travelling in
+/// bulk to a screen that only wants to draw a row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntrySummary {
+    pub id: EntryId,
+    pub group: GroupId,
+    /// The three fields a list shows and filters on. One the database protects
+    /// arrives without its value, like any other protected field.
+    pub title: FieldValue,
+    pub username: FieldValue,
+    pub url: FieldValue,
+    pub tags: Vec<String>,
+    pub times: Timestamps,
+    /// Whether there is a password worth revealing.
+    pub has_password: bool,
+    /// How many attachments the entry carries. Their names come with the entry
+    /// itself.
+    pub attachments: usize,
+    /// How many previous versions the entry keeps.
+    pub versions: usize,
 }
 
 /// An entry, as much of it as can be looked at without a reveal.
@@ -55,6 +81,29 @@ pub mod fields {
 }
 
 impl Entry {
+    /// What a tree or a list may know about this entry.
+    pub fn summary(&self) -> EntrySummary {
+        EntrySummary {
+            id: self.id,
+            group: self.group,
+            title: self.value_of(fields::TITLE),
+            username: self.value_of(fields::USERNAME),
+            url: self.value_of(fields::URL),
+            tags: self.tags.clone(),
+            times: self.times,
+            has_password: self.has_password(),
+            attachments: self.attachments.len(),
+            versions: self.versions,
+        }
+    }
+
+    fn value_of(&self, name: &str) -> FieldValue {
+        self.field(name).map_or_else(
+            || FieldValue::Open(String::new()),
+            |field| field.value.clone(),
+        )
+    }
+
     /// The field with this name, if the entry has one.
     pub fn field(&self, name: &str) -> Option<&Field> {
         self.fields.iter().find(|field| field.name == name)
@@ -82,10 +131,9 @@ impl Entry {
     }
 
     fn open(&self, name: &str) -> &str {
-        match self.field(name).map(|field| &field.value) {
-            Some(FieldValue::Open(text)) => text,
-            _ => "",
-        }
+        self.field(name)
+            .and_then(|field| field.value.open())
+            .unwrap_or_default()
     }
 }
 
@@ -121,6 +169,18 @@ pub enum FieldValue {
         /// whether there is anything to reveal.
         empty: bool,
     },
+}
+
+impl FieldValue {
+    /// The value when the database does not protect it, and `None` when it
+    /// does. A protected value comes from
+    /// [`Vault::reveal`][crate::Vault::reveal] and from nowhere else.
+    pub fn open(&self) -> Option<&str> {
+        match self {
+            FieldValue::Open(text) => Some(text),
+            FieldValue::Protected { .. } => None,
+        }
+    }
 }
 
 impl fmt::Debug for FieldValue {

@@ -40,8 +40,8 @@ pub fn open(path: &Path, secret: &str) -> Vault {
 
 /// Every entry in the database, flattened, with previous versions excluded the
 /// way the tree excludes them.
-pub fn all_entries(vault: &Vault) -> Vec<vault_core::model::Entry> {
-    fn walk(group: &vault_core::model::Project, into: &mut Vec<vault_core::model::Entry>) {
+pub fn all_entries(vault: &Vault) -> Vec<vault_core::model::EntrySummary> {
+    fn walk(group: &vault_core::model::Project, into: &mut Vec<vault_core::model::EntrySummary>) {
         into.extend(group.entries.iter().cloned());
         for section in &group.sections {
             walk(section, into);
@@ -53,12 +53,12 @@ pub fn all_entries(vault: &Vault) -> Vec<vault_core::model::Entry> {
     entries
 }
 
-/// The one entry with this title. Panics when there is not exactly one, so that
-/// a fixture change cannot quietly make a test assert nothing.
+/// The one entry with this title, in full. Panics when there is not exactly
+/// one, so that a fixture change cannot quietly make a test assert nothing.
 pub fn entry_titled(vault: &Vault, title: &str) -> vault_core::model::Entry {
     let mut found: Vec<_> = all_entries(vault)
         .into_iter()
-        .filter(|entry| entry.title() == title)
+        .filter(|entry| entry.title.open() == Some(title))
         .collect();
 
     assert_eq!(
@@ -66,7 +66,9 @@ pub fn entry_titled(vault: &Vault, title: &str) -> vault_core::model::Entry {
         1,
         "expected exactly one entry titled {title:?}"
     );
-    found.remove(0)
+    vault
+        .entry(found.remove(0).id)
+        .expect("the entry the tree named is in the database")
 }
 
 /// Builds a database in the scratch directory with a deliberately cheap key

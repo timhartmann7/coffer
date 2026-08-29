@@ -65,7 +65,7 @@ fn previous_versions_never_appear_in_the_tree() {
     // entry with that title may be reachable through the tree.
     let reachable = all_entries(&vault)
         .into_iter()
-        .filter(|entry| entry.title() == "versioned")
+        .filter(|entry| entry.title.open() == Some("versioned"))
         .count();
     assert_eq!(reachable, 1);
 
@@ -94,7 +94,81 @@ fn the_recycle_bin_is_marked() {
     let bin = find(&vault.tree()).expect("the fixture nominates a recycle bin");
     assert_eq!(bin.name, "Recycle Bin");
     assert_eq!(bin.entries.len(), 1);
-    assert_eq!(bin.entries[0].title(), "deleted entry");
+    assert_eq!(bin.entries[0].title.open(), Some("deleted entry"));
+}
+
+#[test]
+fn the_tree_carries_nothing_a_list_does_not_need() {
+    let (_scratch, database) = support::scratch(RICH);
+    let vault = open(&database, SECRET);
+
+    // The tree and the entry list get the four things they filter on. Notes and
+    // custom field values are the user's data and stay in the database until a
+    // screen asks for one entry.
+    let rendered = format!("{:?}", vault.tree());
+    for absent in [
+        "first line",
+        "second line",
+        "value 1",
+        "meta-custom",
+        "correct horse",
+        "javascript:",
+    ] {
+        assert!(
+            !rendered.contains(absent),
+            "the tree carried {absent:?}, which a list has no use for"
+        );
+    }
+
+    let summary = all_entries(&vault)
+        .into_iter()
+        .find(|entry| entry.title.open() == Some("basic"))
+        .expect("the entry is in the tree");
+    assert_eq!(summary.username.open(), Some("alice"));
+    assert_eq!(summary.tags, vec!["alpha", "beta", "gamma"]);
+    assert!(summary.has_password);
+    assert_eq!(summary.attachments, 0);
+    assert_eq!(summary.versions, 0);
+
+    // The same entry asked for by itself does carry them.
+    let whole = vault.entry(summary.id).expect("the entry is there");
+    assert_eq!(
+        whole
+            .field("Notes")
+            .map(|field| matches!(field.value, vault_core::model::FieldValue::Protected { .. })),
+        Some(true)
+    );
+    assert_eq!(
+        vault
+            .entry(entry_titled(&vault, "many custom fields").id)
+            .expect("the entry is there")
+            .field("custom-002")
+            .and_then(|field| field.value.open()),
+        Some("value 2"),
+        "an entry asked for by itself carries its custom fields"
+    );
+}
+
+#[test]
+fn a_protected_title_leaves_the_list_with_no_title_rather_than_an_empty_one() {
+    let (_scratch, database) = support::scratch(RICH);
+    let vault = open(&database, SECRET);
+
+    // The fixture protects Notes, which is the same mechanism.
+    let entry = entry_titled(&vault, "basic");
+    let summary = entry.summary();
+    assert_eq!(summary.title.open(), Some("basic"));
+    assert_eq!(
+        entry.field(fields::NOTES).map(|field| field.value.clone()),
+        Some(FieldValue::Protected { empty: false })
+    );
+    assert_eq!(
+        entry
+            .field(fields::NOTES)
+            .and_then(|field| field.value.open()),
+        None,
+        "a protected value must never come back as an empty string"
+    );
 }
 
 #[test]

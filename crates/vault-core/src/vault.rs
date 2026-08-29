@@ -330,7 +330,10 @@ fn project_of(group: GroupRef<'_>, recycle_bin: Option<keepass::db::GroupId>) ->
             .groups()
             .map(|section| project_of(section, recycle_bin))
             .collect(),
-        entries: group.entries().map(|entry| entry_of(&entry)).collect(),
+        entries: group
+            .entries()
+            .map(|entry| entry_of(&entry).summary())
+            .collect(),
     }
 }
 
