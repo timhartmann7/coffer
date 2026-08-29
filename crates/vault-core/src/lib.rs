@@ -20,6 +20,7 @@ pub mod error;
 pub mod generate;
 pub mod key;
 pub mod model;
+pub mod scrub;
 pub mod secret;
 pub mod storage;
 pub mod url;
