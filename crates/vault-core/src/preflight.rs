@@ -93,12 +93,10 @@ pub(crate) fn check_key_derivation(file: &[u8]) -> Result<(), VaultError> {
     }
 }
 
+/// The major version sits in bytes 10 and 11, little endian. The minor version
+/// does not matter here: 4.0 and 4.1 carry the same outer header.
 fn is_kdbx4(file: &[u8]) -> bool {
-    let (Some(minor), Some(major)) = (file.get(8..10), file.get(10..12)) else {
-        return false;
-    };
-    let _ = minor;
-    major == [4, 0]
+    file.get(10..12) == Some(&[4, 0][..])
 }
 
 fn check_dictionary(data: &[u8]) -> Result<(), VaultError> {
