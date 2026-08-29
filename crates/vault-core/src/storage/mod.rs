@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 /// The mode every file Coffer creates is born with. Never applied after the
 /// fact: a file that exists for even a moment as world-readable has already
 /// leaked.
-pub const OWNER_ONLY: u32 = 0o600;
+pub(crate) const OWNER_ONLY: u32 = 0o600;
 
 /// Builds a sibling path by appending a suffix to the database's file name, so
 /// that snapshots, lock files and temporary files all land in the directory the

@@ -77,7 +77,7 @@ where
 /// writable. `rename` needs no write permission on the file it replaces, so
 /// without this check a read-only database would be quietly replaced and come
 /// back writable.
-pub fn ensure_writable(path: &Path) -> Result<(), io::Error> {
+pub(crate) fn ensure_writable(path: &Path) -> Result<(), io::Error> {
     OpenOptions::new().write(true).open(path)?;
 
     let temporary = temporary_path(path)?;

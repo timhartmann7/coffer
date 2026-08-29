@@ -118,6 +118,42 @@ fn a_change_on_disk_stops_the_save() {
 }
 
 #[test]
+fn the_vault_can_be_asked_whether_the_file_changed_without_saving() {
+    let (_scratch, database) = support::scratch(RICH);
+    let vault = open(&database, SECRET);
+
+    assert_eq!(
+        vault.external_change().expect("the file is checked"),
+        vault_core::storage::watch::Change::None
+    );
+
+    let (_other, replacement) = support::scratch("minimal-kdbx41.kdbx");
+    std::fs::rename(&replacement, &database).expect("the file is replaced");
+
+    assert_eq!(
+        vault.external_change().expect("the file is checked"),
+        vault_core::storage::watch::Change::Modified
+    );
+
+    std::fs::remove_file(&database).expect("the file goes");
+    assert_eq!(
+        vault.external_change().expect("the file is checked"),
+        vault_core::storage::watch::Change::Gone
+    );
+}
+
+#[test]
+fn saving_records_the_new_state_so_the_next_save_is_not_a_conflict() {
+    let (_scratch, database) = support::scratch(RICH);
+    let mut vault = open(&database, SECRET);
+
+    vault.save().expect("the first save succeeds");
+    vault
+        .save()
+        .expect("the second save is not treated as a conflict");
+}
+
+#[test]
 fn a_database_that_vanished_stops_the_save() {
     let (_scratch, database) = support::scratch(RICH);
     let mut vault = open(&database, SECRET);

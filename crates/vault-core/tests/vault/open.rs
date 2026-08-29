@@ -39,6 +39,18 @@ fn the_tree_holds_every_group_and_entry() {
     );
 
     assert_eq!(all_entries(&vault).len(), 11);
+    assert_eq!(tree.notes.as_deref(), Some("root group notes"));
+    // A group's empty <Notes/> comes back absent rather than empty. KeePassXC
+    // writes the empty element for both, so the round trip cannot tell them
+    // apart either and nothing is lost through it. Entry field values are a
+    // different path, and an empty one there does stay empty.
+    assert_eq!(
+        tree.sections
+            .iter()
+            .find(|section| section.name == "Personal")
+            .and_then(|section| section.notes.clone()),
+        None
+    );
 }
 
 #[test]

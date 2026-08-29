@@ -150,6 +150,12 @@ fn the_lock_names_this_process_and_goes_when_the_vault_does() {
             .expect("the lock reads")
             .expect("a lock is there");
         assert_eq!(holder.pid, Some(std::process::id()));
+        assert_eq!(holder.host, hostname());
+        assert!(
+            !holder.time.is_empty(),
+            "the lock should say when it was taken"
+        );
+        assert_eq!(holder.user, std::env::var("USER").unwrap_or_default());
     }
 
     assert!(!lock_path.exists(), "the lock outlived the vault");
