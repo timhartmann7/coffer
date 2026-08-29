@@ -1,0 +1,11 @@
+{
+  "identifier": "main",
+  "description": "What the main window may reach outside Coffer's own commands, which is almost nothing: the title bar is drawn in HTML, so it has to ask the window manager to drag and to zoom. Everything else Coffer does goes through a command of its own, and application commands are not gated by this file. Nothing from the dialog plugin is listed: the file picker is opened from Rust and is not reachable from the webview at all.",
+  "local": true,
+  "platforms": ["macOS"],
+  "windows": ["main"],
+  "permissions": [
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize"
+  ]
+}

@@ -1,9 +1,27 @@
 [graph]
 all-features = false
+# Coffer ships two builds and no others. Checking the graph of a platform it is
+# never built for would fail on crates that are not in the application at all:
+# the Linux side of the webview pulls a whole HTTP stack that never reaches a
+# Mac.
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
 
 [advisories]
 version = 2
 yanked = "deny"
+
+# Every crate of the rust-unic family is unmaintained. They reach Coffer through
+# `urlpattern`, which `tauri-utils` uses to match a capability against a URL, and
+# no version of Tauri is without them. Nothing here is a vulnerability, there is
+# no upgrade, and the alternative to accepting them is a different webview
+# toolchain. Anything else unmaintained still fails the build.
+ignore = [
+    "RUSTSEC-2025-0075", # unic-char-range
+    "RUSTSEC-2025-0080", # unic-common
+    "RUSTSEC-2025-0081", # unic-char-property
+    "RUSTSEC-2025-0098", # unic-ucd-version
+    "RUSTSEC-2025-0100", # unic-ucd-ident
+]
 
 [licenses]
 version = 2
@@ -20,6 +38,10 @@ allow = [
     "CC0-1.0",
     "Unlicense",
     "Unicode-3.0",
+    # File-level copyleft, and none of these files are modified. It arrives with
+    # the webview: the HTML rewriter Tauri uses to hash inline scripts parses CSS
+    # selectors, and the crate that finds the user's directories parses paths.
+    "MPL-2.0",
 ]
 confidence-threshold = 0.93
 
@@ -43,11 +65,22 @@ deny = [
     { name = "rustls" },
     { name = "socket2" },
     { name = "surf" },
-    { name = "tokio" },
     { name = "tungstenite" },
     { name = "ureq" },
-    { name = "url" },
 ]
+
+# Two crates that can be part of a network stack arrive with the webview and
+# cannot be refused outright.
+#
+# `tokio` is the runtime Tauri runs commands on. Its socket types live behind
+# the `net` feature, which is denied here, so what is compiled into Coffer is
+# the scheduler and nothing that can connect to anything.
+#
+# `url` is a parser for a syntax, not a client for it. It comes from Tauri's own
+# configuration handling and opens nothing.
+[[bans.features]]
+crate = "tokio"
+deny = ["net", "process", "signal"]
 
 [sources]
 unknown-registry = "deny"

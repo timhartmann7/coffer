@@ -13,3 +13,6 @@ crates/vault-core/tests/fixtures/sources/.tmp.xml
 /fuzz/corpus
 /fuzz/artifacts
 /fuzz/Cargo.lock
+
+# Tauri writes the capability schemas here
+/crates/vault-gui/gen

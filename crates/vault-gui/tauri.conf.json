@@ -1,0 +1,39 @@
+{
+  "productName": "Coffer",
+  "version": "0.1.0",
+  "identifier": "app.coffer.vault",
+  "build": {
+    "beforeDevCommand": { "script": "npm run dev", "cwd": "../../frontend" },
+    "beforeBuildCommand": { "script": "npm run build", "cwd": "../../frontend" },
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../../frontend/build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Coffer",
+        "width": 1080,
+        "height": 720,
+        "minWidth": 920,
+        "minHeight": 560,
+        "center": true,
+        "theme": "Dark",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src ipc:; object-src 'none'; media-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": ["app", "dmg"],
+    "category": "Utility",
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    }
+  }
+}

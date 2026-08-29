@@ -6,9 +6,24 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-# vault-core arrives in slice 2, with the Tauri commands that call it. An empty
-# crate here is the workspace shape the slice asks for; an unused dependency
-# would be a claim this crate does something it does not.
+[build-dependencies]
+tauri-build = "2.6.3"
+
+[dependencies]
+vault-core = { path = "../vault-core", version = "0.1.0" }
+tauri = "2.11.5"
+tauri-plugin-dialog = "2.7.2"
+serde = { version = "1", features = ["derive"] }
+zeroize = "1"
+uuid = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-foundation = "0.3"
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"
 
 [lints]
 workspace = true
