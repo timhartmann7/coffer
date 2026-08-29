@@ -1,0 +1,237 @@
+import { flushSync, mount, unmount } from 'svelte';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import Create from './Create.svelte';
+
+const ipc = vi.hoisted(() => ({
+	calibrate: vi.fn(),
+	chooseNewDatabase: vi.fn(),
+	createDatabase: vi.fn(),
+	asFailure: vi.fn()
+}));
+vi.mock('$lib/ipc', () => ipc);
+
+const WHERE = { path: '/Users/someone/Vault/personal.kdbx', name: 'personal' };
+
+let host: HTMLElement;
+
+beforeEach(() => {
+	host = document.createElement('div');
+	document.body.appendChild(host);
+	ipc.calibrate.mockResolvedValue({ iterations: 122, seconds: 1.004 });
+	ipc.chooseNewDatabase.mockResolvedValue(WHERE);
+	ipc.createDatabase.mockResolvedValue(undefined);
+	// The same reading the real one does: a command rejects with the value Rust
+	// serialised, and anything else is not one.
+	ipc.asFailure.mockImplementation((thrown: unknown) =>
+		thrown && typeof (thrown as { message?: unknown }).message === 'string'
+			? thrown
+			: { code: 'other', message: 'Coffer could not finish that.' }
+	);
+});
+
+afterEach(() => host.remove());
+
+function show(over: Record<string, unknown> = {}) {
+	return mount(Create, {
+		target: host,
+		props: { onMade: vi.fn().mockResolvedValue(undefined), onCancel: vi.fn(), ...over }
+	});
+}
+
+function fields(): HTMLInputElement[] {
+	return [...host.querySelectorAll<HTMLInputElement>('input[type="password"]')];
+}
+
+function submit() {
+	host.querySelector('form')?.dispatchEvent(new Event('submit', { cancelable: true }));
+}
+
+function button(label: string): HTMLButtonElement {
+	const found = [...host.querySelectorAll('button')].find(
+		(candidate) => candidate.textContent?.trim() === label
+	);
+	if (!found) throw new Error(`no button labelled ${label}`);
+	return found;
+}
+
+async function ready(over: Record<string, unknown> = {}) {
+	const component = show(over);
+	flushSync();
+	await vi.waitFor(() => expect(host.textContent).toContain('122 passes'));
+	button('Choose a place and a name').click();
+	await vi.waitFor(() => expect(host.textContent).toContain(WHERE.path));
+	return component;
+}
+
+/** The measurement runs as soon as the screen opens, and the number it produces
+ * is the only one there is to show: it does not exist until the end. */
+it('measures the machine before anybody has typed anything', async () => {
+	const component = show();
+	flushSync();
+
+	expect(host.textContent).toContain('Measuring Argon2id');
+	expect(host.textContent).not.toContain('1.00 s');
+
+	await vi.waitFor(() => expect(host.textContent).toContain('1.00 s'));
+	expect(host.textContent).toContain('122 passes');
+	expect(ipc.calibrate).toHaveBeenCalledTimes(1);
+
+	unmount(component);
+});
+
+/** Nothing can be made before there is somewhere to put it and a measurement to
+ * put in it. */
+it('will not make a vault before it knows where or how hard', async () => {
+	const component = show();
+	flushSync();
+	expect(button('Make the vault').disabled).toBe(true);
+
+	await vi.waitFor(() => expect(host.textContent).toContain('122 passes'));
+	expect(button('Make the vault').disabled).toBe(true);
+
+	button('Choose a place and a name').click();
+	await vi.waitFor(() => expect(button('Make the vault').disabled).toBe(false));
+
+	unmount(component);
+});
+
+it('sends the password when both fields hold the same one', async () => {
+	const onMade = vi.fn().mockResolvedValue(undefined);
+	const component = await ready({ onMade });
+
+	const [first, second] = fields();
+	first.value = 'correct horse battery staple';
+	second.value = 'correct horse battery staple';
+	submit();
+
+	await vi.waitFor(() => expect(onMade).toHaveBeenCalledTimes(1));
+	expect(ipc.createDatabase).toHaveBeenCalledTimes(1);
+	// The fields are emptied before the call that takes a second even begins.
+	expect(first.value).toBe('');
+	expect(second.value).toBe('');
+
+	unmount(component);
+});
+
+it('sends nothing when the two fields hold different passwords', async () => {
+	const component = await ready();
+
+	const [first, second] = fields();
+	first.value = 'correct horse battery staple';
+	second.value = 'correct horse battery stapl';
+	submit();
+	flushSync();
+
+	expect(ipc.createDatabase).not.toHaveBeenCalled();
+	expect(host.textContent).toContain('Those two are not the same.');
+
+	unmount(component);
+});
+
+/**
+ * Compared as bytes rather than as strings. Two passwords that differ only in
+ * how they are composed look the same to a lossy conversion, and a vault opened
+ * by neither of them is not something anybody finds out until later.
+ */
+it('compares the two passwords byte for byte', async () => {
+	const component = await ready();
+
+	const [first, second] = fields();
+	// The same letter, written two ways: one code point, and a letter with a
+	// combining mark. Equal to a reader, different to a KeePass file.
+	first.value = '\u00e9clair';
+	second.value = 'e\u0301clair';
+	submit();
+	flushSync();
+
+	expect(ipc.createDatabase).not.toHaveBeenCalled();
+	expect(host.textContent).toContain('Those two are not the same.');
+
+	unmount(component);
+});
+
+it('will not make a vault with no password at all', async () => {
+	const component = await ready();
+
+	const [first, second] = fields();
+	first.value = '';
+	second.value = '';
+	submit();
+	flushSync();
+
+	expect(ipc.createDatabase).not.toHaveBeenCalled();
+	expect(host.textContent).toContain('A vault needs a master password.');
+
+	unmount(component);
+});
+
+/** The buffer is wiped whether the command worked or not, and the fields are
+ * emptied before the call that takes a second even begins. */
+it('empties both fields and wipes the bytes, whatever happens', async () => {
+	ipc.createDatabase.mockRejectedValue({ code: 'refused', message: 'there is already a file' });
+	const component = await ready();
+
+	let sent: Uint8Array | null = null;
+	ipc.createDatabase.mockImplementation((password: Uint8Array) => {
+		sent = password;
+		return Promise.reject({ code: 'refused', message: 'there is already a file' });
+	});
+
+	const [first, second] = fields();
+	first.value = 'a password';
+	second.value = 'a password';
+	submit();
+
+	await vi.waitFor(() => expect(host.textContent).toContain('there is already a file'));
+	expect(first.value).toBe('');
+	expect(second.value).toBe('');
+	// The real `createDatabase` wipes what it was given; this one is a mock, so
+	// what is checked is that the screen hands over a buffer and keeps nothing.
+	expect(sent).not.toBeNull();
+
+	unmount(component);
+});
+
+it('says what Rust refused, and leaves the screen where it was', async () => {
+	ipc.createDatabase.mockRejectedValue({
+		code: 'refused',
+		message: "that name belongs to Coffer's own snapshots"
+	});
+	const onMade = vi.fn();
+	const component = await ready({ onMade });
+
+	const [first, second] = fields();
+	first.value = 'a password';
+	second.value = 'a password';
+	submit();
+
+	await vi.waitFor(() => expect(host.textContent).toContain("Coffer's own snapshots"));
+	expect(onMade).not.toHaveBeenCalled();
+	expect(host.textContent).toContain(WHERE.path);
+
+	unmount(component);
+});
+
+/** A forgotten password is the end of the data, so the warning is at full size
+ * and in plain words rather than in small type behind a checkbox. */
+it('says the password cannot be recovered, in the largest words on the screen', async () => {
+	const component = show();
+	flushSync();
+
+	expect(host.textContent).toContain('The password cannot be recovered.');
+	expect(host.textContent).toContain('nobody can get the data back');
+
+	unmount(component);
+});
+
+/** The bar is one of three literal classes. A computed width compiles to
+ * nothing, and the window's style rules would drop an inline one silently. */
+it('draws the measuring bar out of a fixed set of widths', async () => {
+	const component = show();
+	flushSync();
+	expect(host.querySelector('.w-1\\/3.bg-accent')).not.toBeNull();
+
+	await vi.waitFor(() => expect(host.querySelector('.w-full.bg-accent')).not.toBeNull());
+
+	unmount(component);
+});

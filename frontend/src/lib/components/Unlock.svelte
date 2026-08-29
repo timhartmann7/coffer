@@ -8,6 +8,7 @@
 		database,
 		reason = null,
 		onChoose,
+		onCreate,
 		onUnlocked
 	}: {
 		database: Database | null;
@@ -18,6 +19,8 @@
 		 */
 		reason?: string | null;
 		onChoose: (database: Database) => void;
+		/** Offered on the first run, where there is nothing to open yet. */
+		onCreate: () => void;
 		onUnlocked: () => Promise<void>;
 	} = $props();
 
@@ -112,7 +115,7 @@
 </script>
 
 <div class="flex flex-1 items-center justify-center overflow-y-auto px-10 py-10">
-	<div class="w-full max-w-[320px]">
+	<div class="w-full {database ? 'max-w-[320px]' : 'max-w-[460px]'}">
 		<img src="/coffer-logo-light.svg" alt="" class="mx-auto h-11 w-11" />
 		{#if why}
 			<h1 class="mt-6 text-center text-title font-medium tracking-tight text-txt">Locked</h1>
@@ -218,19 +221,34 @@
 				</div>
 			{/if}
 		{:else}
-			<p class="mt-8 text-center text-body leading-relaxed text-txt2">
-				Coffer opens one file and keeps everything in it. Choose the vault you already have.
+			<h1
+				class="mx-auto mt-7 max-w-[22ch] text-center text-display leading-snug font-medium tracking-tight text-txt"
+			>
+				Your passwords will live here
+			</h1>
+			<p class="mx-auto mt-4 max-w-[46ch] text-center text-base leading-relaxed text-txt2">
+				All of it goes into one file on this Mac. One password opens it, and that is the one you
+				choose next.
 			</p>
 			<button
 				type="button"
-				onclick={choose}
-				class="mt-8 h-[46px] w-full rounded-full bg-accent px-6 text-base font-medium text-canvas transition-colors hover:bg-accenthi"
+				onclick={onCreate}
+				class="mt-9 h-[46px] w-full rounded-full bg-accent px-6 text-base font-medium text-canvas transition-colors hover:bg-accenthi"
 			>
-				Choose a vault file
+				Make a vault
 			</button>
-			<p class="mt-4 text-center text-fine leading-relaxed text-txt4">
-				A .kdbx file from KeePassXC, KeePass or another computer will do
-			</p>
+			<div class="mt-4 text-center">
+				<button
+					type="button"
+					onclick={choose}
+					class="text-small text-txt2 underline decoration-hairline underline-offset-4 transition-colors hover:text-txt"
+				>
+					I already have a vault file
+				</button>
+				<p class="mt-2 text-fine text-txt4">
+					A .kdbx file from KeePassXC, KeePass or another computer will do
+				</p>
+			</div>
 			{#if failure}
 				<p class="mt-4 text-center text-small text-danger">{failure.message}</p>
 			{/if}

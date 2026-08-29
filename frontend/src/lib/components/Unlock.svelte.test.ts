@@ -28,7 +28,7 @@ afterEach(() => {
 function open(onUnlocked = vi.fn().mockResolvedValue(undefined)) {
 	const component = mount(Unlock, {
 		target: host,
-		props: { database, onChoose: vi.fn(), onUnlocked }
+		props: { database, onChoose: vi.fn(), onCreate: vi.fn(), onUnlocked }
 	});
 	flushSync();
 	return component;
@@ -172,7 +172,7 @@ it('says why the vault locked, when there is something to say', () => {
 	]) {
 		const component = mount(Unlock, {
 			target: host,
-			props: { database, reason, onChoose: vi.fn(), onUnlocked: vi.fn() }
+			props: { database, reason, onChoose: vi.fn(), onCreate: vi.fn(), onUnlocked: vi.fn() }
 		});
 		flushSync();
 
@@ -203,7 +203,13 @@ it('says nothing about a lock nobody has to explain', () => {
 it('has something to say about a reason it does not know', () => {
 	const component = mount(Unlock, {
 		target: host,
-		props: { database, reason: 'somethingLater', onChoose: vi.fn(), onUnlocked: vi.fn() }
+		props: {
+			database,
+			reason: 'somethingLater',
+			onChoose: vi.fn(),
+			onCreate: vi.fn(),
+			onUnlocked: vi.fn()
+		}
 	});
 	flushSync();
 

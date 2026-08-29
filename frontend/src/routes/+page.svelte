@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Create from '$lib/components/Create.svelte';
 	import Settings from '$lib/components/Settings.svelte';
 	import Titlebar from '$lib/components/Titlebar.svelte';
 	import Unlock from '$lib/components/Unlock.svelte';
@@ -18,7 +19,7 @@
 	let readOnly = $state(false);
 	let ready = $state(false);
 	let chosen = $state<Chosen | null>(null);
-	let showing = $state<'vault' | 'settings'>('vault');
+	let showing = $state<'vault' | 'settings' | 'create'>('vault');
 	let reason = $state<string | null>(null);
 
 	/** How long the open vault has left. Rust keeps the deadline; this ticks the
@@ -97,16 +98,30 @@
 
 <div class="flex h-full flex-col">
 	<Titlebar
-		name={showing === 'settings' ? 'Settings' : root && database ? database.name : 'Coffer'}
+		name={showing === 'settings'
+			? 'Settings'
+			: showing === 'create'
+				? 'A new vault'
+				: root && database
+					? database.name
+					: 'Coffer'}
 		unlocked={root !== null}
 		{showing}
 		onLock={root !== null ? lock : undefined}
-		onSettings={chosen
+		onSettings={chosen && showing !== 'create'
 			? () => (showing = showing === 'settings' ? 'vault' : 'settings')
 			: undefined}
 	/>
 
-	{#if showing === 'settings' && chosen}
+	{#if showing === 'create'}
+		<Create
+			onMade={async () => {
+				showing = 'vault';
+				await opened();
+			}}
+			onCancel={() => (showing = 'vault')}
+		/>
+	{:else if showing === 'settings' && chosen}
 		<Settings
 			settings={chosen}
 			{database}
@@ -116,6 +131,12 @@
 	{:else if root && database}
 		<Vault {database} {root} {readOnly} {countdown} onTree={(tree) => (root = tree)} />
 	{:else if ready}
-		<Unlock {database} {reason} onChoose={(picked) => (database = picked)} onUnlocked={opened} />
+		<Unlock
+			{database}
+			{reason}
+			onChoose={(picked) => (database = picked)}
+			onCreate={() => (showing = 'create')}
+			onUnlocked={opened}
+		/>
 	{/if}
 </div>

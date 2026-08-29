@@ -9,6 +9,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
 	Alphabet,
+	Calibration,
 	Database,
 	Entry,
 	Failure,
@@ -40,6 +41,38 @@ export function chooseDatabase(): Promise<Database | null> {
 export async function unlock(password: Uint8Array): Promise<void> {
 	try {
 		await invoke('unlock', password);
+	} finally {
+		password.fill(0);
+	}
+}
+
+/** Opens the system's save panel and keeps where the reader wants the new vault.
+ * `null` when they closed it. */
+export function chooseNewDatabase(): Promise<Database | null> {
+	return invoke('choose_new_database');
+}
+
+/**
+ * Measures what a one-second unlock costs on this machine.
+ *
+ * Several seconds of work with every core busy, and the number it answers with
+ * is the only one the screen has to show: it does not exist until the measuring
+ * is over.
+ */
+export function calibrate(): Promise<Calibration> {
+	return invoke('calibrate');
+}
+
+/**
+ * Makes the chosen file into a vault and opens it.
+ *
+ * The password goes the same way an unlock's does - the whole body of the
+ * message, as bytes - which is why where the vault goes and what it costs to
+ * open were settled by the two calls above.
+ */
+export async function createDatabase(password: Uint8Array): Promise<void> {
+	try {
+		await invoke('create_database', password);
 	} finally {
 		password.fill(0);
 	}

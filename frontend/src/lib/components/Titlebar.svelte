@@ -12,7 +12,7 @@
 		unlocked?: boolean;
 		/** Which screen the window is on, so the way in to the settings can be
 		 * the way back out of them. */
-		showing?: 'vault' | 'settings';
+		showing?: 'vault' | 'settings' | 'create';
 		onLock?: () => void;
 		onSettings?: () => void;
 	} = $props();

@@ -150,6 +150,25 @@ impl Settings {
     }
 }
 
+/// What key derivation a new vault will ask for, and what that measured.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Calibration {
+    pub iterations: u64,
+    /// What the measurement took, in seconds. The one number the creation
+    /// screen shows, and it only exists once the measuring is over.
+    pub seconds: f64,
+}
+
+impl Calibration {
+    pub fn of(found: vault_core::kdf::Calibration) -> Calibration {
+        Calibration {
+            iterations: found.work.iterations,
+            seconds: found.took.as_secs_f64(),
+        }
+    }
+}
+
 /// A previous version of an entry, as the versions block lists them.
 #[derive(Serialize)]
 pub struct Version {

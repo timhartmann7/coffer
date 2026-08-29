@@ -134,6 +134,14 @@ export interface Rival {
 	entries: number | null;
 }
 
+/** What key derivation a new vault will ask for, measured on this machine. */
+export interface Calibration {
+	iterations: number;
+	/** What that measured, in seconds. The one number the creation screen shows,
+	 * and it only exists once the measuring is over. */
+	seconds: number;
+}
+
 /** What the reader chose about locking and the clipboard.
  *
  * The two `Choices` lists are what the screen may offer. They arrive with the

@@ -19,6 +19,7 @@ use vault_core::storage::snapshot;
 use zeroize::Zeroizing;
 
 use vault_core::generate::{Alphabet, Recipe};
+use vault_core::kdf;
 use vault_core::{NewValue, Vault};
 
 use crate::autolock::timer::Timer;
@@ -146,6 +147,86 @@ fn password_of(body: &InvokeBody) -> Result<Zeroizing<Vec<u8>>, Failure> {
             "the master password must be sent as bytes",
         )),
     }
+}
+
+/// Asks where a new vault should go, with the system's own save panel.
+///
+/// The path never comes from the webview here either: the window asks for a
+/// panel, the reader chooses, and Coffer keeps the answer. What comes back is
+/// only what to draw.
+#[tauri::command]
+pub async fn choose_new_database(
+    app: AppHandle,
+    session: Held<'_>,
+) -> Result<Option<Database>, Failure> {
+    if session.is_unlocked() {
+        return Err(Failure::refused("lock the vault before making another"));
+    }
+
+    let mut panel = app
+        .dialog()
+        .file()
+        .set_title("Where should the new vault go?")
+        .add_filter("KeePass database", &["kdbx"])
+        .set_file_name("vault.kdbx");
+    if let Some(directory) = session
+        .database()
+        .as_deref()
+        .and_then(std::path::Path::parent)
+    {
+        panel = panel.set_directory(directory);
+    }
+
+    let Some(chosen) = panel.blocking_save_file() else {
+        return Ok(None);
+    };
+    let path = chosen
+        .into_path()
+        .map_err(|_| Failure::refused("that place has no path Coffer can write"))?;
+
+    session.making(path.clone());
+    Ok(Some(Database::of(&path)))
+}
+
+/// Measures how many Argon2id passes this machine needs for a one-second
+/// unlock, and remembers the answer for the vault about to be made.
+///
+/// Several derivations, seconds of work, every core busy. It never touches the
+/// thread that draws, and it never touches the reader's password: the library
+/// that derives keys zeroizes nothing, so a measurement made with the real one
+/// would leave a handful of copies of derived material behind.
+#[tauri::command]
+pub async fn calibrate(session: Held<'_>) -> Result<dto::Calibration, Failure> {
+    let session = Arc::clone(&session);
+    let found = tauri::async_runtime::spawn_blocking(move || {
+        let found = kdf::calibrate(&kdf::Machine);
+        vault_core::scrub::stack();
+        session.measured(found.work);
+        found
+    })
+    .await
+    .map_err(|_| Failure::internal("the key derivation could not be measured"))?;
+
+    Ok(dto::Calibration::of(found))
+}
+
+/// Makes the chosen file into a vault and opens it.
+///
+/// The password arrives as the whole body, exactly as it does for an unlock,
+/// which is why where the vault goes and what it costs to open were settled by
+/// the two commands above rather than sent alongside it.
+#[tauri::command]
+pub async fn create_database(request: Request<'_>, session: Held<'_>) -> Result<(), Failure> {
+    let password = password_of(request.body())?;
+    let session = Arc::clone(&session);
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let made = session.create(password);
+        vault_core::scrub::stack();
+        made
+    })
+    .await
+    .map_err(|_| Failure::internal("the vault could not be made"))?
 }
 
 /// Wipes the decrypted database out of memory and takes the window down with

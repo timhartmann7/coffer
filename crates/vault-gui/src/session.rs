@@ -9,12 +9,20 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
+use vault_core::kdf::Work;
 use vault_core::model::{Entry, EntryId, Project};
-use vault_core::{LockPolicy, MasterKey, SecretValue, Vault};
+use vault_core::{LockPolicy, MasterKey, Recipe, SecretValue, Vault};
 use zeroize::Zeroizing;
 
 use crate::autolock::Reason;
 use crate::error::Failure;
+
+/// A vault that does not exist yet, and what it will cost to open.
+#[derive(Clone)]
+struct Making {
+    target: PathBuf,
+    work: Option<Work>,
+}
 
 pub struct Session {
     held: Mutex<Held>,
@@ -27,6 +35,11 @@ struct Held {
     /// Why the vault that was open is not open any more, when it is worth
     /// saying. Cleared by the next unlock.
     locked_by: Option<Reason>,
+    /// The vault being made, if one is. Kept apart from `database`, which is
+    /// the file the unlock screen offers to open: there is nothing at this path
+    /// yet, and pointing the unlock screen at it would be offering to open a
+    /// file that does not exist.
+    making: Option<Making>,
     /// The open database. Dropping it wipes the decrypted tree and removes the
     /// lock file beside the database.
     vault: Option<Vault>,
@@ -42,6 +55,7 @@ impl Session {
             held: Mutex::new(Held {
                 database,
                 locked_by: None,
+                making: None,
                 vault: None,
                 generation: 0,
             }),
@@ -148,6 +162,67 @@ impl Session {
     /// worth saying. A lock the reader asked for has nothing to explain.
     pub fn locked_by(&self) -> Option<Reason> {
         self.held().locked_by
+    }
+
+    /// Where a new vault will go.
+    ///
+    /// Settled before the password is asked for, because the password arrives
+    /// as the whole body of its message and carries no named arguments beside
+    /// it. Choosing somewhere else replaces this, and so does measuring the
+    /// work: the two are halves of one answer.
+    pub fn making(&self, target: PathBuf) {
+        self.held().making = Some(Making { target, work: None });
+    }
+
+    /// What a one-second unlock costs on this machine, remembered for the
+    /// creation that is about to happen.
+    pub fn measured(&self, work: Work) {
+        if let Some(making) = self.held().making.as_mut() {
+            making.work = Some(work);
+        }
+    }
+
+    /// Makes the chosen vault and opens it.
+    ///
+    /// On the same terms as an unlock: nothing is held while the key is
+    /// derived, and a creation that finishes after the session has been pointed
+    /// somewhere else does not land.
+    pub fn create(&self, password: Zeroizing<Vec<u8>>) -> Result<(), Failure> {
+        let (making, generation) = {
+            let mut held = self.held();
+            held.vault = None;
+            let making = held
+                .making
+                .clone()
+                .ok_or_else(|| Failure::refused("nowhere has been chosen for the new vault"))?;
+            (making, held.generation)
+        };
+
+        let work = making.work.ok_or_else(|| {
+            Failure::refused("the vault's key derivation has not been measured yet")
+        })?;
+        let name = making
+            .target
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+
+        let vault = Vault::create(
+            &making.target,
+            MasterKey::from_password(password),
+            &Recipe { name: &name, work },
+        )?;
+
+        let mut held = self.held();
+        if held.generation != generation {
+            return Err(Failure::stale());
+        }
+
+        held.database = Some(vault.path().to_path_buf());
+        held.vault = Some(vault);
+        held.locked_by = None;
+        held.making = None;
+        Ok(())
     }
 
     pub fn tree(&self) -> Result<Project, Failure> {
@@ -500,5 +575,74 @@ mod tests {
                 .reveal(EntryId::from_uuid(uuid::Uuid::nil()), fields::PASSWORD)
                 .is_err()
         );
+    }
+
+    /// Making a vault is an unlock that happens to write the file first, and it
+    /// is held to the same terms.
+    #[test]
+    fn a_vault_made_here_is_the_one_that_ends_up_open() {
+        let directory = tempfile::tempdir().expect("a scratch directory");
+        let target = directory.path().join("made.kdbx");
+
+        let session = Session::new(None);
+        session.making(target.clone());
+        session.measured(Work::at(1));
+        session.create(password(SECRET)).expect("the vault is made");
+
+        assert!(session.is_unlocked());
+        assert_eq!(session.tree().expect("the tree comes back").name, "made");
+        assert_eq!(
+            session.database(),
+            Some(target.canonicalize().expect("the file is there"))
+        );
+
+        // The vault made is the vault open, so there is nothing left to make.
+        assert!(session.create(password(SECRET)).is_err());
+    }
+
+    /// Nothing is written until both halves of the answer are there.
+    #[test]
+    fn a_vault_cannot_be_made_before_it_is_known_where_or_how_hard() {
+        let directory = tempfile::tempdir().expect("a scratch directory");
+        let target = directory.path().join("made.kdbx");
+
+        let session = Session::new(None);
+        assert!(session.create(password(SECRET)).is_err());
+
+        session.making(target.clone());
+        assert!(session.create(password(SECRET)).is_err());
+        assert!(!target.exists(), "a vault was written with no measurement");
+
+        session.measured(Work::at(1));
+        assert!(session.create(password(SECRET)).is_ok());
+    }
+
+    /// The same race the unlock has. A creation that finishes after the session
+    /// was pointed somewhere else must not land, and the file it wrote is still
+    /// on the disk for whoever wants it.
+    #[test]
+    fn a_creation_that_finishes_late_does_not_win() {
+        use std::sync::Arc;
+
+        let directory = tempfile::tempdir().expect("a scratch directory");
+        let target = directory.path().join("made.kdbx");
+        let (_other, elsewhere) = scratch(RICH);
+
+        let session = Arc::new(Session::new(None));
+        session.making(target.clone());
+        session.measured(Work::at(1));
+
+        let making = {
+            let session = Arc::clone(&session);
+            std::thread::spawn(move || session.create(password(SECRET)))
+        };
+        session.choose(elsewhere.clone());
+        let _ = making.join();
+
+        assert_eq!(
+            session.database(),
+            Some(elsewhere.canonicalize().expect("the copy is there"))
+        );
+        assert!(!session.is_unlocked());
     }
 }
