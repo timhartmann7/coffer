@@ -1,0 +1,298 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Coffer round-trip fixture. Regenerate with tests/fixtures/generate.sh. -->
+<KeePassFile>
+	<Meta>
+		<Generator>coffer-fixture</Generator>
+		<DatabaseName>Coffer round-trip fixture</DatabaseName>
+		<DatabaseDescription>Every feature the round-trip suite has to preserve.</DatabaseDescription>
+		<DefaultUserName>default-user</DefaultUserName>
+		<MaintenanceHistoryDays>365</MaintenanceHistoryDays>
+		<Color>#7B87FF</Color>
+		<MasterKeyChangeRec>180</MasterKeyChangeRec>
+		<MasterKeyChangeForce>365</MasterKeyChangeForce>
+		<MemoryProtection>
+			<ProtectTitle>False</ProtectTitle>
+			<ProtectUserName>False</ProtectUserName>
+			<ProtectPassword>True</ProtectPassword>
+			<ProtectURL>False</ProtectURL>
+			<ProtectNotes>True</ProtectNotes>
+		</MemoryProtection>
+		<CustomIcons>
+			<Icon>
+				<UUID>aWNvbi1hLS0tLS0tLS0tLQ==</UUID>
+				<Data>iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGNgAAACAAEA</Data>
+				<Name>one pixel</Name>
+				<LastModificationTime>2026-01-01T00:00:00Z</LastModificationTime>
+			</Icon>
+			<Icon>
+				<UUID>aWNvbi1iLS0tLS0tLS0tLQ==</UUID>
+				<Data>iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGNgAAACAAEA</Data>
+			</Icon>
+		</CustomIcons>
+		<RecycleBinEnabled>True</RecycleBinEnabled>
+		<RecycleBinUUID>cmVjeWNsZWJpbi0tLS0tLQ==</RecycleBinUUID>
+		<EntryTemplatesGroup>AAAAAAAAAAAAAAAAAAAAAA==</EntryTemplatesGroup>
+		<HistoryMaxItems>10</HistoryMaxItems>
+		<HistoryMaxSize>6291456</HistoryMaxSize>
+		<CustomData><Item><Key>Coffer.Fixture</Key><Value>meta level</Value><LastModificationTime>2026-01-01T00:00:00Z</LastModificationTime></Item><Item><Key>Coffer.Fixture.Empty</Key><Value></Value></Item></CustomData>
+		<Binaries>
+			<Binary ID="0" Compressed="False">AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w==</Binary>
+			<Binary ID="1" Compressed="False"></Binary>
+			<Binary ID="2" Compressed="False">LS0tLS1CRUdJTiBPUEVOU1NIIFBSSVZBVEUgS0VZLS0tLS0KZEdocGN5QnBjeUJ1YjNRZ1lTQnlaV0ZzSUd0bGVTd2dhWFFnYVhNZ1ptbDRkSFZ5WlNCbWFXeHNaWElnYjI1cwplU0JoYm1RZ2JtVjJaWElnYjNCbGJuTWdZVzU1ZEdocGJtY2dZWFFnWVd4c0lHRnVlWGRvWlhKbElHVjJaWEl1Ci0tLS0tRU5EIE9QRU5TU0ggUFJJVkFURSBLRVktLS0tLQo=</Binary>
+			<Binary ID="3" Compressed="False">PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0idXRmLTE2Ij8+CjxFbnRyeVNldHRpbmdzPjxBbGxvd1VzZU9mU3NoS2V5PnRydWU8L0FsbG93VXNlT2ZTc2hLZXk+PC9FbnRyeVNldHRpbmdzPgo=</Binary>
+			<Binary ID="4" Compressed="False">QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB</Binary>
+		</Binaries>
+	</Meta>
+	<Root>
+		<Group>
+			<UUID>cm9vdC0tLS0tLS0tLS0tLQ==</UUID>
+			<Name>Coffer</Name>
+			<Notes>root group notes</Notes>
+			<IconID>48</IconID>
+			<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+			<IsExpanded>True</IsExpanded>
+			<CustomData><Item><Key>Coffer.Fixture.Group</Key><Value>root</Value></Item></CustomData>
+			<Group>
+				<UUID>cGVyc29uYWwtLS0tLS0tLQ==</UUID>
+				<Name>Personal</Name>
+				<Notes></Notes>
+				<CustomIconUUID>aWNvbi1hLS0tLS0tLS0tLQ==</CustomIconUUID>
+				<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+				<IsExpanded>False</IsExpanded>
+				<DefaultAutoTypeSequence>{USERNAME}{TAB}{PASSWORD}</DefaultAutoTypeSequence>
+				<EnableAutoType>False</EnableAutoType>
+				<EnableSearching>True</EnableSearching>
+				<Tags>group-tag</Tags>
+				<Entry>
+					<UUID>ZS1iYXNpYy0tLS0tLS0tLQ==</UUID>
+					<IconID>1</IconID>
+					<ForegroundColor>#FF0000</ForegroundColor>
+					<BackgroundColor>#00FF00</BackgroundColor>
+					<OverrideURL>cmd://open {URL}</OverrideURL>
+					<Tags>alpha;beta;gamma</Tags>
+					<QualityCheck>False</QualityCheck>
+					<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><LastModificationTime>2024-03-04T05:06:07Z</LastModificationTime><ExpiryTime>2030-01-01T00:00:00Z</ExpiryTime><Expires>True</Expires><UsageCount>42</UsageCount><LocationChanged>2021-01-01T00:00:00Z</LocationChanged></Times>
+					<String><Key>Title</Key><Value>basic</Value></String>
+					<String><Key>UserName</Key><Value>alice</Value></String>
+					<String><Key>Password</Key><Value ProtectInMemory="True">correct horse battery staple</Value></String>
+					<String><Key>URL</Key><Value>https://example.com/login?a=1&amp;b=2</Value></String>
+					<String><Key>Notes</Key><Value ProtectInMemory="True">first line
+second line</Value></String>
+					<AutoType><Enabled>True</Enabled><DataTransferObfuscation>0</DataTransferObfuscation><DefaultSequence>{USERNAME}{TAB}{PASSWORD}{ENTER}</DefaultSequence>
+						<Association><Window>Example - Browser</Window><KeystrokeSequence>{PASSWORD}</KeystrokeSequence></Association>
+					</AutoType>
+					<CustomData><Item><Key>Coffer.Fixture.Entry</Key><Value>basic</Value></Item></CustomData>
+				</Entry>
+				<Entry>
+					<UUID>ZS11bmljb2RlLS0tLS0tLQ==</UUID>
+					<IconID>0</IconID>
+					<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+					<String><Key>Title</Key><Value>ユニコード 🔐 é́</Value></String>
+					<String><Key>UserName</Key><Value>עברית ‮reversed‬</Value></String>
+					<String><Key>Password</Key><Value ProtectInMemory="True">́́́́́́́́</Value></String>
+					<String><Key>URL</Key><Value>https://例.テスト/</Value></String>
+					<String><Key>Notes</Key><Value>zero width​ joiner‍ and nbsp here</Value></String>
+				</Entry>
+				<Entry>
+					<UUID>ZS1lbnRpdGllcy0tLS0tLQ==</UUID>
+					<IconID>0</IconID>
+					<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+					<String><Key>Title</Key><Value>&lt;script&gt;alert(1)&lt;/script&gt;</Value></String>
+					<String><Key>UserName</Key><Value>&amp;amp; &amp;lt; &amp;gt; &amp;quot; &amp;apos;</Value></String>
+					<String><Key>Password</Key><Value ProtectInMemory="True">&lt;/Value&gt;&lt;Value&gt;injected</Value></String>
+					<String><Key>Notes</Key><Value>]]&gt; &lt;!-- comment --&gt; &lt;![CDATA[raw]]&gt;</Value></String>
+				</Entry>
+				<Entry>
+					<UUID>ZS11cmxzLS0tLS0tLS0tLQ==</UUID>
+					<IconID>0</IconID>
+					<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+					<String><Key>Title</Key><Value>dangerous urls</Value></String>
+					<String><Key>URL</Key><Value>javascript:alert(document.domain)</Value></String>
+					<String><Key>url-data</Key><Value>data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==</Value></String>
+					<String><Key>url-file</Key><Value>file:///etc/passwd</Value></String>
+					<String><Key>url-vbscript</Key><Value>vbscript:msgbox(1)</Value></String>
+					<String><Key>url-mixed-case</Key><Value>JaVaScRiPt:alert(1)</Value></String>
+					<String><Key>url-whitespace</Key><Value>  javascript:alert(1)</Value></String>
+				</Entry>
+			</Group>
+			<Group>
+				<UUID>d29yay0tLS0tLS0tLS0tLQ==</UUID>
+				<Name>Work</Name>
+				<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+				<Entry>
+					<UUID>ZS1jdXN0b20tLS0tLS0tLQ==</UUID>
+					<IconID>0</IconID>
+					<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+					<String><Key>Title</Key><Value>many custom fields</Value></String>
+					<String><Key>custom-001</Key><Value>value 1</Value></String>
+					<String><Key>custom-002</Key><Value>value 2</Value></String>
+					<String><Key>custom-003</Key><Value ProtectInMemory="True">value 3</Value></String>
+					<String><Key>custom-004</Key><Value>value 4</Value></String>
+					<String><Key>custom-005</Key><Value>value 5</Value></String>
+					<String><Key>custom-006</Key><Value ProtectInMemory="True">value 6</Value></String>
+					<String><Key>custom-007</Key><Value>value 7</Value></String>
+					<String><Key>custom-008</Key><Value>value 8</Value></String>
+					<String><Key>custom-009</Key><Value ProtectInMemory="True">value 9</Value></String>
+					<String><Key>custom-010</Key><Value>value 10</Value></String>
+					<String><Key>custom-011</Key><Value>value 11</Value></String>
+					<String><Key>custom-012</Key><Value ProtectInMemory="True">value 12</Value></String>
+					<String><Key>custom-013</Key><Value>value 13</Value></String>
+					<String><Key>custom-014</Key><Value>value 14</Value></String>
+					<String><Key>custom-015</Key><Value ProtectInMemory="True">value 15</Value></String>
+					<String><Key>custom-016</Key><Value>value 16</Value></String>
+					<String><Key>custom-017</Key><Value>value 17</Value></String>
+					<String><Key>custom-018</Key><Value ProtectInMemory="True">value 18</Value></String>
+					<String><Key>custom-019</Key><Value>value 19</Value></String>
+					<String><Key>custom-020</Key><Value>value 20</Value></String>
+					<String><Key>custom-021</Key><Value ProtectInMemory="True">value 21</Value></String>
+					<String><Key>custom-022</Key><Value>value 22</Value></String>
+					<String><Key>custom-023</Key><Value>value 23</Value></String>
+					<String><Key>custom-024</Key><Value ProtectInMemory="True">value 24</Value></String>
+					<String><Key>custom-025</Key><Value>value 25</Value></String>
+					<String><Key>custom-026</Key><Value>value 26</Value></String>
+					<String><Key>custom-027</Key><Value ProtectInMemory="True">value 27</Value></String>
+					<String><Key>custom-028</Key><Value>value 28</Value></String>
+					<String><Key>custom-029</Key><Value>value 29</Value></String>
+					<String><Key>custom-030</Key><Value ProtectInMemory="True">value 30</Value></String>
+					<String><Key>empty-unprotected</Key><Value></Value></String>
+					<String><Key>empty-protected</Key><Value ProtectInMemory="True"></Value></String>
+					<String><Key>key with spaces &amp; symbols</Key><Value>ok</Value></String>
+				</Entry>
+				<Entry>
+					<UUID>ZS1hdHRhY2gtLS0tLS0tLQ==</UUID>
+					<IconID>0</IconID>
+					<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+					<String><Key>Title</Key><Value>attachments</Value></String>
+					<Binary><Key>all-256-bytes.bin</Key><Value Ref="0"/></Binary>
+					<Binary><Key>zero-byte.txt</Key><Value Ref="1"/></Binary>
+					<Binary><Key>../../escape.txt</Key><Value Ref="1"/></Binary>
+					<Binary><Key>nested/path/name.txt</Key><Value Ref="4"/></Binary>
+				</Entry>
+				<Entry>
+					<UUID>ZS1zc2gtLS0tLS0tLS0tLQ==</UUID>
+					<IconID>0</IconID>
+					<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+					<String><Key>Title</Key><Value>ssh key</Value></String>
+					<String><Key>Password</Key><Value ProtectInMemory="True">key passphrase</Value></String>
+					<Binary><Key>id_ed25519</Key><Value Ref="2"/></Binary>
+					<Binary><Key>KeeAgent.settings</Key><Value Ref="3"/></Binary>
+					<CustomData><Item><Key>KeeAgent.Settings</Key><Value>preserved</Value></Item></CustomData>
+				</Entry>
+				<Group>
+					<UUID>ZGVlcDEtLS0tLS0tLS0tLQ==</UUID>
+					<Name>level 1</Name>
+					<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+					<Group>
+						<UUID>ZGVlcDItLS0tLS0tLS0tLQ==</UUID>
+						<Name>level 2</Name>
+						<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+						<Group>
+							<UUID>ZGVlcDMtLS0tLS0tLS0tLQ==</UUID>
+							<Name>level 3</Name>
+							<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+							<Entry>
+								<UUID>ZS10aW1lcy0tLS0tLS0tLQ==</UUID>
+								<IconID>0</IconID>
+								<Times><CreationTime>1600-01-01T00:00:00Z</CreationTime><LastModificationTime>3000-12-31T23:59:59Z</LastModificationTime><LastAccessTime>1600-01-01T00:00:00Z</LastAccessTime><ExpiryTime>3000-12-31T23:59:59Z</ExpiryTime><Expires>True</Expires><UsageCount>2147483647</UsageCount><LocationChanged>1600-01-01T00:00:00Z</LocationChanged></Times>
+								<String><Key>Title</Key><Value>extreme timestamps</Value></String>
+							</Entry>
+							<Entry>
+								<UUID>ZS1lbXB0eS0tLS0tLS0tLQ==</UUID>
+								<IconID>0</IconID>
+								<Times><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+								<String><Key>Title</Key><Value></Value></String>
+								<String><Key>UserName</Key><Value></Value></String>
+								<String><Key>Password</Key><Value ProtectInMemory="True"></Value></String>
+								<String><Key>URL</Key><Value></Value></String>
+								<String><Key>Notes</Key><Value></Value></String>
+							</Entry>
+						</Group>
+					</Group>
+				</Group>
+			</Group>
+			<Group>
+				<UUID>cHJvamVjdHMtLS0tLS0tLQ==</UUID>
+				<Name>Versioned</Name>
+				<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+				<Entry>
+					<UUID>ZS1oaXN0b3J5LS0tLS0tLQ==</UUID>
+					<IconID>0</IconID>
+					<PreviousParentGroup>cGVyc29uYWwtLS0tLS0tLQ==</PreviousParentGroup>
+					<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><LastModificationTime>2026-07-01T12:00:00Z</LastModificationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+					<String><Key>Title</Key><Value>versioned</Value></String>
+					<String><Key>Password</Key><Value ProtectInMemory="True">current password</Value></String>
+					<String><Key>Notes</Key><Value>current</Value></String>
+					<History>
+						<Entry>
+							<UUID>ZS1oaXN0b3J5LS0tLS0tLQ==</UUID>
+							<IconID>0</IconID>
+							<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><LastModificationTime>2021-06-02T12:00:00Z</LastModificationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+							<String><Key>Title</Key><Value>versioned</Value></String>
+							<String><Key>Password</Key><Value ProtectInMemory="True">version 1 password</Value></String>
+							<String><Key>Notes</Key><Value>padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding </Value></String>
+						</Entry>
+						<Entry>
+							<UUID>ZS1oaXN0b3J5LS0tLS0tLQ==</UUID>
+							<IconID>0</IconID>
+							<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><LastModificationTime>2022-06-03T12:00:00Z</LastModificationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+							<String><Key>Title</Key><Value>versioned</Value></String>
+							<String><Key>Password</Key><Value ProtectInMemory="True">version 2 password</Value></String>
+							<String><Key>Notes</Key><Value>padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding </Value></String>
+						</Entry>
+						<Entry>
+							<UUID>ZS1oaXN0b3J5LS0tLS0tLQ==</UUID>
+							<IconID>0</IconID>
+							<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><LastModificationTime>2023-06-04T12:00:00Z</LastModificationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+							<String><Key>Title</Key><Value>versioned</Value></String>
+							<String><Key>Password</Key><Value ProtectInMemory="True">version 3 password</Value></String>
+							<String><Key>Notes</Key><Value>padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding </Value></String>
+						</Entry>
+						<Entry>
+							<UUID>ZS1oaXN0b3J5LS0tLS0tLQ==</UUID>
+							<IconID>0</IconID>
+							<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><LastModificationTime>2024-06-05T12:00:00Z</LastModificationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+							<String><Key>Title</Key><Value>versioned</Value></String>
+							<String><Key>Password</Key><Value ProtectInMemory="True">version 4 password</Value></String>
+							<String><Key>Notes</Key><Value>padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding </Value></String>
+						</Entry>
+						<Entry>
+							<UUID>ZS1oaXN0b3J5LS0tLS0tLQ==</UUID>
+							<IconID>0</IconID>
+							<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><LastModificationTime>2025-06-06T12:00:00Z</LastModificationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+							<String><Key>Title</Key><Value>versioned</Value></String>
+							<String><Key>Password</Key><Value ProtectInMemory="True">version 5 password</Value></String>
+							<String><Key>Notes</Key><Value>padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding </Value></String>
+						</Entry>
+						<Entry>
+							<UUID>ZS1oaXN0b3J5LS0tLS0tLQ==</UUID>
+							<IconID>0</IconID>
+							<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><LastModificationTime>2026-06-07T12:00:00Z</LastModificationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+							<String><Key>Title</Key><Value>versioned</Value></String>
+							<String><Key>Password</Key><Value ProtectInMemory="True">version 6 password</Value></String>
+							<String><Key>Notes</Key><Value>padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding </Value></String>
+						</Entry>
+					</History>
+				</Entry>
+			</Group>
+			<Group>
+				<UUID>cmVjeWNsZWJpbi0tLS0tLQ==</UUID>
+				<Name>Recycle Bin</Name>
+				<IconID>43</IconID>
+				<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+				<EnableSearching>False</EnableSearching>
+				<Entry>
+					<UUID>ZS10cmFzaGVkLS0tLS0tLQ==</UUID>
+					<IconID>0</IconID>
+					<PreviousParentGroup>d29yay0tLS0tLS0tLS0tLQ==</PreviousParentGroup>
+					<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+					<String><Key>Title</Key><Value>deleted entry</Value></String>
+					<String><Key>Password</Key><Value ProtectInMemory="True">still here</Value></String>
+				</Entry>
+			</Group>
+		</Group>
+		<DeletedObjects>
+			<DeletedObject><UUID>Z29uZS0xLS0tLS0tLS0tLQ==</UUID><DeletionTime>2025-01-01T00:00:00Z</DeletionTime></DeletedObject>
+			<DeletedObject><UUID>Z29uZS0yLS0tLS0tLS0tLQ==</UUID><DeletionTime>2026-02-03T04:05:06Z</DeletionTime></DeletedObject>
+		</DeletedObjects>
+	</Root>
+</KeePassFile>

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+Coffer fixture: a KDBX 3.1 database whose attachment pool holds a zero-byte
+binary. KDBX 3 keeps attachments in Meta/Binaries rather than the inner header,
+and keepass 0.13.22 refuses to deserialise an empty one. The suite pins that as
+a clean error rather than a panic or a silently dropped attachment.
+-->
+<KeePassFile>
+	<Meta>
+		<Generator>coffer-fixture</Generator>
+		<DatabaseName>legacy empty attachment</DatabaseName>
+		<Binaries>
+			<Binary ID="0" Compressed="False">aGVsbG8=</Binary>
+			<Binary ID="1" Compressed="False"></Binary>
+		</Binaries>
+	</Meta>
+	<Root>
+		<Group>
+			<UUID>bGVnYWN5LXJvb3QtLS0tLQ==</UUID>
+			<Name>legacy</Name>
+			<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+			<Entry>
+				<UUID>bGVnYWN5LWVudHJ5LS0tLQ==</UUID>
+				<IconID>0</IconID>
+				<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+				<String><Key>Title</Key><Value>has an empty attachment</Value></String>
+				<Binary><Key>present.txt</Key><Value Ref="0"/></Binary>
+				<Binary><Key>empty.txt</Key><Value Ref="1"/></Binary>
+			</Entry>
+		</Group>
+	</Root>
+</KeePassFile>

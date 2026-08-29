@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Coffer round-trip fixture: the smallest database with an entry. -->
+<KeePassFile>
+	<Meta>
+		<Generator>coffer-fixture</Generator>
+		<DatabaseName>minimal</DatabaseName>
+	</Meta>
+	<Root>
+		<Group>
+			<UUID>bWluaW1hbC1yb290LS0tLQ==</UUID>
+			<Name>minimal</Name>
+			<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+			<Entry>
+				<UUID>bWluaW1hbC1lbnRyeS0tLQ==</UUID>
+				<IconID>0</IconID>
+				<QualityCheck>False</QualityCheck>
+				<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+				<String><Key>Title</Key><Value>only entry</Value></String>
+				<String><Key>UserName</Key><Value>solo</Value></String>
+				<String><Key>Password</Key><Value ProtectInMemory="True">only password</Value></String>
+			</Entry>
+		</Group>
+	</Root>
+</KeePassFile>
