@@ -146,6 +146,22 @@ pub enum VaultError {
     #[error("that value contains a character a KeePass file cannot hold")]
     UnwritableText,
 
+    /// A vault is being made with no master password at all. The library would
+    /// write one happily; a file anybody can open is not what the reader asked
+    /// for. Opening a database that already has one is untouched.
+    #[error("a new vault needs a master password")]
+    EmptyMasterPassword,
+
+    /// There is already a file where the new vault would go. Nothing is written
+    /// over: a creation takes no snapshot, so what was there would be gone.
+    #[error("there is already a file with that name")]
+    DatabaseExists,
+
+    /// The new vault would be named the way Coffer names its own snapshots,
+    /// which is a database every save is refused for.
+    #[error("that name belongs to Coffer's own snapshots")]
+    ReservedName,
+
     /// The master password bytes are not UTF-8, and KeePass hashes passwords as
     /// UTF-8 text.
     #[error("the master password is not valid text")]
@@ -228,6 +244,10 @@ impl From<keepass::db::DatabaseSaveError> for VaultError {
         match error {
             DatabaseSaveError::Io(error) => VaultError::Io(error),
             DatabaseSaveError::Key(_) => VaultError::WrongCredentials,
+            // The one failure that is about the machine rather than the file.
+            // Without this arm it lands in the catch-all below and the reader
+            // is told the database could not be written, which says nothing.
+            DatabaseSaveError::Random(_) => VaultError::RandomnessUnavailable,
             _ => VaultError::Io(io::Error::other("the database could not be written")),
         }
     }

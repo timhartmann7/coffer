@@ -128,6 +128,9 @@ impl From<VaultError> for Failure {
             | VaultError::NoSuchAttachment
             | VaultError::NoSuchVersion => Code::NoSuchEntry,
             VaultError::UnwritableText
+            | VaultError::EmptyMasterPassword
+            | VaultError::DatabaseExists
+            | VaultError::ReservedName
             | VaultError::PasswordNotUtf8
             | VaultError::AbsurdKeyDerivation
             | VaultError::AttachmentPinned
@@ -180,6 +183,10 @@ mod tests {
             (VaultError::TooLarge, "tooLarge"),
             (VaultError::NoSuchEntry, "noSuchEntry"),
             (VaultError::UnwritableText, "refused"),
+            (VaultError::EmptyMasterPassword, "refused"),
+            (VaultError::DatabaseExists, "refused"),
+            (VaultError::ReservedName, "refused"),
+            (VaultError::RandomnessUnavailable, "refused"),
             (VaultError::PasswordNotUtf8, "refused"),
             (VaultError::AbsurdKeyDerivation, "refused"),
             (VaultError::ReadOnlyKdb, "readOnly"),

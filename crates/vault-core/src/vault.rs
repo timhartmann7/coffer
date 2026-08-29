@@ -9,8 +9,10 @@ use keepass::db::{EntryId, GroupId, GroupRef, Times, Value};
 use zeroize::Zeroizing;
 
 use crate::attachment;
+use crate::blank;
 use crate::error::VaultError;
 use crate::history::{self, Limits};
+use crate::kdf::Work;
 use crate::key::MasterKey;
 use crate::model::{Attachment, Entry, Field, FieldValue, Project, Timestamps, Version, fields};
 use crate::preflight;
@@ -59,6 +61,18 @@ pub enum LockPolicy {
     /// Open it anyway and take the lock over, because the user was shown who
     /// held it and said to go ahead.
     TakeOver,
+}
+
+/// What a new database is made with.
+pub struct Recipe<'a> {
+    /// What the top group and the database's own name are called. The file's
+    /// stem, so that the screen has one field fewer and nothing the window
+    /// sends names a file.
+    pub name: &'a str,
+    /// How hard its key derivation is. Given rather than measured here, so that
+    /// a suite can make a thousand databases without paying a calibrated second
+    /// for each of them.
+    pub work: Work,
 }
 
 /// A new value for a field.
@@ -190,6 +204,70 @@ impl Vault {
                 Outcome::Taken(lock) => lock,
                 Outcome::Held(holder) => return Err(VaultError::Locked(holder)),
             },
+        };
+
+        Ok(Vault {
+            database,
+            path,
+            key,
+            source,
+            stamp,
+            changed: false,
+            _lock: lock,
+        })
+    }
+
+    /// Makes a database where there is none, and opens it.
+    ///
+    /// Every refusal happens before a byte is written. There is no snapshot to
+    /// fall back on at a path that has nothing at it yet, and the staged write
+    /// underneath renames over whatever is at the target without a word, so a
+    /// creation aimed at somebody's vault is the one way this application could
+    /// destroy one. It is refused here rather than confirmed in a dialog.
+    ///
+    /// The vault is built from what was written rather than by opening the file
+    /// again, because opening it means a second one-second derivation for a
+    /// database this process already has in its hands.
+    pub fn create(path: &Path, key: MasterKey, recipe: &Recipe<'_>) -> Result<Vault, VaultError> {
+        if key.is_empty() {
+            return Err(VaultError::EmptyMasterPassword);
+        }
+        preflight::acceptable(recipe.work)?;
+
+        // A name of the shape Coffer gives its own snapshots would open like
+        // any other database and refuse every save for good.
+        if snapshot::slot_of(path).is_some() {
+            return Err(VaultError::ReservedName);
+        }
+        if path.try_exists()? {
+            return Err(VaultError::DatabaseExists);
+        }
+        // The parent has to be there: a staged write puts its temporary file
+        // beside the target, and a directory that is not there is a clearer
+        // answer than a failed rename.
+        let parent = crate::storage::parent_of(path)?;
+        if !parent.is_dir() {
+            return Err(VaultError::DatabaseGone);
+        }
+
+        let mut database = Held(blank::database(recipe.name, recipe.work)?);
+        settle(&mut database)?;
+
+        let mut written = 0;
+        atomic::write_atomic::<VaultError, _>(path, |writer: &mut dyn Write| {
+            written = encrypt(&database, &key, writer)?;
+            if written > MAX_DATABASE_BYTES {
+                return Err(VaultError::TooLarge);
+            }
+            Ok(())
+        })?;
+
+        let path = path.canonicalize()?;
+        let stamp = Stamp::of(&path)?;
+        let source = classify(&database, &path);
+        let lock = match Lock::acquire(&path)? {
+            Outcome::Taken(lock) => lock,
+            Outcome::Held(holder) => return Err(VaultError::Locked(holder)),
         };
 
         Ok(Vault {
@@ -405,32 +483,7 @@ impl Vault {
 
     /// Everything a write settles in the database before any bytes leave it.
     fn prepare(&mut self) -> Result<(), VaultError> {
-        let limits = Limits::of(&self.database);
-        history::prune_all(&mut self.database, limits);
-        self.database.config.version = WRITTEN_VERSION;
-
-        // Every KeePass client writes its own name here, so a file Coffer wrote
-        // says so rather than going on claiming to be the work of whatever
-        // wrote it last.
-        self.database.meta.generator = Some(GENERATOR.to_owned());
-
-        // A database that declares no inner cipher stores every protected value
-        // as base64 plaintext inside the encrypted body. Writing that back would
-        // be writing a weaker file than the one Coffer could write, and the
-        // choice of inner cipher is not a field anybody can lose.
-        if self.database.config.inner_cipher_config == InnerCipherConfig::Plain {
-            self.database.config.inner_cipher_config = InnerCipherConfig::ChaCha20;
-        }
-
-        // The last check before the bytes go. A file the writer cannot place
-        // where the reader will look for it is the one way this application
-        // hands somebody else's password to the wrong entry, so the write does
-        // not happen at all.
-        if !attachment::unbroken(&self.database) {
-            return Err(VaultError::AttachmentOrder);
-        }
-
-        Ok(())
+        settle(&mut self.database)
     }
 
     /// Whether this vault holds a change the file on disk does not.
@@ -1035,6 +1088,42 @@ impl Vault {
     fn recycle_bin(&self) -> Option<keepass::db::GroupId> {
         self.database.recycle_bin().map(|group| group.id())
     }
+}
+
+/// Everything a write settles in a database before any bytes leave it.
+///
+/// A free function rather than a method, because the database a creation writes
+/// has no vault around it yet and has to go through exactly the same door: the
+/// format version, the generator, the inner cipher and the history limits are
+/// one rule each, and a second copy of any of them would drift the first time
+/// one changed.
+fn settle(database: &mut Database) -> Result<(), VaultError> {
+    let limits = Limits::of(database);
+    history::prune_all(database, limits);
+    database.config.version = WRITTEN_VERSION;
+
+    // Every KeePass client writes its own name here, so a file Coffer wrote
+    // says so rather than going on claiming to be the work of whatever wrote
+    // it last.
+    database.meta.generator = Some(GENERATOR.to_owned());
+
+    // A database that declares no inner cipher stores every protected value as
+    // base64 plaintext inside the encrypted body. Writing that back would be
+    // writing a weaker file than the one Coffer could write, and the choice of
+    // inner cipher is not a field anybody can lose.
+    if database.config.inner_cipher_config == InnerCipherConfig::Plain {
+        database.config.inner_cipher_config = InnerCipherConfig::ChaCha20;
+    }
+
+    // The last check before the bytes go. A file the writer cannot place where
+    // the reader will look for it is the one way this application hands
+    // somebody else's password to the wrong entry, so the write does not
+    // happen at all.
+    if !attachment::unbroken(database) {
+        return Err(VaultError::AttachmentOrder);
+    }
+
+    Ok(())
 }
 
 /// Writes the encrypted database out, and says how many bytes that took.

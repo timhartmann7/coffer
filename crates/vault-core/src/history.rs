@@ -10,9 +10,10 @@ use keepass::db::{Entry, EntryId, History, Icon, Times};
 
 use crate::error::VaultError;
 
-/// What KeePassXC uses when a database states no limit of its own.
-const DEFAULT_MAX_ITEMS: usize = 10;
-const DEFAULT_MAX_SIZE: u64 = 6 * 1024 * 1024;
+/// What KeePassXC uses when a database states no limit of its own, and what a
+/// database Coffer creates writes into its own header.
+pub(crate) const DEFAULT_MAX_ITEMS: isize = 10;
+pub(crate) const DEFAULT_MAX_SIZE: isize = 6 * 1024 * 1024;
 
 /// The limits a database puts on entry history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,10 +31,9 @@ impl Limits {
     /// opinion should not grow without bound.
     pub(crate) fn of(database: &Database) -> Limits {
         Limits {
-            items: bound(database.meta.history_max_items, DEFAULT_MAX_ITEMS as isize)
+            items: bound(database.meta.history_max_items, DEFAULT_MAX_ITEMS)
                 .map(|value| value as usize),
-            size: bound(database.meta.history_max_size, DEFAULT_MAX_SIZE as isize)
-                .map(|value| value as u64),
+            size: bound(database.meta.history_max_size, DEFAULT_MAX_SIZE).map(|value| value as u64),
         }
     }
 }

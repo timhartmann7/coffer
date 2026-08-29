@@ -39,6 +39,15 @@ impl MasterKey {
         }
     }
 
+    /// Whether there is no password at all.
+    ///
+    /// An empty password opens a database that has one, so this is never asked
+    /// on the way in. It is asked when a vault is being made, where a file
+    /// anybody can open is not a vault.
+    pub fn is_empty(&self) -> bool {
+        self.password.is_empty() && self.key_file.is_none()
+    }
+
     /// Adds a key file. Coffer reads databases that use one and never creates
     /// one.
     pub fn with_key_file(mut self, path: &Path) -> Result<Self, VaultError> {

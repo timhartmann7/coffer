@@ -197,4 +197,42 @@ proptest! {
         let reopened = open(&database, BUILT_PASSWORD);
         prop_assert_eq!(before, observe(&reopened));
     }
+
+    /// The same claim about a database Coffer made rather than one the suite
+    /// assembled: a vault that starts empty is an ordinary vault the moment it
+    /// exists, whatever is then put in it.
+    #[test]
+    fn any_tree_put_into_a_vault_coffer_made_survives_the_same_way(
+        shape in prop::collection::vec(group(), 0..4)
+    ) {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let path = scratch.path().join("made.kdbx");
+        let made = vault_core::Vault::create(
+            &path,
+            crate::support::password(BUILT_PASSWORD),
+            &vault_core::Recipe { name: "Work", work: vault_core::kdf::Work::at(1) },
+        ).expect("the vault is made");
+        drop(made);
+
+        {
+            let mut database = keepass::Database::parse(
+                &std::fs::read(&path).expect("the file reads")[..],
+                keepass::DatabaseKey::new().with_password(BUILT_PASSWORD),
+            ).expect("the file opens");
+            let root = database.root_mut().id();
+            fill(&mut database, root, &shape);
+            let mut file = std::fs::File::create(&path).expect("the file is rewritten");
+            database
+                .save(&mut file, keepass::DatabaseKey::new().with_password(BUILT_PASSWORD))
+                .expect("it saves");
+        }
+
+        let mut vault = open(&path, BUILT_PASSWORD);
+        let before = observe(&vault);
+        vault.save().expect("the database saves");
+        drop(vault);
+
+        let reopened = open(&path, BUILT_PASSWORD);
+        prop_assert_eq!(before, observe(&reopened));
+    }
 }
