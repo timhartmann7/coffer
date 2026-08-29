@@ -1,6 +1,6 @@
 //! Reading a database: what comes back, and what deliberately does not.
 
-use vault_core::model::{FieldValue, fields};
+use vault_core::model::{EntryId, FieldValue, GroupId, fields};
 use vault_core::{LockPolicy, VaultError};
 
 use crate::support::{self, RICH, SECRET, all_entries, entry_titled, fixture, open, password};
@@ -47,6 +47,47 @@ fn the_tree_holds_every_group_and_entry() {
             .find(|section| section.name == "Personal")
             .and_then(|section| section.notes.clone()),
         None
+    );
+}
+
+#[test]
+fn every_entry_names_the_group_it_hangs_under_and_the_names_survive_a_save() {
+    let (_scratch, database) = support::scratch(RICH);
+
+    fn collect(group: &vault_core::model::Project, into: &mut Vec<(GroupId, EntryId)>) {
+        for entry in &group.entries {
+            assert_eq!(
+                entry.group, group.id,
+                "an entry in {:?} says it belongs to another group",
+                group.name
+            );
+            into.push((group.id, entry.id));
+        }
+        for section in &group.sections {
+            collect(section, into);
+        }
+    }
+
+    let mut before = Vec::new();
+    {
+        let mut vault = open(&database, SECRET);
+        collect(&vault.tree(), &mut before);
+        vault.save().expect("the database saves");
+    }
+
+    let mut unique: Vec<GroupId> = before.iter().map(|(group, _)| *group).collect();
+    unique.sort_by_key(|group| group.uuid());
+    unique.dedup();
+    assert!(unique.len() >= 5, "the fixture should span several groups");
+
+    let mut after = Vec::new();
+    collect(&open(&database, SECRET).tree(), &mut after);
+
+    before.sort_by_key(|(group, entry)| (group.uuid(), entry.uuid()));
+    after.sort_by_key(|(group, entry)| (group.uuid(), entry.uuid()));
+    assert_eq!(
+        before, after,
+        "a save moved an entry to a different group, or changed an identifier"
     );
 }
 
