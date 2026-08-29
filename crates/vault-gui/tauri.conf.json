@@ -3,8 +3,14 @@
   "version": "0.1.0",
   "identifier": "app.coffer.vault",
   "build": {
-    "beforeDevCommand": { "script": "npm run dev", "cwd": "../../frontend" },
-    "beforeBuildCommand": { "script": "npm run build", "cwd": "../../frontend" },
+    "beforeDevCommand": {
+      "script": "npm run dev",
+      "cwd": "../../frontend"
+    },
+    "beforeBuildCommand": {
+      "script": "npm run build",
+      "cwd": "../../frontend"
+    },
     "devUrl": "http://localhost:1420",
     "frontendDist": "../../frontend/build"
   },
@@ -30,7 +36,10 @@
   },
   "bundle": {
     "active": false,
-    "targets": ["app", "dmg"],
+    "targets": [
+      "app",
+      "dmg"
+    ],
     "category": "Utility",
     "macOS": {
       "minimumSystemVersion": "12.0"
