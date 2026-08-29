@@ -45,6 +45,12 @@ const UNORDERED: &[(&str, &str)] = &[
 /// and written in another.
 const FORMAT_ARTEFACTS: &[&str] = &["Binaries", "SettingsChanged"];
 
+/// The one element in a database that names whoever wrote it. Every KeePass
+/// client puts its own name here, so a file Coffer saved says Coffer and a
+/// comparison against the file it came from would always differ. It is the
+/// writer's signature, not anything of the user's.
+const GENERATOR: &str = "Generator";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Node {
     name: String,
@@ -215,6 +221,10 @@ fn walk(node: &mut Node, cross_version: bool) {
                 }
             }
         }
+    }
+
+    if node.name == GENERATOR {
+        node.text = "<normalised>".to_owned();
     }
 
     if cross_version {

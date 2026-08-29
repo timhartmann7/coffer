@@ -6,6 +6,8 @@
 #![deny(dead_code, unused_imports, unused_variables, unused_mut)]
 
 mod adversarial;
+mod edit;
+mod generate;
 mod history;
 mod normalise;
 mod open;

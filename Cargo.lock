@@ -4243,6 +4243,7 @@ dependencies = [
  "libc",
  "proptest",
  "quick-xml 0.42.0",
+ "rand_core",
  "rust-argon2",
  "tempfile",
  "thiserror 2.0.20",

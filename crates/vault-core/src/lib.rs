@@ -17,12 +17,14 @@
 )]
 
 pub mod error;
+pub mod generate;
 pub mod key;
 pub mod model;
 pub mod secret;
 pub mod storage;
 pub mod url;
 
+mod attachment;
 mod history;
 mod preflight;
 mod text;

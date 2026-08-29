@@ -63,6 +63,23 @@ pub fn slot(database: &Path, index: u32) -> Result<PathBuf, io::Error> {
     sibling(database, &format!(".{index}.bak"))
 }
 
+/// Which snapshot slot a path names, when it names one.
+///
+/// The name is Coffer's own convention, so a file that carries it is treated as
+/// one of Coffer's snapshots: it opens like any other database and is not
+/// written back, because the next save of the database beside it would rotate
+/// it away.
+pub fn slot_of(path: &Path) -> Option<u32> {
+    let name = path.file_name()?.to_str()?;
+    let (database, index) = name.strip_suffix(".bak")?.rsplit_once('.')?;
+    if database.is_empty() {
+        return None;
+    }
+
+    let index: u32 = index.parse().ok()?;
+    (1..=SNAPSHOT_COUNT).contains(&index).then_some(index)
+}
+
 /// A snapshot that exists on disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Taken {

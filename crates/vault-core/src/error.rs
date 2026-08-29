@@ -71,6 +71,76 @@ pub enum VaultError {
     #[error("there is no such entry in this database")]
     NoSuchEntry,
 
+    /// The group asked for is not in this database.
+    #[error("there is no such folder in this database")]
+    NoSuchGroup,
+
+    /// The entry has no file of that name.
+    #[error("that entry has no such file")]
+    NoSuchAttachment,
+
+    /// The entry has no version at that position.
+    #[error("that entry has no such version")]
+    NoSuchVersion,
+
+    /// The file is still held by previous versions of an entry, which the
+    /// format keeps inside the entry and the library cannot rewrite. Removing
+    /// the file would take it out of those versions as well.
+    #[error("{versions} earlier versions still hold that file")]
+    AttachmentInHistory { versions: usize },
+
+    /// Removing the file would renumber another one that a previous version, or
+    /// a second name, points at.
+    #[error("that file cannot be removed without disturbing another entry")]
+    AttachmentPinned,
+
+    /// The files in the database no longer number from zero without a gap, so
+    /// writing it would hand some of them to the wrong entries. Nothing in
+    /// Coffer should be able to reach this; it is the last check before a write.
+    #[error("the files in this database have lost their order")]
+    AttachmentOrder,
+
+    /// The root group holds everything else and is not something a user has.
+    #[error("the top of the vault cannot be deleted or moved")]
+    CannotMoveRoot,
+
+    /// A folder cannot be put inside itself, or inside one of its own folders.
+    #[error("a folder cannot be moved inside itself")]
+    CannotMoveIntoItself,
+
+    /// What is open is one of Coffer's own snapshots. It opens like any other
+    /// database and is not written back: the next save of the database it was
+    /// taken from would rotate it away.
+    #[error("a snapshot is opened to read, not to write")]
+    ReadOnlySnapshot,
+
+    /// The entry has no field of that name.
+    #[error("that entry has no such field")]
+    NoSuchField,
+
+    /// The file offered is larger than Coffer will put into a database.
+    #[error("that file is too large to keep in a vault")]
+    AttachmentTooLarge,
+
+    /// The database is a KDBX 3 file, whose attachments the reader Coffer is
+    /// built on collapses onto one. The names are the file's; the bytes behind
+    /// them are not, so they are not handed out.
+    #[error("the files in a KeePass 3 database cannot be read reliably")]
+    UnreadableAttachments,
+
+    /// A copy has to go somewhere other than the database it is a copy of.
+    #[error("a copy cannot be written over the database it came from")]
+    CopyOntoItself,
+
+    /// A password with no characters to choose from is not a password.
+    #[error("a password needs at least one kind of character")]
+    NothingToGenerateFrom,
+
+    /// The operating system would not give us randomness, so there is no
+    /// password to hand back. Never quietly substituted with anything weaker.
+    #[error("this Mac would not provide the randomness a password needs")]
+    RandomnessUnavailable,
+
     /// A field name or value holds a character XML cannot carry, so writing it
     /// would produce a file no KeePass client can read.
     #[error("that value contains a character a KeePass file cannot hold")]

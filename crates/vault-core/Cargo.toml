@@ -9,6 +9,7 @@ autotests = false
 
 [dependencies]
 keepass = { version = "=0.13.22", features = ["save_kdbx4"] }
+rand_core = { version = "0.9", default-features = false, features = ["os_rng"] }
 libc = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 thiserror = "2"
