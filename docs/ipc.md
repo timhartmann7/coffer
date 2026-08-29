@@ -64,6 +64,7 @@ Everything slice 3 added:
 | `add_attachment` | `entry` | the entry |
 | `export_attachment` | `entry`, `name` | nothing |
 | `remove_attachment` | `entry`, `name` | the entry |
+| `remove_attachment_and_versions` | `entry`, `name` | the entry |
 | `versions` | `entry` | the previous versions, oldest first |
 | `version` | `entry`, `index` | one version, read like an entry |
 | `reveal_version` | `entry`, `index`, `field` | the value of that field in that version |
@@ -125,7 +126,9 @@ the screen branches on: `wrongCredentials`, `notADatabase`, `unsupportedFormat`,
 file is refused while previous versions of the entry still hold it - the format
 keeps them inside the entry and nothing can rewrite one - so the screen offers
 to clear those versions and remove the file, which is the only sequence that
-works and is the reader's to choose.
+works and is the reader's to choose. That offer is `remove_attachment_and_versions`
+rather than the two commands one after the other: a removal can be refused for
+more than one reason, and the versions go back if the file still cannot go.
 
 `externalChange` is the one the conflict dialog is built on. `save` answers with
 it when the file is not the one the vault was opened from, and nothing has been
