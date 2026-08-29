@@ -1,0 +1,7 @@
+[profile.default]
+# Nextest calls a test "leaky" when the pipes it handed the test process are
+# still open shortly after that process exits. On a loaded machine the suite's
+# heavier tests push short ones past the 100 ms default and they get marked
+# leaky without leaking anything. Half a second is still short enough to catch a
+# test that really did leave a child running.
+leak-timeout = "500ms"
