@@ -16,6 +16,14 @@ strip = true
 lto = true
 codegen-units = 1
 
+# Everything the workspace depends on is built optimised even in a debug build.
+# Almost all of the time a test spends is inside the cipher and the compressor,
+# and an unoptimised build of those turns a suite that takes half a minute into
+# one nobody runs. Coffer's own crates stay unoptimised, so a backtrace still
+# points where it should.
+[profile.dev.package."*"]
+opt-level = 3
+
 # Unwinding is kept on purpose. The parser has reachable panics on a corrupt
 # database, and vault-core turns them into an error rather than letting a
 # damaged file take the application down with the user's unsaved work.

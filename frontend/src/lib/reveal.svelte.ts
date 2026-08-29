@@ -76,6 +76,25 @@ export class Revealed {
 	}
 
 	/**
+	 * Lets go of the value without taking it off the screen, and stops the
+	 * clock.
+	 *
+	 * For a field the reader has started writing in: what is in it is theirs
+	 * now, not the vault's, and wiping it half way through would take away what
+	 * they had typed. Whoever calls this owns the wipe from then on.
+	 */
+	release(): void {
+		this.#asked += 1;
+		if (this.#countdown !== null) {
+			clearInterval(this.#countdown);
+			this.#countdown = null;
+		}
+		this.#node = null;
+		this.showing = false;
+		this.left = 0;
+	}
+
+	/**
 	 * Takes it off the screen. Called by the timer, by the reader, and by every
 	 * component that holds one when it is destroyed - leaving the window is
 	 * leaving the value behind.

@@ -102,21 +102,35 @@ fn settle(database: &mut Database, id: EntryId) {
 
 /// Whether two versions of an entry hold the same thing.
 ///
-/// The comparison is the library's own derived equality with the timestamps
-/// taken out, so a field the library gains in a future release is compared
-/// without anybody having to remember to add it here. That matters more than
-/// the cost of the clone: a field left out of this comparison is a version
-/// silently not kept.
+/// The comparison is the library's own derived equality with the bookkeeping
+/// timestamps taken out, so a field the library gains in a future release is
+/// compared without anybody having to remember to add it here. That matters
+/// more than the cost of the clone: a field left out of this comparison is a
+/// version silently not kept.
+///
+/// Whether an entry expires, and when, stays in the comparison. When it was
+/// made, touched or looked at is not something anybody chose; an expiry date
+/// is, and an edit that set one is an edit. Taking it out is how a restore
+/// whose only change was an expiry date came back reporting success and doing
+/// nothing.
 ///
 /// Neither side carries history at this point - the live entry's was moved out
 /// by the caller, and `History::add_entry` strips it from a version on the way
 /// in - so nothing here copies a version list.
 fn same_content(current: &Entry, previous: &Entry) -> bool {
+    fn content_only(times: &mut Times) {
+        let expires = times.expires;
+        let expiry = times.expiry;
+        *times = Times::default();
+        times.expires = expires;
+        times.expiry = expiry;
+    }
+
     let mut current = current.clone();
     let mut previous = previous.clone();
 
-    current.times = Times::default();
-    previous.times = Times::default();
+    content_only(&mut current.times);
+    content_only(&mut previous.times);
 
     current == previous
 }

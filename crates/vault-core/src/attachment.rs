@@ -88,6 +88,15 @@ fn uses(database: &Database) -> HashMap<AttachmentId, Uses> {
         }
     }
 
+    // The names come out of hash maps, so without this they arrive in whatever
+    // order the hasher gives that run. Which name a file comes back under has
+    // to be the same answer every time; the reason is in [`lift`].
+    for held in found.values_mut() {
+        held.live.sort_by(|one, two| {
+            (one.entry.to_string(), &one.name).cmp(&(two.entry.to_string(), &two.name))
+        });
+    }
+
     found
 }
 
@@ -236,6 +245,13 @@ fn drop_names(
         if moving && (left.len() != 1 || uses.get(id).is_some_and(|held| held.pins(doomed) > 0)) {
             return Err(VaultError::AttachmentPinned);
         }
+        // The first by the order `uses` sorted them into, which is what makes
+        // the choice the same one every time. See [`lift`]: the entry that
+        // added a file to the pool is the one that was first among its names
+        // then, and taking names away never makes an earlier one appear, so
+        // that entry is still the one chosen here for as long as it has a name
+        // at all. That is what keeps the library's own bookkeeping, which knows
+        // only about that one entry, from taking away a name nothing puts back.
         let Some(holder) = left.first() else {
             return Err(VaultError::AttachmentPinned);
         };
@@ -297,13 +313,19 @@ fn bytes(database: &Database, id: AttachmentId) -> Result<Value<Vec<u8>>, VaultE
 /// A dangling name is a state nothing may read, so this is never called except
 /// between the checks and the [`forget`] and [`put`] calls that settle it.
 ///
-/// One thing it does do is take away every name the entry that *added* the file
-/// gives it, because for that one file the library's own bookkeeping is right.
-/// That is only ever the name the file is about to come back under: a file put
-/// into the pool in this session has exactly one name, so if that name is being
-/// dropped the file is going with it, and if it is not, it is the name
-/// [`drop_names`] hands to [`put`]. A file that arrived in the database has no
-/// bookkeeping at all, and nothing of it is taken away here.
+/// One thing it does do: for a file this session put into the pool, the library
+/// knows about the one entry that put it there, and takes away every name that
+/// entry gives the file. Which is safe for exactly one reason, and it is worth
+/// stating.
+///
+/// A file is put into the pool under the first of its names in
+/// [`uses`]'s order, and the names a file has only ever get fewer. So the entry
+/// the library knows about is the first-named entry as it was then, and it is
+/// still the first-named entry now unless every name it had is being dropped.
+/// Either the names this takes away are the ones [`put`] is about to write
+/// back, or they are names the caller asked to be rid of. A file that arrived
+/// in the database has no bookkeeping at all and nothing of it is taken away
+/// here.
 fn lift(database: &mut Database, id: AttachmentId) {
     if let Some(attachment) = database.attachment_mut(id) {
         attachment.remove();

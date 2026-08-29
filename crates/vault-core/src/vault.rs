@@ -333,11 +333,20 @@ impl Vault {
         // the database and its snapshots are still untouched. A run of failed
         // saves used to push ten copies of the same generation through the
         // snapshot chain and destroy it.
-        let database = &self.database;
-        let key = self.key.to_database_key()?;
-        let staged = atomic::stage(&self.path, move |writer: &mut dyn Write| {
-            database.save(writer, key).map_err(VaultError::from)
+        let mut written = 0;
+        let staged = atomic::stage::<VaultError, _>(&self.path, |writer: &mut dyn Write| {
+            written = encrypt(&self.database, &self.key, writer)?;
+            Ok(())
         })?;
+
+        // The whole database is read into memory to be opened, so a file past
+        // the ceiling is a file nobody can open again - not Coffer, and not the
+        // reader who put a hundred files in it one at a time. It is measured
+        // here, where the database it would replace is still untouched and the
+        // temporary file goes when this returns.
+        if written > MAX_DATABASE_BYTES {
+            return Err(VaultError::TooLarge);
+        }
 
         snapshot::rotate(&self.path)?;
 
@@ -720,10 +729,13 @@ impl Vault {
 
         self.prepare()?;
 
-        let database = &self.database;
-        let key = self.key.to_database_key()?;
-        atomic::write_atomic(path, move |writer: &mut dyn Write| {
-            database.save(writer, key).map_err(VaultError::from)
+        let mut written = 0;
+        atomic::write_atomic::<VaultError, _>(path, |writer: &mut dyn Write| {
+            written = encrypt(&self.database, &self.key, writer)?;
+            if written > MAX_DATABASE_BYTES {
+                return Err(VaultError::TooLarge);
+            }
+            Ok(())
         })
     }
 
@@ -810,7 +822,13 @@ impl Vault {
         }
 
         if let Some(bin) = self.recycle_bin() {
-            if bin == group || self.sections_of(bin).contains(&group) {
+            // The bin itself, something already inside it, or something that
+            // holds it: a folder cannot be moved into a folder it contains, and
+            // deleting one that holds the bin takes the bin with it.
+            if bin == group
+                || self.sections_of(bin).contains(&group)
+                || self.sections_of(group).contains(&bin)
+            {
                 return Ok(None);
             }
             return Ok(Some(bin));
@@ -945,6 +963,42 @@ impl Vault {
     fn recycle_bin(&self) -> Option<keepass::db::GroupId> {
         self.database.recycle_bin().map(|group| group.id())
     }
+}
+
+/// Writes the encrypted database out, and says how many bytes that took.
+///
+/// The count is the only way to know what a save would cost before it costs it:
+/// the payload is compressed, so nothing about the tree in memory predicts the
+/// size of the file.
+fn encrypt(
+    database: &Database,
+    key: &MasterKey,
+    writer: &mut dyn Write,
+) -> Result<u64, VaultError> {
+    struct Counted<'a> {
+        inner: &'a mut dyn Write,
+        written: u64,
+    }
+
+    impl Write for Counted<'_> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let taken = self.inner.write(bytes)?;
+            self.written += taken as u64;
+            Ok(taken)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.inner.flush()
+        }
+    }
+
+    let mut counted = Counted {
+        inner: writer,
+        written: 0,
+    };
+    database.save(&mut counted, key.to_database_key()?)?;
+    counted.flush()?;
+    Ok(counted.written)
 }
 
 fn read(path: &Path, key: &MasterKey) -> Result<Database, VaultError> {

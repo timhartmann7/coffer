@@ -600,3 +600,57 @@ it('offers no change on a database it cannot write', () => {
 
 	return unmount(component);
 });
+
+/**
+ * The half minute is how long a password Coffer put on the screen stays there.
+ * What the reader has started typing is not that: a timer that wiped the field
+ * mid-word would take away the password they were writing and leave them
+ * looking at an empty one.
+ */
+it('stops the clock once the reader starts writing a password', async () => {
+	vi.useFakeTimers();
+	try {
+		const component = show({
+			fields: [
+				field({
+					name: 'Password',
+					kind: 'password',
+					value: null,
+					empty: false,
+					protected: true
+				})
+			]
+		});
+		flushSync();
+
+		button('Show').click();
+		await Promise.resolve();
+		await Promise.resolve();
+		flushSync();
+		expect(value()).toBe(SECRET);
+
+		const written = host.querySelector('[data-value]') as HTMLInputElement;
+		written.value = 'a password of my own';
+		written.dispatchEvent(new Event('input', { bubbles: true }));
+		flushSync();
+
+		vi.advanceTimersByTime(60_000);
+		flushSync();
+
+		expect(written.value).toBe('a password of my own');
+		expect(host.textContent).not.toContain('Hides in');
+
+		// And it is still what gets written when the focus leaves.
+		written.dispatchEvent(new Event('blur'));
+		expect(ipc.setField).toHaveBeenCalledWith(
+			expect.any(String),
+			'Password',
+			'a password of my own',
+			true
+		);
+
+		await unmount(component);
+	} finally {
+		vi.useRealTimers();
+	}
+});

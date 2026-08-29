@@ -171,12 +171,26 @@ snapshot cask fails Gatekeeper. `tests/fixtures/generate.sh` is
 version-agnostic, so a second set lands beside the first by installing another
 version and rerunning it.
 
+**A file the pool cannot close up over is not removed.** Taking a file away
+means every file above it moves down a slot, and a file that has to move needs
+every name for it rewritten - which cannot be done for a name inside a previous
+version, and cannot be done twice for a file that two entries name. Both are
+shapes another client produces and Coffer cannot, so both are refusals rather
+than corruption: `AttachmentPinned`, with the file left exactly where it was.
+
 **A file that only a previous version names stays in the database.** Removing an
 attachment removes the one that was asked for. A file left with no name at all -
 which a database written by another client can arrive with, and which clearing an
 entry's history can leave behind - is kept: the pool cannot hold bytes without a
 name, so closing up over it would drop it, and dropping something a file arrived
 with is what the first rule forbids.
+
+**A save that would produce a file too large to open again is refused.** The
+whole database is read into memory to be opened, so the ceiling on that is a
+ceiling on what may be written. It is measured on the encrypted bytes as they
+are staged, where the database they would replace is still untouched, because
+the payload is compressed and nothing about the tree in memory predicts the size
+of the file.
 
 **A database Coffer saves says `Coffer` in `Meta/Generator`.** Every KeePass
 client writes its own name there and the field is the writer's signature rather

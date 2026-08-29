@@ -458,3 +458,60 @@ fn a_thousand_saves_of_one_entry_leave_the_file_bounded() {
         "the file grew from {first} to {last} bytes over a thousand saves"
     );
 }
+
+/// Whether an entry expires, and when, is something the reader chose. An edit
+/// that changed only that is an edit, and a restore that brought only that back
+/// is a restore - the version it replaced has to be kept, and the date has to
+/// be the one that was asked for.
+#[test]
+fn a_change_to_nothing_but_the_expiry_date_is_still_a_change() {
+    let directory = tempfile::tempdir().expect("a scratch directory");
+    let expires = chrono::NaiveDate::from_ymd_opt(2030, 1, 2)
+        .and_then(|day| day.and_hms_opt(3, 4, 5))
+        .expect("the moment is valid");
+
+    let path = built(directory.path(), "expiry.kdbx", |database| {
+        let id = database
+            .root_mut()
+            .add_entry()
+            .edit(|entry| {
+                entry.set_unprotected(fields::TITLE, "subject");
+                entry.times.expires = Some(true);
+                entry.times.expiry = Some(expires);
+            })
+            .id();
+
+        // The one thing the next state changes is that it no longer expires,
+        // which is the shape KeePassXC writes when somebody clears the date.
+        database
+            .entry_mut(id)
+            .expect("the entry is there")
+            .edit_tracking(|entry| {
+                entry.times.expires = Some(false);
+                entry.times.expiry = None;
+            });
+    });
+
+    let mut vault = open(&path, BUILT_PASSWORD);
+    let id = entry_titled(&vault, "subject").id;
+    assert_eq!(vault.versions(id).len(), 1, "the edit kept its version");
+    assert_eq!(
+        vault.entry(id).expect("the entry is there").times.expires,
+        None
+    );
+
+    vault
+        .restore_version(id, 0)
+        .expect("the version is restored");
+
+    assert_eq!(
+        vault.entry(id).expect("the entry is there").times.expires,
+        Some(expires),
+        "the restore reported success and brought nothing back"
+    );
+    assert_eq!(
+        vault.versions(id).len(),
+        2,
+        "the state the restore replaced was not kept"
+    );
+}

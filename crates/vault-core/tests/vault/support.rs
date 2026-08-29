@@ -287,3 +287,31 @@ pub fn attachment_bytes(
 
     std::fs::read(into).expect("the exported attachment reads back")
 }
+
+/// Builds a database out of XML, the way the golden fixtures are built.
+///
+/// The one shape Coffer cannot produce for itself is a file that several
+/// entries name: nothing in the library adds a second name for a file that is
+/// already in the pool, and KeePass 2 writes them all the time, because it
+/// stores identical binaries once. Only an external writer can make one, so the
+/// tests that need one ask the same tool the fixtures came from.
+pub fn imported(tool: &Path, directory: &Path, name: &str, xml: &str, secret: &str) -> PathBuf {
+    let source = directory.join(format!("{name}.xml"));
+    std::fs::write(&source, xml).expect("the source is written");
+
+    let target = directory.join(format!("{name}.kdbx"));
+    let source = source.to_string_lossy().into_owned();
+    let written = target.to_string_lossy().into_owned();
+
+    // `import` asks for the password twice, the way it asks when a database is
+    // created.
+    cli(
+        tool,
+        &format!("{secret}\n{secret}"),
+        None,
+        &["import", "-p", &source, &written],
+    )
+    .unwrap_or_else(|error| panic!("keepassxc-cli could not import {name}: {error}"));
+
+    target
+}

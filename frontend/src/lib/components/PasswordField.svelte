@@ -97,6 +97,20 @@
 	}
 
 	/**
+	 * The first keystroke turns a value being read into a value being written.
+	 *
+	 * The half minute is how long a password Coffer put on the screen stays
+	 * there. What the reader is typing is not that, and a timer that wiped the
+	 * field mid-word would take away their new password and leave them looking
+	 * at nothing.
+	 */
+	function written() {
+		if (!revealed.showing) return;
+		revealed.release();
+		writing = true;
+	}
+
+	/**
 	 * Writes what is in the field.
 	 *
 	 * Only while the value is still on the screen: the timer empties the input
@@ -150,6 +164,7 @@
 				aria-label="Password"
 				hidden={!live}
 				readonly={readOnly}
+				oninput={written}
 				onblur={commit}
 				onkeydown={keys}
 				class="block w-full rounded-sm border border-transparent bg-transparent font-mono text-body leading-snug text-txt transition-colors outline-none select-text focus:border-accent focus:bg-surface2 focus:ring-4 focus:ring-accent/15"

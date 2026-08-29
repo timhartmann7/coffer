@@ -1701,3 +1701,229 @@ fn a_save_moves_the_positions_a_version_list_was_read_at() {
         assert!(vault.version(id, version.index).is_some());
     }
 }
+
+/// A KDBX file can hold one file that several entries name: KeePass 2 stores
+/// identical binaries once and points every entry at the same one. Nothing in
+/// Coffer can produce that shape, so it comes from the tool the fixtures come
+/// from.
+///
+/// Taking one entry's name off it has to leave the other three holding the same
+/// bytes, and it has to go on doing that after the pool has been rebuilt once
+/// already - which is the case where the library's own record of who holds what
+/// is a session old and names one entry out of four.
+#[test]
+fn a_file_four_entries_share_stays_whole_as_the_names_come_off_one_by_one() {
+    let Some(tool) = support::keepassxc_cli() else {
+        return;
+    };
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+
+    let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<KeePassFile>
+  <Meta>
+    <Generator>coffer-test</Generator>
+    <Binaries>
+      <Binary ID="0" Compressed="False">c2hhcmVkIGJ5dGVz</Binary>
+      <Binary ID="1" Compressed="False">bWluZSBhbG9uZQ==</Binary>
+    </Binaries>
+  </Meta>
+  <Root>
+    <Group>
+      <UUID>c2hhcmVkLXJvb3QtLS0tLQ==</UUID>
+      <Name>shared</Name>
+      <Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires></Times>
+      <Entry>
+        <UUID>c2hhcmVkLWEtLS0tLS0tLQ==</UUID>
+        <Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires></Times>
+        <String><Key>Title</Key><Value>a</Value></String>
+        <QualityCheck>False</QualityCheck>
+        <Binary><Key>together.bin</Key><Value Ref="0"/></Binary>
+      </Entry>
+      <Entry>
+        <UUID>c2hhcmVkLWItLS0tLS0tLQ==</UUID>
+        <Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires></Times>
+        <String><Key>Title</Key><Value>b</Value></String>
+        <Binary><Key>together.bin</Key><Value Ref="0"/></Binary>
+      </Entry>
+      <Entry>
+        <UUID>c2hhcmVkLWMtLS0tLS0tLQ==</UUID>
+        <Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires></Times>
+        <String><Key>Title</Key><Value>c</Value></String>
+        <Binary><Key>together.bin</Key><Value Ref="0"/></Binary>
+      </Entry>
+      <Entry>
+        <UUID>c2hhcmVkLWQtLS0tLS0tLQ==</UUID>
+        <Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires></Times>
+        <String><Key>Title</Key><Value>d</Value></String>
+        <Binary><Key>together.bin</Key><Value Ref="0"/></Binary>
+        <Binary><Key>alone.bin</Key><Value Ref="1"/></Binary>
+      </Entry>
+    </Group>
+  </Root>
+</KeePassFile>
+"#;
+
+    let path = support::imported(&tool, scratch.path(), "shared", xml, SECRET);
+
+    {
+        let vault = open(&path, SECRET);
+        // `QualityCheck` is what makes keepassxc write KDBX 4.1, which is the
+        // format that keeps its files where Coffer can read them.
+        assert!(
+            !vault.is_read_only(),
+            "the import came back in a format Coffer will not write"
+        );
+        assert_eq!(
+            files(&vault).len(),
+            5,
+            "the import did not keep one file under four names"
+        );
+    }
+
+    // One name at a time, and after each one every other name still has to give
+    // back the bytes it named.
+    for gone in ["a", "b", "c"] {
+        {
+            let mut vault = open(&path, SECRET);
+            let id = only_entry(&vault, gone);
+            vault
+                .remove_attachment(id, "together.bin")
+                .expect("the name comes off");
+            vault.save().expect("the database saves");
+        }
+
+        let vault = open(&path, SECRET);
+        for kept in ["a", "b", "c", "d"] {
+            let id = only_entry(&vault, kept);
+            let entry = vault.entry(id).expect("the entry is there");
+            let has = entry
+                .attachments
+                .iter()
+                .any(|attachment| attachment.name == "together.bin");
+
+            if kept <= gone {
+                assert!(!has, "{kept} still names the file after {gone} let it go");
+                continue;
+            }
+            assert!(has, "{kept} lost the file when {gone} let it go");
+            assert_eq!(
+                vault
+                    .attachment(id, "together.bin")
+                    .expect("the file is there")
+                    .expose(),
+                b"shared bytes",
+                "{kept} came back holding somebody else's bytes"
+            );
+        }
+
+        let id = only_entry(&vault, "d");
+        assert_eq!(
+            vault
+                .attachment(id, "alone.bin")
+                .expect("the file is there")
+                .expose(),
+            b"mine alone",
+            "the file nobody shared moved onto the wrong entry"
+        );
+    }
+}
+
+/// A folder can hold the recycle bin - the format puts the bin wherever the
+/// client that made it put it, and the tree pane already draws one that way.
+/// Deleting that folder takes the bin with it rather than trying to move the
+/// folder inside something it contains.
+#[test]
+fn a_folder_that_holds_the_recycle_bin_can_still_be_deleted() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let path = built(scratch.path(), "nested-bin.kdbx", |database| {
+        let bin = {
+            let mut root = database.root_mut();
+            let mut project = root.add_group();
+            project.name = "Work".to_owned();
+            let mut bin = project.add_group();
+            bin.name = "Recycle Bin".to_owned();
+            bin.add_entry()
+                .edit(|entry| entry.set_unprotected(fields::TITLE, "thrown away"));
+            bin.id()
+        };
+
+        database.meta.recyclebin_enabled = Some(true);
+        database.meta.recyclebin_uuid = Some(bin.uuid());
+    });
+
+    let mut vault = open(&path, BUILT_PASSWORD);
+    let project = only_group(&vault, "Work");
+    assert!(
+        vault
+            .tree()
+            .sections
+            .iter()
+            .any(|section| section.sections.iter().any(|inner| inner.is_recycle_bin)),
+        "the fixture is supposed to hold the bin inside a folder"
+    );
+
+    vault.delete_group(project).expect("the folder is deleted");
+    assert!(
+        vault.tree().sections.iter().all(|s| s.name != "Work"),
+        "the folder that held the bin could not be deleted"
+    );
+    vault.save().expect("the database saves");
+    drop(vault);
+
+    // The bin went with it, and nothing in the file still names one.
+    let vault = open(&path, BUILT_PASSWORD);
+    assert!(
+        vault
+            .tree()
+            .sections
+            .iter()
+            .all(|section| !section.is_recycle_bin)
+    );
+}
+
+/// The whole database is read into memory to be opened, so a vault past the
+/// ceiling is a vault nobody can open again. It is measured on the way out,
+/// where the file it would replace is still untouched.
+///
+/// The database is written uncompressed, so that the size of the file is the
+/// size of what went into it and the test does not spend minutes deflating a
+/// gigabyte to prove a bound that has nothing to do with compression.
+#[test]
+fn a_database_that_would_be_too_large_to_open_again_is_not_written() {
+    use keepass::config::CompressionConfig;
+
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let path = built(scratch.path(), "large.kdbx", |database| {
+        database.config.compression_config = CompressionConfig::None;
+    });
+
+    let before = std::fs::metadata(&path).expect("the file is there").len();
+
+    let mut vault = open(&path, BUILT_PASSWORD);
+    let root = root_of(&vault);
+    let id = vault.create_entry(root).expect("the entry is made");
+
+    // Five files of a quarter of a gigabyte: each one is inside the limit on a
+    // single file, and together they are past the limit on the database.
+    for round in 0..5u8 {
+        vault
+            .add_attachment(
+                id,
+                &format!("big-{round}.bin"),
+                Zeroizing::new(vec![round; 256 * 1024 * 1024]),
+            )
+            .expect("each file on its own is allowed");
+    }
+
+    assert!(matches!(vault.save(), Err(VaultError::TooLarge)));
+    assert_eq!(
+        std::fs::metadata(&path).expect("the file is there").len(),
+        before,
+        "the database was written even though it could not be opened again"
+    );
+    drop(vault);
+
+    // And it still opens, because nothing was written.
+    let vault = open(&path, BUILT_PASSWORD);
+    assert!(vault.entry(id).is_none());
+}
