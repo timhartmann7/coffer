@@ -5,13 +5,24 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+autotests = false
 
 [dependencies]
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+keepass = { version = "=0.13.22", features = ["save_kdbx4"] }
 libc = "0.2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+thiserror = "2"
+zeroize = { version = "1", features = ["zeroize_derive"] }
 
 [dev-dependencies]
+base64 = "0.23"
+quick-xml = "0.41"
+rust-argon2 = "3"
 tempfile = "3"
+
+[[test]]
+name = "vault"
+path = "tests/vault/main.rs"
 
 [lints]
 workspace = true
