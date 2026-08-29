@@ -169,7 +169,10 @@ pub struct Field {
     /// The name the file holds, and the name a reveal asks for.
     pub name: String,
     pub kind: FieldKind,
-    /// `null` when the database protects the value.
+    /// The value, or `null` when it does not cross: the database protects it,
+    /// or it is the password. A file can hold a password the database does not
+    /// protect, and it is still a password; `empty` says whether there is one,
+    /// and a reveal is the only way to see it.
     pub value: Option<String>,
     pub empty: bool,
     /// Whether Coffer would hand this value to the system if asked to open it.
@@ -181,7 +184,10 @@ pub struct Field {
 impl Field {
     fn of(field: &model::Field) -> Field {
         let kind = FieldKind::of(&field.name);
-        let value = shown(&field.value);
+        let value = match kind {
+            FieldKind::Password => None,
+            _ => shown(&field.value),
+        };
         Field {
             name: field.name.clone(),
             kind,
@@ -438,6 +444,19 @@ mod tests {
                 .as_deref(),
             Some(hostile)
         );
+    }
+
+    /// A file can hold a password the database does not protect. It is still a
+    /// password, and the screen still has to ask for it one reveal at a time.
+    #[test]
+    fn a_password_the_database_left_open_still_does_not_cross() {
+        let entry = Entry::of(&entry_of(vec![open(fields::PASSWORD, SECRET)]));
+        let password = entry.fields.first().expect("the field is there");
+
+        assert_eq!(password.kind, FieldKind::Password);
+        assert_eq!(password.value, None);
+        assert!(!password.empty);
+        assert!(!json(&entry).contains(SECRET));
     }
 
     #[test]
