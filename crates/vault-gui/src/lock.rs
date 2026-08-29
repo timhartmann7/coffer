@@ -39,6 +39,13 @@ pub fn lock<R: Runtime>(app: &AppHandle<R>, reason: Reason) {
     vault_core::scrub::stack();
 
     if let Some(main) = app.get_webview_window(window::MAIN) {
+        // Coffer is closing, so the window is not wanted back. Every other
+        // reason is a lock, and a lock is a window that returns asking for a
+        // password.
+        if reason != Reason::Quitting {
+            window::rebuilding();
+        }
+
         // Destroyed rather than closed. Closing runs the path a page can veto -
         // Tauri prevents a close whenever the webview has a close-requested
         // listener - and a lock that JavaScript can refuse is not a lock.

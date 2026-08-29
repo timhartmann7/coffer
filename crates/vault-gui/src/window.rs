@@ -6,6 +6,7 @@
 //! a way nobody tested.
 
 use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::utils::config::WindowConfig;
 use tauri::{AppHandle, PhysicalPosition, PhysicalSize, Runtime, WindowEvent};
@@ -14,6 +15,24 @@ use crate::buttons;
 
 /// The window's label, which is also its key in `tauri.conf.json`.
 pub const MAIN: &str = "main";
+
+/// Whether the window that is going is going in order to come back.
+///
+/// A lock destroys the window, and so does the reader pressing the close
+/// button. The two arrive as the same event, so without this the close button
+/// would build the window again and Coffer could never be shut.
+static REBUILDING: AtomicBool = AtomicBool::new(false);
+
+/// Says that the destroy about to be queued is a lock rather than a close.
+pub fn rebuilding() {
+    REBUILDING.store(true, Ordering::Release);
+}
+
+/// Whether the window that has just gone asked to come back. Answers once: a
+/// second destroy is a close until another lock says otherwise.
+pub fn wanted_again() -> bool {
+    REBUILDING.swap(false, Ordering::AcqRel)
+}
 
 thread_local! {
     /// Where the reader last left the window.
@@ -114,4 +133,23 @@ fn place<R: Runtime>(
         width: f64::from(size.width) / scale,
         height: f64::from(size.height) / scale,
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Locking and closing arrive as the same event, and only one of them may
+    /// build the window again.
+    #[test]
+    fn only_a_lock_asks_for_the_window_back() {
+        assert!(!wanted_again(), "nothing has asked yet");
+
+        rebuilding();
+        assert!(wanted_again(), "a lock asked for it back");
+        assert!(
+            !wanted_again(),
+            "the answer stood a second time, so a close would reopen the window"
+        );
+    }
 }

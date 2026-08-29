@@ -19,6 +19,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "Coffer",
         "width": 1080,
         "height": 720,

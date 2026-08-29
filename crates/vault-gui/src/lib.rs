@@ -138,11 +138,15 @@ pub fn run() {
             // until this event is delivered - so destroying and building in one
             // function always fails, and building from a timer thread builds a
             // window AppKit will not let that thread decorate.
+            //
+            // Only when a lock asked for it. The reader closing the window
+            // arrives as the same event, and a window that came back from that
+            // would be one Coffer could never be shut.
             tauri::RunEvent::WindowEvent {
                 ref label,
                 event: tauri::WindowEvent::Destroyed,
                 ..
-            } if label == window::MAIN => {
+            } if label == window::MAIN && window::wanted_again() => {
                 if let Err(error) = window::open(app) {
                     // Nothing has been unlocked at this point - the lock that
                     // destroyed the window wiped the tree first - so there is
