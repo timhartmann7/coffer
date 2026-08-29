@@ -134,7 +134,16 @@ fn a_single_flipped_bit_anywhere_is_caught() {
         let path = write_bytes(scratch.path(), "flipped.kdbx", &damaged);
         let error = open_error(&path, SECRET);
         assert!(
-            !matches!(error, VaultError::Locked(_)),
+            matches!(
+                error,
+                VaultError::NotADatabase
+                    | VaultError::UnsupportedFormat
+                    | VaultError::DamagedHeader
+                    | VaultError::DamagedPayload
+                    | VaultError::DamagedContent
+                    | VaultError::WrongCredentials
+                    | VaultError::AbsurdKeyDerivation
+            ),
             "a bit flipped at {offset} produced {error:?}"
         );
     }

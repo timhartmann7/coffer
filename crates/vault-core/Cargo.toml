@@ -16,6 +16,7 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 
 [dev-dependencies]
 base64 = "0.23"
+proptest = "1"
 quick-xml = "0.41"
 rust-argon2 = "3"
 tempfile = "3"

@@ -1,0 +1,27 @@
+[package]
+name = "vault-core-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+# Outside the workspace on purpose: cargo-fuzz needs a nightly toolchain for its
+# sanitizers, and rust-toolchain.toml pins this project to stable. CI runs the
+# suite; the fuzzer is run by hand.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+tempfile = "3"
+vault-core = { path = "../crates/vault-core" }
+zeroize = "1"
+
+[[bin]]
+name = "open"
+path = "fuzz_targets/open.rs"
+test = false
+doc = false
+bench = false

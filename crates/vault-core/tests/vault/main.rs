@@ -9,6 +9,7 @@ mod adversarial;
 mod history;
 mod normalise;
 mod open;
+mod property;
 mod round_trip;
 mod save;
 mod storage;

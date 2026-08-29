@@ -253,3 +253,88 @@ fn the_normaliser_reads_both_timestamp_spellings_as_the_same_moment() {
         "the two spellings of 2020-01-01 did not compare equal: {iso:?} against {packed:?}"
     );
 }
+
+#[test]
+fn keepassxc_writing_the_file_while_coffer_holds_it_open_is_noticed() {
+    let Some(tool) = support::keepassxc_cli() else {
+        return;
+    };
+
+    let (_scratch, database) = support::scratch("minimal-kdbx41.kdbx");
+    let mut vault = support::open(&database, "coffer-test");
+
+    // The other client Coffer is dogfooded against, writing the same file.
+    let path = database.to_string_lossy().into_owned();
+    support::cli(
+        &tool,
+        "coffer-test",
+        None,
+        &[
+            "edit",
+            "-q",
+            "--url",
+            "https://written-by-keepassxc",
+            &path,
+            "only entry",
+        ],
+    )
+    .expect("keepassxc-cli edits the database");
+
+    assert!(
+        matches!(
+            vault.save().expect_err("the save is refused"),
+            vault_core::VaultError::ExternalChange
+        ),
+        "KeePassXC wrote the file and Coffer did not notice"
+    );
+
+    // Reopening picks up their work rather than losing it.
+    drop(vault);
+    let reopened = support::open(&database, "coffer-test");
+    assert_eq!(
+        support::entry_titled(&reopened, "only entry").url(),
+        "https://written-by-keepassxc"
+    );
+}
+
+#[test]
+fn keepassxc_reads_back_a_database_coffer_wrote_over_theirs() {
+    let Some(tool) = support::keepassxc_cli() else {
+        return;
+    };
+
+    let (_scratch, database) = support::scratch("rich-kdbx41.kdbx");
+
+    // Coffer writes first, KeePassXC reads second: the other order.
+    let mut vault = support::open(&database, "coffer-test");
+    let id = support::entry_titled(&vault, "basic").id;
+    vault
+        .set_field(
+            id,
+            vault_core::model::fields::URL,
+            vault_core::NewValue::Open("https://written-by-coffer".to_owned()),
+        )
+        .expect("the field is written");
+    vault.save().expect("the database saves");
+    drop(vault);
+
+    let shown = support::cli(
+        &tool,
+        "coffer-test",
+        None,
+        &[
+            "show",
+            "-q",
+            "-a",
+            "URL",
+            &database.to_string_lossy(),
+            "basic",
+        ],
+    )
+    .expect("keepassxc-cli reads what Coffer wrote");
+
+    assert_eq!(
+        String::from_utf8_lossy(&shown).trim(),
+        "https://written-by-coffer"
+    );
+}

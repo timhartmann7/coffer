@@ -7,3 +7,9 @@ design.html
 
 # Intermediate XML the fixture generator writes
 crates/vault-core/tests/fixtures/sources/.tmp.xml
+
+# cargo-fuzz working files
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+/fuzz/Cargo.lock
