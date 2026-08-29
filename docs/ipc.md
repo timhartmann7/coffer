@@ -147,6 +147,20 @@ Two things follow from that, and both are traps:
   hidden with a class, and why the two timers that drain on screen are CSS
   animations of a fixed length rather than a width that JavaScript sets.
 
+## What the window does not do yet
+
+**It draws every row it is given.** The list has no windowing: a vault of a
+thousand entries, which is what `SPEC.md` sets a time budget for, draws in one
+pass and filters on the text it folded when the folder was opened. Fifty
+thousand would draw fifty thousand rows and take its time about it. The filter
+itself is tested at that size; the drawing is not, and the fix when it matters is
+to draw only the rows on screen.
+
+**A snapshot opened from the unlock screen becomes the chosen database for the
+rest of the session.** The remembered path is only ever written when the reader
+picks a file, so the next launch offers the database rather than the snapshot,
+but slice 3 has to decide what saving means when what is open is a `.bak`.
+
 ## Where this departs from SPEC.md
 
 **A copied password is kept off Universal Clipboard.** `SPEC.md` says macOS
