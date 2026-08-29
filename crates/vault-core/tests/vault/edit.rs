@@ -2,7 +2,7 @@
 //! underneath it.
 
 use keepass::db::fields;
-use vault_core::model::{EntryId, FieldValue, GroupId};
+use vault_core::model::{EntryId, Field, FieldValue, GroupId};
 use vault_core::{NewValue, Vault, VaultError};
 use zeroize::Zeroizing;
 
@@ -816,6 +816,270 @@ fn keepassxc_shows_a_version_coffer_wrote() {
         "the state before the edit is not in the file keepassxc reads"
     );
     assert!(exported.contains("a newer password"));
+
+    // The version keepassxc offers to restore is a version of this entry: the
+    // block sits inside the entry and carries the entry's own identifier. A
+    // version whose identifier had drifted is a file nothing can open again.
+    let at = exported
+        .find("correct horse battery staple")
+        .expect("the value is in the file");
+    let before = exported.get(..at).expect("the file has a beginning");
+    assert!(
+        before.rfind("<History>") > before.rfind("</History>"),
+        "the state before the edit is not inside a history block"
+    );
+    assert!(
+        exported.matches("ZS1iYXNpYy0tLS0tLS0tLQ==").count() >= 2,
+        "the version does not carry the identifier of the entry it belongs to"
+    );
+}
+
+/// The whole of the first rule, applied to the editing path: a change to one
+/// value changes that value and nothing else. Every other entry comes back with
+/// the same fields, the same protection, the same tags and the same files.
+#[test]
+fn an_edit_changes_the_field_it_was_asked_to_change_and_nothing_else() {
+    let (_scratch, database) = support::scratch(RICH);
+
+    let before = {
+        let vault = open(&database, SECRET);
+        picture(&vault)
+    };
+
+    let id = {
+        let mut vault = open(&database, SECRET);
+        let id = only_entry(&vault, "basic");
+        vault
+            .set_field(id, fields::NOTES, NewValue::Open("a new note".to_owned()))
+            .expect("the note is written");
+        vault.save().expect("the database saves");
+        id
+    };
+
+    let vault = open(&database, SECRET);
+    let after = picture(&vault);
+
+    assert_eq!(
+        before.len(),
+        after.len(),
+        "the database gained or lost an entry"
+    );
+    for (was, now) in before.iter().zip(after.iter()) {
+        if was.0 == id {
+            continue;
+        }
+        assert_eq!(was, now, "an entry nobody edited came back different");
+    }
+
+    let changed = after
+        .iter()
+        .find(|(entry, _, _, _)| *entry == id)
+        .expect("the entry is still there");
+    assert!(
+        changed
+            .1
+            .contains(&("Notes".to_owned(), Some("a new note".to_owned()), false)),
+        "the note was not written"
+    );
+}
+
+/// Every entry, with everything about it that a save must not change on its
+/// own: its fields, whether the database protects each one, its tags, and the
+/// bytes of every file it holds.
+type Picture = Vec<(
+    EntryId,
+    Vec<(String, Option<String>, bool)>,
+    Vec<String>,
+    Vec<(String, Vec<u8>)>,
+)>;
+
+fn picture(vault: &Vault) -> Picture {
+    let mut found: Picture = support::all_entries(vault)
+        .into_iter()
+        .map(|summary| {
+            let entry = vault.entry(summary.id).expect("the entry is there");
+            let mut fields: Vec<(String, Option<String>, bool)> = entry
+                .fields
+                .iter()
+                .map(|field| {
+                    (
+                        field.name.clone(),
+                        field.value.open().map(str::to_owned),
+                        matches!(field.value, FieldValue::Protected { .. }),
+                    )
+                })
+                .collect();
+            fields.sort();
+
+            let files: Vec<(String, Vec<u8>)> = entry
+                .attachments
+                .iter()
+                .map(|attachment| {
+                    let bytes = vault
+                        .attachment(entry.id, &attachment.name)
+                        .expect("the file is there");
+                    (attachment.name.clone(), bytes.expose().to_vec())
+                })
+                .collect();
+
+            (entry.id, fields, entry.tags.clone(), files)
+        })
+        .collect();
+    found.sort_by_key(|(id, _, _, _)| id.to_string());
+    found
+}
+
+/// The other order the two clients can go in: the file is written first and the
+/// change in the window comes second. The window still holds what it opened, so
+/// the save still stops and asks.
+#[test]
+fn a_file_written_before_the_edit_stops_the_save_just_the_same() {
+    let (_scratch, database) = support::scratch(RICH);
+    let mut ours = open(&database, SECRET);
+    let id = only_entry(&ours, "basic");
+
+    {
+        let mut theirs = Vault::open(
+            &database,
+            support::password(SECRET),
+            vault_core::LockPolicy::TakeOver,
+        )
+        .expect("the database opens");
+        theirs
+            .set_field(id, fields::NOTES, NewValue::Open("theirs".to_owned()))
+            .expect("the note is written");
+        theirs.save().expect("the database saves");
+    }
+
+    ours.set_field(id, fields::NOTES, NewValue::Open("ours".to_owned()))
+        .expect("the note is written");
+    assert!(matches!(ours.save(), Err(VaultError::ExternalChange)));
+
+    // Keeping both is the way out that loses nothing: this version goes beside
+    // the database, and the database keeps theirs.
+    let beside = database.with_extension("mine.kdbx");
+    ours.save_copy(&beside).expect("the copy is written");
+    ours.reload().expect("the file reads again");
+    drop(ours);
+
+    let mine = open(&beside, SECRET);
+    assert_eq!(
+        mine.entry(id)
+            .expect("the entry is there")
+            .field(fields::NOTES)
+            .and_then(|field| field.value.open()),
+        Some("ours")
+    );
+    drop(mine);
+
+    let theirs = open(&database, SECRET);
+    assert_eq!(
+        theirs
+            .entry(id)
+            .expect("the entry is there")
+            .field(fields::NOTES)
+            .and_then(|field| field.value.open()),
+        Some("theirs")
+    );
+}
+
+#[test]
+fn emptying_the_recycle_bin_takes_what_is_in_it_out_of_the_file() {
+    let (_scratch, database) = support::scratch(RICH);
+    let mut vault = open(&database, SECRET);
+
+    let deleted = only_entry(&vault, "deleted entry");
+    let living = only_entry(&vault, "basic");
+    vault.delete_entry(living).expect("the entry is deleted");
+
+    assert_eq!(vault.count(), 11, "the fixture holds eleven entries");
+
+    vault.empty_recycle_bin().expect("the bin is emptied");
+    assert!(vault.entry(deleted).is_none(), "the bin still holds it");
+    assert!(vault.entry(living).is_none(), "the bin still holds it");
+    assert_eq!(vault.count(), 9);
+
+    vault.save().expect("the database saves");
+    drop(vault);
+
+    let vault = open(&database, SECRET);
+    assert_eq!(vault.count(), 9, "the entries came back");
+    assert!(
+        vault
+            .tree()
+            .sections
+            .iter()
+            .any(|section| section.is_recycle_bin),
+        "emptying the bin took the bin as well"
+    );
+}
+
+#[test]
+fn a_field_can_be_taken_off_an_entry() {
+    let (_scratch, database) = support::scratch(RICH);
+    let mut vault = open(&database, SECRET);
+    let id = only_entry(&vault, "many custom fields");
+
+    assert!(matches!(
+        vault.remove_field(id, "no such field"),
+        Err(VaultError::NoSuchField)
+    ));
+
+    vault
+        .remove_field(id, "custom-001")
+        .expect("the field is removed");
+    assert!(
+        vault
+            .entry(id)
+            .expect("the entry is there")
+            .field("custom-001")
+            .is_none()
+    );
+
+    vault.save().expect("the database saves");
+    drop(vault);
+
+    let vault = open(&database, SECRET);
+    let entry = vault.entry(id).expect("the entry is there");
+    assert!(entry.field("custom-001").is_none(), "the field came back");
+    assert!(
+        entry.field("custom-002").is_some(),
+        "removing one field took another"
+    );
+}
+
+/// A version is read the way an entry is read, and what it protects it goes on
+/// protecting: the value comes one field at a time or not at all.
+#[test]
+fn a_version_is_read_without_its_protected_values_crossing() {
+    let (_scratch, database) = support::scratch(RICH);
+    let vault = open(&database, SECRET);
+    let id = only_entry(&vault, "versioned");
+
+    let oldest = vault.versions(id).first().expect("there is one").index;
+    let version = vault.version(id, oldest).expect("the version reads");
+
+    assert_eq!(
+        version.field(fields::PASSWORD).map(Field::is_empty),
+        Some(false)
+    );
+    assert_eq!(
+        version
+            .field(fields::PASSWORD)
+            .and_then(|field| field.value.open()),
+        None,
+        "a version handed its protected value over without being asked"
+    );
+    assert_eq!(
+        vault
+            .reveal_version(id, oldest, fields::PASSWORD)
+            .expect("the value comes back on request")
+            .expose_str(),
+        Some("version 1 password")
+    );
+
+    assert!(vault.version(id, 99).is_none());
+    assert!(vault.reveal_version(id, 99, fields::PASSWORD).is_none());
 }
 
 #[test]
