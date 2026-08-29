@@ -51,6 +51,7 @@ pub(crate) fn database(name: &str, work: Work) -> Result<Database, VaultError> {
     let mut root = database.root_mut();
     root.name = name.to_owned();
     root.set_icon_builtin(FOLDER_ICON);
+    root.times.expiry = Some(now);
 
     database.meta = Meta {
         database_name: Some(name.to_owned()),
@@ -59,6 +60,13 @@ pub(crate) fn database(name: &str, work: Work) -> Result<Database, VaultError> {
         master_key_change_rec: Some(NEVER),
         master_key_change_force: Some(NEVER),
         maintenance_history_days: Some(MAINTENANCE_DAYS),
+        // Every "changed" date is written, even for a field that has never been
+        // set. A date a file leaves out is one every client puts its own value
+        // in, which makes two readings of the same file disagree.
+        database_description_changed: Some(now),
+        default_username_changed: Some(now),
+        recyclebin_changed: Some(now),
+        entry_templates_group_changed: Some(now),
         memory_protection: Some(MemoryProtection::default()),
         // A recycle bin is asked for and not made. The group itself appears the
         // first time something is deleted; naming a group here that does not

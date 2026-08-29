@@ -630,12 +630,19 @@ mod tests {
 
         let session = Arc::new(Session::new(None));
         session.making(target.clone());
-        session.measured(Work::at(1));
+        // Heavy enough that the creation is still deriving a key when the
+        // session is pointed elsewhere. At one pass it would be finished before
+        // the racing thread had started, and the test would prove nothing.
+        session.measured(Work::at(40));
 
         let making = {
             let session = Arc::clone(&session);
             std::thread::spawn(move || session.create(password(SECRET)))
         };
+
+        // Long enough for the creation to be inside key derivation, and short
+        // enough that it is still there.
+        std::thread::sleep(std::time::Duration::from_millis(50));
         session.choose(elsewhere.clone());
         let _ = making.join();
 

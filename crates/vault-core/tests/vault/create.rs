@@ -399,6 +399,58 @@ fn a_vault_that_was_made_takes_a_change_and_keeps_it() {
     assert_eq!(secret.expose_str(), Some("hunter2"));
 }
 
+/// A date the file leaves out is a date every client puts its own value in, so
+/// two readings of the same file disagree and neither of them is what Coffer
+/// wrote. Everything Coffer makes carries its own.
+#[test]
+fn everything_coffer_makes_carries_its_own_dates() {
+    let (_scratch, path) = scratch();
+    let mut made = make(&path, SECRET, "Work").expect("the vault is made");
+
+    let root = made.tree().id;
+    let folder = made
+        .create_group(root, "Clients")
+        .expect("the folder is made");
+    made.create_entry(folder).expect("the entry is made");
+    made.save().expect("the vault saves");
+    drop(made);
+
+    let bytes = std::fs::read(&path).expect("the file is there");
+    let database = keepass::Database::parse(
+        &bytes[..],
+        keepass::DatabaseKey::new().with_password(SECRET),
+    )
+    .expect("the file opens");
+
+    for group in database.iter_all_groups() {
+        assert!(group.times.expiry.is_some(), "a folder has no expiry date");
+        assert_eq!(group.times.expires, Some(false));
+    }
+    for entry in database.iter_all_entries() {
+        assert!(entry.times.expiry.is_some(), "an entry has no expiry date");
+        assert_eq!(entry.times.expires, Some(false));
+    }
+
+    let meta = &database.meta;
+    for (name, held) in [
+        ("DatabaseNameChanged", meta.database_name_changed),
+        (
+            "DatabaseDescriptionChanged",
+            meta.database_description_changed,
+        ),
+        ("DefaultUserNameChanged", meta.default_username_changed),
+        ("MasterKeyChanged", meta.master_key_changed),
+        ("RecycleBinChanged", meta.recyclebin_changed),
+        (
+            "EntryTemplatesGroupChanged",
+            meta.entry_templates_group_changed,
+        ),
+        ("SettingsChanged", meta.settings_changed),
+    ] {
+        assert!(held.is_some(), "{name} is not in the file");
+    }
+}
+
 /// An external implementation opens what Coffer made, and what Coffer then
 /// saves over its own file is still whole.
 ///

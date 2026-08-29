@@ -526,6 +526,7 @@ impl Vault {
                 .ok_or(VaultError::NoSuchGroup)?;
             let mut made = group.add_group();
             made.name = name.to_owned();
+            dated(&mut made.times);
             made.id()
         };
 
@@ -607,6 +608,7 @@ impl Vault {
                 .group_mut(group)
                 .ok_or(VaultError::NoSuchGroup)?;
             let mut entry = group.add_entry();
+            dated(&mut entry.times);
             for (name, protect) in protection {
                 if protect {
                     entry.set_protected(name, "");
@@ -963,6 +965,7 @@ impl Vault {
             let mut root = self.database.root_mut();
             let mut made = root.add_group();
             made.name = RECYCLE_BIN.to_owned();
+            dated(&mut made.times);
             // The bin is not part of the vault a search runs over, which is the
             // flag KeePassXC writes on the group it makes.
             made.enable_searching = Some(false);
@@ -1087,6 +1090,19 @@ impl Vault {
 
     fn recycle_bin(&self) -> Option<keepass::db::GroupId> {
         self.database.recycle_bin().map(|group| group.id())
+    }
+}
+
+/// Gives something newly made a date to go with the fact that it never expires.
+///
+/// The library leaves the date out when nothing expires, which the format
+/// allows and no other client does: KeePass and KeePassXC both write one, and a
+/// reader that finds none invents its own. A file that leaves a field for
+/// somebody else to fill in says a different thing to every client that opens
+/// it, and says a different thing twice to the same one.
+fn dated(times: &mut Times) {
+    if times.expiry.is_none() {
+        times.expiry = times.creation.or_else(|| Some(Times::now()));
     }
 }
 
