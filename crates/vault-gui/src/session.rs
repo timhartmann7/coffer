@@ -577,6 +577,47 @@ mod tests {
         );
     }
 
+    /// The screen locks while a vault is opening.
+    ///
+    /// Opening is the moment a vault is most exposed: the password is in
+    /// memory, nothing is holding the session, and the machine can say the
+    /// reader has gone at any point in it. A vault that finished opening after
+    /// that would be one sitting decrypted behind a locked screen, which is the
+    /// one thing the machine's triggers exist to prevent.
+    #[test]
+    fn a_lock_during_key_derivation_leaves_nothing_open() {
+        use std::sync::Arc;
+
+        let directory = tempfile::tempdir().expect("a scratch directory");
+        let target = directory.path().join("slow.kdbx");
+
+        // Heavy enough that the unlock is still deriving a key when the screen
+        // locks. The fixtures open in a few milliseconds, which is too fast to
+        // be inside.
+        let session = Arc::new(Session::new(None));
+        session.making(target.clone());
+        session.measured(Work::at(40));
+        session.create(password(SECRET)).expect("the vault is made");
+        assert!(session.lock(Reason::ByHand));
+
+        let unlocking = {
+            let session = Arc::clone(&session);
+            std::thread::spawn(move || session.unlock(password(SECRET)))
+        };
+
+        // Long enough for the unlock to be inside key derivation, and short
+        // enough that it is still there.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            !session.lock(Reason::ScreenLocked),
+            "the unlock had already finished, so this proved nothing"
+        );
+        let landed = unlocking.join().expect("the unlocking thread finishes");
+
+        assert!(landed.is_err(), "a vault opened after the screen locked");
+        assert!(!session.is_unlocked());
+    }
+
     /// Making a vault is an unlock that happens to write the file first, and it
     /// is held to the same terms.
     #[test]

@@ -282,6 +282,46 @@ mod tests {
         );
     }
 
+    /// A vault the size of a real one, nested as deep as the attack list asks
+    /// for. The walk collects its ids before it starts rather than recursing,
+    /// so a hundred folders inside each other is arithmetic rather than a
+    /// hundred stack frames.
+    #[test]
+    fn a_large_and_deeply_nested_database_is_emptied_without_running_out_of_stack() {
+        const DEEP: usize = 100;
+        const WIDE: usize = 2_000;
+
+        let mut held = Database::new();
+        let mut parent = held.root().id();
+        for depth in 0..DEEP {
+            let made = held
+                .group_mut(parent)
+                .map(|mut group| group.add_group().id())
+                .unwrap_or(parent);
+            if let Some(mut group) = held.group_mut(made) {
+                group.name = format!("{FOLDER} {depth}");
+            }
+            parent = made;
+        }
+
+        for _ in 0..WIDE {
+            if let Some(mut group) = held.group_mut(parent) {
+                group.add_entry().edit(|entry| {
+                    entry.set_unprotected(fields::NOTES, OPEN);
+                    entry.set_protected(fields::PASSWORD, "a password");
+                });
+            }
+        }
+
+        assert_eq!(held.num_entries(), WIDE);
+        assert_eq!(held.num_groups(), DEEP + 1);
+
+        database(&mut held);
+
+        assert!(held.iter_all_entries().all(|entry| entry.fields.is_empty()));
+        assert!(held.iter_all_groups().all(|group| group.name.is_empty()));
+    }
+
     /// The names are the half that has to be dropped rather than emptied,
     /// because a map hands its keys out by shared reference. What can be
     /// asserted here is that they are gone from the database; that their
