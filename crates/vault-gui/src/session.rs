@@ -26,6 +26,10 @@ struct Held {
     /// The open database. Dropping it wipes the decrypted tree and removes the
     /// lock file beside the database.
     vault: Option<Vault>,
+    /// Bumped every time the session is pointed somewhere else or emptied. Key
+    /// derivation takes a second and does not hold the lock, so an unlock that
+    /// started before such a change must not finish over it.
+    generation: u64,
 }
 
 impl Session {
@@ -34,6 +38,7 @@ impl Session {
             held: Mutex::new(Held {
                 database,
                 vault: None,
+                generation: 0,
             }),
         }
     }
@@ -56,10 +61,17 @@ impl Session {
     /// Points the session at another database. Whatever was open is locked
     /// first: two databases at once is not something Coffer does, and the
     /// lock file beside the old one has to go before the new one is opened.
+    ///
+    /// The path is resolved here, so that everything downstream - the snapshots
+    /// beside it, the name in the window, what gets remembered - is about the
+    /// file rather than about a link to it. A path that is not there yet is
+    /// kept as it was given; opening it is what will say so.
     pub fn choose(&self, database: PathBuf) {
+        let database = database.canonicalize().unwrap_or(database);
         let mut held = self.held();
         held.vault = None;
         held.database = Some(database);
+        held.generation += 1;
     }
 
     pub fn is_unlocked(&self) -> bool {
@@ -72,13 +84,16 @@ impl Session {
     /// long as it is open because KeePass derives a fresh key on every save,
     /// and wipes it on the way out.
     pub fn unlock(&self, password: Zeroizing<Vec<u8>>) -> Result<(), Failure> {
-        let database = {
+        let (database, generation) = {
             let mut held = self.held();
             // Anything already open is dropped before the new one is opened, so
             // that reopening the same file does not find Coffer's own lock
             // beside it and refuse.
             held.vault = None;
-            held.database.clone().ok_or_else(Failure::no_vault)?
+            (
+                held.database.clone().ok_or_else(Failure::no_vault)?,
+                held.generation,
+            )
         };
 
         // Key derivation is a second of work, and it happens with nothing held.
@@ -91,6 +106,13 @@ impl Session {
         )?;
 
         let mut held = self.held();
+        if held.generation != generation {
+            // Somebody chose another database, or locked, while this one was
+            // opening. Dropping the vault here takes the lock file off a
+            // database nobody is asking about any more.
+            return Err(Failure::stale());
+        }
+
         // The database Coffer opened is the one it followed the links to.
         held.database = Some(vault.path().to_path_buf());
         held.vault = Some(vault);
@@ -99,7 +121,9 @@ impl Session {
 
     /// Wipes the decrypted database out of memory.
     pub fn lock(&self) {
-        self.held().vault = None;
+        let mut held = self.held();
+        held.vault = None;
+        held.generation += 1;
     }
 
     pub fn tree(&self) -> Result<Project, Failure> {
@@ -113,9 +137,17 @@ impl Session {
 
     /// Hands out one field's value. Every call is a place a secret can escape,
     /// so there are two callers: revealing and copying.
+    ///
+    /// A field the entry does not carry and an entry the database does not have
+    /// are different answers, and the screen is told which one it got.
     pub fn reveal(&self, id: EntryId, field: &str) -> Result<SecretValue, Failure> {
-        self.with(|vault| vault.reveal(id, field))?
-            .ok_or_else(Failure::no_such_entry)
+        match self.with(|vault| vault.reveal(id, field))? {
+            Some(secret) => Ok(secret),
+            None => {
+                self.entry(id)?;
+                Err(Failure::refused("that entry has no such field"))
+            }
+        }
     }
 
     /// Borrows the open vault. It never leaves the lock, so nothing can hold a
@@ -282,13 +314,49 @@ mod tests {
         session.choose(database.clone());
 
         assert!(!session.is_unlocked());
-        assert_eq!(session.database(), Some(database));
+        // The session keeps the file rather than the way in to it: on macOS a
+        // scratch directory is reached through a link.
+        assert_eq!(
+            session.database(),
+            Some(database.canonicalize().expect("the copy is there"))
+        );
     }
 
     #[test]
     fn there_is_nothing_to_unlock_until_something_is_chosen() {
         let session = Session::new(None);
         assert!(session.unlock(password(SECRET)).is_err());
+    }
+
+    /// Key derivation happens with nothing held, so the session can move while
+    /// it runs. Whatever the timing, the session must end up where it was last
+    /// pointed rather than where the unlock started.
+    #[test]
+    fn an_unlock_that_finishes_late_does_not_win() {
+        use std::sync::Arc;
+
+        let (_first, one) = scratch(RICH);
+        let (_second, two) = scratch(RICH);
+
+        let session = Arc::new(Session::new(Some(one)));
+        let unlocking = {
+            let session = Arc::clone(&session);
+            std::thread::spawn(move || session.unlock(password(SECRET)))
+        };
+
+        // Long enough for the unlock to be inside key derivation, which takes
+        // the better part of a second, and short enough that it is still there.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        session.choose(two.clone());
+        let _ = unlocking.join();
+
+        // Whichever of the two got there first, the session points at what it
+        // was last told to point at. Without the check inside `unlock`, the
+        // vault that finished opening writes the old path back over this one.
+        assert_eq!(
+            session.database(),
+            Some(two.canonicalize().expect("the copy is there"))
+        );
     }
 
     #[test]
@@ -302,6 +370,7 @@ mod tests {
         assert_eq!(secret.expose_str(), Some("correct horse battery staple"));
 
         assert!(session.reveal(entry.id, "no such field").is_err());
+        assert!(session.reveal(entry.id, "").is_err());
         assert!(
             session
                 .reveal(EntryId::from_uuid(uuid::Uuid::nil()), fields::PASSWORD)

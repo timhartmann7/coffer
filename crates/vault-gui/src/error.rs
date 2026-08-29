@@ -64,6 +64,15 @@ impl Failure {
         }
     }
 
+    /// An unlock finished after the session had been pointed somewhere else.
+    /// Nothing is open, which is what the code says; the message says why.
+    pub fn stale() -> Failure {
+        Failure {
+            code: Code::NoVault,
+            message: "the database changed while it was opening".to_owned(),
+        }
+    }
+
     /// The database file is not where it was.
     pub fn gone() -> Failure {
         Failure::from(VaultError::DatabaseGone)

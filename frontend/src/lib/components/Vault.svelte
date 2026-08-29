@@ -20,7 +20,7 @@
 	let query = $state('');
 	let opened = $state<Entry | null>(null);
 	let field = $state<HTMLInputElement>();
-	let notice = $state<{ message: string; draining: boolean } | null>(null);
+	let notice = $state<{ message: string; kind: 'copied' | 'failed' } | null>(null);
 	let countdown: ReturnType<typeof setInterval> | null = null;
 
 	// Timestamps are written against the moment the vault was opened rather than
@@ -79,7 +79,7 @@
 	function announce(seconds: number) {
 		clear();
 		let left = seconds;
-		notice = { message: message(left), draining: true };
+		notice = { message: message(left), kind: 'copied' };
 		countdown = setInterval(() => {
 			left -= 1;
 			if (left <= 0) {
@@ -87,7 +87,7 @@
 				notice = null;
 				return;
 			}
-			notice = { message: message(left), draining: true };
+			notice = { message: message(left), kind: 'copied' };
 		}, 1000);
 	}
 
@@ -98,7 +98,7 @@
 
 	function failed(thrown: unknown) {
 		clear();
-		notice = { message: asFailure(thrown).message, draining: false };
+		notice = { message: asFailure(thrown).message, kind: 'failed' };
 		setTimeout(() => {
 			notice = null;
 		}, 4000);
@@ -132,6 +132,11 @@
 		if (!opened) return;
 		const wanted = event.key === 'b' ? 'username' : event.key === 'c' ? 'password' : null;
 		if (!wanted) return;
+
+		// A revealed value, a login and a note are all selectable on purpose. If
+		// the reader has selected something, the copy they pressed is theirs and
+		// not the entry's.
+		if (wanted === 'password' && document.getSelection()?.isCollapsed === false) return;
 
 		const chosen = opened.fields.find((entry) => entry.kind === wanted);
 		if (!chosen || chosen.empty) return;
@@ -250,6 +255,12 @@
 					</button>
 				{/snippet}
 			</Empty>
+		{:else if found.length === 0 && group === null}
+			<Empty
+				icon="folder"
+				title="This vault has nothing in it yet"
+				detail="Entries added in Coffer or in any other KeePass client show up here."
+			/>
 		{:else if found.length === 0 && bin && group === bin.id}
 			<Empty
 				icon="trash"
@@ -274,7 +285,7 @@
 	{/if}
 
 	{#if notice}
-		<Toast message={notice.message} draining={notice.draining} />
+		<Toast message={notice.message} kind={notice.kind} />
 	{/if}
 </div>
 

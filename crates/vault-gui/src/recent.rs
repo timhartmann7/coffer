@@ -25,20 +25,19 @@ pub fn remembered(directory: &Path) -> Option<PathBuf> {
 }
 
 pub fn remember(directory: &Path, database: &Path) -> Result<(), io::Error> {
-    use std::io::Write as _;
+    use std::io::Write;
     use std::os::unix::ffi::OsStrExt as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
 
     std::fs::create_dir_all(directory)?;
 
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(directory.join(REMEMBERED))?;
-
-    file.write_all(database.as_os_str().as_bytes())
+    // The same staged write the database itself gets: a file killed halfway
+    // through would hold half a path, and half a path is a directory Coffer
+    // would offer to open. The writer creates the file owner-only, which a file
+    // that was already there with a wider mode would otherwise keep.
+    vault_core::storage::atomic::write_atomic::<io::Error, _>(
+        &directory.join(REMEMBERED),
+        |writer: &mut dyn Write| writer.write_all(database.as_os_str().as_bytes()),
+    )
 }
 
 #[cfg(test)]

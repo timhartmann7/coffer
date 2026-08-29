@@ -169,6 +169,38 @@ it('copies the open entry through Rust on the keyboard', async () => {
 	return unmount(component);
 });
 
+/** The pane marks the login, the address, the notes and a revealed value as
+ * selectable on purpose. A reader who selected one of them and pressed the copy
+ * shortcut asked for that, not for the entry's password. */
+it('leaves a copy the reader selected alone', async () => {
+	ipc.entry.mockResolvedValue(
+		entry({
+			id: kept.id,
+			group: root.id,
+			fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+		})
+	);
+
+	const component = open();
+	flushSync();
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('node-3'))
+		?.click();
+	await vi.waitFor(() => expect(ipc.entry).toHaveBeenCalled());
+	flushSync();
+
+	vi.spyOn(document, 'getSelection').mockReturnValue({ isCollapsed: false } as Selection);
+	window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', metaKey: true }));
+	await tick();
+	expect(ipc.copy).not.toHaveBeenCalled();
+
+	vi.spyOn(document, 'getSelection').mockReturnValue({ isCollapsed: true } as Selection);
+	window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', metaKey: true }));
+	await vi.waitFor(() => expect(ipc.copy).toHaveBeenCalledWith(kept.id, 'Password'));
+
+	return unmount(component);
+});
+
 it('puts the reader in the search field on the shortcut the field advertises', async () => {
 	const component = open();
 	flushSync();

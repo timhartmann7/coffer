@@ -52,9 +52,13 @@
 			<span class="font-mono text-label tracking-label text-txt3 uppercase">Login</span>
 			<span class="mt-1.5 flex items-center gap-2">
 				<span class="min-w-0 flex-1 truncate font-mono text-body text-txt select-text">
-					{username?.value ?? ''}
+					{#if username && username.value === null}
+						<Mask />
+					{:else}
+						{username?.value ?? ''}
+					{/if}
 				</span>
-				{#if username?.value}
+				{#if username && !username.empty}
 					<button
 						type="button"
 						onclick={() => onCopy(entry.id, username.name)}
@@ -88,11 +92,13 @@
 					>
 						{url.value}
 					</button>
+				{:else if url.value === null}
+					<span class="mt-1.5 block"><Mask /></span>
 				{:else}
 					<!-- An address Coffer will not open is a value on a screen and
 					     nothing more. Nothing here can be clicked into a browser. -->
 					<span class="mt-1.5 block truncate text-body text-txt2 select-text">
-						{url.value ?? ''}
+						{url.value}
 					</span>
 				{/if}
 			</div>

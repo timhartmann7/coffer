@@ -55,27 +55,27 @@ fn balance<R: Runtime>(window: &WebviewWindow<R>) {
     };
 
     // Everything below has to happen on the thread that draws.
-    let _ = window.run_on_main_thread({
-        let native = SendWindow(Retained::as_ptr(&native));
-        move || unsafe { lay_out(&native) }
-    });
+    let native = SendWindow(native);
+    let _ = window.run_on_main_thread(move || unsafe { lay_out(&native) });
 }
 
-/// A window pointer on its way to the main thread.
+/// A window on its way to the main thread.
 ///
 /// `Retained<NSWindow>` is deliberately not `Send`, because most of AppKit is
-/// only safe on the main thread. This carries the pointer and nothing else, and
-/// the only thing that dereferences it is the closure that runs there.
-struct SendWindow(*const NSWindow);
+/// only safe on the main thread. This carries the reference across and holds it
+/// there: the message may be queued, and a window released in the meantime
+/// would leave the closure with nothing to move.
+struct SendWindow(Retained<NSWindow>);
 
-// SAFETY: the pointer is dereferenced on the main thread and nowhere else, and
-// the window it names outlives the message that carries it.
+// SAFETY: the window is only ever touched by the closure below, which runs on
+// the main thread. Holding the reference is what keeps it alive until then, and
+// retaining and releasing are themselves thread-safe.
 unsafe impl Send for SendWindow {}
 
 unsafe fn lay_out(window: &SendWindow) {
-    // SAFETY: the caller is the main thread, and the window is alive for as
-    // long as it has buttons to move.
-    let window = unsafe { &*window.0 };
+    // SAFETY: the caller is the main thread, and the window is held by the
+    // value that carried it here.
+    let window = &*window.0;
 
     let (Some(close), Some(miniaturise), Some(zoom)) = (
         window.standardWindowButton(NSWindowButton::CloseButton),

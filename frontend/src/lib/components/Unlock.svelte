@@ -19,9 +19,16 @@
 	let failure = $state<Failure | null>(null);
 	let snapshot = $state<Snapshot | null>(null);
 
-	/** A file that will not open at all, as opposed to a password that is
-	 * wrong. The offer to open a snapshot belongs to the first and not the
-	 * second. */
+	/**
+	 * The one failure the field itself is about. Everything else - a file that
+	 * will not open, a database somebody else has open, a file that is gone -
+	 * is about the vault, and painting the password field red for those sends
+	 * the reader back to a password that was right all along.
+	 */
+	const wrongPassword = $derived(failure?.code === 'wrongCredentials');
+
+	/** A file that will not open at all. The offer to open a snapshot belongs to
+	 * this and to nothing else. */
 	const unreadable = $derived(
 		failure !== null && (failure.code === 'damaged' || failure.code === 'notADatabase')
 	);
@@ -55,6 +62,10 @@
 	}
 
 	async function choose() {
+		// Not while a key is deriving: the unlock in flight would finish over
+		// whatever is picked here, and Rust would then refuse it as stale.
+		if (busy) return;
+
 		const picked = await chooseDatabase().catch((thrown) => {
 			failure = asFailure(thrown);
 			return null;
@@ -91,7 +102,8 @@
 			<button
 				type="button"
 				onclick={choose}
-				class="mt-8 flex w-full items-center gap-3 rounded-sm border border-hairline bg-surface2 px-3 py-2.5 text-left transition-colors hover:border-txt4"
+				disabled={busy}
+				class="mt-8 flex w-full items-center gap-3 rounded-sm border border-hairline bg-surface2 px-3 py-2.5 text-left transition-colors hover:border-txt4 disabled:cursor-not-allowed disabled:hover:border-hairline"
 			>
 				<Icon name="disk" class="h-4 w-4 shrink-0 text-txt4" />
 				<span class="min-w-0 flex-1">
@@ -107,8 +119,7 @@
 						Vault password
 					</span>
 					<span
-						class="flex items-center gap-2 rounded-sm border bg-surface2 px-3 py-3 {failure &&
-						!unreadable
+						class="flex items-center gap-2 rounded-sm border bg-surface2 px-3 py-3 {wrongPassword
 							? 'border-danger/60'
 							: 'border-hairline focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/15'}"
 					>
@@ -123,7 +134,7 @@
 					</span>
 				</label>
 
-				{#if failure && !unreadable}
+				{#if wrongPassword && failure}
 					<p class="mt-3 text-small text-danger">{failure.message}</p>
 				{/if}
 
@@ -138,15 +149,19 @@
 				</button>
 			</form>
 
-			{#if unreadable && failure}
+			{#if failure && !wrongPassword}
 				<div class="mt-6 flex gap-4 border-t border-line pt-5">
 					<Icon name="warn" class="mt-0.5 h-5 w-5 shrink-0 text-warn" />
 					<div>
 						<p class="text-lead text-txt">{failure.message}</p>
 						{#if snapshot}
 							<p class="mt-2 text-small leading-relaxed text-txt2">
-								A snapshot from {fully(snapshot.taken, new Date())} sits beside it. It opens with the
-								same password.
+								{#if snapshot.taken}
+									A snapshot from {fully(snapshot.taken, new Date())} sits beside it.
+								{:else}
+									A snapshot Coffer took before one of its own saves sits beside it.
+								{/if}
+								It opens with the same password.
 							</p>
 						{/if}
 						<div class="mt-5 flex flex-wrap gap-2">

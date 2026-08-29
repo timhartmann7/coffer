@@ -85,7 +85,7 @@
 					type="button"
 					onclick={() => onCopy(row, 'UserName')}
 					disabled={!row.username}
-					class="rounded-sm p-1 text-txt4 transition-colors hover:bg-surface2 hover:text-txt disabled:text-line"
+					class="rounded-sm p-1 text-txt4 transition-colors hover:bg-surface2 hover:text-txt disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-txt4"
 					aria-label="Copy login"
 					title="Copy login · ⌘B"
 				>
@@ -95,7 +95,7 @@
 					type="button"
 					onclick={() => onCopy(row, 'Password')}
 					disabled={!row.hasPassword}
-					class="rounded-sm p-1 text-txt4 transition-colors hover:bg-surface2 hover:text-txt disabled:text-line"
+					class="rounded-sm p-1 text-txt4 transition-colors hover:bg-surface2 hover:text-txt disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-txt4"
 					aria-label="Copy password"
 					title="Copy password · ⌘C"
 				>

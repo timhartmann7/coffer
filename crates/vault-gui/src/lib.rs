@@ -69,12 +69,23 @@ pub fn run() {
             commands::snapshots,
             commands::choose_snapshot,
         ])
-        .run(tauri::generate_context!());
+        .build(tauri::generate_context!());
 
-    // Nothing has been unlocked when the window fails to open, so there is
-    // nothing here that could name a secret.
-    if let Err(error) = application {
-        eprintln!("Coffer could not open its window: {error}");
-        std::process::exit(1);
+    match application {
+        Ok(application) => application.run(|_, event| {
+            // A copied secret is taken off the clipboard by a thread that
+            // sleeps until its minute is up, and a sleeping thread does not
+            // survive the process. Quitting inside that minute would otherwise
+            // leave the password on the clipboard for good.
+            if matches!(event, tauri::RunEvent::Exit) {
+                clipboard::revoke_pending();
+            }
+        }),
+        // Nothing has been unlocked when the window fails to open, so there is
+        // nothing here that could name a secret.
+        Err(error) => {
+            eprintln!("Coffer could not open its window: {error}");
+            std::process::exit(1);
+        }
     }
 }

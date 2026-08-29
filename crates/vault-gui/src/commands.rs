@@ -18,7 +18,7 @@ use tauri_plugin_dialog::DialogExt;
 use vault_core::storage::snapshot;
 use zeroize::Zeroizing;
 
-use crate::dto::{self, Database, Entry, Group, Snapshot, Status};
+use crate::dto::{self, Database, Entry, Group, Revealed, Snapshot, Status};
 use crate::error::Failure;
 use crate::session::Session;
 use crate::{clipboard, opener, recent};
@@ -124,11 +124,11 @@ pub fn entry(id: String, session: Held<'_>) -> Result<Entry, Failure> {
 /// Hands one field's value to the screen. This is the only command that returns
 /// a secret, and it returns one field of one entry, once.
 #[tauri::command]
-pub fn reveal(entry: String, field: String, session: Held<'_>) -> Result<String, Failure> {
+pub fn reveal(entry: String, field: String, session: Held<'_>) -> Result<Revealed, Failure> {
     let secret = session.reveal(dto::entry_id(&entry)?, &field)?;
     secret
         .expose_str()
-        .map(str::to_owned)
+        .map(Revealed::new)
         .ok_or_else(|| Failure::refused("that value is not text"))
 }
 
@@ -154,12 +154,16 @@ pub fn copy(entry: String, field: String, session: Held<'_>) -> Result<u64, Fail
 pub fn open_url(entry: String, session: Held<'_>) -> Result<(), Failure> {
     let entry = session.entry(dto::entry_id(&entry)?)?;
 
-    if opener::open(entry.url()) {
-        Ok(())
-    } else {
-        Err(Failure::refused(
+    match opener::open(entry.url()) {
+        opener::Opened::Yes => Ok(()),
+        opener::Opened::Refused => Err(Failure::refused(
             "Coffer does not open addresses of that kind",
-        ))
+        )),
+        // The scheme is one Coffer opens and the system still did nothing with
+        // it, which is a different thing to say.
+        opener::Opened::NoHandler => Err(Failure::refused(
+            "this Mac has nothing registered to open that address",
+        )),
     }
 }
 

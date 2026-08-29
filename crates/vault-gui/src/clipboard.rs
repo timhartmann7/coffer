@@ -12,6 +12,7 @@
 //! later and lists Coffer in System Settings for good. The change count is the
 //! only thing Coffer looks at, and it is a number, not a value.
 
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use objc2::rc::Retained;
@@ -68,6 +69,19 @@ struct Receipt {
     change_count: isize,
 }
 
+/// What Coffer last put on a pasteboard and has not taken off again.
+///
+/// The timer that clears it is a sleeping thread, and a sleeping thread dies
+/// with the process. This is what lets the application take the value back on
+/// the way out instead of leaving it on the clipboard for good.
+static PENDING: Mutex<Option<(Board, Receipt)>> = Mutex::new(None);
+
+fn pending() -> MutexGuard<'static, Option<(Board, Receipt)>> {
+    PENDING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Copies a secret to the clipboard and schedules its removal.
 pub fn copy(secret: &str, after: Duration) {
     copy_to(Board::General, secret, after);
@@ -75,6 +89,7 @@ pub fn copy(secret: &str, after: Duration) {
 
 fn copy_to(board: Board, secret: &str, after: Duration) {
     let receipt = write(&board.open(), secret);
+    *pending() = Some((board.clone(), receipt));
 
     // One thread per copy, sleeping. A copy that happened while an earlier
     // timer was still waiting bumps the change count, so the earlier timer
@@ -82,7 +97,30 @@ fn copy_to(board: Board, secret: &str, after: Duration) {
     std::thread::spawn(move || {
         std::thread::sleep(after);
         revoke(&board.open(), receipt);
+        spent(receipt);
     });
+}
+
+/// Takes the copied secret off the pasteboard now rather than when its timer
+/// says so.
+///
+/// Coffer calls this as it exits. The alternative is a password that outlives
+/// the application on the clipboard of whoever quit while the toast was still
+/// counting down, which is the one thing the timer exists to prevent.
+pub fn revoke_pending() {
+    let Some((board, receipt)) = pending().take() else {
+        return;
+    };
+    revoke(&board.open(), receipt);
+}
+
+/// Forgets a receipt once its timer has been and gone, unless a later copy has
+/// already replaced it.
+fn spent(receipt: Receipt) {
+    let mut pending = pending();
+    if pending.as_ref().is_some_and(|(_, held)| *held == receipt) {
+        *pending = None;
+    }
 }
 
 fn write(pasteboard: &NSPasteboard, secret: &str) -> Receipt {
@@ -178,6 +216,23 @@ mod tests {
             types.iter().any(|kind| kind == "public.utf8-plain-text"),
             "{types:?}"
         );
+    }
+
+    /// Quitting inside the minute is the case the timer cannot cover on its
+    /// own: the thread that would have cleared the pasteboard dies with the
+    /// process.
+    #[test]
+    fn the_secret_can_be_taken_back_before_its_timer_runs() {
+        let private = Private::new();
+        copy_to(private.board(), "hunter2", Duration::from_secs(600));
+        assert!(!private.types().is_empty());
+
+        revoke_pending();
+        assert!(private.types().is_empty());
+
+        // Nothing is left to revoke, and a second call is not somebody else's
+        // clipboard being cleared.
+        revoke_pending();
     }
 
     #[test]

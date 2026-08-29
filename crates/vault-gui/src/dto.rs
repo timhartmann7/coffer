@@ -10,8 +10,9 @@
 //! business in a panic message.
 
 use chrono::NaiveDateTime;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use vault_core::model::{self, FieldValue, fields};
+use zeroize::Zeroizing;
 
 /// The database Coffer has chosen, whether or not it is open.
 #[derive(Serialize)]
@@ -20,6 +21,27 @@ pub struct Database {
     pub path: String,
     /// The file name without its extension: what the window calls the vault.
     pub name: String,
+}
+
+/// A value revealed out of the vault, on its way to the one screen that asked
+/// for it.
+///
+/// The buffer is wiped when this is dropped. Serde copies it into the message
+/// Tauri sends and that copy is out of reach - the same residue `docs/ipc.md`
+/// records for the password travelling the other way - but the copy Coffer owns
+/// is not left behind.
+pub struct Revealed(Zeroizing<String>);
+
+impl Revealed {
+    pub fn new(value: &str) -> Revealed {
+        Revealed(Zeroizing::new(value.to_owned()))
+    }
+}
+
+impl Serialize for Revealed {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
 }
 
 /// The entry an id names, or nothing at all. An id that does not parse is not
@@ -40,12 +62,7 @@ impl Snapshot {
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             index: taken.index,
-            taken: taken.taken.map(|time| {
-                chrono::DateTime::<chrono::Utc>::from(time)
-                    .naive_utc()
-                    .format("%Y-%m-%dT%H:%M:%SZ")
-                    .to_string()
-            }),
+            taken: taken.taken.and_then(moment),
         }
     }
 }
@@ -253,6 +270,20 @@ fn shown(value: &FieldValue) -> Option<String> {
 /// clock. Sending the zone with the value is what makes that possible.
 fn stamp(time: Option<NaiveDateTime>) -> Option<String> {
     time.map(|time| time.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+}
+
+/// A filesystem timestamp, when it is one a calendar can hold.
+///
+/// It comes from whatever wrote the file, which may be another machine, another
+/// filesystem or nothing sensible at all. `DateTime::from(SystemTime)` unwraps
+/// its own range check, and a snapshot beside the database is not worth a panic.
+fn moment(time: std::time::SystemTime) -> Option<String> {
+    let since = time.duration_since(std::time::UNIX_EPOCH).ok()?;
+    let moment = chrono::DateTime::from_timestamp(
+        i64::try_from(since.as_secs()).ok()?,
+        since.subsec_nanos(),
+    )?;
+    Some(moment.naive_utc().format("%Y-%m-%dT%H:%M:%SZ").to_string())
 }
 
 #[cfg(test)]
