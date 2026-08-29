@@ -21,17 +21,19 @@ use zeroize::Zeroizing;
 use vault_core::generate::{Alphabet, Recipe};
 use vault_core::{NewValue, Vault};
 
+use crate::autolock::timer::Timer;
+use crate::autolock::{Event, Reason};
 use crate::dto::{self, Database, Entry, Group, Made, Revealed, Rival, Snapshot, Status, Version};
 use crate::error::Failure;
 use crate::session::Session;
-use crate::{clipboard, opener, recent, settings};
+use crate::{clipboard, lock, opener, recent, settings};
 
 /// The session is behind an `Arc` so that a command can take it onto a blocking
 /// thread, which is where key derivation belongs.
 type Held<'a> = State<'a, Arc<Session>>;
 
 #[tauri::command]
-pub fn status(session: Held<'_>) -> Status {
+pub fn status(app: AppHandle, session: Held<'_>) -> Status {
     let (entries, dirty, read_only) = session
         .with(|vault| (vault.count(), vault.is_dirty(), vault.is_read_only()))
         .unwrap_or((0, false, false));
@@ -42,6 +44,11 @@ pub fn status(session: Held<'_>) -> Status {
         entries,
         dirty,
         read_only,
+        locked_by: session.locked_by().and_then(Reason::explained),
+        locks_in: app
+            .try_state::<Arc<Timer>>()
+            .and_then(|timer| timer.left())
+            .map(|left| left.as_secs()),
     }
 }
 
@@ -98,15 +105,31 @@ pub async fn choose_database(
 /// a JSON string, never a field of an object, and never a value anything else
 /// could have written down on the way.
 #[tauri::command]
-pub async fn unlock(request: Request<'_>, session: Held<'_>) -> Result<(), Failure> {
+pub async fn unlock(
+    request: Request<'_>,
+    app: AppHandle,
+    session: Held<'_>,
+) -> Result<(), Failure> {
     let password = password_of(request.body())?;
     let session = Arc::clone(&session);
 
     // Key derivation is a second of work by design. It happens on a thread that
     // is allowed to block, so the window goes on drawing while it runs.
-    tauri::async_runtime::spawn_blocking(move || session.unlock(password))
-        .await
-        .map_err(|_| Failure::internal("the database could not be opened"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        let opened = session.unlock(password);
+        // The stack this thread derived the key on. The heap is the
+        // allocator's; the arrays a derivation leaves behind are not.
+        vault_core::scrub::stack();
+        opened
+    })
+    .await
+    .map_err(|_| Failure::internal("the database could not be opened"))??;
+
+    // The clock starts here and nowhere else.
+    if let Some(timer) = app.try_state::<Arc<Timer>>() {
+        timer.post(Event::Unlocked);
+    }
+    Ok(())
 }
 
 /// The master password out of a message, and only out of a message that
@@ -125,10 +148,32 @@ fn password_of(body: &InvokeBody) -> Result<Zeroizing<Vec<u8>>, Failure> {
     }
 }
 
-/// Wipes the decrypted database out of memory.
+/// Wipes the decrypted database out of memory and takes the window down with
+/// it, which is what every other way of locking does too.
 #[tauri::command]
-pub fn lock(session: Held<'_>) {
-    session.lock();
+pub fn lock(app: AppHandle) {
+    match app.try_state::<Arc<Timer>>() {
+        Some(timer) => timer.post(Event::Locking(Reason::ByHand)),
+        // Nothing is keeping a deadline, so there is none to clear.
+        None => lock::lock(&app, Reason::ByHand),
+    }
+}
+
+/// The reader is there.
+///
+/// Answers with the seconds the open vault has left, so that the bar in the
+/// status line counts the clock Rust is counting rather than one of its own.
+/// Nothing when no vault is open, which is the honest answer to a message that
+/// arrived after a lock.
+///
+/// The window sends this on real input and at most once every several seconds.
+/// It is deliberately not something the countdown itself does: an idle timer
+/// that the thing drawing the countdown kept resetting would never fire.
+#[tauri::command]
+pub fn stirred(app: AppHandle) -> Option<u64> {
+    let timer = app.try_state::<Arc<Timer>>()?;
+    timer.post(Event::Stirred);
+    timer.left().map(|left| left.as_secs())
 }
 
 #[tauri::command(async)]
@@ -194,6 +239,13 @@ pub fn set_settings(settings: dto::Settings, app: AppHandle) -> Result<dto::Sett
         .ok_or_else(|| Failure::internal("this Mac has nowhere to keep a setting"))?;
 
     let stored = held.set(settings.wanted()).map_err(Failure::io)?;
+
+    // A shorter timeout applies to the vault that is open now, not to the next
+    // one. Shortening it past what has already gone locks immediately, which is
+    // what a reader who just chose one minute is asking for.
+    if let Some(timer) = app.try_state::<Arc<Timer>>() {
+        timer.post(Event::TimeoutChanged(stored.idle()));
+    }
     Ok(dto::Settings::of(stored))
 }
 

@@ -62,6 +62,10 @@ impl Settings {
         }
     }
 
+    pub fn idle(self) -> Duration {
+        Duration::from_secs(self.idle_seconds)
+    }
+
     pub fn clipboard(self) -> Duration {
         Duration::from_secs(self.clipboard_seconds)
     }

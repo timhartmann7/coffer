@@ -10,6 +10,7 @@
 		status,
 		tree
 	} from '$lib/ipc';
+	import { Countdown } from '$lib/countdown.svelte';
 	import type { Database, Group, Settings as Chosen } from '$lib/model';
 
 	let database = $state<Database | null>(null);
@@ -18,6 +19,11 @@
 	let ready = $state(false);
 	let chosen = $state<Chosen | null>(null);
 	let showing = $state<'vault' | 'settings'>('vault');
+	let reason = $state<string | null>(null);
+
+	/** How long the open vault has left. Rust keeps the deadline; this ticks the
+	 * number between the few messages that ask for it. */
+	const countdown = new Countdown();
 
 	// The window opens locked. Nothing is asked of the vault until a password
 	// has opened it.
@@ -31,6 +37,7 @@
 			try {
 				const opening = await status();
 				database = opening.database;
+				reason = opening.lockedBy;
 				chosen = await loadSettings();
 				if (opening.unlocked) await opened();
 			} finally {
@@ -49,12 +56,21 @@
 		const now = await status();
 		database = now.database;
 		readOnly = now.readOnly;
+		reason = null;
+		countdown.sync(now.locksIn);
 	}
 
+	/**
+	 * Locking destroys this window, so nothing after the call is guaranteed to
+	 * run. The state is cleared first for the case where it does: a window that
+	 * outlived its own lock would go on drawing a tree that is no longer in
+	 * memory.
+	 */
 	async function lock() {
-		await lockVault();
 		root = null;
 		showing = 'vault';
+		countdown.sync(null);
+		await lockVault();
 	}
 
 	/** The settings screen offers another vault, which is the unlock screen's
@@ -67,6 +83,17 @@
 		}
 	}
 </script>
+
+<!--
+	What counts as the reader being there. Deliberately not every event a browser
+	has: a scroll or a mouse move can happen without anybody in the room, and a
+	deadline they reset would be a vault that never locks itself.
+-->
+<svelte:window
+	onkeydown={() => countdown.stir()}
+	onpointerdown={() => countdown.stir()}
+	onwheel={() => countdown.stir()}
+/>
 
 <div class="flex h-full flex-col">
 	<Titlebar
@@ -87,8 +114,8 @@
 			onChoose={choose}
 		/>
 	{:else if root && database}
-		<Vault {database} {root} {readOnly} onTree={(tree) => (root = tree)} />
+		<Vault {database} {root} {readOnly} {countdown} onTree={(tree) => (root = tree)} />
 	{:else if ready}
-		<Unlock {database} onChoose={(picked) => (database = picked)} onUnlocked={opened} />
+		<Unlock {database} {reason} onChoose={(picked) => (database = picked)} onUnlocked={opened} />
 	{/if}
 </div>

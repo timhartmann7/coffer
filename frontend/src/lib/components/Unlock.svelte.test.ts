@@ -159,3 +159,54 @@ it('will not let another database be chosen while one is opening', async () => {
 	finish();
 	return unmount(component);
 });
+
+/** Screen 05: the same password path, with a sentence above it saying what
+ * happened. The reason is Rust's word - the window that knew was destroyed,
+ * which is what locking means here. */
+it('says why the vault locked, when there is something to say', () => {
+	for (const [reason, said] of [
+		['idle', 'Nothing happened here for a while.'],
+		['sleeping', 'This Mac went to sleep.'],
+		['screenLocked', 'The screen locked.'],
+		['sessionSwitched', 'Somebody else signed in on this Mac.']
+	]) {
+		const component = mount(Unlock, {
+			target: host,
+			props: { database, reason, onChoose: vi.fn(), onUnlocked: vi.fn() }
+		});
+		flushSync();
+
+		expect(host.textContent).toContain('Locked');
+		expect(host.textContent).toContain(said);
+		expect(host.textContent).toContain('wiped out of memory');
+		// One password path, not two: the field is the same one.
+		expect(host.querySelector('input[type="password"]')).not.toBeNull();
+
+		unmount(component);
+		host.innerHTML = '';
+	}
+});
+
+/** A lock the reader asked for has nothing to explain, and a screen that said
+ * "you were away" after they pressed the button would be wrong. */
+it('says nothing about a lock nobody has to explain', () => {
+	const component = open();
+
+	expect(host.textContent).toContain('COFFER');
+	expect(host.textContent).not.toContain('Locked');
+
+	unmount(component);
+});
+
+/** A word from a later version of Rust than this window. Better a plain
+ * sentence than an empty screen. */
+it('has something to say about a reason it does not know', () => {
+	const component = mount(Unlock, {
+		target: host,
+		props: { database, reason: 'somethingLater', onChoose: vi.fn(), onUnlocked: vi.fn() }
+	});
+	flushSync();
+
+	expect(host.textContent).toContain('The vault was locked.');
+	unmount(component);
+});

@@ -22,10 +22,13 @@
 #[cfg(not(target_os = "macos"))]
 compile_error!("Coffer's window is macOS only. vault-core is the part that is not.");
 
+mod autolock;
+mod buttons;
 mod clipboard;
 mod commands;
 mod dto;
 mod error;
+mod lock;
 mod opener;
 mod recent;
 mod session;
@@ -36,6 +39,8 @@ use std::sync::Arc;
 
 use tauri::Manager;
 
+use crate::autolock::timer::Timer;
+use crate::autolock::{Deadline, Event, Reason, watch};
 use crate::session::Session;
 
 /// Opens the window.
@@ -43,20 +48,40 @@ pub fn run() {
     let application = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let remembered = app
-                .path()
-                .app_config_dir()
-                .ok()
-                .and_then(|directory| recent::remembered(&directory));
-
             let directory = app.path().app_config_dir().ok();
+            let remembered = directory.as_deref().and_then(recent::remembered);
+
+            // Managed before anything that locks is started: the timer and the
+            // notification blocks both find the session and the settings by
+            // type, and neither may run before they are there.
+            let preferences = Arc::new(settings::Preferences::load(directory));
             app.manage(Arc::new(Session::new(remembered)));
-            app.manage(Arc::new(settings::Preferences::load(directory)));
+            app.manage(Arc::clone(&preferences));
 
-            if let Some(main) = app.get_webview_window("main") {
-                window::centre_buttons(&main);
-            }
+            let locking = app.handle().clone();
+            app.manage(Arc::new(Timer::start(
+                Deadline::new(preferences.get().idle()),
+                move |reason| lock::lock(&locking, reason),
+            )));
 
+            // The machine's own triggers, which the reader can turn off one at
+            // a time. They are read here rather than in the timer, so that the
+            // deadline knows nothing about what a reader chose.
+            let ticking = app.handle().clone();
+            let chosen = Arc::clone(&preferences);
+            watch::watch(move |reason| {
+                if !reason.wanted(chosen.get()) {
+                    return;
+                }
+                // Through the timer rather than straight to the lock, so that
+                // the deadline it was keeping is cleared by the same message
+                // that tears the window down. There is one route in.
+                if let Some(timer) = ticking.try_state::<Arc<Timer>>() {
+                    timer.post(Event::Locking(reason));
+                }
+            });
+
+            window::open(app.handle())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -66,6 +91,7 @@ pub fn run() {
             commands::choose_database,
             commands::unlock,
             commands::lock,
+            commands::stirred,
             commands::tree,
             commands::entry,
             commands::reveal,
@@ -102,14 +128,31 @@ pub fn run() {
         .build(tauri::generate_context!());
 
     match application {
-        Ok(application) => application.run(|_, event| {
-            // A copied secret is taken off the clipboard by a thread that
-            // sleeps until its minute is up, and a sleeping thread does not
-            // survive the process. Quitting inside that minute would otherwise
-            // leave the password on the clipboard for good.
-            if matches!(event, tauri::RunEvent::Exit) {
-                clipboard::revoke_pending();
+        Ok(application) => application.run(|app, event| match event {
+            // The window is built again exactly here and nowhere else. A destroy
+            // is a message to the event loop rather than something that has
+            // happened by the time the call returns, and the label stays taken
+            // until this event is delivered - so destroying and building in one
+            // function always fails, and building from a timer thread builds a
+            // window AppKit will not let that thread decorate.
+            tauri::RunEvent::WindowEvent {
+                ref label,
+                event: tauri::WindowEvent::Destroyed,
+                ..
+            } if label == window::MAIN => {
+                if let Err(error) = window::open(app) {
+                    // Nothing has been unlocked at this point - the lock that
+                    // destroyed the window wiped the tree first - so there is
+                    // nothing here that could name a secret.
+                    eprintln!("Coffer could not open its window again: {error}");
+                }
             }
+            // The window toolkit ends its loop by exiting the process, which
+            // runs no destructor. Without this, quitting with a vault open
+            // leaves the lock file beside the database for good, and a copied
+            // password on the clipboard until somebody copies something else.
+            tauri::RunEvent::Exit => lock::lock(app, Reason::Quitting),
+            _ => {}
         }),
         // Nothing has been unlocked when the window fails to open, so there is
         // nothing here that could name a secret.

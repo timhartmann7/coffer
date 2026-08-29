@@ -23,6 +23,11 @@ export interface Status {
 	dirty: boolean;
 	/** Whether this database can be written back at all. */
 	readOnly: boolean;
+	/** Why the vault that was open is not open any more, when it is worth
+	 * saying. A lock the reader asked for has nothing to explain. */
+	lockedBy: 'idle' | 'sleeping' | 'screenLocked' | 'sessionSwitched' | null;
+	/** Seconds until the open vault locks itself. */
+	locksIn: number | null;
 }
 
 /** A snapshot Coffer took before one of its own saves. */

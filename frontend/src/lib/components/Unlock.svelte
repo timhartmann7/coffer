@@ -6,13 +6,31 @@
 
 	let {
 		database,
+		reason = null,
 		onChoose,
 		onUnlocked
 	}: {
 		database: Database | null;
+		/**
+		 * Why the vault that was open is not open any more. Rust's word, not the
+		 * window's: the window that knew was destroyed, which is what locking
+		 * means here.
+		 */
+		reason?: string | null;
 		onChoose: (database: Database) => void;
 		onUnlocked: () => Promise<void>;
 	} = $props();
+
+	/** What happened, in a sentence. Every one of them ends the same way,
+	 * because what matters is that the data is out of memory rather than which
+	 * of three things put it there. */
+	const said: Record<string, string> = {
+		idle: 'Nothing happened here for a while.',
+		sleeping: 'This Mac went to sleep.',
+		screenLocked: 'The screen locked.',
+		sessionSwitched: 'Somebody else signed in on this Mac.'
+	};
+	const why = $derived(reason ? (said[reason] ?? 'The vault was locked.') : null);
 
 	let field = $state<HTMLInputElement>();
 	let busy = $state(false);
@@ -96,7 +114,14 @@
 <div class="flex flex-1 items-center justify-center overflow-y-auto px-10 py-10">
 	<div class="w-full max-w-[320px]">
 		<img src="/coffer-logo-light.svg" alt="" class="mx-auto h-11 w-11" />
-		<div class="mt-5 text-center text-lead font-bold tracking-wordmark">COFFER</div>
+		{#if why}
+			<h1 class="mt-6 text-center text-title font-medium tracking-tight text-txt">Locked</h1>
+			<p class="mx-auto mt-3 max-w-[38ch] text-center text-body leading-relaxed text-txt2">
+				{why} What was in the vault has been wiped out of memory - the password opens it again.
+			</p>
+		{:else}
+			<div class="mt-5 text-center text-lead font-bold tracking-wordmark">COFFER</div>
+		{/if}
 
 		{#if database}
 			<button

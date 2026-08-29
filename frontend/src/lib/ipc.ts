@@ -49,6 +49,18 @@ export function lock(): Promise<void> {
 	return invoke('lock');
 }
 
+/**
+ * Says the reader is there, and answers with the seconds the open vault has
+ * left.
+ *
+ * Sent on real input and no more than a few times a minute. It is deliberately
+ * not what the countdown does as it draws: an idle timer the status bar kept
+ * resetting would never fire.
+ */
+export function stirred(): Promise<number | null> {
+	return invoke('stirred');
+}
+
 /** What the reader chose, and the values they may choose instead. Both come
  * from Rust: a screen holding its own list would be a second place the answer
  * lives. */

@@ -13,6 +13,7 @@ use vault_core::model::{Entry, EntryId, Project};
 use vault_core::{LockPolicy, MasterKey, SecretValue, Vault};
 use zeroize::Zeroizing;
 
+use crate::autolock::Reason;
 use crate::error::Failure;
 
 pub struct Session {
@@ -23,6 +24,9 @@ struct Held {
     /// What the next unlock will open. Chosen before a password is asked for,
     /// which is why it outlives the vault.
     database: Option<PathBuf>,
+    /// Why the vault that was open is not open any more, when it is worth
+    /// saying. Cleared by the next unlock.
+    locked_by: Option<Reason>,
     /// The open database. Dropping it wipes the decrypted tree and removes the
     /// lock file beside the database.
     vault: Option<Vault>,
@@ -37,6 +41,7 @@ impl Session {
         Session {
             held: Mutex::new(Held {
                 database,
+                locked_by: None,
                 vault: None,
                 generation: 0,
             }),
@@ -116,14 +121,33 @@ impl Session {
         // The database Coffer opened is the one it followed the links to.
         held.database = Some(vault.path().to_path_buf());
         held.vault = Some(vault);
+        held.locked_by = None;
         Ok(())
     }
 
-    /// Wipes the decrypted database out of memory.
-    pub fn lock(&self) {
+    /// Wipes the decrypted database out of memory, and says whether there was
+    /// one to wipe.
+    ///
+    /// The answer is what stops two triggers arriving together tearing down two
+    /// windows. Tauri goes on handing out the window between a destroy being
+    /// queued and the event that says it happened, so a second caller that
+    /// checked whether a vault was open and then destroyed would be destroying
+    /// the window the first caller's rebuild had just made. Exactly one caller
+    /// is told `true`.
+    pub fn lock(&self, reason: Reason) -> bool {
         let mut held = self.held();
-        held.vault = None;
+        let had = held.vault.take().is_some();
+        if had {
+            held.locked_by = Some(reason);
+        }
         held.generation += 1;
+        had
+    }
+
+    /// Why the window is asking for a password again, when there is something
+    /// worth saying. A lock the reader asked for has nothing to explain.
+    pub fn locked_by(&self) -> Option<Reason> {
+        self.held().locked_by
     }
 
     pub fn tree(&self) -> Result<Project, Failure> {
@@ -268,7 +292,7 @@ mod tests {
                 .is_empty()
         );
 
-        session.lock();
+        session.lock(Reason::ByHand);
 
         assert!(!session.is_unlocked());
         assert!(session.tree().is_err());
@@ -285,7 +309,7 @@ mod tests {
             session
                 .unlock(password(SECRET))
                 .expect("the database opens");
-            session.lock();
+            session.lock(Reason::ByHand);
         }
 
         assert!(
@@ -439,7 +463,7 @@ mod tests {
         );
 
         // Locking takes the change with the vault: nothing was written.
-        session.lock();
+        session.lock(Reason::ByHand);
         assert!(session.tree().is_err());
     }
 

@@ -1,5 +1,6 @@
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { Countdown } from '$lib/countdown.svelte';
 import { entry, field, group, row } from '$lib/fixtures';
 import Vault from './Vault.svelte';
 
@@ -72,10 +73,23 @@ afterEach(() => {
 	host.remove();
 });
 
-function open(over: { readOnly?: boolean; onTree?: (tree: typeof root) => void } = {}) {
+function open(
+	over: {
+		readOnly?: boolean;
+		countdown?: Countdown;
+		onTree?: (tree: typeof root) => void;
+	} = {}
+) {
 	return mount(Vault, {
 		target: host,
-		props: { database, root, readOnly: false, onTree: vi.fn(), ...over }
+		props: {
+			database,
+			root,
+			readOnly: false,
+			countdown: new Countdown(),
+			onTree: vi.fn(),
+			...over
+		}
 	});
 }
 
@@ -568,4 +582,46 @@ it('closes the folder name it opened when the plus is pressed again', () => {
 	expect(ipc.createGroup).not.toHaveBeenCalled();
 
 	return unmount(component);
+});
+
+/** The status bar says how long is left, and the bar beside it shrinks with the
+ * number. It is drawn only while a vault is open. */
+it('says how long the vault has before it locks itself', () => {
+	const countdown = new Countdown();
+	const component = open({ countdown });
+	flushSync();
+	expect(reads()).not.toContain('Locks in');
+
+	countdown.sync(300);
+	flushSync();
+	expect(reads()).toContain('Locks in 5:00');
+	expect(host.querySelector('.w-full.bg-accent')).not.toBeNull();
+
+	countdown.left = 30;
+	flushSync();
+	expect(reads()).toContain('Locks in 0:30');
+	expect(host.querySelector('.w-1\\/12.bg-accent')).not.toBeNull();
+
+	countdown.sync(null);
+	flushSync();
+	expect(reads()).not.toContain('Locks in');
+
+	unmount(component);
+});
+
+/** Two `ml-auto` siblings in a flex row do not both push right: the second one
+ * lands wherever the first one left it, which for the countdown is the middle
+ * of the status bar. */
+it('keeps everything on the right in one group', () => {
+	const countdown = new Countdown();
+	const component = open({ readOnly: true, countdown });
+	countdown.sync(60);
+	flushSync();
+
+	const pushed = [...host.querySelectorAll('.ml-auto')];
+	expect(pushed).toHaveLength(1);
+	expect(pushed[0].textContent).toContain('Read only');
+	expect(pushed[0].textContent).toContain('Locks in');
+
+	unmount(component);
 });

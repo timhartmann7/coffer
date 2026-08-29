@@ -100,6 +100,11 @@ pub struct Status {
     /// Whether this database can be written back at all. A snapshot and a
     /// format Coffer will not write are both read only.
     pub read_only: bool,
+    /// Why the vault that was open is not open any more, when it is worth
+    /// saying. A lock the reader asked for has nothing to explain.
+    pub locked_by: Option<&'static str>,
+    /// How many seconds the open vault has before it locks itself.
+    pub locks_in: Option<u64>,
 }
 
 /// What the reader chose, and what they may choose instead.

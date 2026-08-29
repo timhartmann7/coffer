@@ -19,6 +19,7 @@
 		versions as loadVersions
 	} from '$lib/ipc';
 	import type { Database, Entry, EntryRow, Group, Rival, Version } from '$lib/model';
+	import { clock } from '$lib/duration';
 	import { index, search } from '$lib/search';
 	import { entriesOf, liveEntries, pathTo, recycleBin, shownEntries } from '$lib/tree';
 	import Conflict from './Conflict.svelte';
@@ -28,12 +29,14 @@
 	import EntryView from './EntryView.svelte';
 	import Icon from './Icon.svelte';
 	import Toast from './Toast.svelte';
+	import type { Countdown } from '$lib/countdown.svelte';
 	import Tree from './Tree.svelte';
 
 	let {
 		database,
 		root,
 		readOnly,
+		countdown,
 		onTree
 	}: {
 		database: Database;
@@ -41,6 +44,9 @@
 		/** A snapshot, or a format Coffer reads and does not write. Nothing on
 		 * the screen offers a change it would only be refused. */
 		readOnly: boolean;
+		/** How long the vault has before it locks itself. The number is Rust's;
+		 * this only draws it. */
+		countdown: Countdown;
 		onTree: (tree: Group) => void;
 	} = $props();
 
@@ -60,7 +66,9 @@
 	let conflict = $state<Rival | null>(null);
 	let changedAt = $state<Date | null>(null);
 	let notice = $state<{ message: string; kind: 'copied' | 'failed'; seconds: number } | null>(null);
-	let countdown: ReturnType<typeof setInterval> | null = null;
+	/** The toast's own clock, counting the seconds the clipboard still holds a
+	 * copied value. Not the vault's: that one is Rust's and arrives as a prop. */
+	let ticking: ReturnType<typeof setInterval> | null = null;
 	let fading: ReturnType<typeof setTimeout> | null = null;
 	/** Which copy the toast is about. The bar that drains is a CSS animation and
 	 * an animation does not start again on its own, so the toast is rebuilt. */
@@ -327,7 +335,7 @@
 		copies += 1;
 		let left = seconds;
 		notice = { message: message(left), kind: 'copied', seconds };
-		countdown = setInterval(() => {
+		ticking = setInterval(() => {
 			left -= 1;
 			if (left <= 0) {
 				clear();
@@ -357,9 +365,9 @@
 	}
 
 	function clear() {
-		if (countdown !== null) {
-			clearInterval(countdown);
-			countdown = null;
+		if (ticking !== null) {
+			clearInterval(ticking);
+			ticking = null;
 		}
 		if (fading !== null) {
 			clearTimeout(fading);
@@ -754,9 +762,23 @@
 		{found.length === 1 ? 'entry' : 'entries'} here · {live.length} in the vault
 	</span>
 	<span class="truncate">{database.path}</span>
-	{#if saving}
-		<span class="ml-auto shrink-0 text-txt3">Saving…</span>
-	{:else if readOnly}
-		<span class="ml-auto shrink-0 text-txt3">Read only</span>
-	{/if}
+
+	<!-- One group, because two `ml-auto` siblings in a flex row do not both push
+	     right and the countdown would land in the middle of the bar. -->
+	<span class="ml-auto flex shrink-0 items-center gap-4">
+		{#if saving}
+			<span class="text-txt3">Saving…</span>
+		{:else if readOnly}
+			<span class="text-txt3">Read only</span>
+		{/if}
+		{#if countdown.left !== null}
+			<span class="flex items-center gap-2 text-txt3">
+				<Icon name="clock" class="h-3.5 w-3.5" />
+				Locks in {clock(countdown.left)}
+				<span class="h-[3px] w-16 overflow-hidden rounded-full bg-line">
+					<span class="block h-full rounded-full bg-accent {countdown.width()}"></span>
+				</span>
+			</span>
+		{/if}
+	</span>
 </div>
