@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the current stable toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup component add clippy rustfmt
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The round-trip suite is the point of this slice, and it needs an
+      # external implementation to compare against. The suite fails rather than
+      # skips when keepassxc-cli is missing, so a rename of this package cannot
+      # quietly delete the project's main test.
+      - name: Install keepassxc-cli
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends keepassxc
+          keepassxc-cli --version
+
+      - name: Install cargo tooling
+        run: |
+          curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+          cargo install cargo-shear cargo-deny --locked
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Unused dependencies
+        run: cargo shear
+
+      - name: Licences and banned crates
+        run: cargo deny check
+
+      - name: Tests, including the round-trip suite
+        run: cargo nextest run --workspace --all-features
