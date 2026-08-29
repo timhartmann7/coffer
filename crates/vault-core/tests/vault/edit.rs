@@ -1927,3 +1927,50 @@ fn a_database_that_would_be_too_large_to_open_again_is_not_written() {
     let vault = open(&path, BUILT_PASSWORD);
     assert!(vault.entry(id).is_none());
 }
+
+/// Clearing the versions and taking the file off is one thing or neither. A
+/// removal can be refused for more than one reason, and a reader who asked to
+/// be rid of a file must not be left having lost the history of the entry and
+/// still having the file.
+#[test]
+fn dropping_the_versions_to_free_a_file_puts_them_back_when_the_file_still_cannot_go() {
+    let (_scratch, database) = support::scratch(RICH);
+    let mut vault = open(&database, SECRET);
+
+    // The fixture gives this file two names, and a file with a second name
+    // stays wherever it is: taking one name off it can never be what makes it
+    // go, so this is a removal that is refused for a reason clearing the
+    // versions cannot help with.
+    let id = only_entry(&vault, "versioned");
+    vault
+        .add_attachment(id, "one.bin", Zeroizing::new(b"one".to_vec()))
+        .expect("the file is added");
+    vault.save().expect("the database saves");
+    let before = vault.versions(id).len();
+    assert_eq!(before, 6, "the fixture carries six versions");
+
+    // A file the entry has and a name it does not: the removal is refused, and
+    // the versions are still there afterwards.
+    assert!(matches!(
+        vault.remove_attachment_and_versions(id, "no such file"),
+        Err(VaultError::NoSuchAttachment)
+    ));
+    assert_eq!(
+        vault.versions(id).len(),
+        before,
+        "the versions went for a removal that never happened"
+    );
+
+    // And when the file can go, they go with it.
+    vault
+        .remove_attachment_and_versions(id, "one.bin")
+        .expect("the file goes once nothing holds it");
+    assert!(vault.versions(id).is_empty());
+    assert!(
+        vault
+            .entry(id)
+            .expect("the entry is there")
+            .attachments
+            .is_empty()
+    );
+}

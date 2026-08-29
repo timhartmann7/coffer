@@ -80,6 +80,7 @@ pub fn run() {
             commands::add_attachment,
             commands::export_attachment,
             commands::remove_attachment,
+            commands::remove_attachment_and_versions,
             commands::versions,
             commands::version,
             commands::reveal_version,

@@ -3,10 +3,10 @@
 	import {
 		addAttachment,
 		asFailure,
-		clearHistory,
 		exportAttachment,
 		openUrl,
 		removeAttachment,
+		removeAttachmentAndVersions,
 		removeField,
 		setField,
 		setTags
@@ -81,8 +81,13 @@
 	// one, offering to clear the wrong entry's history.
 	$effect(() => {
 		void entry.id;
-		pinned = null;
-		naming = false;
+		// Cleared on the way out rather than on the way in: a write inside the
+		// body of an effect is a read of what was there, and an effect that
+		// reads what it writes runs again the moment anything sets it.
+		return () => {
+			pinned = null;
+			naming = false;
+		};
 	});
 
 	/** Runs a change and says whether it was taken. */
@@ -121,9 +126,8 @@
 		pinned = null;
 		if (name === undefined) return;
 		try {
-			await clearHistory(entry.id);
+			await onChanged(await removeAttachmentAndVersions(entry.id, name));
 			onVersions([]);
-			await onChanged(await removeAttachment(entry.id, name));
 		} catch (thrown) {
 			onFailure(thrown);
 		}

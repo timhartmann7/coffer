@@ -411,6 +411,21 @@ pub fn remove_attachment(entry: String, name: String, session: Held<'_>) -> Resu
     entry_of(&session, &entry)
 }
 
+/// Takes a file off an entry along with the previous versions holding it back.
+///
+/// One command rather than two, because the two have to happen together or not
+/// at all: the versions are put back if the file still cannot go.
+#[tauri::command(async)]
+pub fn remove_attachment_and_versions(
+    entry: String,
+    name: String,
+    session: Held<'_>,
+) -> Result<Entry, Failure> {
+    let id = dto::entry_id(&entry)?;
+    session.with_mut(|vault| vault.remove_attachment_and_versions(id, &name))??;
+    entry_of(&session, &entry)
+}
+
 #[tauri::command(async)]
 pub fn versions(entry: String, session: Held<'_>) -> Result<Vec<Version>, Failure> {
     let id = dto::entry_id(&entry)?;

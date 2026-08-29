@@ -673,6 +673,45 @@ impl Vault {
         Ok(())
     }
 
+    /// Takes a file off an entry, dropping the previous versions that are
+    /// holding it back.
+    ///
+    /// The versions go only if the file then goes. A removal can be refused for
+    /// more than one reason, and a reader who asked to be rid of a file must
+    /// not be left having lost the history of the entry and still having the
+    /// file.
+    pub fn remove_attachment_and_versions(
+        &mut self,
+        id: EntryId,
+        name: &str,
+    ) -> Result<(), VaultError> {
+        self.writable()?;
+
+        let kept = self
+            .database
+            .entry(id)
+            .ok_or(VaultError::NoSuchEntry)?
+            .history
+            .clone();
+        history::clear(&mut self.database, id)?;
+
+        match attachment::detach(&mut self.database, id, name) {
+            Ok(()) => {
+                if let Some(mut entry) = self.database.entry_mut(id) {
+                    entry.times.last_modification = Some(Times::now());
+                }
+                self.changed = true;
+                Ok(())
+            }
+            Err(refused) => {
+                if let Some(mut entry) = self.database.entry_mut(id) {
+                    entry.history = kept;
+                }
+                Err(refused)
+            }
+        }
+    }
+
     /// Makes a previous version the current state of the entry, keeping what it
     /// replaces as a version of its own.
     pub fn restore_version(&mut self, id: EntryId, index: usize) -> Result<(), VaultError> {

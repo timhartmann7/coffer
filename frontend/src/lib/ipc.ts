@@ -151,6 +151,17 @@ export function removeAttachment(entry: string, name: string): Promise<Entry> {
 	return invoke('remove_attachment', { entry, name });
 }
 
+/**
+ * Takes a file off along with the previous versions that are holding it back.
+ *
+ * One call rather than two: the versions go only if the file then goes, so a
+ * reader who asked to be rid of a file is not left having lost the history and
+ * still having the file.
+ */
+export function removeAttachmentAndVersions(entry: string, name: string): Promise<Entry> {
+	return invoke('remove_attachment_and_versions', { entry, name });
+}
+
 export function versions(entry: string): Promise<Version[]> {
 	return invoke('versions', { entry });
 }

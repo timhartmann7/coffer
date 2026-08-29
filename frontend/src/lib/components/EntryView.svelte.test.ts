@@ -1,6 +1,7 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { attachment, entry, field, group } from '$lib/fixtures';
+import { reactive } from '$lib/props.svelte';
 import EntryView from './EntryView.svelte';
 
 const ipc = vi.hoisted(() => ({
@@ -19,6 +20,7 @@ const ipc = vi.hoisted(() => ({
 	restoreVersion: vi.fn(),
 	deleteVersion: vi.fn(),
 	clearHistory: vi.fn(),
+	removeAttachmentAndVersions: vi.fn(),
 	// The same reading the real one does: a command rejects with the value Rust
 	// serialised, and anything else is not one.
 	asFailure: (thrown: unknown) =>
@@ -438,7 +440,7 @@ it('offers to clear the versions that are holding a file back', async () => {
 			message: '2 earlier versions still hold that file'
 		})
 		.mockResolvedValueOnce(entry());
-	ipc.clearHistory.mockResolvedValue([]);
+	ipc.removeAttachmentAndVersions.mockResolvedValue(entry());
 
 	const component = mount(EntryView, {
 		target: host,
@@ -465,8 +467,9 @@ it('offers to clear the versions that are holding a file back', async () => {
 	expect(onFailure).not.toHaveBeenCalled();
 	expect(onChanged).not.toHaveBeenCalled();
 
+	// One call, not two: the versions go only if the file then goes.
 	button('Clear the versions and remove it').click();
-	await vi.waitFor(() => expect(ipc.clearHistory).toHaveBeenCalledTimes(1));
+	await vi.waitFor(() => expect(ipc.removeAttachmentAndVersions).toHaveBeenCalledTimes(1));
 	await vi.waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
 	expect(onVersions).toHaveBeenCalledWith([]);
 
@@ -524,6 +527,9 @@ it('refuses a new field named after one the entry already has', async () => {
  * offering to clear a history would otherwise clear the wrong one.
  */
 it('says nothing about the entry that was open once another one is', async () => {
+	// `clearMocks` clears the calls and leaves the queued answers, so a `once`
+	// from an earlier test would answer this one.
+	ipc.removeAttachment.mockReset();
 	ipc.removeAttachment.mockRejectedValue({
 		code: 'attachmentInHistory',
 		message: '2 earlier versions still hold that file'
@@ -531,7 +537,7 @@ it('says nothing about the entry that was open once another one is', async () =>
 
 	// A props object the test can change, which is how the window hands the pane
 	// another entry.
-	const props = $state({
+	const props = reactive({
 		entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
 		path: [group({ name: 'Work' })],
 		versions: [],
