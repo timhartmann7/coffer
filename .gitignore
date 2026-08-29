@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+
+spec.md
+CLAUDE.md
+design.html
+
+# Intermediate XML the fixture generator writes
+crates/vault-core/tests/fixtures/sources/.tmp.xml

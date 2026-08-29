@@ -1,0 +1,14 @@
+[package]
+name = "vault-gui"
+description = "Tauri command layer over vault-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# vault-core arrives in slice 2, with the Tauri commands that call it. An empty
+# crate here is the workspace shape the slice asks for; an unused dependency
+# would be a claim this crate does something it does not.
+
+[lints]
+workspace = true
