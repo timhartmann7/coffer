@@ -59,6 +59,8 @@ normalised away; anything else is a failure.
 - **`Meta/Binaries` and `Meta/SettingsChanged`.** Artefacts of the format
   version: KDBX 3 carries the first, KDBX 4 the second. Only their presence is
   ignored, never their contents.
+- **`Meta/Generator`.** The one element that names whoever wrote the file. Every
+  KeePass client puts its own name there, so a file Coffer saved says Coffer.
 
 Attachment bytes never appear in a KDBX 4 export, only a `Ref` attribute, so the
 suite additionally exports every attachment from both databases with

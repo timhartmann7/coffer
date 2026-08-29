@@ -91,6 +91,17 @@ impl std::fmt::Debug for Vault {
     }
 }
 
+/// What the file on disk holds, when it is not what this vault holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rival {
+    /// When it was last written, as the filesystem has it.
+    pub modified: Option<std::time::SystemTime>,
+    /// How many entries it holds, or nothing when it will not open with the
+    /// credentials this vault was opened with. A file somebody else changed is
+    /// a file somebody else may have changed the password of.
+    pub entries: Option<usize>,
+}
+
 /// Whether a write may go over a file somebody else has changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Guard {
@@ -682,6 +693,24 @@ impl Vault {
         atomic::write_atomic(path, move |writer: &mut dyn Write| {
             database.save(writer, key).map_err(VaultError::from)
         })
+    }
+
+    /// What the file on disk holds now.
+    ///
+    /// Reading it means decrypting it, which is another key derivation, so this
+    /// is asked for when there is a decision to make and never on a timer.
+    pub fn rival(&self) -> Rival {
+        Rival {
+            modified: std::fs::metadata(&self.path)
+                .ok()
+                .and_then(|about| about.modified().ok()),
+            // A file that will not open is still an answer: the dialog says how
+            // many entries are in this window and that it cannot say what is in
+            // the other one.
+            entries: read(&self.path, &self.key)
+                .ok()
+                .map(|database| database.num_entries()),
+        }
     }
 
     /// Throws away everything in this vault and reads the file again.

@@ -20,8 +20,12 @@ travels the other way, as bytes.
 | Tree and list | id, title, username, URL, tags, dates, whether there is a password, how many attachments |
 | Open an entry | the same, plus every field's name, kind and whether it is empty, plus attachment names and sizes |
 | Reveal a field | the value, one field, once |
+| Read a previous version | the same as an entry, and one value at a time on a reveal |
 | Copy a field | nothing; Rust writes the pasteboard |
 | Open an address | nothing; Rust hands the URL to the system |
+| Add a file | nothing; Rust opens the panel and reads the file |
+| Write a file out | nothing; Rust opens the panel and writes it |
+| Make a password | the password, once, the way a reveal answers |
 
 A field's `value` is `null` exactly when it does not cross: the database
 protects it, or it is the password. **A password never crosses, protected or
@@ -32,17 +36,65 @@ is still a password; `empty` says whether there is one to ask for.
 
 | Command | Takes | Answers |
 |---|---|---|
-| `status` | | the chosen database and whether it is open |
+| `status` | | the chosen database, whether it is open, how many entries, whether there is an unsaved change, whether it can be written |
 | `choose_database` | | the database the user picked, or nothing if they closed the dialog |
 | `unlock` | the master password, as the raw body | nothing |
 | `lock` | | nothing |
 | `tree` | | the root group, its sections and their entry rows |
-| `entry` | `id` | one entry's fields, attachments, tags and dates |
+| `entry` | `id` | one entry's fields, attachments, tags, dates and version count |
 | `reveal` | `entry`, `field` | the value of that field |
 | `copy` | `entry`, `field` | the seconds until Coffer clears the pasteboard |
 | `open_url` | `entry` | nothing |
 | `snapshots` | | the `.bak` files beside the chosen database, newest first |
 | `choose_snapshot` | `index` | the snapshot now chosen |
+
+Everything slice 3 added:
+
+| Command | Takes | Answers |
+|---|---|---|
+| `create_entry` | `group` | the tree, and the entry it made |
+| `delete_entry` | `entry` | the tree |
+| `create_group` | `parent`, `name` | the tree |
+| `rename_group` | `group`, `name` | the tree |
+| `delete_group` | `group` | the tree |
+| `empty_recycle_bin` | | the tree |
+| `set_field` | `entry`, `field`, `value`, `protect` | the entry |
+| `remove_field` | `entry`, `field` | the entry |
+| `set_tags` | `entry`, `tags` | the entry |
+| `add_attachment` | `entry` | the entry |
+| `export_attachment` | `entry`, `name` | nothing |
+| `remove_attachment` | `entry`, `name` | the entry |
+| `versions` | `entry` | the previous versions, oldest first |
+| `version` | `entry`, `index` | one version, read like an entry |
+| `reveal_version` | `entry`, `index`, `field` | the value of that field in that version |
+| `restore_version` | `entry`, `index` | the entry |
+| `delete_version` | `entry`, `index` | the versions that are left |
+| `clear_history` | `entry` | the versions that are left, which is none |
+| `generate_password` | `length`, `alphabets`, `similar` | a password |
+| `save` | | nothing |
+| `save_over` | | nothing |
+| `save_copy` | | the file it wrote, or nothing if the panel was closed |
+| `reload` | | the tree |
+| `rival` | | when the file on disk was written and how many entries it holds |
+
+**A command that changes something answers with what it changed.** A change to
+one entry answers with that entry; a change to the shape of the vault answers
+with the whole tree. The screen never patches its own copy of the database from
+what it thinks a command did, because a screen that guessed wrong would go on
+drawing something that is not in the file.
+
+**A version is addressed by `(entry, index)`.** The index is its position in the
+entry's history, which is the only thing that identifies one: modification times
+have one-second resolution, so two versions written in the same second are
+indistinguishable by date, and the list is ordered by date rather than by
+position because a file another client wrote may hold them in any order.
+
+**`add_attachment` and `export_attachment` open their panel in Rust.** The
+bytes of a file never cross in either direction and neither does a path: the
+webview asks, the reader picks, and Rust reads or writes. The name a save panel
+is offered comes from
+[`Attachment::file_name`](../crates/vault-core/src/model.rs), which is the one
+place a name out of a database is turned into a file name.
 
 Nothing that names a file comes from the webview. `choose_database` opens the
 system's own dialog and keeps the answer; `choose_snapshot` takes a slot number
@@ -60,12 +112,39 @@ Every command that can fail answers with `{ code, message }`. The message is
 the sentence the screen shows, written in `vault-core` so that it never repeats
 a secret and never says which half of a credential was wrong. The code is what
 the screen branches on: `wrongCredentials`, `notADatabase`, `unsupportedFormat`,
-`damaged`, `heldByAnother`, `gone`, `tooLarge`, `noVault`, `noSuchEntry`,
-`refused`, `io`, `other`.
+`damaged`, `heldByAnother`, `externalChange`, `readOnly`, `gone`, `tooLarge`,
+`noVault`, `noSuchEntry`, `refused`, `io`, `other`.
+
+`externalChange` is the one the conflict dialog is built on. `save` answers with
+it when the file is not the one the vault was opened from, and nothing has been
+written at that point. The screen then has three ways out and each of them keeps
+something: `reload` takes the version on disk and drops what is in the window,
+`save_copy` writes what is in the window to a file of its own first, and
+`save_over` writes over the file - with the version that was there going into
+`<database>.1.bak` on the way, so it can still be opened afterwards.
 
 A rejected command rejects with that object and not with an `Error`, so
 `instanceof` and `.message` are both useless on the raw value. `asFailure` in
 `src/lib/ipc.ts` is the one place that reads it.
+
+## The one value that goes the other way
+
+A field the reader is editing crosses as ordinary JSON, and the master password
+does not. The difference is not carelessness, it is what the two values are.
+
+A password being edited is in the window already: it is the `value` of an input
+element the reader is typing into, which is a JavaScript string by construction,
+and no shape of message changes that. The master password is different in one
+way that matters - it is never displayed, never edited in place, and it opens
+everything - so it is worth the machinery of a raw body, and `unlock` is the
+only command that gets it.
+
+What the boundary is for still holds in both directions: a value the database
+protects **leaves** the vault only through `reveal`, `reveal_version` or
+`generate_password`, one value at a time and only when the screen asked.
+`set_field` carries `protect`, which the screen read off the field it is
+editing, so a value the database keeps protected goes back protected rather than
+being written into the file as plain text.
 
 ## The master password
 
@@ -141,6 +220,11 @@ Two things follow from that, and both are traps:
 - **The policy is not enforced in `tauri dev`.** With `devUrl` set, the window
   loads the Vite server directly and Tauri's asset handler, which is what adds
   the header, never runs. A policy bug only appears in a real build.
+- **The generator's slider and the length the engine accepts are written
+  twice.** `LENGTHS` in `generate.rs` is the eight to sixty-four the slider
+  offers. The engine brings anything outside it back inside rather than trusting
+  it, because a length the screen could not have asked for came from something
+  that is not the screen. Change one and change the other.
 - **The two bars that drain are CSS animations of a fixed length, and their
   lengths are written twice.** `--animate-drain-reveal` in `app.css` is the
   thirty seconds of `SECONDS` in `reveal.svelte.ts`; `--animate-drain-clipboard`
@@ -163,9 +247,11 @@ itself is tested at that size; the drawing is not, and the fix when it matters i
 to draw only the rows on screen.
 
 **A snapshot opened from the unlock screen becomes the chosen database for the
-rest of the session.** The remembered path is only ever written when the reader
-picks a file, so the next launch offers the database rather than the snapshot,
-but slice 3 has to decide what saving means when what is open is a `.bak`.
+rest of the session,** and it is read only. Writing to a `.bak` would put the
+change in a file the next save of the database beside it rotates away, so every
+change is refused with `readOnly` and `save_copy` is the way out: it writes what
+is in the window to a file of the reader's choosing, which then opens like any
+other database.
 
 ## Where this departs from SPEC.md
 

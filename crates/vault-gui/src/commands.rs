@@ -18,7 +18,10 @@ use tauri_plugin_dialog::DialogExt;
 use vault_core::storage::snapshot;
 use zeroize::Zeroizing;
 
-use crate::dto::{self, Database, Entry, Group, Revealed, Snapshot, Status};
+use vault_core::generate::{Alphabet, Recipe};
+use vault_core::{NewValue, Vault};
+
+use crate::dto::{self, Database, Entry, Group, Made, Revealed, Rival, Snapshot, Status, Version};
 use crate::error::Failure;
 use crate::session::Session;
 use crate::{clipboard, opener, recent};
@@ -29,9 +32,16 @@ type Held<'a> = State<'a, Arc<Session>>;
 
 #[tauri::command]
 pub fn status(session: Held<'_>) -> Status {
+    let (entries, dirty, read_only) = session
+        .with(|vault| (vault.count(), vault.is_dirty(), vault.is_read_only()))
+        .unwrap_or((0, false, false));
+
     Status {
         database: session.database().as_deref().map(Database::of),
         unlocked: session.is_unlocked(),
+        entries,
+        dirty,
+        read_only,
     }
 }
 
@@ -209,6 +219,373 @@ pub fn choose_snapshot(index: u32, session: Held<'_>) -> Result<Database, Failur
 
     session.choose(path.clone());
     Ok(Database::of(&path))
+}
+
+/// The whole tree, as it is now. Every command that changes the shape of the
+/// vault answers with one of these, so the screen never draws from a picture it
+/// assembled itself.
+fn tree_of(session: &Session) -> Result<Group, Failure> {
+    Ok(Group::of(&session.tree()?))
+}
+
+fn entry_of(session: &Session, id: &str) -> Result<Entry, Failure> {
+    Ok(Entry::of(&session.entry(dto::entry_id(id)?)?))
+}
+
+#[tauri::command(async)]
+pub fn create_entry(group: String, session: Held<'_>) -> Result<Made, Failure> {
+    let group = dto::group_id(&group)?;
+    let made = session.with_mut(|vault| vault.create_entry(group))??;
+
+    Ok(Made {
+        tree: tree_of(&session)?,
+        entry: made.to_string(),
+    })
+}
+
+#[tauri::command(async)]
+pub fn delete_entry(entry: String, session: Held<'_>) -> Result<Group, Failure> {
+    let id = dto::entry_id(&entry)?;
+    session.with_mut(|vault| vault.delete_entry(id))??;
+    tree_of(&session)
+}
+
+#[tauri::command(async)]
+pub fn create_group(parent: String, name: String, session: Held<'_>) -> Result<Group, Failure> {
+    let parent = dto::group_id(&parent)?;
+    session.with_mut(|vault| vault.create_group(parent, &name))??;
+    tree_of(&session)
+}
+
+#[tauri::command(async)]
+pub fn rename_group(group: String, name: String, session: Held<'_>) -> Result<Group, Failure> {
+    let group = dto::group_id(&group)?;
+    session.with_mut(|vault| vault.rename_group(group, &name))??;
+    tree_of(&session)
+}
+
+#[tauri::command(async)]
+pub fn delete_group(group: String, session: Held<'_>) -> Result<Group, Failure> {
+    let group = dto::group_id(&group)?;
+    session.with_mut(|vault| vault.delete_group(group))??;
+    tree_of(&session)
+}
+
+#[tauri::command(async)]
+pub fn empty_recycle_bin(session: Held<'_>) -> Result<Group, Failure> {
+    session.with_mut(vault_core::Vault::empty_recycle_bin)??;
+    tree_of(&session)
+}
+
+/// Writes one field of one entry.
+///
+/// `protect` is what the screen read off the field it is editing, so a value
+/// the database keeps protected goes back protected. Getting that wrong would
+/// write a password into the file as plain text inside the encrypted body.
+#[tauri::command(async)]
+pub fn set_field(
+    entry: String,
+    field: String,
+    value: String,
+    protect: bool,
+    session: Held<'_>,
+) -> Result<Entry, Failure> {
+    let id = dto::entry_id(&entry)?;
+    let written = if protect {
+        NewValue::Protected(Zeroizing::new(value))
+    } else {
+        NewValue::Open(value)
+    };
+
+    session.with_mut(|vault| vault.set_field(id, &field, written))??;
+    entry_of(&session, &entry)
+}
+
+#[tauri::command(async)]
+pub fn remove_field(entry: String, field: String, session: Held<'_>) -> Result<Entry, Failure> {
+    let id = dto::entry_id(&entry)?;
+    session.with_mut(|vault| vault.remove_field(id, &field))??;
+    entry_of(&session, &entry)
+}
+
+#[tauri::command(async)]
+pub fn set_tags(entry: String, tags: Vec<String>, session: Held<'_>) -> Result<Entry, Failure> {
+    let id = dto::entry_id(&entry)?;
+    session.with_mut(|vault| vault.set_tags(id, tags))??;
+    entry_of(&session, &entry)
+}
+
+/// Puts a file on an entry.
+///
+/// The file is chosen and read in Rust. Nothing about it crosses the boundary
+/// on the way in: the webview asks for a picker and is told what the entry
+/// holds afterwards.
+#[tauri::command]
+pub async fn add_attachment(
+    app: AppHandle,
+    entry: String,
+    session: Held<'_>,
+) -> Result<Entry, Failure> {
+    let id = dto::entry_id(&entry)?;
+
+    let Some(chosen) = app
+        .dialog()
+        .file()
+        .set_title("Add a file to this entry")
+        .blocking_pick_file()
+    else {
+        return entry_of(&session, &entry);
+    };
+    let path = chosen
+        .into_path()
+        .map_err(|_| Failure::refused("that file has no path Coffer can read"))?;
+
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .ok_or_else(|| Failure::refused("that file has no name"))?;
+    let data = Zeroizing::new(std::fs::read(&path).map_err(Failure::io)?);
+
+    session.with_mut(|vault| vault.add_attachment(id, &name, data))??;
+    entry_of(&session, &entry)
+}
+
+/// Writes one of an entry's files out to wherever the reader says.
+///
+/// The bytes never reach the webview and the path never comes from it: the
+/// panel is opened here and the file is written here, owner-only and through
+/// the same staged write the database gets.
+#[tauri::command]
+pub async fn export_attachment(
+    app: AppHandle,
+    entry: String,
+    name: String,
+    session: Held<'_>,
+) -> Result<(), Failure> {
+    let id = dto::entry_id(&entry)?;
+    let suggested = session
+        .with(|vault| vault.entry(id))?
+        .ok_or_else(Failure::no_such_entry)?
+        .attachments
+        .iter()
+        .find(|attachment| attachment.name == name)
+        .ok_or_else(|| Failure::from(vault_core::VaultError::NoSuchAttachment))?
+        .file_name();
+
+    let bytes = session.with(|vault| vault.attachment(id, &name))?;
+    let bytes = bytes.ok_or_else(|| Failure::from(vault_core::VaultError::NoSuchAttachment))?;
+
+    let Some(chosen) = app
+        .dialog()
+        .file()
+        .set_title("Write this file out")
+        .set_file_name(&suggested)
+        .blocking_save_file()
+    else {
+        return Ok(());
+    };
+    let path = chosen
+        .into_path()
+        .map_err(|_| Failure::refused("that place has no path Coffer can write"))?;
+
+    vault_core::storage::atomic::write_atomic::<std::io::Error, _>(
+        &path,
+        |writer: &mut dyn std::io::Write| writer.write_all(bytes.expose()),
+    )
+    .map_err(Failure::io)
+}
+
+#[tauri::command(async)]
+pub fn remove_attachment(entry: String, name: String, session: Held<'_>) -> Result<Entry, Failure> {
+    let id = dto::entry_id(&entry)?;
+    session.with_mut(|vault| vault.remove_attachment(id, &name))??;
+    entry_of(&session, &entry)
+}
+
+#[tauri::command(async)]
+pub fn versions(entry: String, session: Held<'_>) -> Result<Vec<Version>, Failure> {
+    let id = dto::entry_id(&entry)?;
+    let found = session.with(|vault| vault.versions(id))?;
+    Ok(found.iter().map(Version::of).collect())
+}
+
+#[tauri::command(async)]
+pub fn version(entry: String, index: usize, session: Held<'_>) -> Result<Entry, Failure> {
+    let id = dto::entry_id(&entry)?;
+    let found = session.with(|vault| vault.version(id, index))?;
+    found
+        .as_ref()
+        .map(Entry::of)
+        .ok_or_else(|| Failure::from(vault_core::VaultError::NoSuchVersion))
+}
+
+/// Hands one field's value out of a previous version, on the same terms as
+/// [`reveal`]: one field, once, and only when the screen asked for it.
+#[tauri::command]
+pub fn reveal_version(
+    entry: String,
+    index: usize,
+    field: String,
+    session: Held<'_>,
+) -> Result<Revealed, Failure> {
+    let id = dto::entry_id(&entry)?;
+    let secret = session.with(|vault| vault.reveal_version(id, index, &field))?;
+    let secret = secret.ok_or_else(|| Failure::refused("that version has no such field"))?;
+    Ok(Revealed::new(text(&secret)?))
+}
+
+#[tauri::command(async)]
+pub fn restore_version(entry: String, index: usize, session: Held<'_>) -> Result<Entry, Failure> {
+    let id = dto::entry_id(&entry)?;
+    session.with_mut(|vault| vault.restore_version(id, index))??;
+    entry_of(&session, &entry)
+}
+
+#[tauri::command(async)]
+pub fn delete_version(
+    entry: String,
+    index: usize,
+    session: Held<'_>,
+) -> Result<Vec<Version>, Failure> {
+    let id = dto::entry_id(&entry)?;
+    session.with_mut(|vault| vault.delete_version(id, index))??;
+    versions(entry, session)
+}
+
+#[tauri::command(async)]
+pub fn clear_history(entry: String, session: Held<'_>) -> Result<Vec<Version>, Failure> {
+    let id = dto::entry_id(&entry)?;
+    session.with_mut(|vault| vault.clear_history(id))??;
+    versions(entry, session)
+}
+
+/// Makes a password.
+///
+/// It comes back the way a revealed value does, because that is what it is: the
+/// screen shows it, the reader looks at it, and it goes into a field or it goes
+/// nowhere.
+#[tauri::command]
+pub fn generate_password(
+    length: usize,
+    alphabets: Vec<String>,
+    similar: bool,
+) -> Result<Revealed, Failure> {
+    let chosen: Vec<Alphabet> = alphabets
+        .iter()
+        .filter_map(|name| match name.as_str() {
+            "lower" => Some(Alphabet::Lower),
+            "upper" => Some(Alphabet::Upper),
+            "digits" => Some(Alphabet::Digits),
+            "symbols" => Some(Alphabet::Symbols),
+            _ => None,
+        })
+        .collect();
+
+    let made = vault_core::generate::password(&Recipe {
+        length,
+        alphabets: chosen,
+        similar,
+    })?;
+    Ok(Revealed::new(&made))
+}
+
+/// Writes the database back.
+///
+/// A save derives the key again and encrypts the whole file, which is the
+/// second of work the unlock screen also pays, so it happens on a thread that
+/// is allowed to block.
+#[tauri::command]
+pub async fn save(session: Held<'_>) -> Result<(), Failure> {
+    let session = Arc::clone(&session);
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), Failure> {
+        session.with_mut(Vault::save)??;
+        Ok(())
+    })
+    .await
+    .map_err(|_| Failure::internal("the database could not be written"))?
+}
+
+/// Writes the database back over a file somebody else changed.
+#[tauri::command]
+pub async fn save_over(session: Held<'_>) -> Result<(), Failure> {
+    let session = Arc::clone(&session);
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), Failure> {
+        session.with_mut(Vault::save_over)??;
+        Ok(())
+    })
+    .await
+    .map_err(|_| Failure::internal("the database could not be written"))?
+}
+
+/// Writes what is in the window to a file of its own, leaving the database
+/// alone. The way out of a conflict that keeps both, and the way out of a
+/// snapshot.
+#[tauri::command]
+pub async fn save_copy(app: AppHandle, session: Held<'_>) -> Result<Option<Database>, Failure> {
+    let database = session.database().ok_or_else(Failure::no_vault)?;
+    let suggested = database
+        .file_stem()
+        .map(|stem| format!("{} copy.kdbx", stem.to_string_lossy()))
+        .unwrap_or_else(|| "vault copy.kdbx".to_owned());
+
+    let mut panel = app
+        .dialog()
+        .file()
+        .set_title("Keep this version as a file of its own")
+        .add_filter("KeePass database", &["kdbx"])
+        .set_file_name(&suggested);
+    if let Some(directory) = database.parent() {
+        panel = panel.set_directory(directory);
+    }
+
+    let Some(chosen) = panel.blocking_save_file() else {
+        return Ok(None);
+    };
+    let path = chosen
+        .into_path()
+        .map_err(|_| Failure::refused("that place has no path Coffer can write"))?;
+
+    let writing = Arc::clone(&session);
+    let target = path.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), Failure> {
+        writing.with_mut(|vault| vault.save_copy(&target))??;
+        Ok(())
+    })
+    .await
+    .map_err(|_| Failure::internal("the copy could not be written"))??;
+
+    Ok(Some(Database::of(&path)))
+}
+
+/// Throws away what is in the window and reads the file again.
+#[tauri::command]
+pub async fn reload(session: Held<'_>) -> Result<Group, Failure> {
+    let reading = Arc::clone(&session);
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), Failure> {
+        reading.with_mut(Vault::reload)??;
+        Ok(())
+    })
+    .await
+    .map_err(|_| Failure::internal("the database could not be read"))??;
+
+    tree_of(&session)
+}
+
+/// What the file on disk holds, for the dialog that asks which version to keep.
+///
+/// Reading it means opening it, which is another second of key derivation, so
+/// it is asked for once, when the dialog appears, rather than on a timer.
+#[tauri::command]
+pub async fn rival(session: Held<'_>) -> Result<Rival, Failure> {
+    let reading = Arc::clone(&session);
+    let found = tauri::async_runtime::spawn_blocking(move || reading.with(Vault::rival))
+        .await
+        .map_err(|_| Failure::internal("the file could not be read"))??;
+
+    Ok(Rival {
+        modified: found.modified.and_then(dto::moment),
+        entries: found.entries,
+    })
 }
 
 #[cfg(test)]

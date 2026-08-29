@@ -30,6 +30,12 @@ enum Code {
     Damaged,
     /// Another process has this database open.
     HeldByAnother,
+    /// The file changed on disk after Coffer opened it, and the screen has to
+    /// ask which version to keep before anything is written.
+    ExternalChange,
+    /// The database cannot be written back at all: a snapshot, or a format
+    /// Coffer reads and does not write.
+    ReadOnly,
     Gone,
     TooLarge,
     /// Nothing has been chosen to open, or nothing is open.
@@ -53,6 +59,10 @@ impl Failure {
 
     pub fn no_such_entry() -> Failure {
         Failure::from(VaultError::NoSuchEntry)
+    }
+
+    pub fn no_such_group() -> Failure {
+        Failure::from(VaultError::NoSuchGroup)
     }
 
     /// An address Coffer will not hand to the system, or anything else it
@@ -101,12 +111,30 @@ impl From<VaultError> for Failure {
                 Code::Damaged
             }
             VaultError::Locked(_) => Code::HeldByAnother,
+            VaultError::ExternalChange => Code::ExternalChange,
+            VaultError::ReadOnlyKdb
+            | VaultError::ReadOnlyKdbx3Attachments
+            | VaultError::ReadOnlySnapshot => Code::ReadOnly,
             VaultError::DatabaseGone => Code::Gone,
             VaultError::TooLarge => Code::TooLarge,
-            VaultError::NoSuchEntry => Code::NoSuchEntry,
+            VaultError::NoSuchEntry
+            | VaultError::NoSuchGroup
+            | VaultError::NoSuchField
+            | VaultError::NoSuchAttachment
+            | VaultError::NoSuchVersion => Code::NoSuchEntry,
             VaultError::UnwritableText
             | VaultError::PasswordNotUtf8
-            | VaultError::AbsurdKeyDerivation => Code::Refused,
+            | VaultError::AbsurdKeyDerivation
+            | VaultError::AttachmentInHistory { .. }
+            | VaultError::AttachmentPinned
+            | VaultError::AttachmentTooLarge
+            | VaultError::AttachmentOrder
+            | VaultError::UnreadableAttachments
+            | VaultError::CannotMoveRoot
+            | VaultError::CannotMoveIntoItself
+            | VaultError::CopyOntoItself
+            | VaultError::NothingToGenerateFrom
+            | VaultError::RandomnessUnavailable => Code::Refused,
             VaultError::Io(_) => Code::Io,
             _ => Code::Other,
         };
@@ -150,9 +178,17 @@ mod tests {
             (VaultError::UnwritableText, "refused"),
             (VaultError::PasswordNotUtf8, "refused"),
             (VaultError::AbsurdKeyDerivation, "refused"),
-            (VaultError::ReadOnlyKdb, "other"),
-            (VaultError::ReadOnlyKdbx3Attachments, "other"),
-            (VaultError::ExternalChange, "other"),
+            (VaultError::ReadOnlyKdb, "readOnly"),
+            (VaultError::ReadOnlyKdbx3Attachments, "readOnly"),
+            (VaultError::ReadOnlySnapshot, "readOnly"),
+            (VaultError::ExternalChange, "externalChange"),
+            (VaultError::NoSuchGroup, "noSuchEntry"),
+            (VaultError::NoSuchVersion, "noSuchEntry"),
+            (VaultError::AttachmentInHistory { versions: 2 }, "refused"),
+            (VaultError::AttachmentPinned, "refused"),
+            (VaultError::AttachmentTooLarge, "refused"),
+            (VaultError::CannotMoveRoot, "refused"),
+            (VaultError::NothingToGenerateFrom, "refused"),
             (VaultError::Io(io::Error::other("a disk")), "io"),
         ] {
             let message = error.to_string();

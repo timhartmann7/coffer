@@ -1106,3 +1106,38 @@ fn a_database_coffer_wrote_says_coffer_wrote_it() {
         "the file still claims to be somebody else's work"
     );
 }
+
+/// An attachment name is somebody's text and a save panel wants a file name.
+/// Everything that could make one mean a directory goes, and the panel is never
+/// opened on an empty name.
+#[test]
+fn a_name_out_of_a_database_is_made_into_one_a_save_panel_can_use() {
+    for (held, offered) in [
+        ("id_ed25519", "id_ed25519"),
+        ("../../escape.txt", "escape.txt"),
+        ("nested/path/name.txt", "name.txt"),
+        ("..\\..\\windows.txt", "windows.txt"),
+        ("Macintosh HD:System:x", "x"),
+        ("..", "attachment"),
+        (".", "attachment"),
+        ("", "attachment"),
+        ("   ", "attachment"),
+        (".hidden", "hidden"),
+        ("with\u{0}null", "withnull"),
+        ("ユニコード 🔐.pem", "ユニコード 🔐.pem"),
+    ] {
+        let attachment = vault_core::model::Attachment {
+            name: held.to_owned(),
+            size: 0,
+        };
+        assert_eq!(attachment.file_name(), offered, "{held:?}");
+    }
+
+    // However long the name in the database is, the one offered fits a
+    // filesystem.
+    let long = vault_core::model::Attachment {
+        name: "a".repeat(10_000),
+        size: 0,
+    };
+    assert!(long.file_name().chars().count() <= 200);
+}

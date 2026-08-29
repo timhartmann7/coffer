@@ -201,6 +201,45 @@ pub struct Attachment {
     pub size: usize,
 }
 
+impl Attachment {
+    /// A name to offer the save panel when this file is written out.
+    ///
+    /// The name in the database is somebody's text, not a path: the fixture
+    /// alone carries `../../escape.txt` and `nested/path/name.txt`. Everything
+    /// that could make it mean a directory is dropped rather than escaped, and
+    /// a name that is nothing but those characters becomes a plain one, because
+    /// a save panel that opens on an empty name is a save panel that saves the
+    /// wrong thing.
+    ///
+    /// The user still chooses where the file goes and under what name. This is
+    /// the suggestion, and it is the only place a name from a database is
+    /// turned into one.
+    pub fn file_name(&self) -> String {
+        /// Long enough for any name a person types and short enough for every
+        /// filesystem a Mac mounts.
+        const LONGEST: usize = 200;
+
+        let last = self
+            .name
+            .rsplit(['/', '\\', ':'])
+            .next()
+            .unwrap_or_default();
+
+        let cleaned: String = last
+            .chars()
+            .filter(|character| !character.is_control())
+            .take(LONGEST)
+            .collect();
+        let cleaned = cleaned.trim().trim_start_matches('.').trim();
+
+        if cleaned.is_empty() {
+            "attachment".to_owned()
+        } else {
+            cleaned.to_owned()
+        }
+    }
+}
+
 /// The dates an entry carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Timestamps {

@@ -171,6 +171,17 @@ snapshot cask fails Gatekeeper. `tests/fixtures/generate.sh` is
 version-agnostic, so a second set lands beside the first by installing another
 version and rerunning it.
 
+**A file that only a previous version names stays in the database.** Removing an
+attachment removes the one that was asked for. A file left with no name at all -
+which a database written by another client can arrive with, and which clearing an
+entry's history can leave behind - is kept: the pool cannot hold bytes without a
+name, so closing up over it would drop it, and dropping something a file arrived
+with is what the first rule forbids.
+
+**A database Coffer saves says `Coffer` in `Meta/Generator`.** Every KeePass
+client writes its own name there and the field is the writer's signature rather
+than anything of the user's, so the round-trip suite normalises it away.
+
 **`VaultError::ReadOnlyKdb` has no test.** No available tool writes a KeePass 1
 file: KeePassXC 2.7 dropped the writer and the CLI never had it. The guard stays
 because saving a KDB-sourced database as KDBX 4.1 is exactly the kind of silent
@@ -189,10 +200,55 @@ which is why the check normalises before it compares and hands back the string i
 judged. `vault-gui::opener` is its only caller, and the entry screen asks it
 rather than deciding for itself.
 
-**Attachment name sanitising is not.** Attachment names come from the file and
-may contain anything: the fixture carries `../../escape.txt` and
-`nested/path/name.txt`. `vault-core` returns them verbatim, and slice 2 shows
-them and nothing more. Whatever turns one into a path for the export dialog
-belongs in `vault-core`, called from there and from nowhere else. Slice 3 writes
-it, along with the check that removing an attachment leaves the identifier space
-contiguous.
+**Attachment name sanitising is written.** It is
+[`Attachment::file_name`](../crates/vault-core/src/model.rs): the last component
+after `/`, `\` and `:`, without control characters or a leading dot, bounded to
+two hundred characters, and `attachment` when nothing is left. The name in the
+database is shown as the database holds it and is never used as a path; this is
+the name the save panel is offered, and it is the only place the conversion
+happens.
+
+## The pool of files, and why removing one is not a removal
+
+Every attachment in a KDBX 4 file lives once, in the inner header, and an entry
+refers to one by a number. The reader hands those numbers out **by position in
+the header**; the writer orders the header **by the number an attachment already
+carries** and writes the number itself into the entry. The two agree only while
+the numbers are an unbroken run from zero. Punch a hole and the file still
+saves, still opens, and hands the bytes of one attachment to the entry that
+asked for another - the right file name over somebody else's file. That is
+worse than losing it.
+
+Nothing in the library keeps that run unbroken. Three things make it Coffer's
+job:
+
+- **`Attachment::entries`, the reference count, is empty on every database read
+  from disk.** The only line in the crate that fills it is
+  `EntryMut::add_attachment`. So `remove_attachment_by_name`,
+  `remove_attachment_by_id`, `AttachmentMut::remove` and `EntryMut::remove` all
+  read "nothing points at this" and destroy a file two entries share.
+- **`AttachmentId::next_free` fills holes rather than appending.** A removal
+  followed by an add repairs the damage by accident, which is why the corruption
+  is intermittent and why the regression test removes and saves with nothing in
+  between.
+- **`AttachmentId::new` is crate-private and previous versions cannot be
+  rewritten**, so a number can never be changed: not on a version, and not
+  anywhere else.
+
+[`attachment.rs`](../crates/vault-core/src/attachment.rs) is the whole answer.
+It works out what names each file, current entries and previous versions alike;
+lifts a file out of the pool before taking a name off it, so the library's own
+removal finds nothing to destroy; and puts back what survives, lowest slot
+first, so the run closes up with nothing moved that anything unrewritable points
+at. Two things follow that a reader of the source would otherwise find
+surprising:
+
+- **A file a previous version still holds is not removed.** There is no way to
+  keep bytes in the pool without a name on some current entry, and no way to
+  take the name off the version. Coffer says how many versions hold it; clearing
+  the entry's history is what lets it go.
+- **Taking a file off an entry writes no previous version.** A version records
+  the entry as it was, files included, and the file has just gone.
+
+`unbroken` runs before every write. It has never fired, and it is the last thing
+between a mistake in this module and a database that hands out the wrong file.

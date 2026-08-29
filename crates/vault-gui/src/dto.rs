@@ -53,6 +53,13 @@ pub fn entry_id(text: &str) -> Result<model::EntryId, crate::error::Failure> {
         .map_err(|_| crate::error::Failure::no_such_entry())
 }
 
+/// The folder an id names, on the same terms.
+pub fn group_id(text: &str) -> Result<model::GroupId, crate::error::Failure> {
+    uuid::Uuid::parse_str(text)
+        .map(model::GroupId::from_uuid)
+        .map_err(|_| crate::error::Failure::no_such_group())
+}
+
 impl Snapshot {
     pub fn of(taken: &vault_core::storage::snapshot::Taken) -> Snapshot {
         Snapshot {
@@ -80,9 +87,54 @@ impl Database {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Status {
     pub database: Option<Database>,
     pub unlocked: bool,
+    /// How many entries the vault holds, the recycle bin's included.
+    pub entries: usize,
+    /// Whether there is a change in the window that the file does not have.
+    pub dirty: bool,
+    /// Whether this database can be written back at all. A snapshot and a
+    /// format Coffer will not write are both read only.
+    pub read_only: bool,
+}
+
+/// A previous version of an entry, as the versions block lists them.
+#[derive(Serialize)]
+pub struct Version {
+    /// Where it sits in the entry's history, which is how it is addressed.
+    /// Several versions can share a modification time, so nothing else
+    /// identifies one.
+    pub index: usize,
+    pub modified: Option<String>,
+}
+
+impl Version {
+    pub fn of(version: &model::Version) -> Version {
+        Version {
+            index: version.index,
+            modified: stamp(version.modified),
+        }
+    }
+}
+
+/// What a command that changed the shape of the vault hands back: the tree as
+/// it is now, and the entry the change was about.
+#[derive(Serialize)]
+pub struct Made {
+    pub tree: Group,
+    pub entry: String,
+}
+
+/// What the file on disk holds, for the dialog that asks which version to keep.
+#[derive(Serialize)]
+pub struct Rival {
+    /// When the file was last written, as the filesystem has it.
+    pub modified: Option<String>,
+    /// How many entries it holds, or nothing when it will not open with the
+    /// password this vault was opened with.
+    pub entries: Option<usize>,
 }
 
 /// A snapshot Coffer took before one of its own saves.
@@ -184,6 +236,10 @@ pub struct Field {
     /// The name the file holds, and the name a reveal asks for.
     pub name: String,
     pub kind: FieldKind,
+    /// Whether the database keeps this value protected. The screen sends it
+    /// back on an edit, so that rewriting a field never quietly turns a
+    /// protected value into plain text inside the file.
+    pub protected: bool,
     /// The value, or `null` when it does not cross: the database protects it,
     /// or it is the password. A file can hold a password the database does not
     /// protect, and it is still a password; `empty` says whether there is one,
@@ -206,6 +262,7 @@ impl Field {
         Field {
             name: field.name.clone(),
             kind,
+            protected: matches!(field.value, FieldValue::Protected { .. }),
             openable: kind == FieldKind::Url
                 && value
                     .as_deref()
@@ -217,17 +274,24 @@ impl Field {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Attachment {
     /// As the file holds it. It may contain anything at all, `/` and `..`
     /// included, so nothing may build a path out of it.
     pub name: String,
     pub size: usize,
+    /// What the save panel would call it. The rule lives in `vault-core`; this
+    /// is the screen's copy of the answer, so that the name a reader sees on
+    /// the export button is the name they will get.
+    pub file_name: String,
 }
 
 #[derive(Serialize)]
 pub struct Entry {
     pub id: String,
     pub group: String,
+    /// How many previous versions the entry keeps.
+    pub versions: usize,
     /// Every field the entry has, standard and custom alike, ordered by name.
     pub fields: Vec<Field>,
     pub attachments: Vec<Attachment>,
@@ -241,6 +305,7 @@ impl Entry {
         Entry {
             id: entry.id.to_string(),
             group: entry.group.to_string(),
+            versions: entry.versions,
             fields: entry.fields.iter().map(Field::of).collect(),
             attachments: entry
                 .attachments
@@ -248,6 +313,7 @@ impl Entry {
                 .map(|attachment| Attachment {
                     name: attachment.name.clone(),
                     size: attachment.size,
+                    file_name: attachment.file_name(),
                 })
                 .collect(),
             tags: entry.tags.clone(),
@@ -277,7 +343,7 @@ fn stamp(time: Option<NaiveDateTime>) -> Option<String> {
 /// It comes from whatever wrote the file, which may be another machine, another
 /// filesystem or nothing sensible at all. `DateTime::from(SystemTime)` unwraps
 /// its own range check, and a snapshot beside the database is not worth a panic.
-fn moment(time: std::time::SystemTime) -> Option<String> {
+pub(crate) fn moment(time: std::time::SystemTime) -> Option<String> {
     let since = time.duration_since(std::time::UNIX_EPOCH).ok()?;
     let moment = chrono::DateTime::from_timestamp(
         i64::try_from(since.as_secs()).ok()?,
@@ -335,15 +401,15 @@ mod tests {
         ]));
 
         let payload = json(&entry);
-        assert!(
-            payload.contains(r#""name":"Password","kind":"password","value":null,"empty":false"#)
-        );
-        assert!(
-            payload.contains(r#""name":"API token","kind":"custom","value":null,"empty":false"#)
-        );
-        assert!(
-            payload.contains(r#""name":"empty secret","kind":"custom","value":null,"empty":true"#)
-        );
+        assert!(payload.contains(
+            r#""name":"Password","kind":"password","protected":true,"value":null,"empty":false"#
+        ));
+        assert!(payload.contains(
+            r#""name":"API token","kind":"custom","protected":true,"value":null,"empty":false"#
+        ));
+        assert!(payload.contains(
+            r#""name":"empty secret","kind":"custom","protected":true,"value":null,"empty":true"#
+        ));
     }
 
     #[test]
@@ -480,6 +546,53 @@ mod tests {
         assert!(!json(&entry).contains(secret));
     }
 
+    /// The screen sends the protection back when it writes a field, so a value
+    /// the database keeps protected has to arrive marked as one. Without it the
+    /// screen would have to guess, and a wrong guess writes a password into the
+    /// file as plain text.
+    #[test]
+    fn a_field_says_whether_the_database_protects_it() {
+        let entry = Entry::of(&entry_of(vec![
+            open(fields::TITLE, "a login"),
+            protected(fields::PASSWORD, false),
+            open("plain", "2202"),
+            protected("API token", false),
+        ]));
+
+        let marked: Vec<(&str, bool)> = entry
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.protected))
+            .collect();
+        assert_eq!(
+            marked,
+            vec![
+                ("Title", false),
+                ("Password", true),
+                ("plain", false),
+                ("API token", true),
+            ]
+        );
+    }
+
+    /// The name in the file may be anything at all. The screen shows that name
+    /// and the save panel is offered the other one, so a reader sees what they
+    /// will get.
+    #[test]
+    fn an_attachment_crosses_with_the_name_a_save_panel_would_use() {
+        let mut entry = entry_of(Vec::new());
+        entry.attachments = vec![Attachment {
+            name: "../../escape.txt".to_owned(),
+            size: 12,
+        }];
+
+        let payload = json(&Entry::of(&entry));
+        assert!(
+            payload.contains(r#"{"name":"../../escape.txt","size":12,"fileName":"escape.txt"}"#),
+            "{payload}"
+        );
+    }
+
     #[test]
     fn a_million_characters_of_title_cross_whole() {
         let long = "a".repeat(1_000_000);
@@ -529,8 +642,8 @@ mod tests {
         ];
 
         let payload = json(&Entry::of(&entry));
-        assert!(payload.contains(r#"{"name":"../../escape.txt","size":0}"#));
-        assert!(payload.contains(r#"{"name":"nested/path/name.txt","size":104857600}"#));
+        assert!(payload.contains(r#""name":"../../escape.txt","size":0"#));
+        assert!(payload.contains(r#""name":"nested/path/name.txt","size":104857600"#));
     }
 
     #[test]

@@ -152,10 +152,23 @@ impl Session {
 
     /// Borrows the open vault. It never leaves the lock, so nothing can hold a
     /// vault past a lock that was supposed to wipe it.
-    fn with<T>(&self, read: impl FnOnce(&Vault) -> T) -> Result<T, Failure> {
+    pub fn with<T>(&self, read: impl FnOnce(&Vault) -> T) -> Result<T, Failure> {
         let held = self.held();
         let vault = held.vault.as_ref().ok_or_else(Failure::no_vault)?;
         Ok(read(vault))
+    }
+
+    /// Borrows the open vault to change it.
+    ///
+    /// The lock is held for the whole change, and a save holds it for the
+    /// second the key derivation takes. Nothing else may touch the vault
+    /// meanwhile, which is the point: a window drawing a tree from a database
+    /// that is half way through a change would be drawing something that was
+    /// never true.
+    pub fn with_mut<T>(&self, change: impl FnOnce(&mut Vault) -> T) -> Result<T, Failure> {
+        let mut held = self.held();
+        let vault = held.vault.as_mut().ok_or_else(Failure::no_vault)?;
+        Ok(change(vault))
     }
 }
 
@@ -391,6 +404,43 @@ mod tests {
 
         assert!(session.reveal(entry.id, "no such field").is_err());
         assert!(session.reveal(entry.id, "").is_err());
+    }
+
+    /// A change goes through the same lock the reads do, so a screen can never
+    /// draw a database that is half way through one.
+    #[test]
+    fn a_change_needs_an_open_vault_and_shows_up_in_the_next_read() {
+        let (_scratch, database) = scratch(RICH);
+        let session = Session::new(Some(database));
+
+        // Nothing is open, so nothing changes.
+        assert!(
+            session
+                .with_mut(|vault| vault.create_group(vault.tree().id, "Later"))
+                .is_err()
+        );
+
+        session
+            .unlock(password(SECRET))
+            .expect("the database opens");
+        let root = session.tree().expect("the tree comes back").id;
+        session
+            .with_mut(|vault| vault.create_group(root, "Later"))
+            .expect("the session is open")
+            .expect("the folder is made");
+
+        assert!(
+            session
+                .tree()
+                .expect("the tree comes back")
+                .sections
+                .iter()
+                .any(|section| section.name == "Later")
+        );
+
+        // Locking takes the change with the vault: nothing was written.
+        session.lock();
+        assert!(session.tree().is_err());
     }
 
     /// The end of the boundary, from a real database to the bytes the webview
