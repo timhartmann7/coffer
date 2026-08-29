@@ -12,7 +12,7 @@ hazards are waiting for the slices that come next.
 
 ## The library underneath
 
-Coffer is built on `keepass`, pinned to exactly `=0.13.22`. The pin is not
+Coffer is built on `keepass`, pinned to exactly `=0.13.23`. The pin is not
 caution: `0.13.x` has shipped breaking refactors inside patch releases. Bump it
 by hand and run the round-trip suite.
 
@@ -23,7 +23,7 @@ Only the `save_kdbx4` feature is enabled. `totp` is out of scope, and
 ### What the library gets wrong, and what Coffer does about it
 
 Line references are into
-`~/.cargo/registry/src/index.crates.io-*/keepass-0.13.22/`.
+`~/.cargo/registry/src/index.crates.io-*/keepass-0.13.23/`.
 
 **Every KDBX 3 attachment collapses onto one.**
 `format/xml_db/mod.rs:108-123` assigns each `Meta/Binaries` entry
@@ -277,3 +277,95 @@ has one. Taking one of the two names away keeps the file exactly where it is,
 which is tested. Making such a file *move* would mean rewriting both names and
 only one can be rewritten, so that is refused - a guard against a database
 Coffer cannot itself produce, and the reason the refusal has no test of its own.
+
+## Memory, and what a lock leaves behind
+
+Two things, and they cover different halves of the same question.
+
+[`wipe.rs`](../crates/vault-core/src/wipe.rs) empties the tree Coffer still
+owns, at the moment it stops owning it. Every write goes through `Zeroize`,
+which is a volatile store per byte followed by a barrier and covers a buffer's
+whole capacity: a plain `fill(0)` is a store into memory that is never read
+again, and the optimiser may remove it. Wherever the library allows it a value
+is written over where it lies rather than dropped, because a buffer that is
+still this process's can be read back and asserted to be zero. The maps are the
+exception - a map hands its keys out by shared reference, and the name of a
+custom field is the user's text as much as its value is - so those are drained.
+Two things cannot be reached at all: an entry's attachment *names*, and the
+unprotected halves of previous versions, both of which the library keeps
+private.
+
+The wrapper that carries the destructor is on the `Database` field rather than
+on `Vault`. Reloading assigns into that field, and reading the file on disk to
+answer the conflict dialog decrypts a whole second database that no vault ever
+owns; a destructor on `Vault` would see neither.
+
+[`scrub.rs`](../crates/vault-core/src/scrub.rs) covers what has already been
+handed back. Opening a KDBX file decompresses the whole database into a buffer,
+deserialises it into a second, decrypts every protected value into a third and
+frees all three; none of them belong to Coffer and the library zeroizes none of
+them. A database of six hundred entries opened and dropped under the system
+allocator leaves over two thousand readable copies of a password in freed heap.
+Under the allocator in `scrub.rs` the same measurement is zero, at about six per
+cent of a parse and nothing measurable on a save.
+
+It is declared in this crate rather than in the window's so that it covers the
+test binaries: the suite that asserts no value survives a lock has to be running
+under the thing that makes that true. macOS writes over a freed block of its own
+accord up to about sixteen kilobytes, which is why `tests/vault/wipe.rs` uses a
+crowded database - a small one measures clean whatever Coffer does. Linux zeroes
+nothing at any size.
+
+Neither reaches an Objective-C allocation or another process. The pasteboard is
+both, which is why a copied secret is taken back on a timer rather than trusted
+to a wipe.
+
+## Making a vault, and what a second of work costs
+
+[`kdf.rs`](../crates/vault-core/src/kdf.rs) measures rather than assumes. Coffer
+ships for two architectures, and an iteration count tuned on Apple silicon is
+five seconds of waiting on an older Intel machine. Argon2id, sixty-four
+megabytes and four lanes are fixed by the spec; only the number of passes is
+measured, and it is measured by timing a whole save of an empty database rather
+than by calling Argon2 directly. The library builds a nine-field configuration
+around every derivation - the variant, the version, the lane count, and the
+bytes-to-kibibytes conversion the format needs - and restating that here would
+be a second copy of a rule that drifts silently in either direction. Leaving
+`thread_mode` at its default alone measures four times slow and writes a header
+four times weaker than intended.
+
+The search discards its first derivation, probes from four passes rather than
+one, takes the lowest of two runs at every step, and verifies up to three times
+against the spec's own band. The first derivation in a process costs about half
+as much again as the ones after it; a measurement at one pass is a fifth high,
+because the arena is allocated and the prehash computed whether there is one
+pass or a hundred; and interference makes a derivation slower and never faster,
+so the lowest reading is the one closest to the truth and erring that way asks
+for more passes rather than fewer. Measured here: 122 passes for a second,
+reached in 2.4 seconds of measuring.
+
+Nothing on that path touches the reader's password. `rust-argon2` zeroizes
+nothing, so a calibration made with the real one would leave a handful of copies
+of derived material in freed heap; it derives from a constant instead.
+
+**The ceiling lives with the check that reads a file.** `preflight::acceptable`
+is called by the pre-flight every file passes on its way in *and* by the
+calibration's answer on its way out, so a database Coffer writes cannot be one
+Coffer then refuses to open. At sixty-four megabytes the product ceiling caps
+the count at exactly 1024, long before the count ceiling of 100,000 does.
+
+**Every refusal happens before a byte is written.** A staged write renames over
+whatever is at the target and a creation rotates no snapshot, so a creation
+aimed at somebody's vault is the one way this application could destroy one. An
+existing file is refused outright rather than confirmed in a dialog, and so is a
+name of the shape Coffer gives its own snapshots - which would open like any
+other database and then refuse every save, for good.
+
+**A new database is written down in full.** Every `Meta` field is skipped when
+it has no value, so a bare new database writes a `<Meta>` carrying a generator
+and almost nothing else, and other clients fill the gaps with their own defaults
+on load. That is invisible to the round-trip suite, which compares two exports
+and therefore compares two substitutions. The same reasoning covers the expiry
+date the library omits when nothing expires: the format allows it and no other
+client does, so a reader that finds none puts its own there, and two readings of
+the same file disagree. Everything Coffer makes carries its own dates.

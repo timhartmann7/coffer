@@ -78,6 +78,33 @@ Everything slice 3 added:
 | `reload` | | the tree |
 | `rival` | | when the file on disk was written and how many entries it holds |
 
+Everything slice 4 added:
+
+| Command | Takes | Answers |
+|---|---|---|
+| `settings` | | the two timers, the two switches, and the values each may be set to |
+| `set_settings` | `settings` | what was actually stored, which is not always what was sent |
+| `stirred` | | the seconds the open vault has left, or nothing when none is open |
+| `choose_new_database` | | where the reader wants the new vault |
+| `calibrate` | | how many Argon2id passes a one-second unlock costs here, and what that measured |
+| `create_database` | the master password, as the raw body | nothing |
+
+**A creation is an unlock that writes the file first.** Where the vault goes and
+what its key derivation costs are settled by the two commands before it, for the
+same reason the database to open is: the password is the whole body of the
+message and nothing can travel beside it. `create_database` refuses a JSON body
+exactly as `unlock` does.
+
+**`settings` sends the lists as well as the values.** What a reader may choose is
+Rust's to decide, and a screen holding its own copy would be a second place the
+answer lives. What comes back from `set_settings` is what was stored, because a
+value the screen does not offer is settled onto one it does.
+
+**`stirred` is how the countdown stays honest, and it is deliberately rare.** The
+window sends it on real input and at most once every fifteen seconds, and ticks
+the number itself in between. A status bar that asked once a second would be an
+idle timer resetting itself, and a vault that never locks.
+
 **A command that changes something answers with what it changed.** A change to
 one entry answers with that entry; a change to the shape of the vault answers
 with the whole tree. The screen never patches its own copy of the database from
@@ -181,11 +208,16 @@ to `ipc://localhost` is blocked, Tauri logs one warning and resends the same
 message through `postMessage`, where `JSON.stringify` turns the bytes into
 numbers. Refusing is what keeps a broken policy from becoming a silent leak.
 
-**What Coffer cannot do about the copy Tauri keeps.** WebKit copies the request
-body once, Tauri moves it into an `InvokeBody::Raw(Vec<u8>)`, and that buffer is
-dropped without being wiped. `Zeroizing` on this side covers the copy Coffer
-takes and nothing else. The residue is documented rather than fixed because
-there is no way to reach it.
+**The copy Tauri keeps, and the half of it that is now closed.** WebKit copies
+the request body once, Tauri moves it into an `InvokeBody::Raw(Vec<u8>)`, and
+that buffer is dropped without being wiped. `Zeroizing` on this side covers only
+the copy Coffer takes. Since slice 4 the Rust half of that residue is covered
+too: `InvokeBody::Raw` holds an ordinary `Vec`, and
+[`vault_core::scrub`](../crates/vault-core/src/scrub.rs) writes over every block
+this process frees. What is still out of reach is WebKit's own copy, which is in
+another process, and anything Objective-C allocated - the pasteboard's string
+included, which is why the clipboard is cleared on a timer rather than trusted
+to a wipe.
 
 ## Why the shape of a command is what it is
 
@@ -240,17 +272,56 @@ Two things follow from that, and both are traps:
   offers. The engine brings anything outside it back inside rather than trusting
   it, because a length the screen could not have asked for came from something
   that is not the screen. Change one and change the other.
-- **The two bars that drain are CSS animations of a fixed length, and their
-  lengths are written twice.** `--animate-drain-reveal` in `app.css` is the
-  thirty seconds of `SECONDS` in `reveal.svelte.ts`; `--animate-drain-clipboard`
-  is the sixty of `clipboard::CLEAR_AFTER` in Rust. Neither pair can share a
-  value, because the only way to set a duration from script is an inline style
-  and the policy below forbids one. Change one and change the other.
+- **Every bar that drains is a CSS animation of a fixed length, and the lengths
+  are written twice.** `--animate-drain-reveal` in `app.css` is the thirty
+  seconds of `SECONDS` in `reveal.svelte.ts`. The clipboard's is one animation
+  per timeout `settings.rs` offers, because the reader chooses it: `drain.test.ts`
+  reads both files and fails when the two lists disagree, which is as close to
+  one place as a stylesheet and a Rust constant can get. Neither pair can share
+  a value, because the only way to set a duration from script is an inline style
+  and the policy below forbids one.
+- **The countdown's bar and the calibration's bar are widths, not animations.**
+  A width cannot be computed into a class either, so both pick from a short
+  table of literal ones. Twelve steps is as fine as a sixty-four pixel bar
+  shows.
 - **Nothing in the window may use an inline style.** `style-src 'self'` covers
   `style` attributes as well as `<style>` elements, and Tauri's nonce only
   reaches elements that are in the HTML at build time. This is why the sprite is
   hidden with a class, and why the two timers that drain on screen are CSS
   animations of a fixed length rather than a width that JavaScript sets.
+
+## Locking
+
+Locking destroys the window. It does not hide one: a hidden window is a webview
+still holding every value the reader looked at, in a heap nothing in this
+process can reach.
+
+One route in, whatever asked. The idle deadline, the machine's own
+notifications and the button all post to
+[`autolock::timer`](../crates/vault-gui/src/autolock/timer.rs), which is the
+only caller of [`lock.rs`](../crates/vault-gui/src/lock.rs). That order is the
+whole of what `lock.rs` is: the tree is wiped **first and synchronously**,
+because destroying a window is a message to the event loop and a Mac going to
+sleep will not wait for it; then the clipboard is taken back; then the stack the
+key was derived on is written over; and only then is the destroy queued.
+
+`Session::lock` answers whether it actually dropped a vault, and exactly one
+caller is told yes. Tauri goes on handing out the window between a destroy being
+queued and the event that says it happened, so a second trigger arriving at the
+same moment would otherwise destroy the window the first one's rebuild had just
+made.
+
+The window is built again in the `Destroyed` event of the run callback and
+nowhere else. A destroy followed by a build in one function always fails: the
+label is taken until the event is delivered. It is built from its entry in
+`tauri.conf.json` rather than by hand, so the rebuilt window is the same window,
+and it is put back where the reader left it.
+
+**No Tauri event goes the other way.** The rebuilt page asks `status` and gets
+the reason it is asking for a password again. An event would need two
+capabilities the window does not have, and Tauri never clears a destroyed
+window's listeners: a rebuilt window reuses the label `main`, so every emit
+after the first relock would serialise every dead listener id ever registered.
 
 ## What the window does not do yet
 
@@ -276,13 +347,15 @@ The mockup shows dragging a row into another folder; nothing here does that yet.
 **The three window buttons are moved, and the moving has one right moment.**
 macOS puts the close, minimise and zoom buttons a fixed distance below the top
 of the window, and lays them out again on every resize.
-[`window.rs`](../crates/vault-gui/src/window.rs) corrects them from each
+[`buttons.rs`](../crates/vault-gui/src/buttons.rs) corrects them from each
 button's own frame notification, which is the only hook that arrives *after*
 AppKit has placed them - the title bar container's notification arrives before,
 and a correction made from a resize event arrives a frame later, which is a
 resize that shows them flickering between the two positions. The observers are
-taken off the notification centre when the window goes, because slice 4 builds
-this window again on every unlock.
+taken off the notification centre when the window goes, and they are keyed by
+which window rather than by its label: locking destroys the window and builds
+another with the same label, and the runtime delivers the old one's teardown
+after the callback that built its replacement.
 
 **A save holds the session while it runs.** Every committed change writes the
 file, and the write derives the key again, so for that second nothing else can
@@ -313,23 +386,21 @@ that empties itself, and a toast that promises what the application does not do
 is worse than an early timer. Sixty seconds, the spec's own default, with the
 change count checked before the clear and the contents never read.
 
-**The window is not destroyed on lock.** `SPEC.md` and slice 4 ask for that.
-Slice 2 drops the vault, which wipes the decrypted tree, the master password and
-the lock file, and returns the window to the unlock screen. Destroying the last
-window today would end the process, because the runtime treats it as the
-application closing; slice 4 adds the handler that prevents it and rebuilds the
-window.
-
 **The Tauri crate is `crates/vault-gui`, not `src-tauri`.** `SPEC.md` names
 `src-tauri/capabilities/` when it describes capabilities, which is the framework's
 default layout. Coffer has one workspace with two crates, as the same document
 says two paragraphs earlier, so the capability files, the configuration and the
 window icon live in the crate that runs `tauri_build::build()`.
 
-**TypeScript is pinned to 6.** `CLAUDE.md` asks for the newest major of every npm
-dependency, and 7.0.2 is out. `svelte-check` 4.7.6 accepts `^5 || ^6`, so
-TypeScript 7 would take `npm run check` out of the build. It moves when
-`svelte-check` moves.
+**The theme is not in the settings screen.** `design.html` draws a three-way
+control there. The light theme is slice 5's, and a control where two of three
+choices change nothing is dead code wearing a user interface, so the row waits
+for the theme it switches between.
+
+**TypeScript needs two majors installed.** `svelte-check` will not run against
+TypeScript 7 unless 6 is installed beside it and the check is given `--tsgo`,
+which is what it says to do and what `package.json` does. `@typescript/native` is
+the alias that carries 7; `knip.json` names it, because nothing imports it.
 
 ## Running it
 
