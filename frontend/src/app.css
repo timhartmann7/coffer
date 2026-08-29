@@ -2,7 +2,7 @@
 
 /* Every value below is copied from design.html. Tailwind's own palette, type
    scale, radii and tracking are cleared first, so a class the mockup does not
-   define cannot be written by accident: bg-blue-500 does not compile. */
+   define compiles to nothing at all. There is a test that nobody writes one. */
 @theme {
 	--color-*: initial;
 	--font-*: initial;
