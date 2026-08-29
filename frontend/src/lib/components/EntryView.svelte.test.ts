@@ -18,7 +18,13 @@ const ipc = vi.hoisted(() => ({
 	revealVersion: vi.fn(),
 	restoreVersion: vi.fn(),
 	deleteVersion: vi.fn(),
-	clearHistory: vi.fn()
+	clearHistory: vi.fn(),
+	// The same reading the real one does: a command rejects with the value Rust
+	// serialised, and anything else is not one.
+	asFailure: (thrown: unknown) =>
+		thrown && typeof (thrown as { message?: unknown }).message === 'string'
+			? (thrown as { code: string; message: string })
+			: { code: 'other', message: 'Coffer could not finish that.' }
 }));
 vi.mock('$lib/ipc', () => ipc);
 
@@ -410,6 +416,56 @@ it('writes a field back with the protection it arrived with', () => {
 	login.dispatchEvent(new Event('blur'));
 
 	expect(ipc.setField).toHaveBeenCalledWith(expect.any(String), 'UserName', 'bob', false);
+
+	return unmount(component);
+});
+
+/**
+ * A file a previous version still holds cannot go: the format keeps versions
+ * inside the entry and nothing can rewrite one. The pane says so and offers the
+ * one sequence that works, rather than reporting a failure the reader can do
+ * nothing about.
+ */
+it('offers to clear the versions that are holding a file back', async () => {
+	const onChanged = vi.fn();
+	const onVersions = vi.fn();
+	const onFailure = vi.fn();
+	ipc.removeAttachment
+		.mockRejectedValueOnce({
+			code: 'attachmentInHistory',
+			message: '2 earlier versions still hold that file'
+		})
+		.mockResolvedValueOnce(entry());
+	ipc.clearHistory.mockResolvedValue([]);
+
+	const component = mount(EntryView, {
+		target: host,
+		props: {
+			entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
+			path: [group({ name: 'Work' })],
+			versions: [],
+			now: new Date('2026-08-29T14:30:00Z'),
+			onCopy: vi.fn(),
+			onChanged,
+			onVersions,
+			onDelete: vi.fn(),
+			onFailure
+		}
+	});
+	flushSync();
+
+	host.querySelector<HTMLButtonElement>('[aria-label="Remove id_ed25519"]')?.click();
+	await vi.waitFor(() => expect(host.textContent).toContain('2 earlier versions still hold'));
+	flushSync();
+
+	// A refusal the reader can act on is not an error message.
+	expect(onFailure).not.toHaveBeenCalled();
+	expect(onChanged).not.toHaveBeenCalled();
+
+	button('Clear the versions and remove it').click();
+	await vi.waitFor(() => expect(ipc.clearHistory).toHaveBeenCalledTimes(1));
+	await vi.waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+	expect(onVersions).toHaveBeenCalledWith([]);
 
 	return unmount(component);
 });

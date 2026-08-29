@@ -245,10 +245,14 @@ surprising:
 
 - **A file a previous version still holds is not removed.** There is no way to
   keep bytes in the pool without a name on some current entry, and no way to
-  take the name off the version. Coffer says how many versions hold it; clearing
-  the entry's history is what lets it go.
-- **Taking a file off an entry writes no previous version.** A version records
-  the entry as it was, files included, and the file has just gone.
+  take the name off the version. Coffer says how many versions hold it, and the
+  entry screen offers the only thing that lets it go: clearing those versions.
+- **The files on an entry are not part of its history.** Neither adding one nor
+  taking one away writes a version, and a restore does not touch them. A version
+  written across a change to the pool would name bytes that have moved or gone,
+  and a version written on the way *in* would be the surest way to make the file
+  impossible to take off again. What a version records is the entry's fields,
+  tags, notes, colours, icon and expiry date.
 
 `unbroken` runs before every write. It has never fired, and it is the last thing
 between a mistake in this module and a database that hands out the wrong file.

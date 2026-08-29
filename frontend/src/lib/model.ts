@@ -142,6 +142,7 @@ export interface Failure {
 		| 'damaged'
 		| 'heldByAnother'
 		| 'externalChange'
+		| 'attachmentInHistory'
 		| 'readOnly'
 		| 'gone'
 		| 'tooLarge'

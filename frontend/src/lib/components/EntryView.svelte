@@ -2,6 +2,8 @@
 	import { fully, size } from '$lib/format';
 	import {
 		addAttachment,
+		asFailure,
+		clearHistory,
 		exportAttachment,
 		openUrl,
 		removeAttachment,
@@ -61,6 +63,14 @@
 
 	let naming = $state(false);
 	let named = $state<HTMLInputElement>();
+	/**
+	 * A file the entry's own previous versions still hold, and the reason it
+	 * cannot go yet. The format keeps those versions inside the entry and the
+	 * library gives no way to rewrite one, so the only way the file can leave is
+	 * for the versions holding it to leave first - which is the reader's call
+	 * and nobody else's.
+	 */
+	let pinned = $state<{ name: string; message: string } | null>(null);
 
 	/** Runs a change and hands back what Rust now holds. */
 	async function change(run: () => Promise<Entry>) {
@@ -73,6 +83,35 @@
 
 	function write(field: string, value: string, protect: boolean) {
 		void change(() => setField(entry.id, field, value, protect));
+	}
+
+	/** Takes a file off, or says why it cannot go yet. */
+	async function detach(name: string) {
+		pinned = null;
+		try {
+			onChanged(await removeAttachment(entry.id, name));
+		} catch (thrown) {
+			const failure = asFailure(thrown);
+			if (failure.code === 'attachmentInHistory') {
+				pinned = { name, message: failure.message };
+			} else {
+				onFailure(thrown);
+			}
+		}
+	}
+
+	/** What the reader asked for, once they have said the versions may go. */
+	async function detachWithVersions() {
+		const name = pinned?.name;
+		pinned = null;
+		if (name === undefined) return;
+		try {
+			await clearHistory(entry.id);
+			onVersions([]);
+			onChanged(await removeAttachment(entry.id, name));
+		} catch (thrown) {
+			onFailure(thrown);
+		}
 	}
 
 	/** The name a standard field carries in the file. An entry that arrived
@@ -332,7 +371,7 @@
 					</button>
 					<button
 						type="button"
-						onclick={() => void change(() => removeAttachment(entry.id, attachment.name))}
+						onclick={() => void detach(attachment.name)}
 						class="shrink-0 text-txt4 transition-colors hover:text-danger"
 						aria-label="Remove {attachment.name}"
 					>
@@ -345,6 +384,30 @@
 				</p>
 			{/each}
 		</div>
+
+		{#if pinned}
+			<div class="mt-3 rounded-sm border border-hairline bg-surface2 p-3">
+				<p class="text-fine leading-relaxed text-txt2">
+					{pinned.message} of this entry. The file can go once they have.
+				</p>
+				<div class="mt-3 flex flex-wrap gap-2">
+					<button
+						type="button"
+						onclick={() => (pinned = null)}
+						class="h-9 rounded-full px-4 text-small text-txt3 transition-colors hover:text-txt2"
+					>
+						Keep the file
+					</button>
+					<button
+						type="button"
+						onclick={detachWithVersions}
+						class="h-9 rounded-full px-4 text-small text-danger transition-colors hover:bg-dangerwash"
+					>
+						Clear the versions and remove it
+					</button>
+				</div>
+			</div>
+		{/if}
 
 		<Versions
 			entry={entry.id}

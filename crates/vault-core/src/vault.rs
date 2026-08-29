@@ -575,6 +575,9 @@ impl Vault {
     }
 
     /// Puts a file on an entry, replacing one of the same name.
+    ///
+    /// No previous version is written; see [`Vault::remove_attachment`] for why
+    /// the files on an entry are not part of its history.
     pub fn add_attachment(
         &mut self,
         id: EntryId,
@@ -604,11 +607,10 @@ impl Vault {
         // Added as a protected value: the flag is what KeePassXC writes, and it
         // is what keeps the bytes in a buffer that wipes itself and prints
         // `[REDACTED]` rather than the file.
-        let name = name.to_owned();
         let value = Value::protected(data.to_vec());
-        history::edit(&mut self.database, id, move |entry| {
-            entry.add_attachment(name, value);
-        });
+        let mut entry = self.database.entry_mut(id).ok_or(VaultError::NoSuchEntry)?;
+        entry.add_attachment(name.to_owned(), value);
+        entry.times.last_modification = Some(Times::now());
 
         self.changed = true;
         Ok(())
@@ -616,10 +618,13 @@ impl Vault {
 
     /// Takes a file off an entry.
     ///
-    /// No previous version is written. A version records the entry as it was,
-    /// files included, and the file has just gone: the library cannot rewrite
-    /// what a version points at, so a version written here would name bytes
-    /// that are not in the database.
+    /// No previous version is written, and none is written when a file is added
+    /// either: **the files on an entry are not part of its history.** A version
+    /// records the entry as it was, files included, and the library gives no way
+    /// to change what a version points at, so a version written across a change
+    /// to the pool would name bytes that have moved or gone. Writing one on the
+    /// way in would also be the surest way to make the file impossible to take
+    /// off again.
     pub fn remove_attachment(&mut self, id: EntryId, name: &str) -> Result<(), VaultError> {
         self.writable()?;
         attachment::detach(&mut self.database, id, name)?;

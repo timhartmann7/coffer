@@ -530,10 +530,13 @@ fn a_file_an_earlier_version_still_holds_is_not_taken_away_from_it() {
         vault
             .add_attachment(id, "key.pem", Zeroizing::new(b"a private key".to_vec()))
             .expect("the file is added");
-        // An edit after the file was added writes a version that holds it.
+        // A change to the files writes no version. A change to a field does,
+        // and that version holds the file the entry had at the time.
+        assert!(vault.versions(id).is_empty());
         vault
             .set_field(id, fields::NOTES, NewValue::Open("edited".to_owned()))
             .expect("the note is written");
+        assert_eq!(vault.versions(id).len(), 1);
         vault.save().expect("the database saves");
         id
     };
@@ -1404,4 +1407,101 @@ fn a_name_out_of_a_database_is_made_into_one_a_save_panel_can_use() {
         size: 0,
     };
     assert!(long.file_name().chars().count() <= 200);
+}
+
+/// A file with nothing in it is still a file. The pool has to keep the name and
+/// the slot, and the round trip has to bring both back.
+#[test]
+fn a_file_with_no_bytes_in_it_survives_being_added_and_taken_away() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let path = built(scratch.path(), "empty.kdbx", |_| {});
+
+    let id = {
+        let mut vault = open(&path, BUILT_PASSWORD);
+        let root = root_of(&vault);
+        let id = vault.create_entry(root).expect("the entry is made");
+        vault
+            .add_attachment(id, "nothing.txt", Zeroizing::new(Vec::new()))
+            .expect("the file is added");
+        vault
+            .add_attachment(
+                id,
+                "something.txt",
+                Zeroizing::new(b"a byte or two".to_vec()),
+            )
+            .expect("the file is added");
+        vault.save().expect("the database saves");
+        id
+    };
+
+    {
+        let vault = open(&path, BUILT_PASSWORD);
+        assert_eq!(
+            vault
+                .attachment(id, "nothing.txt")
+                .expect("the file is there")
+                .expose(),
+            b""
+        );
+        assert_eq!(
+            vault
+                .attachment(id, "something.txt")
+                .expect("the file is there")
+                .expose(),
+            b"a byte or two"
+        );
+    }
+
+    // Taking the empty one away is taking away the file in the lower slot, so
+    // the one above it has to move down without changing hands.
+    {
+        let mut vault = open(&path, BUILT_PASSWORD);
+        vault
+            .remove_attachment(id, "nothing.txt")
+            .expect("the file is removed");
+        vault.save().expect("the database saves");
+    }
+
+    let vault = open(&path, BUILT_PASSWORD);
+    let entry = vault.entry(id).expect("the entry is there");
+    assert_eq!(entry.attachments.len(), 1);
+    assert_eq!(
+        vault
+            .attachment(id, "something.txt")
+            .expect("the file is there")
+            .expose(),
+        b"a byte or two"
+    );
+}
+
+/// Replacing a file by the same name is the shape that loses everything when it
+/// is left to the library: it takes the new number before it notices the name
+/// is taken, then destroys the old file and leaves the hole behind.
+#[test]
+fn a_file_replaced_by_one_of_the_same_name_keeps_the_new_bytes_and_the_pool() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let path = three_files(scratch.path());
+
+    {
+        let mut vault = open(&path, BUILT_PASSWORD);
+        let middle = only_entry(&vault, "entry 1");
+        vault
+            .add_attachment(middle, "file 1", Zeroizing::new(b"replaced".to_vec()))
+            .expect("the file is replaced");
+        vault.save().expect("the database saves");
+    }
+
+    let vault = open(&path, BUILT_PASSWORD);
+    assert_eq!(
+        files(&vault),
+        vec![
+            ("entry 0".to_owned(), "file 0".to_owned(), vec![0u8; 32]),
+            (
+                "entry 1".to_owned(),
+                "file 1".to_owned(),
+                b"replaced".to_vec()
+            ),
+            ("entry 2".to_owned(), "file 2".to_owned(), vec![2u8; 32]),
+        ]
+    );
 }

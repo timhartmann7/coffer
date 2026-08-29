@@ -44,6 +44,10 @@ enum Code {
     /// Coffer will not do this: an address in a scheme it does not open, or a
     /// value it cannot write.
     Refused,
+    /// The file cannot go while previous versions of the entry still hold it.
+    /// A code of its own, because the screen has something to offer here that
+    /// it has nowhere else: clearing those versions.
+    AttachmentInHistory,
     Io,
     Other,
 }
@@ -111,6 +115,7 @@ impl From<VaultError> for Failure {
                 Code::Damaged
             }
             VaultError::Locked(_) => Code::HeldByAnother,
+            VaultError::AttachmentInHistory { .. } => Code::AttachmentInHistory,
             VaultError::ExternalChange => Code::ExternalChange,
             VaultError::ReadOnlyKdb
             | VaultError::ReadOnlyKdbx3Attachments
@@ -125,7 +130,6 @@ impl From<VaultError> for Failure {
             VaultError::UnwritableText
             | VaultError::PasswordNotUtf8
             | VaultError::AbsurdKeyDerivation
-            | VaultError::AttachmentInHistory { .. }
             | VaultError::AttachmentPinned
             | VaultError::AttachmentTooLarge
             | VaultError::AttachmentOrder
@@ -184,7 +188,10 @@ mod tests {
             (VaultError::ExternalChange, "externalChange"),
             (VaultError::NoSuchGroup, "noSuchEntry"),
             (VaultError::NoSuchVersion, "noSuchEntry"),
-            (VaultError::AttachmentInHistory { versions: 2 }, "refused"),
+            (
+                VaultError::AttachmentInHistory { versions: 2 },
+                "attachmentInHistory",
+            ),
             (VaultError::AttachmentPinned, "refused"),
             (VaultError::AttachmentTooLarge, "refused"),
             (VaultError::CannotMoveRoot, "refused"),

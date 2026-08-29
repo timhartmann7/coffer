@@ -11,6 +11,7 @@ mod generate;
 mod history;
 mod normalise;
 mod open;
+mod probe;
 mod property;
 mod round_trip;
 mod save;

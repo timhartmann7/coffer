@@ -115,6 +115,12 @@ the screen branches on: `wrongCredentials`, `notADatabase`, `unsupportedFormat`,
 `damaged`, `heldByAnother`, `externalChange`, `readOnly`, `gone`, `tooLarge`,
 `noVault`, `noSuchEntry`, `refused`, `io`, `other`.
 
+`attachmentInHistory` is the one the entry screen has an answer for. Removing a
+file is refused while previous versions of the entry still hold it - the format
+keeps them inside the entry and nothing can rewrite one - so the screen offers
+to clear those versions and remove the file, which is the only sequence that
+works and is the reader's to choose.
+
 `externalChange` is the one the conflict dialog is built on. `save` answers with
 it when the file is not the one the vault was opened from, and nothing has been
 written at that point. The screen then has three ways out and each of them keeps
