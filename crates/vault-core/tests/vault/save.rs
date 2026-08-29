@@ -103,6 +103,38 @@ fn snapshots_rotate_and_stop_at_ten() {
 }
 
 #[test]
+fn a_rotation_that_died_half_way_recovers_on_the_next_save() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = built(scratch.path(), "cheap.kdbx", |db| {
+        db.root_mut()
+            .add_entry()
+            .edit(|entry| entry.set_unprotected(fields::TITLE, "one"));
+    });
+
+    // What a process killed between the shift and the capture leaves behind:
+    // slot 1 still occupied by the generation that should have moved on.
+    let first = snapshot::slot(&database, 1).expect("the slot has a path");
+    std::fs::write(&first, b"a snapshot from a rotation that never finished")
+        .expect("the slot is seeded");
+
+    let mut vault = open(&database, BUILT_PASSWORD);
+    let id = vault.tree().entries[0].id;
+    vault
+        .set_field(id, fields::NOTES, NewValue::Open("after".to_owned()))
+        .expect("the field is written");
+    vault.save().expect("the database saves");
+
+    // Slot 1 holds a database again, and the leftover moved down rather than
+    // being lost.
+    open(&first, BUILT_PASSWORD);
+    assert_eq!(
+        std::fs::read(snapshot::slot(&database, 2).expect("the slot has a path"))
+            .expect("the second slot is there"),
+        b"a snapshot from a rotation that never finished"
+    );
+}
+
+#[test]
 fn a_change_on_disk_stops_the_save() {
     let (_scratch, database) = support::scratch(RICH);
     let mut vault = open(&database, SECRET);
