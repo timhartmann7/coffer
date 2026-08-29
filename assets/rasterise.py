@@ -6,7 +6,7 @@ rounded rectangles, so a full SVG renderer is not needed to read them. The
 output is drawn at four times the size and scaled down, which is what gives the
 rounded corners their edges.
 
-    python3 assets/brand/rasterise.py assets/brand/coffer-icon-dark-accent.svg \
+    python3 assets/rasterise.py assets/brand/coffer-icon-dark-accent.svg \
         crates/vault-gui/icons/icon.png 1024
 """
 
