@@ -83,7 +83,7 @@
 			<div
 				class="mt-2 flex items-center gap-2 font-mono text-label tracking-label text-accent uppercase"
 			>
-				<span>Hidden in 0:{String(revealed.left).padStart(2, '0')}</span>
+				<span>Hides in 0:{String(revealed.left).padStart(2, '0')}</span>
 				<span class="h-[2px] w-16 overflow-hidden rounded-full bg-line">
 					<span class="block h-full w-full origin-left animate-drain-reveal rounded-full bg-accent"
 					></span>

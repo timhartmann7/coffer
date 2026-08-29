@@ -3,6 +3,7 @@
 	import { openUrl } from '$lib/ipc';
 	import type { Entry, Field, Group } from '$lib/model';
 	import Icon from './Icon.svelte';
+	import Mask from './Mask.svelte';
 	import PasswordField from './PasswordField.svelte';
 	import ProtectedValue from './ProtectedValue.svelte';
 
@@ -38,7 +39,11 @@
 			{path.map((group) => group.name).join(' · ')}
 		</div>
 		<h1 class="mt-2 truncate text-title font-medium tracking-tight text-txt">
-			{title?.value ?? ''}
+			{#if title && title.value === null}
+				<Mask />
+			{:else}
+				{title?.value ?? ''}
+			{/if}
 		</h1>
 	</header>
 

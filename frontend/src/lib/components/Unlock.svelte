@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { asFailure, chooseDatabase, chooseSnapshot, snapshots, unlock } from '$lib/ipc';
+	import { fully } from '$lib/format';
 	import type { Database, Failure, Snapshot } from '$lib/model';
 	import Icon from './Icon.svelte';
 
@@ -144,7 +145,7 @@
 						<p class="text-lead text-txt">{failure.message}</p>
 						{#if snapshot}
 							<p class="mt-2 text-small leading-relaxed text-txt2">
-								A snapshot Coffer took before one of its own saves sits beside it. It opens with the
+								A snapshot from {fully(snapshot.taken, new Date())} sits beside it. It opens with the
 								same password.
 							</p>
 						{/if}

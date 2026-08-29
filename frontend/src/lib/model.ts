@@ -21,7 +21,6 @@ export interface Status {
 
 /** A snapshot Coffer took before one of its own saves. */
 export interface Snapshot {
-	path: string;
 	name: string;
 	/** Which slot it sits in, counting from 1 for the most recent. */
 	index: number;
@@ -78,8 +77,6 @@ export interface Entry {
 	tags: string[];
 	created: string | null;
 	modified: string | null;
-	expires: string | null;
-	versions: number;
 }
 
 /** Everything a command can fail with. The message is already the sentence the

@@ -34,7 +34,6 @@ pub fn entry_id(text: &str) -> Result<model::EntryId, crate::error::Failure> {
 impl Snapshot {
     pub fn of(taken: &vault_core::storage::snapshot::Taken) -> Snapshot {
         Snapshot {
-            path: taken.path.to_string_lossy().into_owned(),
             name: taken
                 .path
                 .file_name()
@@ -72,7 +71,6 @@ pub struct Status {
 /// A snapshot Coffer took before one of its own saves.
 #[derive(Serialize)]
 pub struct Snapshot {
-    pub path: String,
     /// The file name, which is what the offer to open it says.
     pub name: String,
     /// Which slot it is in, counting from 1 for the most recent. This is what
@@ -219,10 +217,6 @@ pub struct Entry {
     pub tags: Vec<String>,
     pub created: Option<String>,
     pub modified: Option<String>,
-    pub expires: Option<String>,
-    /// How many previous versions the entry keeps. The versions themselves are
-    /// slice 3.
-    pub versions: usize,
 }
 
 impl Entry {
@@ -242,8 +236,6 @@ impl Entry {
             tags: entry.tags.clone(),
             created: stamp(entry.times.created),
             modified: stamp(entry.times.modified),
-            expires: stamp(entry.times.expires),
-            versions: entry.versions,
         }
     }
 }

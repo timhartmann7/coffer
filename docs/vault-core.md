@@ -178,20 +178,21 @@ conversion the first hard rule exists to prevent.
 
 ---
 
-## What slice 2 must take from here rather than invent
+## What the slices after this one must take from here rather than invent
 
-Two rules belong in `vault-core` and are not written yet, because writing them
-now would be a public function with no caller:
+**The URL scheme allowlist is written.** It is `vault_core::url::openable`:
+`http`, `https`, `mailto` and `ftp`, compared after the value has been trimmed
+and refused outright when a control character sits inside it. `vault-core` hands
+URL values back exactly as the file holds them, leading whitespace and mixed case
+included - `open::dangerous_url_schemes_are_handed_back_unchanged` pins that -
+which is why the check normalises before it compares and hands back the string it
+judged. `vault-gui::opener` is its only caller, and the entry screen asks it
+rather than deciding for itself.
 
-- **The URL scheme allowlist.** `SPEC.md` calls a `javascript:` URL in the URL
-  field "the one real code execution path in this application". `http`, `https`,
-  `mailto` and `ftp` are the allowed schemes. `vault-core` hands URL values back
-  exactly as the file holds them, leading whitespace and mixed case included -
-  `open::dangerous_url_schemes_are_handed_back_unchanged` pins that - so the
-  check has to normalise before it compares. Put it in `vault-core` with a table
-  test, and call it from the frontend.
-- **Attachment name sanitising.** Attachment names come from the file and may
-  contain anything: the fixture carries `../../escape.txt` and
-  `nested/path/name.txt`. `vault-core` returns them verbatim. Whatever turns one
-  into a path for the export dialog belongs in `vault-core` too, called from
-  there and from nowhere else.
+**Attachment name sanitising is not.** Attachment names come from the file and
+may contain anything: the fixture carries `../../escape.txt` and
+`nested/path/name.txt`. `vault-core` returns them verbatim, and slice 2 shows
+them and nothing more. Whatever turns one into a path for the export dialog
+belongs in `vault-core`, called from there and from nowhere else. Slice 3 writes
+it, along with the check that removing an attachment leaves the identifier space
+contiguous.

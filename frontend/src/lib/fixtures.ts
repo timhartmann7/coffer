@@ -61,8 +61,6 @@ export function entry(over: Partial<Entry> = {}): Entry {
 		tags: [],
 		created: null,
 		modified: null,
-		expires: null,
-		versions: 0,
 		...over
 	};
 }
