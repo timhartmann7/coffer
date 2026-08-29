@@ -63,6 +63,46 @@ pub fn slot(database: &Path, index: u32) -> Result<PathBuf, io::Error> {
     sibling(database, &format!(".{index}.bak"))
 }
 
+/// A snapshot that exists on disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Taken {
+    /// Which slot it is in, counting from 1 for the most recent.
+    pub index: u32,
+    pub path: PathBuf,
+    /// When it was taken, as far as the filesystem knows. Absent on a
+    /// filesystem that does not keep the time.
+    pub taken: Option<std::time::SystemTime>,
+}
+
+/// The snapshots beside `database`, most recent first.
+///
+/// A slot that is not there is skipped rather than reported: the chain is a
+/// history of saves, and a database saved three times has three of them. This
+/// is what the screen offers when a database will not open, so it asks about
+/// the file the user chose rather than about a database Coffer managed to read.
+pub fn taken(database: &Path) -> Result<Vec<Taken>, io::Error> {
+    let mut found = Vec::new();
+
+    for index in 1..=SNAPSHOT_COUNT {
+        let path = slot(database, index)?;
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+
+        if metadata.is_file() {
+            found.push(Taken {
+                index,
+                path,
+                taken: metadata.modified().ok(),
+            });
+        }
+    }
+
+    Ok(found)
+}
+
 fn remove_if_present(path: &Path) -> Result<(), io::Error> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),

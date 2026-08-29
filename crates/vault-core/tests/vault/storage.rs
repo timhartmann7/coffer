@@ -390,3 +390,73 @@ fn a_path_that_names_a_directory_is_refused() {
 
     assert!(matches!(error, vault_core::VaultError::Io(_)));
 }
+
+#[test]
+fn a_database_that_was_never_saved_has_no_snapshots() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = scratch.path().join("db.kdbx");
+    write(&database, "a file");
+
+    assert_eq!(snapshot::taken(&database).expect("the chain reads"), vec![]);
+}
+
+#[test]
+fn every_snapshot_is_offered_newest_first() {
+    let (_scratch, database) = support::scratch(support::RICH);
+    let mut vault = open(&database, support::SECRET);
+
+    for _ in 0..3 {
+        vault.save().expect("the database saves");
+    }
+
+    let taken = snapshot::taken(&database).expect("the chain reads");
+    assert_eq!(
+        taken
+            .iter()
+            .map(|snapshot| snapshot.index)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    for snapshot in &taken {
+        assert!(snapshot.path.exists());
+        assert!(snapshot.taken.is_some());
+    }
+}
+
+/// The chain is written from the oldest slot towards the newest, so a process
+/// killed part way through can leave a hole in it. A hole is not a reason to
+/// stop offering the snapshots that are there.
+#[test]
+fn a_hole_in_the_chain_does_not_hide_the_rest_of_it() {
+    let (_scratch, database) = support::scratch(support::RICH);
+    let mut vault = open(&database, support::SECRET);
+
+    for _ in 0..3 {
+        vault.save().expect("the database saves");
+    }
+
+    std::fs::remove_file(snapshot::slot(&database, 2).expect("the slot has a path"))
+        .expect("the snapshot is removed");
+
+    let taken = snapshot::taken(&database).expect("the chain reads");
+    assert_eq!(
+        taken
+            .iter()
+            .map(|snapshot| snapshot.index)
+            .collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+}
+
+/// Somebody can put anything beside a database, and a directory named like a
+/// snapshot is not one.
+#[test]
+fn something_that_is_not_a_file_is_not_a_snapshot() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = scratch.path().join("db.kdbx");
+    write(&database, "a file");
+    std::fs::create_dir(snapshot::slot(&database, 1).expect("the slot has a path"))
+        .expect("the directory is made");
+
+    assert_eq!(snapshot::taken(&database).expect("the chain reads"), vec![]);
+}
