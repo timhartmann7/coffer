@@ -571,7 +571,7 @@ fn a_file_an_earlier_version_still_holds_is_not_taken_away_from_it() {
         "a file an earlier version holds was removed anyway"
     );
     assert!(
-        vault.attachment(id, "key.pem").is_some(),
+        vault.attachment(id, "key.pem").is_ok(),
         "the refusal took the file anyway"
     );
 
@@ -1580,4 +1580,124 @@ fn taking_the_last_name_off_a_shared_file_moves_everything_above_it_down() {
             .collect::<Vec<_>>(),
         "closing the pool up handed a file to the wrong entry"
     );
+}
+
+/// The names on a KDBX 3 entry are the file's; the bytes behind them are not.
+/// The reader collapses every attachment in one of those onto a single file, so
+/// an entry whose row says one thing would hand over another entry's key.
+#[test]
+fn the_files_in_a_keepass_3_database_are_not_handed_out_at_all() {
+    let (_scratch, database) = support::scratch("rich-kdbx31.kdbx");
+    let vault = open(&database, SECRET);
+
+    let entry = support::all_entries(&vault)
+        .into_iter()
+        .find(|summary| summary.attachments > 0)
+        .expect("the fixture has an entry with a file on it");
+    let entry = vault.entry(entry.id).expect("the entry is there");
+    let name = &entry
+        .attachments
+        .first()
+        .expect("the entry has a file")
+        .name;
+
+    assert!(matches!(
+        vault.attachment(entry.id, name),
+        Err(VaultError::UnreadableAttachments)
+    ));
+
+    // A KDBX 4 database hands the same file over without a word.
+    let (_other, fourth) = support::scratch(RICH);
+    let vault = open(&fourth, SECRET);
+    let id = only_entry(&vault, "ssh key");
+    assert!(
+        vault
+            .attachment(id, "id_ed25519")
+            .expect("the file comes back")
+            .expose()
+            .starts_with(b"-----BEGIN OPENSSH PRIVATE KEY-----")
+    );
+}
+
+/// A database that is not there any more, and a reader who says to write it
+/// back anyway. The file goes back where it was rather than the save failing on
+/// a stamp of something that is gone.
+#[test]
+fn a_database_somebody_deleted_is_written_back_when_the_reader_asks() {
+    let (_scratch, database) = support::scratch(RICH);
+    let mut vault = open(&database, SECRET);
+    let id = only_entry(&vault, "basic");
+
+    vault
+        .set_field(id, fields::NOTES, NewValue::Open("ours".to_owned()))
+        .expect("the note is written");
+    std::fs::remove_file(&database).expect("the database is deleted");
+
+    assert!(matches!(vault.save(), Err(VaultError::DatabaseGone)));
+    vault
+        .save_over()
+        .expect("writing it back is allowed once asked");
+    drop(vault);
+
+    let vault = open(&database, SECRET);
+    assert_eq!(
+        vault
+            .entry(id)
+            .expect("the entry is there")
+            .field(fields::NOTES)
+            .and_then(|field| field.value.open()),
+        Some("ours")
+    );
+}
+
+/// A version is addressed by its position, and a save brings every entry's
+/// history inside the database's limits. So a save moves the positions, and a
+/// list of versions read before one names versions that are no longer there.
+/// Whoever holds that list has to read it again afterwards.
+#[test]
+fn a_save_moves_the_positions_a_version_list_was_read_at() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let path = built(scratch.path(), "versions.kdbx", |database| {
+        let id = database
+            .root_mut()
+            .add_entry()
+            .edit(|entry| entry.set_unprotected(fields::TITLE, "subject"))
+            .id();
+
+        // Twelve versions against the default limit of ten, each a minute apart
+        // so that the order is not a matter of which one ties with which.
+        for round in 0..12u32 {
+            let mut entry = database.entry_mut(id).expect("the entry is there");
+            entry.edit_tracking(|entry| {
+                entry.set_unprotected(fields::USERNAME, format!("user {round}"));
+            });
+            entry.times.last_modification = chrono::NaiveDate::from_ymd_opt(2024, 1, 1)
+                .and_then(|day| day.and_hms_opt(0, 0, 0))
+                .map(|moment| moment + chrono::Duration::minutes(i64::from(round)));
+        }
+    });
+
+    let mut vault = open(&path, BUILT_PASSWORD);
+    let id = only_entry(&vault, "subject");
+    assert_eq!(vault.versions(id).len(), 12);
+
+    let read_before: Vec<usize> = vault
+        .versions(id)
+        .into_iter()
+        .map(|version| version.index)
+        .collect();
+
+    vault.save().expect("the database saves");
+
+    let read_after = vault.versions(id);
+    assert_eq!(read_after.len(), 10, "the save did not prune to the limit");
+    assert!(
+        read_after.len() < read_before.len(),
+        "the positions the list was read at are not the positions there are now"
+    );
+    // The two the limit dropped are the two oldest, and the list is the ten that
+    // are left, addressable again from where they are now.
+    for version in read_after {
+        assert!(vault.version(id, version.index).is_some());
+    }
 }

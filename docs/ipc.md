@@ -89,6 +89,12 @@ have one-second resolution, so two versions written in the same second are
 indistinguishable by date, and the list is ordered by date rather than by
 position because a file another client wrote may hold them in any order.
 
+**A save moves those positions,** because it brings every entry's history inside
+the database's limits, so a list read before a save names versions that are no
+longer there. The window reads the list back after the save rather than before
+it, which is why every change is `save` and then `versions` and never the other
+way round.
+
 **`add_attachment` and `export_attachment` open their panel in Rust.** The
 bytes of a file never cross in either direction and neither does a path: the
 webview asks, the reader picks, and Rust reads or writes. The name a save panel

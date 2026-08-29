@@ -1,10 +1,9 @@
 <script lang="ts">
 	import { fully } from '$lib/format';
 	import { clearHistory, deleteVersion, restoreVersion, revealVersion, version } from '$lib/ipc';
-	import type { Entry, Field, Version } from '$lib/model';
-	import { Revealed } from '$lib/reveal.svelte';
+	import type { Entry, Version } from '$lib/model';
 	import Icon from './Icon.svelte';
-	import Mask from './Mask.svelte';
+	import ProtectedValue from './ProtectedValue.svelte';
 
 	/**
 	 * What the entry held before, closed until it is asked for.
@@ -21,6 +20,7 @@
 		entry,
 		versions,
 		now,
+		readOnly,
 		onVersions,
 		onChanged,
 		onFailure
@@ -28,8 +28,11 @@
 		entry: string;
 		versions: Version[];
 		now: Date;
+		/** A database Coffer will not write back: a version can be read and not
+		 * restored, dropped or cleared. */
+		readOnly: boolean;
 		onVersions: (versions: Version[]) => void;
-		onChanged: (entry: Entry) => void;
+		onChanged: (entry: Entry) => Promise<void>;
 		onFailure: (thrown: unknown) => void;
 	} = $props();
 
@@ -37,24 +40,27 @@
 	let showing = $state<{ index: number; entry: Entry } | null>(null);
 	let confirming = $state(false);
 
-	const revealed = new Revealed();
-	let node = $state<HTMLElement>();
-
 	// Another entry is another history. Whatever is on the screen goes with it.
 	$effect(() => {
 		void entry;
-		return () => {
-			revealed.hide();
-			showing = null;
-			confirming = false;
-		};
+		showing = null;
+		confirming = false;
+	});
+
+	/**
+	 * A version is addressed by its position, and dropping one moves every
+	 * position after it. Anything open when the list changes is showing a
+	 * version by a number that may now name a different one, so it closes.
+	 */
+	$effect(() => {
+		void versions;
+		showing = null;
 	});
 
 	/** Newest first: what a reader looks for is what changed last. */
 	const listed = $derived([...versions].reverse());
 
 	async function view(index: number) {
-		revealed.hide();
 		if (showing?.index === index) {
 			showing = null;
 			return;
@@ -69,7 +75,7 @@
 	async function restore(index: number) {
 		try {
 			showing = null;
-			onChanged(await restoreVersion(entry, index));
+			await onChanged(await restoreVersion(entry, index));
 		} catch (thrown) {
 			onFailure(thrown);
 		}
@@ -77,7 +83,7 @@
 
 	async function drop(index: number) {
 		try {
-			if (showing?.index === index) showing = null;
+			showing = null;
 			onVersions(await deleteVersion(entry, index));
 		} catch (thrown) {
 			onFailure(thrown);
@@ -89,16 +95,6 @@
 			confirming = false;
 			showing = null;
 			onVersions(await clearHistory(entry));
-		} catch (thrown) {
-			onFailure(thrown);
-		}
-	}
-
-	async function show(field: Field) {
-		if (!node || !showing) return;
-		const index = showing.index;
-		try {
-			await revealed.show(node, entry, field.name, (of, name) => revealVersion(of, index, name));
 		} catch (thrown) {
 			onFailure(thrown);
 		}
@@ -138,48 +134,41 @@
 						>
 							{here ? 'Close' : 'View'}
 						</button>
-						<button
-							type="button"
-							onclick={() => restore(version.index)}
-							class="text-fine text-txt3 transition-colors hover:text-txt"
-						>
-							Restore
-						</button>
-						<button
-							type="button"
-							onclick={() => drop(version.index)}
-							class="text-txt4 transition-colors hover:text-danger"
-							aria-label="Delete this version"
-						>
-							<Icon name="trash" class="h-4 w-4" />
-						</button>
+						{#if !readOnly}
+							<button
+								type="button"
+								onclick={() => restore(version.index)}
+								class="text-fine text-txt3 transition-colors hover:text-txt"
+							>
+								Restore
+							</button>
+							<button
+								type="button"
+								onclick={() => drop(version.index)}
+								class="text-txt4 transition-colors hover:text-danger"
+								aria-label="Delete this version"
+							>
+								<Icon name="trash" class="h-4 w-4" />
+							</button>
+						{/if}
 					</div>
 
 					{#if here && showing}
+						{@const at = showing.index}
 						<div class="border-t border-hairline px-3 py-3">
 							{#each showing.entry.fields as field (field.name)}
 								<div class="mt-1.5 flex items-start gap-3 first:mt-0">
 									<span class="w-24 shrink-0 truncate text-fine text-txt3">{field.name}</span>
 									{#if field.value === null && !field.empty}
-										<span class="min-w-0 flex-1 overflow-hidden">
-											{#if !revealed.showing}
-												<Mask />
-											{/if}
-											<!-- The value lives here and nowhere else. -->
-											<span
-												bind:this={node}
-												data-value
-												class="block font-mono text-fine break-all text-txt select-text"
-											></span>
-										</span>
-										<button
-											type="button"
-											onclick={() => show(field)}
-											class="shrink-0 text-txt4 transition-colors hover:text-txt2"
-											aria-label="Show {field.name} as it was"
-										>
-											<Icon name="eye" class="h-4 w-4" />
-										</button>
+										<!-- One of these per value, each holding its own node, so the
+										     value that was asked for cannot land in another row. -->
+										<ProtectedValue
+											{entry}
+											field={field.name}
+											label="{field.name} as it was"
+											read={(of, name) => revealVersion(of, at, name)}
+											{onFailure}
+										/>
 									{:else}
 										<span
 											class="min-w-0 flex-1 font-mono text-fine break-all whitespace-pre-wrap text-txt2 select-text"
@@ -198,7 +187,9 @@
 			{/each}
 
 			<div class="mt-3">
-				{#if confirming}
+				{#if readOnly}
+					<!-- Nothing to offer: this database is not written back. -->
+				{:else if confirming}
 					<div class="flex flex-wrap items-center gap-2">
 						<span class="text-fine text-txt2">
 							Drop all {versions.length} versions? What the entry holds now stays.

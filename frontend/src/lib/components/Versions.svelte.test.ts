@@ -37,6 +37,7 @@ function show(props: Record<string, unknown> = {}) {
 			entry: 'an-entry',
 			versions: listed,
 			now: new Date('2026-08-29T14:30:00Z'),
+			readOnly: false,
 			onVersions: vi.fn(),
 			onChanged: vi.fn(),
 			onFailure: vi.fn(),
@@ -176,6 +177,82 @@ it('asks before it drops every version', async () => {
 	button('Clear the history').click();
 	await vi.waitFor(() => expect(ipc.clearHistory).toHaveBeenCalledWith('an-entry'));
 	expect(onVersions).toHaveBeenCalledWith([]);
+
+	return unmount(component);
+});
+
+/**
+ * Every protected value in an expanded version holds its own node. One node
+ * shared between the rows would put the value of the field that was asked for
+ * into the row of the field that was not - the reader clicks the eye beside
+ * "Password" and reads it under "API token".
+ */
+it('puts a revealed value in the row it was asked for', async () => {
+	ipc.version.mockResolvedValue(
+		entry({
+			fields: [
+				field({ name: 'API token', kind: 'custom', value: null, empty: false }),
+				field({ name: 'Password', kind: 'password', value: null, empty: false })
+			]
+		})
+	);
+	ipc.revealVersion.mockImplementation((_entry: string, _index: number, name: string) =>
+		Promise.resolve(`the ${name}`)
+	);
+
+	const component = show();
+	open();
+	button('View').click();
+	await vi.waitFor(() => expect(host.querySelectorAll('[data-value]')).toHaveLength(2));
+	flushSync();
+
+	const rows = [...host.querySelectorAll('[data-value]')];
+	host.querySelector<HTMLButtonElement>('[aria-label="Show Password as it was"]')?.click();
+	await vi.waitFor(() => expect(host.textContent).toContain('the Password'));
+	flushSync();
+
+	expect(rows[0].textContent).toBe('');
+	expect(rows[1].textContent).toBe('the Password');
+
+	return unmount(component);
+});
+
+/**
+ * A version is addressed by its position, and dropping one moves every position
+ * after it. A panel left open on a number that now names a different version
+ * would show one version's fields and reveal another's values.
+ */
+it('closes an open version when the list underneath it changes', async () => {
+	ipc.version.mockResolvedValue(entry({ fields: [field({ name: 'Title', value: 'was' })] }));
+	ipc.deleteVersion.mockResolvedValue([listed[0], listed[1]]);
+
+	const component = show();
+	open();
+
+	button('View').click();
+	await vi.waitFor(() => expect(host.textContent).toContain('A version is read only'));
+	flushSync();
+
+	host.querySelectorAll<HTMLButtonElement>('[aria-label="Delete this version"]')[2]?.click();
+	await vi.waitFor(() => expect(ipc.deleteVersion).toHaveBeenCalled());
+	flushSync();
+
+	expect(host.textContent).not.toContain('A version is read only');
+
+	return unmount(component);
+});
+
+/** A database Coffer will not write back has versions to read and nothing to
+ * do to them. */
+it('offers nothing but a look on a database it cannot write', () => {
+	const component = show({ readOnly: true });
+	open();
+
+	const named = [...host.querySelectorAll('button')].map((each) => each.textContent?.trim());
+	expect(named).toContain('View');
+	expect(named).not.toContain('Restore');
+	expect(named).not.toContain('Clear the history');
+	expect(host.querySelector('[aria-label="Delete this version"]')).toBeNull();
 
 	return unmount(component);
 });

@@ -5,6 +5,7 @@ import Vault from './Vault.svelte';
 
 const ipc = vi.hoisted(() => ({
 	entry: vi.fn(),
+	tree: vi.fn(),
 	setField: vi.fn(),
 	copy: vi.fn(),
 	createEntry: vi.fn(),
@@ -14,6 +15,19 @@ const ipc = vi.hoisted(() => ({
 	renameGroup: vi.fn(),
 	emptyRecycleBin: vi.fn(),
 	versions: vi.fn(),
+	version: vi.fn(),
+	revealVersion: vi.fn(),
+	restoreVersion: vi.fn(),
+	deleteVersion: vi.fn(),
+	clearHistory: vi.fn(),
+	reveal: vi.fn(),
+	openUrl: vi.fn(),
+	removeField: vi.fn(),
+	setTags: vi.fn(),
+	addAttachment: vi.fn(),
+	exportAttachment: vi.fn(),
+	removeAttachment: vi.fn(),
+	generatePassword: vi.fn(),
 	save: vi.fn(),
 	saveOver: vi.fn(),
 	saveCopy: vi.fn(),
@@ -51,6 +65,7 @@ beforeEach(() => {
 	ipc.copy.mockResolvedValue(60);
 	ipc.versions.mockResolvedValue([]);
 	ipc.save.mockResolvedValue(undefined);
+	ipc.tree.mockResolvedValue(root);
 });
 
 afterEach(() => {
@@ -415,6 +430,115 @@ it('offers no change at all on a database it cannot write', () => {
 	expect(named).not.toContain('Entry');
 	expect(host.querySelector('[aria-label="New folder"]')).toBeNull();
 	expect(host.textContent).toContain('Read only');
+
+	return unmount(component);
+});
+
+/**
+ * There is no save button, so every change has to reach the file by itself.
+ * Dropping a version and clearing a history are changes like any other: a
+ * screen that left them in memory would lose them at the next lock.
+ */
+it('writes the file after a version is dropped', async () => {
+	ipc.entry.mockResolvedValue(entry({ id: kept.id, group: root.id }));
+	ipc.versions.mockResolvedValue([{ index: 0, modified: '2021-06-02T12:00:00Z' }]);
+	ipc.deleteVersion.mockResolvedValue([]);
+
+	const component = open();
+	flushSync();
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('node-3'))
+		?.click();
+	await vi.waitFor(() => expect(ipc.versions).toHaveBeenCalled());
+	flushSync();
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('Versions'))
+		?.click();
+	flushSync();
+
+	expect(ipc.save).not.toHaveBeenCalled();
+	host.querySelector<HTMLButtonElement>('[aria-label="Delete this version"]')?.click();
+	await vi.waitFor(() => expect(ipc.save).toHaveBeenCalledTimes(1));
+
+	return unmount(component);
+});
+
+/**
+ * A row in the list is drawn from the tree. An edit that changed the pane and
+ * not the tree would leave the list and the search index holding a value that
+ * is no longer in the file.
+ */
+it('redraws the list after an entry is edited', async () => {
+	const renamed = { ...kept, title: 'node-4' };
+	ipc.entry.mockResolvedValue(
+		entry({
+			id: kept.id,
+			group: root.id,
+			fields: [field({ name: 'Title', kind: 'title', value: 'node-3', empty: false })]
+		})
+	);
+	ipc.setField.mockResolvedValue(
+		entry({
+			id: kept.id,
+			group: root.id,
+			fields: [field({ name: 'Title', kind: 'title', value: 'node-4', empty: false })]
+		})
+	);
+	ipc.tree.mockResolvedValue(group({ ...root, entries: [renamed], sections: [] }));
+
+	const onTree = vi.fn();
+	const component = open({ onTree });
+	flushSync();
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('node-3'))
+		?.click();
+	await vi.waitFor(() => expect(ipc.entry).toHaveBeenCalled());
+	flushSync();
+
+	const title = host.querySelector('h1 input') as HTMLInputElement;
+	title.value = 'node-4';
+	title.dispatchEvent(new Event('blur'));
+
+	await vi.waitFor(() => expect(ipc.tree).toHaveBeenCalled());
+	await vi.waitFor(() =>
+		expect(onTree).toHaveBeenCalledWith(expect.objectContaining({ entries: [renamed] }))
+	);
+
+	return unmount(component);
+});
+
+/**
+ * The two copy shortcuts act on the entry that is open. A reader who has
+ * selected something in a field is copying that, and the platform's own copy
+ * has to be the one that happens.
+ */
+it('leaves a copy made inside a field to the field', async () => {
+	ipc.entry.mockResolvedValue(
+		entry({
+			id: kept.id,
+			group: root.id,
+			fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+		})
+	);
+
+	const component = open();
+	flushSync();
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('node-3'))
+		?.click();
+	await vi.waitFor(() => expect(ipc.entry).toHaveBeenCalled());
+	flushSync();
+
+	const writing = host.querySelector('input') as HTMLInputElement;
+	const pressed = new KeyboardEvent('keydown', { key: 'c', metaKey: true, bubbles: true });
+	writing.dispatchEvent(pressed);
+	flushSync();
+
+	expect(ipc.copy).not.toHaveBeenCalled();
+	expect(pressed.defaultPrevented).toBe(false);
 
 	return unmount(component);
 });

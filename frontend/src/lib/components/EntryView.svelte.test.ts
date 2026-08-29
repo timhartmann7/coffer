@@ -53,6 +53,7 @@ function show(entryOver: Parameters<typeof entry>[0]) {
 			path: [group({ name: 'Work' })],
 			versions: [],
 			now: new Date('2026-08-29T14:30:00Z'),
+			readOnly: false,
 			onCopy: vi.fn(),
 			onChanged: vi.fn(),
 			onVersions: vi.fn(),
@@ -373,6 +374,7 @@ it('shows a file under the name the database holds and exports it under a safe o
 			path: [group({ name: 'Work' })],
 			versions: [],
 			now: new Date('2026-08-29T14:30:00Z'),
+			readOnly: false,
 			onCopy: vi.fn(),
 			onChanged,
 			onVersions: vi.fn(),
@@ -445,6 +447,7 @@ it('offers to clear the versions that are holding a file back', async () => {
 			path: [group({ name: 'Work' })],
 			versions: [],
 			now: new Date('2026-08-29T14:30:00Z'),
+			readOnly: false,
 			onCopy: vi.fn(),
 			onChanged,
 			onVersions,
@@ -466,6 +469,134 @@ it('offers to clear the versions that are holding a file back', async () => {
 	await vi.waitFor(() => expect(ipc.clearHistory).toHaveBeenCalledTimes(1));
 	await vi.waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
 	expect(onVersions).toHaveBeenCalledWith([]);
+
+	return unmount(component);
+});
+
+/**
+ * Writing a field writes over whatever that name held. A "new" field named
+ * after one the entry already has would empty it - and typing `Password` would
+ * empty the password.
+ */
+it('refuses a new field named after one the entry already has', async () => {
+	const onFailure = vi.fn();
+	const component = mount(EntryView, {
+		target: host,
+		props: {
+			entry: entry({
+				fields: [
+					field({ name: 'Password', kind: 'password', value: null, empty: false }),
+					field({ name: 'Notes', kind: 'notes', value: 'root access', empty: false })
+				]
+			}),
+			path: [group({ name: 'Work' })],
+			versions: [],
+			now: new Date('2026-08-29T14:30:00Z'),
+			readOnly: false,
+			onCopy: vi.fn(),
+			onChanged: vi.fn(),
+			onVersions: vi.fn(),
+			onDelete: vi.fn(),
+			onFailure
+		}
+	});
+	flushSync();
+
+	host.querySelector<HTMLButtonElement>('[aria-label="Add a field"]')?.click();
+	flushSync();
+
+	const named = host.querySelector('[aria-label="The name of the new field"]') as HTMLInputElement;
+	named.value = 'Notes';
+	named.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+	flushSync();
+
+	expect(ipc.setField).not.toHaveBeenCalled();
+	expect(onFailure).toHaveBeenCalledWith(
+		expect.objectContaining({ message: expect.stringContaining('already has a field') })
+	);
+
+	return unmount(component);
+});
+
+/**
+ * The pane is one component that another entry is handed to, so anything it is
+ * saying about the entry that was open has to go with that entry. A banner
+ * offering to clear a history would otherwise clear the wrong one.
+ */
+it('says nothing about the entry that was open once another one is', async () => {
+	ipc.removeAttachment.mockRejectedValue({
+		code: 'attachmentInHistory',
+		message: '2 earlier versions still hold that file'
+	});
+
+	// A props object the test can change, which is how the window hands the pane
+	// another entry.
+	const props = $state({
+		entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
+		path: [group({ name: 'Work' })],
+		versions: [],
+		now: new Date('2026-08-29T14:30:00Z'),
+		readOnly: false,
+		onCopy: vi.fn(),
+		onChanged: vi.fn(),
+		onVersions: vi.fn(),
+		onDelete: vi.fn(),
+		onFailure: vi.fn()
+	});
+	const component = mount(EntryView, { target: host, props });
+	flushSync();
+
+	host.querySelector<HTMLButtonElement>('[aria-label="Remove id_ed25519"]')?.click();
+	await vi.waitFor(() => expect(host.textContent).toContain('2 earlier versions still hold'));
+	flushSync();
+
+	props.entry = entry({ attachments: [attachment({ name: 'other.pem' })] });
+	flushSync();
+
+	expect(host.textContent).not.toContain('2 earlier versions still hold');
+
+	return unmount(component);
+});
+
+/** A database Coffer will not write back has values to read and copy, and
+ * nothing at all to change. */
+it('offers no change on a database it cannot write', () => {
+	const component = mount(EntryView, {
+		target: host,
+		props: {
+			entry: entry({
+				fields: [
+					field({ name: 'Title', kind: 'title', value: 'node-3', empty: false }),
+					field({ name: 'Password', kind: 'password', value: null, empty: false })
+				],
+				tags: ['prod'],
+				attachments: [attachment({ name: 'id_ed25519' })]
+			}),
+			path: [group({ name: 'Work' })],
+			versions: [],
+			now: new Date('2026-08-29T14:30:00Z'),
+			readOnly: true,
+			onCopy: vi.fn(),
+			onChanged: vi.fn(),
+			onVersions: vi.fn(),
+			onDelete: vi.fn(),
+			onFailure: vi.fn()
+		}
+	});
+	flushSync();
+
+	expect(host.textContent).toContain('node-3');
+	expect(host.querySelector('[aria-label="Delete this entry"]')).toBeNull();
+	expect(host.querySelector('[aria-label="Add a field"]')).toBeNull();
+	expect(host.querySelector('[aria-label="Add a file"]')).toBeNull();
+	expect(host.querySelector('[aria-label="Remove id_ed25519"]')).toBeNull();
+	expect(host.querySelector('[aria-label="Remove the tag prod"]')).toBeNull();
+
+	// Only the password field, which is not editable until it is revealed.
+	const named = [...host.querySelectorAll('button')].map((each) => each.textContent?.trim());
+	expect(named).toContain('Show');
+	expect(named).not.toContain('Make one');
+	expect(named).not.toContain('+ tag');
 
 	return unmount(component);
 });

@@ -17,6 +17,7 @@
 		multiline = false,
 		mono = false,
 		classes = 'text-body text-txt',
+		readonly = false,
 		onCommit
 	}: {
 		value: string;
@@ -28,13 +29,23 @@
 		/** The type this value is drawn in. A title is a title wherever it is
 		 * being edited. */
 		classes?: string;
-		onCommit: (value: string) => void;
+		/** A database Coffer will not write back is one nothing here may offer to
+		 * change. */
+		readonly?: boolean;
+		/** Answers whether the value was taken. A value that was refused is put
+		 * back, so that the screen never shows something the vault does not have.
+		 */
+		onCommit: (value: string) => Promise<boolean>;
 	} = $props();
 
 	let node = $state<HTMLInputElement | HTMLTextAreaElement>();
 
-	function commit() {
-		if (node && node.value !== value) onCommit(node.value);
+	async function commit() {
+		if (!node || node.value === value) return;
+		const taken = await onCommit(node.value);
+		// A refusal leaves the vault as it was, so the field goes back to what
+		// the vault has rather than standing there showing something else.
+		if (!taken && node) node.value = value;
 	}
 
 	function keys(event: KeyboardEvent) {
@@ -50,7 +61,15 @@
 	}
 </script>
 
-{#if multiline}
+{#if readonly}
+	<span
+		class="min-w-0 flex-1 px-2 py-1 break-words whitespace-pre-wrap select-text {classes} {mono
+			? 'font-mono'
+			: ''}"
+	>
+		{value === '' ? placeholder : value}
+	</span>
+{:else if multiline}
 	<textarea
 		bind:this={node}
 		{value}

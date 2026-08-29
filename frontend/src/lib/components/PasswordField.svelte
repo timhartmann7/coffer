@@ -19,6 +19,7 @@
 		field,
 		empty,
 		protect,
+		readOnly,
 		onCopy,
 		onCommit,
 		onFailure
@@ -29,6 +30,9 @@
 		/** Whether the database keeps this value protected. It goes back with the
 		 * edit so the file does not quietly lose the protection. */
 		protect: boolean;
+		/** A database Coffer will not write back: the value can still be shown
+		 * and copied, and nothing here offers to change it. */
+		readOnly: boolean;
 		onCopy: (field: string) => void;
 		onCommit: (field: string, value: string, protect: boolean) => void;
 		onFailure: (thrown: unknown) => void;
@@ -66,6 +70,7 @@
 		// An entry with no password has nothing to reveal, and asking for one
 		// would be asking for a field the file may not even carry.
 		if (empty) {
+			if (readOnly) return;
 			writing = true;
 			node.value = '';
 			await tick();
@@ -99,7 +104,7 @@
 	 * real one.
 	 */
 	function commit() {
-		if (!node || !live) return;
+		if (!node || !live || readOnly) return;
 		const written = node.value;
 		close();
 		onCommit(field, written, protect);
@@ -144,6 +149,7 @@
 				spellcheck="false"
 				aria-label="Password"
 				hidden={!live}
+				readonly={readOnly}
 				onblur={commit}
 				onkeydown={keys}
 				class="block w-full rounded-sm border border-transparent bg-transparent font-mono text-body leading-snug text-txt transition-colors outline-none select-text focus:border-accent focus:bg-surface2 focus:ring-4 focus:ring-accent/15"
@@ -156,7 +162,7 @@
 			class="flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 text-fine text-txt2 transition-colors hover:border-txt3 hover:text-txt"
 		>
 			<Icon name={live ? 'eye-off' : 'eye'} class="h-3.5 w-3.5" />
-			<span>{live ? 'Hide' : empty ? 'Set one' : 'Show'}</span>
+			<span>{live ? 'Hide' : empty && !readOnly ? 'Set one' : 'Show'}</span>
 		</button>
 		<button
 			type="button"
@@ -166,13 +172,15 @@
 		>
 			<Icon name="copy" class="h-3.5 w-3.5" /> Copy
 		</button>
-		<button
-			type="button"
-			onclick={() => (generating = !generating)}
-			class="flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 text-fine text-txt2 transition-colors hover:border-txt3 hover:text-txt"
-		>
-			<Icon name="refresh" class="h-3.5 w-3.5" /> Make one
-		</button>
+		{#if !readOnly}
+			<button
+				type="button"
+				onclick={() => (generating = !generating)}
+				class="flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 text-fine text-txt2 transition-colors hover:border-txt3 hover:text-txt"
+			>
+				<Icon name="refresh" class="h-3.5 w-3.5" /> Make one
+			</button>
+		{/if}
 	</div>
 
 	{#if revealed.showing}

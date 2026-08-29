@@ -33,6 +33,7 @@
 		path,
 		versions,
 		now,
+		readOnly,
 		onCopy,
 		onChanged,
 		onVersions,
@@ -45,8 +46,11 @@
 		path: Group[];
 		versions: Version[];
 		now: Date;
+		/** A database Coffer will not write back. Nothing here offers a change
+		 * that would only be refused. */
+		readOnly: boolean;
 		onCopy: (entry: string, field: string) => void;
-		onChanged: (entry: Entry) => void;
+		onChanged: (entry: Entry) => Promise<void>;
 		onVersions: (versions: Version[]) => void;
 		onDelete: () => void;
 		onFailure: (thrown: unknown) => void;
@@ -72,24 +76,35 @@
 	 */
 	let pinned = $state<{ name: string; message: string } | null>(null);
 
-	/** Runs a change and hands back what Rust now holds. */
-	async function change(run: () => Promise<Entry>) {
+	// Another entry is another set of answers. A banner about a file on the
+	// entry that was open would otherwise still be on the screen under the next
+	// one, offering to clear the wrong entry's history.
+	$effect(() => {
+		void entry.id;
+		pinned = null;
+		naming = false;
+	});
+
+	/** Runs a change and says whether it was taken. */
+	async function change(run: () => Promise<Entry>): Promise<boolean> {
 		try {
-			onChanged(await run());
+			await onChanged(await run());
+			return true;
 		} catch (thrown) {
 			onFailure(thrown);
+			return false;
 		}
 	}
 
-	function write(field: string, value: string, protect: boolean) {
-		void change(() => setField(entry.id, field, value, protect));
+	function write(field: string, value: string, protect: boolean): Promise<boolean> {
+		return change(() => setField(entry.id, field, value, protect));
 	}
 
 	/** Takes a file off, or says why it cannot go yet. */
 	async function detach(name: string) {
 		pinned = null;
 		try {
-			onChanged(await removeAttachment(entry.id, name));
+			await onChanged(await removeAttachment(entry.id, name));
 		} catch (thrown) {
 			const failure = asFailure(thrown);
 			if (failure.code === 'attachmentInHistory') {
@@ -108,7 +123,7 @@
 		try {
 			await clearHistory(entry.id);
 			onVersions([]);
-			onChanged(await removeAttachment(entry.id, name));
+			await onChanged(await removeAttachment(entry.id, name));
 		} catch (thrown) {
 			onFailure(thrown);
 		}
@@ -131,10 +146,23 @@
 		named.value = '';
 		naming = false;
 		if (name === '') return;
+
+		// Writing a field is writing over whatever that name held, so a name the
+		// entry already has is refused here rather than emptying a value the
+		// reader was not thinking about. The password and the notes are fields
+		// like any other by that name.
+		if (entry.fields.some((field) => field.name === name)) {
+			onFailure({
+				code: 'refused',
+				message: `this entry already has a field called “${name}”`
+			});
+			return;
+		}
+
 		// A new field of the reader's own is protected: a field somebody adds to
 		// a password entry is far more often a secret than not, and the value is
 		// shown behind an eye until they say otherwise.
-		write(name, '', true);
+		void write(name, '', true);
 	}
 </script>
 
@@ -156,19 +184,22 @@
 							label="Title"
 							placeholder="Untitled"
 							classes="text-title font-medium tracking-tight text-txt"
+							readonly={readOnly}
 							onCommit={(value) => write(nameOf(title, 'Title'), value, title?.protected ?? false)}
 						/>
 					</h1>
 				{/if}
 			</div>
-			<button
-				type="button"
-				onclick={onDelete}
-				class="text-txt4 transition-colors hover:text-danger"
-				aria-label="Delete this entry"
-			>
-				<Icon name="trash" class="h-4 w-4" />
-			</button>
+			{#if !readOnly}
+				<button
+					type="button"
+					onclick={onDelete}
+					class="text-txt4 transition-colors hover:text-danger"
+					aria-label="Delete this entry"
+				>
+					<Icon name="trash" class="h-4 w-4" />
+				</button>
+			{/if}
 		</div>
 	</header>
 
@@ -189,6 +220,7 @@
 						label="Login"
 						placeholder="No login"
 						mono
+						readonly={readOnly}
 						onCommit={(value) =>
 							write(nameOf(username, 'UserName'), value, username?.protected ?? false)}
 					/>
@@ -211,6 +243,7 @@
 			field={nameOf(password, 'Password')}
 			empty={password?.empty ?? true}
 			protect={password?.protected ?? true}
+			{readOnly}
 			onCopy={(field) => onCopy(entry.id, field)}
 			onCommit={write}
 			{onFailure}
@@ -228,6 +261,7 @@
 						value={url?.value ?? ''}
 						label="Address"
 						placeholder="No address"
+						readonly={readOnly}
 						onCommit={(value) => write(nameOf(url, 'URL'), value, url?.protected ?? false)}
 					/>
 					{#if url?.openable}
@@ -246,7 +280,11 @@
 
 		<div class="mt-5">
 			<span class="font-mono text-label tracking-label text-txt3 uppercase">Tags</span>
-			<Tags tags={entry.tags} onSet={(tags) => void change(() => setTags(entry.id, tags))} />
+			<Tags
+				tags={entry.tags}
+				{readOnly}
+				onSet={(tags) => void change(() => setTags(entry.id, tags))}
+			/>
 		</div>
 
 		<div class="mt-6 border-t border-line pt-5">
@@ -262,6 +300,7 @@
 						label="Notes"
 						placeholder="Nothing written down"
 						multiline
+						readonly={readOnly}
 						onCommit={(value) => write(nameOf(notes, 'Notes'), value, notes?.protected ?? false)}
 					/>
 				</div>
@@ -271,14 +310,16 @@
 		<div class="mt-6 border-t border-line pt-5">
 			<div class="flex items-center justify-between">
 				<span class="font-mono text-label tracking-label text-txt3 uppercase">Own fields</span>
-				<button
-					type="button"
-					onclick={addField}
-					class="text-txt4 transition-colors hover:text-txt2"
-					aria-label="Add a field"
-				>
-					<Icon name="plus" class="h-4 w-4" />
-				</button>
+				{#if !readOnly}
+					<button
+						type="button"
+						onclick={addField}
+						class="text-txt4 transition-colors hover:text-txt2"
+						aria-label="Add a field"
+					>
+						<Icon name="plus" class="h-4 w-4" />
+					</button>
+				{/if}
 			</div>
 
 			{#each custom as field (field.name)}
@@ -293,6 +334,7 @@
 								label={field.name}
 								placeholder="Empty"
 								mono
+								readonly={readOnly}
 								onCommit={(value) => write(field.name, value, true)}
 							/>
 						</span>
@@ -303,18 +345,21 @@
 								label={field.name}
 								placeholder="Empty"
 								mono
+								readonly={readOnly}
 								onCommit={(value) => write(field.name, value, field.protected)}
 							/>
 						</span>
 					{/if}
-					<button
-						type="button"
-						onclick={() => void change(() => removeField(entry.id, field.name))}
-						class="shrink-0 text-txt4 transition-colors hover:text-danger"
-						aria-label="Remove the field {field.name}"
-					>
-						<Icon name="trash" class="h-4 w-4" />
-					</button>
+					{#if !readOnly}
+						<button
+							type="button"
+							onclick={() => void change(() => removeField(entry.id, field.name))}
+							class="shrink-0 text-txt4 transition-colors hover:text-danger"
+							aria-label="Remove the field {field.name}"
+						>
+							<Icon name="trash" class="h-4 w-4" />
+						</button>
+					{/if}
 				</div>
 			{/each}
 
@@ -342,14 +387,16 @@
 		<div class="mt-6 border-t border-line pt-5">
 			<div class="flex items-center justify-between">
 				<span class="font-mono text-label tracking-label text-txt3 uppercase">Attachments</span>
-				<button
-					type="button"
-					onclick={() => void change(() => addAttachment(entry.id))}
-					class="text-txt4 transition-colors hover:text-txt2"
-					aria-label="Add a file"
-				>
-					<Icon name="plus" class="h-4 w-4" />
-				</button>
+				{#if !readOnly}
+					<button
+						type="button"
+						onclick={() => void change(() => addAttachment(entry.id))}
+						class="text-txt4 transition-colors hover:text-txt2"
+						aria-label="Add a file"
+					>
+						<Icon name="plus" class="h-4 w-4" />
+					</button>
+				{/if}
 			</div>
 
 			{#each entry.attachments as attachment (attachment.name)}
@@ -369,14 +416,16 @@
 					>
 						<Icon name="export" class="h-4 w-4" />
 					</button>
-					<button
-						type="button"
-						onclick={() => void detach(attachment.name)}
-						class="shrink-0 text-txt4 transition-colors hover:text-danger"
-						aria-label="Remove {attachment.name}"
-					>
-						<Icon name="trash" class="h-4 w-4" />
-					</button>
+					{#if !readOnly}
+						<button
+							type="button"
+							onclick={() => void detach(attachment.name)}
+							class="shrink-0 text-txt4 transition-colors hover:text-danger"
+							aria-label="Remove {attachment.name}"
+						>
+							<Icon name="trash" class="h-4 w-4" />
+						</button>
+					{/if}
 				</div>
 			{:else}
 				<p class="mt-3 text-fine leading-relaxed text-txt4">
@@ -413,6 +462,7 @@
 			entry={entry.id}
 			{versions}
 			{now}
+			{readOnly}
 			{onVersions}
 			onChanged={(changed) => onChanged(changed)}
 			{onFailure}

@@ -8,7 +8,11 @@
 	 * tab, because the format keeps them all in one string and reads any of the
 	 * three as the separator; the message that comes back says so.
 	 */
-	let { tags, onSet }: { tags: string[]; onSet: (tags: string[]) => void } = $props();
+	let {
+		tags,
+		readOnly,
+		onSet
+	}: { tags: string[]; readOnly: boolean; onSet: (tags: string[]) => void } = $props();
 
 	let adding = $state(false);
 	let field = $state<HTMLInputElement>();
@@ -52,14 +56,16 @@
 			class="flex items-center gap-1.5 rounded-full bg-surface2 px-2.5 py-1 font-mono text-label tracking-label text-txt3 uppercase"
 		>
 			{tag}
-			<button
-				type="button"
-				onclick={() => remove(at)}
-				class="text-txt4 transition-colors hover:text-danger"
-				aria-label="Remove the tag {tag}"
-			>
-				<Icon name="x" class="h-3 w-3" />
-			</button>
+			{#if !readOnly}
+				<button
+					type="button"
+					onclick={() => remove(at)}
+					class="text-txt4 transition-colors hover:text-danger"
+					aria-label="Remove the tag {tag}"
+				>
+					<Icon name="x" class="h-3 w-3" />
+				</button>
+			{/if}
 		</span>
 	{/each}
 
@@ -74,7 +80,7 @@
 			onkeydown={keys}
 			class="w-24 rounded-full border border-accent bg-surface2 px-2.5 py-1 font-mono text-label tracking-label text-txt uppercase ring-4 ring-accent/15 outline-none"
 		/>
-	{:else}
+	{:else if !readOnly}
 		<button
 			type="button"
 			onclick={open}

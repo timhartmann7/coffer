@@ -33,4 +33,4 @@ mod vault;
 pub use crate::error::VaultError;
 pub use crate::key::MasterKey;
 pub use crate::secret::SecretValue;
-pub use crate::vault::{LockPolicy, NewValue, Rival, Vault};
+pub use crate::vault::{LockPolicy, MAX_ATTACHMENT_BYTES, NewValue, Rival, Vault};

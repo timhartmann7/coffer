@@ -15,6 +15,7 @@
 		save,
 		saveCopy,
 		saveOver,
+		tree as loadTree,
 		versions as loadVersions
 	} from '$lib/ipc';
 	import type { Database, Entry, EntryRow, Group, Rival, Version } from '$lib/model';
@@ -134,27 +135,50 @@
 		}
 	}
 
-	/** An entry came back changed. */
-	function changed(entry: Entry) {
+	/**
+	 * An entry came back changed.
+	 *
+	 * The tree comes back with it. A row in the list is drawn from the tree, and
+	 * a screen that changed a title in one pane and not in the other would go on
+	 * filtering and searching on a value that is no longer in the file.
+	 */
+	async function changed(entry: Entry) {
 		opened = entry;
 		changedAt = new Date();
-		void refreshVersions(entry.id);
-		void persist();
+		await persist();
+		await redraw(entry.id);
 	}
 
-	async function refreshVersions(id: string) {
+	/**
+	 * Reads back what the save left.
+	 *
+	 * After the save, not before it: a save brings every entry's history inside
+	 * the database's limits, and a version is addressed by its position, so the
+	 * list read before a save can name versions that are no longer there.
+	 */
+	async function redraw(id: string) {
 		try {
 			versions = await loadVersions(id);
+			onTree(await loadTree());
 		} catch (thrown) {
 			failed(thrown);
 		}
 	}
 
+	/** The versions of the open entry came back changed, which is a change to
+	 * the file like any other. */
+	async function versionsChanged(found: Version[]) {
+		versions = found;
+		changedAt = new Date();
+		await persist();
+		if (opened) await redraw(opened.id);
+	}
+
 	/** The tree came back changed. */
-	function reshaped(tree: Group) {
+	async function reshaped(tree: Group) {
 		onTree(tree);
 		changedAt = new Date();
-		void persist();
+		await persist();
 	}
 
 	async function addEntry() {
@@ -176,7 +200,7 @@
 			const tree = await deleteEntry(id);
 			opened = null;
 			versions = [];
-			reshaped(tree);
+			await reshaped(tree);
 		} catch (thrown) {
 			failed(thrown);
 		}
@@ -194,7 +218,7 @@
 		naming = false;
 		if (name === '') return;
 		try {
-			reshaped(await createGroup(inside, name));
+			await reshaped(await createGroup(inside, name));
 		} catch (thrown) {
 			failed(thrown);
 		}
@@ -204,7 +228,7 @@
 		renaming = false;
 		if (group === null || name.trim() === '') return;
 		try {
-			reshaped(await renameGroup(group, name.trim()));
+			await reshaped(await renameGroup(group, name.trim()));
 		} catch (thrown) {
 			failed(thrown);
 		}
@@ -216,7 +240,7 @@
 		try {
 			const tree = await deleteGroup(group);
 			select(null);
-			reshaped(tree);
+			await reshaped(tree);
 		} catch (thrown) {
 			failed(thrown);
 		}
@@ -227,7 +251,7 @@
 		try {
 			const tree = await emptyRecycleBin();
 			opened = null;
-			reshaped(tree);
+			await reshaped(tree);
 		} catch (thrown) {
 			failed(thrown);
 		}
@@ -340,6 +364,15 @@
 
 	$effect(() => () => clear());
 
+	/** Whether the key went to somewhere the reader is writing. */
+	function typing(target: EventTarget | null): boolean {
+		return (
+			target instanceof HTMLInputElement ||
+			target instanceof HTMLTextAreaElement ||
+			(target instanceof HTMLElement && target.isContentEditable)
+		);
+	}
+
 	function shortcut(event: KeyboardEvent) {
 		if (!event.metaKey) {
 			if (event.key === 'Escape') {
@@ -362,7 +395,9 @@
 
 		// A revealed value, a login and a note are all selectable on purpose. If
 		// the reader has selected something, the copy they pressed is theirs and
-		// not the entry's.
+		// not the entry's - and a selection inside a field is not something
+		// `getSelection` reports at all, so the field itself is the answer there.
+		if (typing(event.target)) return;
 		if (wanted === 'password' && document.getSelection()?.isCollapsed === false) return;
 
 		const chosen = opened.fields.find((entry) => entry.kind === wanted);
@@ -672,9 +707,10 @@
 			{path}
 			{versions}
 			{now}
+			{readOnly}
 			onCopy={copy}
 			onChanged={changed}
-			onVersions={(found) => (versions = found)}
+			onVersions={versionsChanged}
 			onDelete={removeEntry}
 			onFailure={failed}
 		/>

@@ -344,6 +344,16 @@ pub async fn add_attachment(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .ok_or_else(|| Failure::refused("that file has no name"))?;
+
+    // Asked before the file is read rather than after. A twenty gigabyte pick
+    // read first and refused second is twenty gigabytes in the memory of a
+    // process holding a decrypted vault, and the allocation that fails takes
+    // the vault down with it.
+    let size = std::fs::metadata(&path).map_err(Failure::io)?.len();
+    if size > vault_core::MAX_ATTACHMENT_BYTES as u64 {
+        return Err(Failure::from(vault_core::VaultError::AttachmentTooLarge));
+    }
+
     let data = Zeroizing::new(std::fs::read(&path).map_err(Failure::io)?);
 
     session.with_mut(|vault| vault.add_attachment(id, &name, data))??;
@@ -372,8 +382,7 @@ pub async fn export_attachment(
         .ok_or_else(|| Failure::from(vault_core::VaultError::NoSuchAttachment))?
         .file_name();
 
-    let bytes = session.with(|vault| vault.attachment(id, &name))?;
-    let bytes = bytes.ok_or_else(|| Failure::from(vault_core::VaultError::NoSuchAttachment))?;
+    let bytes = session.with(|vault| vault.attachment(id, &name))??;
 
     let Some(chosen) = app
         .dialog()

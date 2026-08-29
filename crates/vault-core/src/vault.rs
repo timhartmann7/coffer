@@ -36,7 +36,11 @@ const WRITTEN_VERSION: DatabaseVersion = DatabaseVersion::KDB4(1);
 /// GiB is written truncated and the database it lands in cannot be opened
 /// again. The ceiling is far below that because the whole database is read into
 /// memory to be opened, and [`MAX_DATABASE_BYTES`] is the ceiling on that.
-const MAX_ATTACHMENT_BYTES: usize = 256 * 1024 * 1024;
+///
+/// Public because whoever reads a file off the disk has to know the size before
+/// it reads it. Handing this function twenty gigabytes and letting it refuse
+/// afterwards means twenty gigabytes were already in memory.
+pub const MAX_ATTACHMENT_BYTES: usize = 256 * 1024 * 1024;
 
 /// What Coffer writes into `Meta/Generator`, the way every KeePass client
 /// writes its own name there.
@@ -232,10 +236,23 @@ impl Vault {
     }
 
     /// Hands out one attachment's bytes.
-    pub fn attachment(&self, id: EntryId, name: &str) -> Option<SecretValue> {
-        let entry = self.database.entry(id)?;
-        let attachment = entry.attachment_by_name(name)?;
-        Some(SecretValue::new(attachment.data.get().clone()))
+    ///
+    /// A KDBX 3 database is refused. The reader Coffer is built on collapses
+    /// every attachment in one of those onto a single file, so the names are
+    /// the file's and the bytes behind them are somebody else's: an entry whose
+    /// row says `id_ed25519` would hand over another entry's private key.
+    /// Refusing to save one was never enough - it has to refuse to read one out
+    /// as well.
+    pub fn attachment(&self, id: EntryId, name: &str) -> Result<SecretValue, VaultError> {
+        if self.source == Source::Kdbx3WithAttachments {
+            return Err(VaultError::UnreadableAttachments);
+        }
+
+        let entry = self.database.entry(id).ok_or(VaultError::NoSuchEntry)?;
+        let attachment = entry
+            .attachment_by_name(name)
+            .ok_or(VaultError::NoSuchAttachment)?;
+        Ok(SecretValue::new(attachment.data.get().clone()))
     }
 
     /// Sets a field, keeping the entry's previous state as a version.
@@ -328,7 +345,14 @@ impl Vault {
         // time. That change is Coffer's own, so it is recorded now: a vault
         // that mistook its own snapshot for somebody else's edit could never
         // save again, and every unsaved edit would be stranded.
-        self.stamp = Stamp::of(&self.path)?;
+        //
+        // There is nothing to record when the file is not there, which is the
+        // one case that reaches here: somebody deleted the database and the
+        // reader asked to write it back anyway. The rename below puts it back,
+        // and the stamp taken after it is the one that counts.
+        if let Ok(stamp) = Stamp::of(&self.path) {
+            self.stamp = stamp;
+        }
 
         staged.commit()?;
 
