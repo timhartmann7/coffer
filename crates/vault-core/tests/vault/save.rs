@@ -304,8 +304,11 @@ fn ten_edits_of_an_entry_with_a_three_kilobyte_attachment_barely_grow_the_file()
         .len();
     let growth = grown.saturating_sub(baseline);
 
+    // The bound is one copy of the attachment, not ten. The fixture's blob is
+    // incompressible on purpose, so a writer that copied it into each version
+    // would blow through this on the first edit rather than hiding behind gzip.
     assert!(
-        growth < 10 * 3072,
+        growth < 3072,
         "ten edits grew the file by {growth} bytes, so the attachment is being copied into every version"
     );
 }
