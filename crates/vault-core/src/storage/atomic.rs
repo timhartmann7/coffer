@@ -9,65 +9,97 @@ use crate::storage::{OWNER_ONLY, parent_of, process, sibling, sync_directory};
 
 const TEMPORARY_SUFFIX: &str = ".coffer-tmp";
 
-/// Writes `path` by filling a temporary file beside it and renaming over the
-/// target.
+/// A temporary file, filled and flushed, waiting to be renamed over its target.
 ///
-/// The sequence is fixed: create the temporary file with owner-only permissions,
-/// let `fill` write it, flush it to the platter, rename, then flush the
-/// directory entry. A process killed anywhere before the rename leaves the
-/// original database exactly as it was, and leaves behind a temporary file that
-/// the next successful save sweeps up.
+/// Splitting the write in two is what lets a caller do everything that can fail
+/// before it disturbs anything on disk: filling this is where a full volume, a
+/// serialisation error or a killed process shows up, and the target is still
+/// exactly as it was at that point. Dropping a `Staged` without committing
+/// removes the temporary file.
+#[must_use = "a staged write does nothing until it is committed"]
+pub struct Staged {
+    temporary: PathBuf,
+    target: PathBuf,
+    committed: bool,
+}
+
+impl Staged {
+    /// Renames the temporary file over the target and flushes the directory
+    /// entry, so that the new name survives a power cut.
+    pub fn commit(mut self) -> Result<(), io::Error> {
+        let directory = parent_of(&self.target)?;
+
+        fs::rename(&self.temporary, &self.target)?;
+        sync_directory(directory)?;
+        self.committed = true;
+
+        sweep_abandoned(&self.target);
+        Ok(())
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = fs::remove_file(&self.temporary);
+        }
+    }
+}
+
+/// Fills a temporary file beside `path`, ready to be renamed over it.
+///
+/// The temporary file is created with owner-only permissions, filled by `fill`,
+/// flushed to the platter and closed. A process killed anywhere in here leaves
+/// the original exactly as it was, and leaves behind a temporary file that the
+/// next successful commit sweeps up.
 ///
 /// `fill` is the seam the failure tests drive: a closure that stops halfway or
 /// reports a full volume proves that the original survives.
-pub fn write_atomic<E, F>(path: &Path, fill: F) -> Result<(), E>
+pub fn stage<E, F>(path: &Path, fill: F) -> Result<Staged, E>
 where
     E: From<io::Error>,
     F: FnOnce(&mut dyn Write) -> Result<(), E>,
 {
-    let directory = parent_of(path)?;
     let temporary = temporary_path(path)?;
+    remove_if_present(&temporary)?;
 
-    // A temporary file from a previous run of this same process id is the only
-    // one we may assume is ours to remove.
-    match fs::remove_file(&temporary) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
+    let staged = Staged {
+        temporary,
+        target: path.to_path_buf(),
+        committed: false,
+    };
 
-    let outcome = fill_and_rename(path, &temporary, directory, fill);
-
-    if outcome.is_err() {
-        let _ = fs::remove_file(&temporary);
-        return outcome;
-    }
-
-    sweep_abandoned(path);
-    outcome
-}
-
-fn fill_and_rename<E, F>(path: &Path, temporary: &Path, directory: &Path, fill: F) -> Result<(), E>
-where
-    E: From<io::Error>,
-    F: FnOnce(&mut dyn Write) -> Result<(), E>,
-{
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(OWNER_ONLY)
-        .open(temporary)?;
+        .open(&staged.temporary)?;
 
     fill(&mut file)?;
 
     file.flush()?;
     file.sync_all()?;
-    drop(file);
 
-    fs::rename(temporary, path)?;
-    sync_directory(directory)?;
+    Ok(staged)
+}
 
-    Ok(())
+/// Fills and commits in one step, for writers with nothing to do in between.
+pub fn write_atomic<E, F>(path: &Path, fill: F) -> Result<(), E>
+where
+    E: From<io::Error>,
+    F: FnOnce(&mut dyn Write) -> Result<(), E>,
+{
+    Ok(stage(path, fill)?.commit()?)
+}
+
+/// A temporary file from a previous run of this same process id is the only one
+/// Coffer may assume is its own to remove.
+fn remove_if_present(path: &Path) -> Result<(), io::Error> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 /// Proves a write to `path` can happen, before anything on disk is disturbed.
@@ -81,11 +113,7 @@ pub(crate) fn ensure_writable(path: &Path) -> Result<(), io::Error> {
     OpenOptions::new().write(true).open(path)?;
 
     let temporary = temporary_path(path)?;
-    match fs::remove_file(&temporary) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
+    remove_if_present(&temporary)?;
 
     OpenOptions::new()
         .write(true)

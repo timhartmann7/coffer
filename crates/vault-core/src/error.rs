@@ -61,6 +61,10 @@ pub enum VaultError {
     #[error("the database asks for key derivation Coffer will not perform")]
     AbsurdKeyDerivation,
 
+    /// The entry asked for is not in this database.
+    #[error("there is no such entry in this database")]
+    NoSuchEntry,
+
     /// A field name or value holds a character XML cannot carry, so writing it
     /// would produce a file no KeePass client can read.
     #[error("that value contains a character a KeePass file cannot hold")]

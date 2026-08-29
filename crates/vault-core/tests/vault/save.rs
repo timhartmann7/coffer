@@ -134,6 +134,132 @@ fn a_rotation_that_died_half_way_recovers_on_the_next_save() {
     );
 }
 
+/// Text no compressor can shrink, built from a hash chain so that it is the
+/// same on every run.
+fn incompressible(bytes: usize) -> String {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    let mut text = String::with_capacity(bytes + 16);
+    let mut seed: u64 = 0x5eed;
+    while text.len() < bytes {
+        let mut hasher = DefaultHasher::new();
+        seed.hash(&mut hasher);
+        seed = hasher.finish();
+        let _ = std::fmt::Write::write_fmt(&mut text, format_args!("{seed:016x}"));
+    }
+    text
+}
+
+/// Set in the child process the out-of-space test spawns.
+const CHILD_FULL_VOLUME: &str = "COFFER_CHILD_FULL_VOLUME_PATH";
+
+#[test]
+fn a_save_that_runs_out_of_room_leaves_the_database_and_its_snapshots_alone() {
+    if let Some(path) = std::env::var_os(CHILD_FULL_VOLUME) {
+        // This process is the child. A file size limit smaller than the
+        // database makes the write fail part way through, which is what a full
+        // volume looks like from inside a save and what no check before the
+        // write can predict.
+        //
+        // SAFETY: both calls set properties of this process and touch nothing
+        // else. SIGXFSZ would otherwise kill it before the write could report
+        // the failure.
+        unsafe {
+            libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
+            let limit = libc::rlimit {
+                rlim_cur: 1024,
+                rlim_max: 1024,
+            };
+            assert_eq!(
+                libc::setrlimit(libc::RLIMIT_FSIZE, &raw const limit),
+                0,
+                "the file size limit is set"
+            );
+        }
+
+        let path = std::path::PathBuf::from(path);
+        let mut vault = open(&path, BUILT_PASSWORD);
+        let id = vault.tree().entries[0].id;
+        // Incompressible on purpose: the payload is gzipped before it is
+        // written, and a field of repeated characters would fit inside the
+        // limit however long it was.
+        vault
+            .set_field(id, fields::NOTES, NewValue::Open(incompressible(200_000)))
+            .expect("the field is written");
+
+        // The save must fail, and it must fail without disturbing anything.
+        assert!(
+            vault.save().is_err(),
+            "the write should have run out of room"
+        );
+        return;
+    }
+
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = built(scratch.path(), "cramped.kdbx", |db| {
+        db.root_mut()
+            .add_entry()
+            .edit(|entry| entry.set_unprotected(fields::TITLE, "one"));
+    });
+
+    // Three generations of real history in the snapshot chain.
+    for round in 0..3 {
+        let mut vault = open(&database, BUILT_PASSWORD);
+        let id = vault.tree().entries[0].id;
+        vault
+            .set_field(id, fields::NOTES, NewValue::Open(format!("round {round}")))
+            .expect("the field is written");
+        vault.save().expect("the database saves");
+    }
+
+    let before = std::fs::read(&database).expect("the database reads");
+    let chain: Vec<Vec<u8>> = (1..=3)
+        .map(|index| {
+            std::fs::read(snapshot::slot(&database, index).expect("the slot has a path"))
+                .expect("the slot is there")
+        })
+        .collect();
+
+    let status = std::process::Command::new(
+        std::env::current_exe().expect("the test binary knows its own path"),
+    )
+    .args([
+        "--exact",
+        "save::a_save_that_runs_out_of_room_leaves_the_database_and_its_snapshots_alone",
+    ])
+    .env(CHILD_FULL_VOLUME, &database)
+    .output()
+    .expect("the child runs");
+    assert!(
+        status.status.success(),
+        "the child's own assertions failed:\n{}",
+        String::from_utf8_lossy(&status.stdout)
+    );
+
+    assert_eq!(
+        std::fs::read(&database).expect("the database is still there"),
+        before,
+        "a save that ran out of room changed the database"
+    );
+    for (index, expected) in chain.into_iter().enumerate() {
+        let slot = snapshot::slot(&database, index as u32 + 1).expect("the slot has a path");
+        assert_eq!(
+            std::fs::read(&slot).expect("the slot is still there"),
+            expected,
+            "a save that ran out of room rotated snapshot slot {}",
+            index + 1
+        );
+    }
+
+    // And the vault is not wedged: a save that can succeed still does.
+    let mut vault = open(&database, BUILT_PASSWORD);
+    let id = vault.tree().entries[0].id;
+    vault
+        .set_field(id, fields::NOTES, NewValue::Open("afterwards".to_owned()))
+        .expect("the field is written");
+    vault.save().expect("the vault still saves");
+}
+
 #[test]
 fn a_change_on_disk_stops_the_save() {
     let (_scratch, database) = support::scratch(RICH);

@@ -10,7 +10,11 @@ const RICH: &str = "rich-kdbx41.kdbx";
 const SECRET: &str = "coffer-test";
 
 /// A database holding one entry, with `versions` previous states already on it.
-fn with_versions(directory: &std::path::Path, versions: usize) -> std::path::PathBuf {
+///
+/// Each version is stamped a minute apart. Versions written in a loop all land
+/// in the same second, and a test that asserted an order over four identical
+/// timestamps would pass whatever the order was.
+fn with_versions(directory: &std::path::Path, versions: u32) -> std::path::PathBuf {
     built(directory, "versioned.kdbx", |database| {
         let id = database
             .root_mut()
@@ -22,17 +26,24 @@ fn with_versions(directory: &std::path::Path, versions: usize) -> std::path::Pat
             .id();
 
         for round in 0..versions {
-            database
-                .entry_mut(id)
-                .expect("the entry is there")
-                .edit_tracking(|entry| {
-                    entry.set(
-                        fields::NOTES,
-                        Value::unprotected(format!("version {round}")),
-                    );
-                });
+            let mut entry = database.entry_mut(id).expect("the entry is there");
+            entry.times.last_modification = Some(stamp(round));
+            entry.edit_tracking(|entry| {
+                entry.set(
+                    fields::NOTES,
+                    Value::unprotected(format!("version {round}")),
+                );
+            });
         }
     })
+}
+
+/// A distinct moment for each version, ascending.
+fn stamp(round: u32) -> chrono::NaiveDateTime {
+    chrono::NaiveDate::from_ymd_opt(2024, 1, 1)
+        .and_then(|day| day.and_hms_opt(0, 0, 0))
+        .map(|moment| moment + chrono::Duration::minutes(i64::from(round)))
+        .expect("the moment is valid")
 }
 
 #[test]
@@ -116,6 +127,44 @@ fn versions_come_back_and_are_written_oldest_first() {
 
     let mut vault = open(&database, BUILT_PASSWORD);
     let id = vault.tree().entries[0].id;
+
+    // The fixture was built through the library, which puts the newest version
+    // at position 0. The list still comes back oldest first, and each entry's
+    // index still addresses the version it came from.
+    let expected: Vec<_> = (0..4).map(|round| Some(stamp(round))).collect();
+    let listed = vault.versions(id);
+    assert_eq!(
+        listed
+            .iter()
+            .map(|version| version.modified)
+            .collect::<Vec<_>>(),
+        expected,
+        "versions came back in the wrong order before the save"
+    );
+    assert_eq!(
+        listed
+            .iter()
+            .map(|version| version.index)
+            .collect::<Vec<_>>(),
+        vec![3, 2, 1, 0],
+        "the index should stay the position in the file, not the position in the list"
+    );
+
+    // An edit of our own has to land at the end, not at the front where the
+    // library puts it.
+    vault
+        .set_field(id, fields::NOTES, NewValue::Open("newest".to_owned()))
+        .expect("the field is written");
+    let after_edit = vault.versions(id);
+    assert_eq!(after_edit.len(), 5);
+    assert!(
+        after_edit
+            .last()
+            .and_then(|version| version.modified)
+            .is_some_and(|moment| moment > stamp(3)),
+        "the version just written is not the newest one in the list"
+    );
+
     vault.save().expect("the database saves");
     drop(vault);
 
@@ -125,11 +174,71 @@ fn versions_come_back_and_are_written_oldest_first() {
         .into_iter()
         .map(|version| version.modified)
         .collect();
+    assert_eq!(dates.len(), 5);
+    assert_eq!(
+        dates.iter().take(4).copied().collect::<Vec<_>>(),
+        expected,
+        "the saved order is not oldest first"
+    );
+    assert_eq!(
+        vault
+            .versions(id)
+            .iter()
+            .map(|version| version.index)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2, 3, 4],
+        "the save should have put the file's own order right as well"
+    );
+}
 
-    assert_eq!(dates.len(), 4);
-    let mut sorted = dates.clone();
-    sorted.sort();
-    assert_eq!(dates, sorted, "versions were not written oldest first");
+#[test]
+fn pruning_drops_the_oldest_version_when_timestamps_tie() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = built(scratch.path(), "tied.kdbx", |db| {
+        db.meta.history_max_items = Some(2);
+        let id = db
+            .root_mut()
+            .add_entry()
+            .edit(|entry| entry.set_unprotected(fields::TITLE, "subject"))
+            .id();
+
+        // Four versions sharing one modification time, distinguishable only by
+        // their notes and by the order they sit in.
+        for round in 0..4 {
+            let mut entry = db.entry_mut(id).expect("the entry is there");
+            entry.times.last_modification = Some(stamp(0));
+            entry.edit_tracking(|entry| {
+                entry.set(fields::NOTES, Value::unprotected(format!("v{round}")));
+            });
+        }
+    });
+
+    let mut vault = open(&database, BUILT_PASSWORD);
+    let id = vault.tree().entries[0].id;
+    assert_eq!(vault.versions(id).len(), 4);
+    vault.save().expect("the database saves");
+    drop(vault);
+
+    // Two survive, and they must be the last two written, not the first two.
+    let vault = open(&database, BUILT_PASSWORD);
+    assert_eq!(vault.versions(id).len(), 2);
+}
+
+#[test]
+fn editing_an_entry_that_is_not_there_says_so() {
+    let (_scratch, database) = support::scratch(RICH);
+    let (_other, elsewhere) = support::scratch("minimal-kdbx41.kdbx");
+
+    // An identifier that is real, just not in this database.
+    let absent = open(&elsewhere, SECRET).tree().entries[0].id;
+    let mut vault = open(&database, SECRET);
+
+    assert!(matches!(
+        vault
+            .set_field(absent, fields::NOTES, NewValue::Open("x".to_owned()))
+            .expect_err("there is no such entry"),
+        vault_core::VaultError::NoSuchEntry
+    ));
 }
 
 #[test]

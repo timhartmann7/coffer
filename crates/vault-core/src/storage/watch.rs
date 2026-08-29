@@ -19,9 +19,9 @@ use std::time::SystemTime;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {
     modified: Option<SystemTime>,
-    /// Change time, which a writer cannot set backwards the way it can set
-    /// modification time.
-    changed: i64,
+    /// Change time, seconds and nanoseconds kept apart: a writer can set
+    /// modification time to whatever it likes, and cannot touch this.
+    changed: (i64, i64),
     len: u64,
     inode: u64,
     device: u64,
@@ -33,7 +33,7 @@ impl Stamp {
         let metadata = std::fs::metadata(path)?;
         Ok(Stamp {
             modified: metadata.modified().ok(),
-            changed: metadata.ctime_nsec().wrapping_add(metadata.ctime()),
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
             len: metadata.len(),
             inode: metadata.ino(),
             device: metadata.dev(),

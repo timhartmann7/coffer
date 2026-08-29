@@ -146,6 +146,11 @@ impl Vault {
     }
 
     /// The previous versions of an entry, oldest first.
+    ///
+    /// Ordered by modification time rather than by position, because position
+    /// is not a reliable order: a file another client wrote may list versions
+    /// in any order at all. `index` stays the position in the file, so it goes
+    /// on addressing the same version whatever order the list comes back in.
     pub fn versions(&self, id: EntryId) -> Vec<Version> {
         let Some(entry) = self.database.entry(id) else {
             return Vec::new();
@@ -154,7 +159,7 @@ impl Vault {
             return Vec::new();
         };
 
-        history
+        let mut versions: Vec<Version> = history
             .get_entries()
             .iter()
             .enumerate()
@@ -162,7 +167,10 @@ impl Vault {
                 index,
                 modified: version.times.last_modification,
             })
-            .collect()
+            .collect();
+
+        versions.sort_by_key(|version| (version.modified.is_none(), version.modified));
+        versions
     }
 
     /// Hands out one field's value.
@@ -199,14 +207,18 @@ impl Vault {
         }
 
         let field = field.to_owned();
-        history::edit(&mut self.database, id, move |entry| match value {
+        let edited = history::edit(&mut self.database, id, move |entry| match value {
             NewValue::Open(written) => entry.set(field, Value::unprotected(written)),
             NewValue::Protected(written) => {
                 entry.set(field, Value::protected(written.to_string()));
             }
         });
 
-        Ok(())
+        if edited {
+            Ok(())
+        } else {
+            Err(VaultError::NoSuchEntry)
+        }
     }
 
     /// Whether the file on disk is still the one this vault was opened from.
@@ -248,18 +260,30 @@ impl Vault {
 
         // Nothing on disk is disturbed until the write is known to be possible.
         // Renaming over a file needs no write permission on that file, so a
-        // read-only database would otherwise be replaced silently, and a
-        // directory nobody can write to would be discovered only after the
-        // snapshot chain had already been rotated.
+        // read-only database would otherwise be replaced silently.
         atomic::ensure_writable(&self.path)?;
+
+        // The whole database is encrypted into a temporary file first. Every
+        // way a save can fail in practice - a full volume, an unwritable
+        // directory, a process killed part way through - happens here, while
+        // the database and its snapshots are still untouched. A run of failed
+        // saves used to push ten copies of the same generation through the
+        // snapshot chain and destroy it.
+        let database = &self.database;
+        let key = self.key.to_database_key()?;
+        let staged = atomic::stage(&self.path, move |writer: &mut dyn Write| {
+            database.save(writer, key).map_err(VaultError::from)
+        })?;
 
         snapshot::rotate(&self.path)?;
 
-        let database = &self.database;
-        let key = self.key.to_database_key()?;
-        atomic::write_atomic(&self.path, move |writer: &mut dyn Write| {
-            database.save(writer, key).map_err(VaultError::from)
-        })?;
+        // The snapshot is a hard link, which changes the database's change
+        // time. That change is Coffer's own, so it is recorded now: a vault
+        // that mistook its own snapshot for somebody else's edit could never
+        // save again, and every unsaved edit would be stranded.
+        self.stamp = Stamp::of(&self.path)?;
+
+        staged.commit()?;
 
         self.stamp = Stamp::of(&self.path)?;
         Ok(())

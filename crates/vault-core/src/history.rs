@@ -45,6 +45,8 @@ fn bound(stated: Option<isize>, default: isize) -> Option<isize> {
 
 /// Edits an entry, keeping its previous state as a version.
 ///
+/// Returns whether the entry was there to edit.
+///
 /// The version is dropped again when the edit turned out to change nothing,
 /// along with the modification time the library stamps on the way through: an
 /// edit that changed nothing did not happen.
@@ -52,59 +54,67 @@ pub(crate) fn edit(
     database: &mut Database,
     id: EntryId,
     change: impl FnOnce(&mut keepass::db::EntryTrack<'_>),
-) {
+) -> bool {
     let Some(mut entry) = database.entry_mut(id) else {
-        return;
+        return false;
     };
 
     entry.edit_tracking(change);
-
-    discard_unchanged(database, id);
+    settle(database, id);
+    true
 }
 
-/// Removes the version the library just wrote if it is the same entry again.
-fn discard_unchanged(database: &mut Database, id: EntryId) {
-    let Some(entry) = database.entry(id) else {
-        return;
-    };
-    let Some(history) = entry.history.as_ref() else {
-        return;
-    };
-    // `History::add_entry` inserts at the front, so the version just written is
-    // the first one.
-    let Some(previous) = history.get_entries().first() else {
-        return;
-    };
-
-    if !same_content(&entry, previous) {
-        return;
-    }
-
-    let restored = previous.times.clone();
-    let kept: Vec<Entry> = history.get_entries().iter().skip(1).cloned().collect();
-
+/// Puts the version the library just wrote where it belongs, or takes it away
+/// again.
+///
+/// `History::add_entry` inserts at the front, and the front is where the oldest
+/// version sits in a file KeePassXC wrote. Left alone, the newest version would
+/// be sitting in the oldest one's place, where pruning throws it away first and
+/// a version list shows it in the wrong order.
+fn settle(database: &mut Database, id: EntryId) {
     let Some(mut entry) = database.entry_mut(id) else {
         return;
     };
-    entry.times = restored;
-    entry.history = Some(rebuild(kept));
+
+    // Moved out rather than borrowed, so that the comparison below copies the
+    // entry without copying every version of it.
+    let Some(history) = entry.history.take() else {
+        return;
+    };
+    let mut versions: Vec<Entry> = history.get_entries().clone();
+
+    if versions.is_empty() {
+        entry.history = Some(history);
+        return;
+    }
+    let written = versions.remove(0);
+
+    if same_content(&entry, &written) {
+        entry.times = written.times.clone();
+    } else {
+        versions.push(written);
+    }
+
+    entry.history = Some(rebuild(versions));
 }
 
 /// Whether two versions of an entry hold the same thing.
 ///
-/// The comparison is the library's own derived equality with the timestamps and
-/// the nested history taken out, so a field the library gains in a future
-/// release is compared without anybody having to remember to add it here. That
-/// matters more than the cost of the two clones: a field left out of this
-/// comparison is a version silently not kept.
+/// The comparison is the library's own derived equality with the timestamps
+/// taken out, so a field the library gains in a future release is compared
+/// without anybody having to remember to add it here. That matters more than
+/// the cost of the clone: a field left out of this comparison is a version
+/// silently not kept.
+///
+/// Neither side carries history at this point - the live entry's was moved out
+/// by the caller, and `History::add_entry` strips it from a version on the way
+/// in - so nothing here copies a version list.
 fn same_content(current: &Entry, previous: &Entry) -> bool {
     let mut current = current.clone();
     let mut previous = previous.clone();
 
     current.times = Times::default();
     previous.times = Times::default();
-    current.history = None;
-    previous.history = None;
 
     current == previous
 }
@@ -134,19 +144,36 @@ fn prune(database: &mut Database, id: EntryId, limits: Limits) {
             return;
         };
 
-        (0..history.get_entries().len())
-            .filter_map(|index| {
-                let version = entry.historical(index)?;
-                let weight = weigh(&version);
-                Some((history.get_entries().get(index)?.clone(), weight))
-            })
-            .collect()
+        let mut weighed = Vec::with_capacity(history.get_entries().len());
+        for index in 0..history.get_entries().len() {
+            // A version that cannot be weighed is a version this function does
+            // not understand, and dropping what you do not understand is how
+            // history goes missing. Leave the entry exactly as it is.
+            let (Some(version), Some(entry)) =
+                (entry.historical(index), history.get_entries().get(index))
+            else {
+                return;
+            };
+            weighed.push((entry.clone(), weigh(&version)));
+        }
+        weighed
     };
 
-    // Position in the vector is not a reliable order: a file written by
-    // KeePassXC lists versions oldest first, while the library adds new ones at
-    // the front. Time decides, and equal times keep the order they were in.
-    versions.sort_by_key(|(version, _)| version.times.last_modification);
+    // The vector is oldest first: that is the order KeePassXC writes and the
+    // order `settle` restores after every edit. Sorting by time only corrects a
+    // file that arrived out of order, and being stable it leaves versions that
+    // share a timestamp exactly where they were, so the newest of a tied pair is
+    // still the last one and is never the first to go.
+    //
+    // A version with no modification time sorts last rather than first. Nothing
+    // is known about when it was written, and a version nobody can date is the
+    // wrong thing to throw away first.
+    versions.sort_by_key(|(version, _)| {
+        (
+            version.times.last_modification.is_none(),
+            version.times.last_modification,
+        )
+    });
 
     let mut drop_count = match limits.items {
         Some(max) => versions.len().saturating_sub(max),
