@@ -17,6 +17,7 @@ serde = { version = "1", features = ["derive"] }
 zeroize = "1"
 uuid = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+block2 = "0.6"
 objc2 = "0.6"
 objc2-app-kit = "0.3"
 objc2-foundation = "0.3"

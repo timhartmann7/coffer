@@ -273,6 +273,17 @@ slice.
 open and it stays there until it is deleted, which moves it to the recycle bin.
 The mockup shows dragging a row into another folder; nothing here does that yet.
 
+**The three window buttons are moved, and the moving has one right moment.**
+macOS puts the close, minimise and zoom buttons a fixed distance below the top
+of the window, and lays them out again on every resize.
+[`window.rs`](../crates/vault-gui/src/window.rs) corrects them from each
+button's own frame notification, which is the only hook that arrives *after*
+AppKit has placed them - the title bar container's notification arrives before,
+and a correction made from a resize event arrives a frame later, which is a
+resize that shows them flickering between the two positions. The observers are
+taken off the notification centre when the window goes, because slice 4 builds
+this window again on every unlock.
+
 **A save holds the session while it runs.** Every committed change writes the
 file, and the write derives the key again, so for that second nothing else can
 read the vault. The status bar says `Saving…`. If that ever becomes a wait
