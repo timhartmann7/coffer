@@ -172,10 +172,11 @@ fn a_lock_held_by_a_living_process_is_reported_and_left_alone() {
     match Lock::acquire(&database).expect("the second attempt reads the lock") {
         Outcome::Held(holder) => {
             assert_eq!(holder.pid, Some(std::process::id()));
-            assert!(
-                !format!("{holder:?}").contains("2026"),
-                "the lock time is not printed"
-            );
+            // The point of a lock file is to say who is holding the database
+            // and since when, so all three have to survive the trip.
+            let described = format!("{holder:?}");
+            assert!(described.contains(&holder.time), "{described}");
+            assert!(described.contains(&holder.host), "{described}");
         }
         Outcome::Taken(_) => panic!("the lock was taken twice"),
     }

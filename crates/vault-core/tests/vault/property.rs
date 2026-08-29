@@ -141,7 +141,13 @@ fn observe(vault: &vault_core::Vault) -> Vec<String> {
                     let revealed = vault
                         .reveal(entry.id, &field.name)
                         .and_then(|value| value.expose_str().map(str::to_owned));
-                    parts.push(format!("field {} = {revealed:?}", field.name));
+                    // The protection flag is part of the field. A save that
+                    // wrote every value in the clear would otherwise pass.
+                    parts.push(format!(
+                        "field {} protected={} = {revealed:?}",
+                        field.name,
+                        field.value.open().is_none()
+                    ));
                 }
                 for attachment in &entry.attachments {
                     let bytes = vault

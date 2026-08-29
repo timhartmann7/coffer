@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+Coffer fixture: a field whose value is nothing but whitespace.
+
+keepass 0.13.22 reads it back as the empty string, so the three spaces are gone
+before Coffer ever sees the database. The suite pins that, so the day the
+library keeps them a test fails and the limitation comes out of the
+documentation.
+-->
+<KeePassFile>
+	<Meta>
+		<Generator>coffer-fixture</Generator>
+		<DatabaseName>whitespace</DatabaseName>
+	</Meta>
+	<Root>
+		<Group>
+			<UUID>d2hpdGVzcGFjZS1yb290Lg==</UUID>
+			<Name>whitespace</Name>
+			<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+			<Entry>
+				<UUID>d2hpdGVzcGFjZS1lbnRyeQ==</UUID>
+				<IconID>0</IconID>
+				<QualityCheck>False</QualityCheck>
+				<Times><CreationTime>2020-01-01T00:00:00Z</CreationTime><Expires>False</Expires><UsageCount>0</UsageCount></Times>
+				<String><Key>Title</Key><Value>blank values</Value></String>
+				<String><Key>spaces-only</Key><Value>   </Value></String>
+				<String><Key>padded</Key><Value>  kept  </Value></String>
+				<String><Key>tab-only</Key><Value>	</Value></String>
+			</Entry>
+		</Group>
+	</Root>
+</KeePassFile>

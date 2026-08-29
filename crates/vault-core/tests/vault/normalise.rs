@@ -120,7 +120,11 @@ fn split(line: &str) -> (&str, &str) {
 
 fn parse(xml: &str) -> Node {
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
+    // Text is kept exactly as written. Trimming here would make the comparison
+    // blind to a value that lost its leading or trailing spaces, which is a
+    // lost field like any other. The indentation between elements is dropped
+    // instead by rendering text only for elements that have no children.
+    reader.config_mut().trim_text(false);
 
     let mut stack: Vec<Node> = vec![Node {
         name: String::new(),
@@ -265,7 +269,13 @@ fn render(node: &Node, path: &mut Vec<String>, out: &mut Vec<String>) {
         }
         path.push(here);
 
-        out.push(format!("{}\t{}", path.join("/"), node.text.trim()));
+        let text = if node.children.is_empty() {
+            node.text.as_str()
+        } else {
+            // Whatever sits between child elements is the writer's indentation.
+            ""
+        };
+        out.push(format!("{}\t{}", path.join("/"), text));
     }
 
     for child in &node.children {

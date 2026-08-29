@@ -95,6 +95,23 @@ instead, which is the residual risk `SPEC.md` already names.
 master password. Nothing in `vault-core` may hold one of those types in a struct
 that derives `Debug`, and nothing may format one.
 
+**A field value that is nothing but whitespace comes back empty.** An
+unprotected `<Value>   </Value>` is read as the empty string, so the three
+spaces are gone before Coffer has the database and saving writes the loss back.
+Whitespace *around* a value survives, and so does a whitespace-only protected
+value, because a protected value is base64 and its XML text is not whitespace.
+`whitespace-kdbx41.kdbx` pins all three, so the day the library keeps them a
+test fails.
+
+**A KDBX 4 file that puts its attachments in `Meta/Binaries` hits the same
+collapse as a KDBX 3 one.** The parser reads that element whatever the format
+version says, so the read-only guard, which keys on the version, does not catch
+it. Telling the two apart needs the decrypted XML, and the only way to get it is
+`Database::get_xml`, which derives the key a second time and would double the
+time to unlock every database that has an attachment. KeePass 2 and KeePassXC
+put KDBX 4 attachments in the inner header and never write that element, so the
+file this would take is one no released client produces.
+
 **Two hazards Coffer cannot reach and cannot fix.** Timestamp deserialisation
 panics on a base64 payload shorter than eight bytes, and the gzip payload is
 decompressed with an unbounded `read_to_end`. Both are inside the encrypted

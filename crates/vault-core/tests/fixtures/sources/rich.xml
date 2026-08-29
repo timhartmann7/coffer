@@ -155,6 +155,11 @@ second line</Value></String>
 					<String><Key>custom-029</Key><Value>value 29</Value></String>
 					<String><Key>custom-030</Key><Value ProtectInMemory="True">value 30</Value></String>
 					<String><Key>empty-unprotected</Key><Value></Value></String>
+					<String><Key>padded</Key><Value>  leading and trailing  </Value></String>
+					<String><Key>whitespace-protected</Key><Value ProtectInMemory="True"> 	 </Value></String>
+					<String><Key>newlines</Key><Value>a
+b
+</Value></String>
 					<String><Key>empty-protected</Key><Value ProtectInMemory="True"></Value></String>
 					<String><Key>key with spaces &amp; symbols</Key><Value>ok</Value></String>
 				</Entry>

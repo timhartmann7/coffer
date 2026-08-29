@@ -322,23 +322,22 @@ fn read(path: &Path, key: &MasterKey) -> Result<Database, VaultError> {
 /// Nothing has been written at this point, so there is no half-finished state
 /// to unwind into.
 fn parse_without_dying(bytes: &[u8], key: keepass::DatabaseKey) -> Result<Database, VaultError> {
-    silence_panics();
+    // A panic inside the parser quotes the document it failed on, and that
+    // document is the user's passwords. The default hook writes it to standard
+    // error, where a terminal, a log or a crash reporter can pick it up. The
+    // hook is silenced for exactly the length of this call and put back
+    // afterwards, so that nothing else in the process loses its diagnostics.
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
 
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Database::parse(bytes, key)))
+    let outcome =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Database::parse(bytes, key)));
+
+    std::panic::set_hook(previous);
+
+    outcome
         .map_err(|_| VaultError::DamagedContent)?
         .map_err(VaultError::from)
-}
-
-/// Stops the runtime printing panic messages.
-///
-/// A panic inside the parser quotes the document it failed on, and that document
-/// is the user's passwords. The default hook writes it to standard error, where
-/// a terminal, a log or a crash reporter can pick it up. Coffer would rather
-/// lose the diagnostic than print the vault, so the hook is replaced the first
-/// time a database is opened and never restored.
-fn silence_panics() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| std::panic::set_hook(Box::new(|_| {})));
 }
 
 fn classify(database: &Database) -> Source {

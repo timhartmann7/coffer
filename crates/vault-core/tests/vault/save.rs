@@ -401,17 +401,18 @@ fn ten_edits_of_an_entry_with_a_three_kilobyte_attachment_barely_grow_the_file()
             .len()
     };
 
-    let id = {
+    let (id, before) = {
         let vault = open(&database, SECRET);
         let entry = entry_titled(&vault, "attachments");
-        assert!(
-            entry
-                .attachments
-                .iter()
-                .any(|attachment| attachment.size == 3072),
-            "the fixture entry carries a three kilobyte attachment"
+        let blob = vault
+            .attachment(entry.id, "nested/path/name.txt")
+            .expect("the attachment is there");
+        assert_eq!(
+            blob.expose().len(),
+            3072,
+            "the fixture carries three kilobytes"
         );
-        entry.id
+        (entry.id, blob.expose().to_vec())
     };
 
     for round in 0..10 {
@@ -427,11 +428,31 @@ fn ten_edits_of_an_entry_with_a_three_kilobyte_attachment_barely_grow_the_file()
         .len();
     let growth = grown.saturating_sub(baseline);
 
-    // The bound is one copy of the attachment, not ten. The fixture's blob is
-    // incompressible on purpose, so a writer that copied it into each version
-    // would blow through this on the first edit rather than hiding behind gzip.
     assert!(
-        growth < 3072,
-        "ten edits grew the file by {growth} bytes, so the attachment is being copied into every version"
+        growth < 10 * 3072,
+        "ten edits grew the file by {growth} bytes"
+    );
+
+    // The size on its own proves less than it looks. The payload is gzipped as
+    // a whole, and ten identical copies of a blob compress to barely more than
+    // one, so a writer that did copy the attachment into every version would
+    // slip under any bound this test could set. What the criterion is really
+    // about is that the versions share the blob, and that it is still the blob
+    // the fixture had.
+    let vault = open(&database, SECRET);
+    let entry = vault.entry(id).expect("the entry is there");
+    assert_eq!(entry.versions, 10, "ten edits should be ten versions");
+    assert_eq!(
+        entry.attachments.len(),
+        4,
+        "the entry gained or lost an attachment"
+    );
+    assert_eq!(
+        vault
+            .attachment(id, "nested/path/name.txt")
+            .expect("the attachment is still there")
+            .expose(),
+        before,
+        "the attachment came back changed"
     );
 }

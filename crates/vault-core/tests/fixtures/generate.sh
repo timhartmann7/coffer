@@ -97,6 +97,7 @@ rm -f sources/.tmp.xml
 import sources/legacy-empty-attachment.xml legacy-empty-attachment-kdbx31.kdbx 3.1 "$PASSWORD"
 
 import sources/minimal.xml minimal-kdbx41.kdbx 4.1 "$PASSWORD"
+import sources/whitespace.xml whitespace-kdbx41.kdbx 4.1 "$PASSWORD"
 
 # A database that needs a key file as well as a password. Coffer reads these,
 # and never creates one.

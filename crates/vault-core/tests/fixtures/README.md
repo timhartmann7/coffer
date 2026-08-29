@@ -14,6 +14,7 @@ the resulting `.kdbx` files.
 | `rich-kdbx31.kdbx` | KDBX 3.1 | `coffer-test` | the same content again, attachments in `Meta/Binaries` |
 | `legacy-empty-attachment-kdbx31.kdbx` | KDBX 3.1 | `coffer-test` | a zero-byte attachment in `Meta/Binaries` |
 | `minimal-kdbx41.kdbx` | KDBX 4.1 | `coffer-test` | one group, one entry |
+| `whitespace-kdbx41.kdbx` | KDBX 4.1 | `coffer-test` | values made only of whitespace |
 | `keyfile-kdbx41.kdbx` | KDBX 4.1 | `coffer-keyfile` + `keyfile.key` | a database that needs a key file |
 | `empty-kdbx31.kdbx` | KDBX 3.1 | `coffer-test` | `keepassxc-cli db-create` output, untouched |
 

@@ -199,11 +199,12 @@ fn pruning_drops_the_oldest_version_when_timestamps_tie() {
             .edit(|entry| entry.set_unprotected(fields::TITLE, "subject"))
             .id();
 
-        // Four versions sharing one modification time, distinguishable only by
-        // their notes and by the order they sit in.
+        // Two pairs, each pair sharing a modification time. Pruning to two has
+        // to keep the later pair, and a tie-break that favoured the front of
+        // the list would keep one from each.
         for round in 0..4 {
             let mut entry = db.entry_mut(id).expect("the entry is there");
-            entry.times.last_modification = Some(stamp(0));
+            entry.times.last_modification = Some(stamp(round / 2));
             entry.edit_tracking(|entry| {
                 entry.set(fields::NOTES, Value::unprotected(format!("v{round}")));
             });
@@ -216,9 +217,16 @@ fn pruning_drops_the_oldest_version_when_timestamps_tie() {
     vault.save().expect("the database saves");
     drop(vault);
 
-    // Two survive, and they must be the last two written, not the first two.
     let vault = open(&database, BUILT_PASSWORD);
-    assert_eq!(vault.versions(id).len(), 2);
+    assert_eq!(
+        vault
+            .versions(id)
+            .into_iter()
+            .map(|version| version.modified)
+            .collect::<Vec<_>>(),
+        vec![Some(stamp(1)), Some(stamp(1))],
+        "a tie sent the wrong version to the bin"
+    );
 }
 
 #[test]
@@ -249,14 +257,14 @@ fn history_is_pruned_to_the_databases_item_limit_on_save() {
             .edit(|entry| entry.set_unprotected(fields::TITLE, "subject"))
             .id();
         for round in 0..9 {
-            db.entry_mut(id)
-                .expect("the entry is there")
-                .edit_tracking(|entry| {
-                    entry.set(
-                        fields::NOTES,
-                        Value::unprotected(format!("version {round}")),
-                    );
-                });
+            let mut entry = db.entry_mut(id).expect("the entry is there");
+            entry.times.last_modification = Some(stamp(round));
+            entry.edit_tracking(|entry| {
+                entry.set(
+                    fields::NOTES,
+                    Value::unprotected(format!("version {round}")),
+                );
+            });
         }
     });
 
@@ -271,16 +279,17 @@ fn history_is_pruned_to_the_databases_item_limit_on_save() {
     vault.save().expect("the database saves");
     drop(vault);
 
+    // The three that survive have to be the three newest. A prune that dropped
+    // from the wrong end would keep three versions too.
     let vault = open(&database, BUILT_PASSWORD);
-    assert_eq!(vault.versions(id).len(), 3);
-
-    // The three kept are the newest three, so the oldest note is gone.
-    let notes: Vec<_> = vault
-        .versions(id)
-        .into_iter()
-        .filter_map(|version| version.modified)
-        .collect();
-    assert_eq!(notes.len(), 3);
+    assert_eq!(
+        vault
+            .versions(id)
+            .into_iter()
+            .map(|version| version.modified)
+            .collect::<Vec<_>>(),
+        vec![Some(stamp(6)), Some(stamp(7)), Some(stamp(8))]
+    );
 }
 
 #[test]

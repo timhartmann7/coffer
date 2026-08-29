@@ -64,8 +64,9 @@ pub struct Entry {
     pub id: EntryId,
     /// The group holding this entry.
     pub group: GroupId,
-    /// Every field the entry has, standard and custom alike, in the order the
-    /// database lists them.
+    /// Every field the entry has, standard and custom alike, ordered by name.
+    /// The database stores them in a map and writes them in whatever order it
+    /// iterates, so there is no file order to preserve.
     pub fields: Vec<Field>,
     pub attachments: Vec<Attachment>,
     pub tags: Vec<String>,

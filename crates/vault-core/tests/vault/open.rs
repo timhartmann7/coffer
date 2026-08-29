@@ -265,6 +265,42 @@ fn attachments_come_back_with_their_bytes_intact() {
 }
 
 #[test]
+fn whitespace_inside_a_value_survives_but_a_value_that_is_only_whitespace_does_not() {
+    let (_scratch, database) = support::scratch(RICH);
+    let vault = open(&database, SECRET);
+    let entry = entry_titled(&vault, "many custom fields");
+
+    let read = |name: &str| {
+        vault
+            .reveal(entry.id, name)
+            .and_then(|value| value.expose_str().map(str::to_owned))
+    };
+
+    assert_eq!(read("padded"), Some("  leading and trailing  ".to_owned()));
+    assert_eq!(read("newlines"), Some("a\nb\n".to_owned()));
+    assert_eq!(read("whitespace-protected"), Some(" \t ".to_owned()));
+
+    // The one that does not survive has a fixture of its own, so that this
+    // limitation is a fact the suite states rather than one it hides.
+    let (_blank, blank) = support::scratch("whitespace-kdbx41.kdbx");
+    let vault = open(&blank, SECRET);
+    let entry = entry_titled(&vault, "blank values");
+
+    let read = |name: &str| {
+        vault
+            .reveal(entry.id, name)
+            .and_then(|value| value.expose_str().map(str::to_owned))
+    };
+    assert_eq!(
+        read("spaces-only"),
+        Some(String::new()),
+        "the library kept a whitespace-only value: this limitation is over"
+    );
+    assert_eq!(read("tab-only"), Some(String::new()));
+    assert_eq!(read("padded"), Some("  kept  ".to_owned()));
+}
+
+#[test]
 fn empty_values_survive_as_empty_rather_than_absent() {
     let (_scratch, database) = support::scratch(RICH);
     let vault = open(&database, SECRET);

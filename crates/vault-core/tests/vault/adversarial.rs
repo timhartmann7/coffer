@@ -621,9 +621,9 @@ fn a_one_megabyte_field_value_survives() {
         vault
             .reveal(id, fields::NOTES)
             .expect("the notes reveal")
-            .expose()
-            .len(),
-        long.len()
+            .expose_str(),
+        Some(long.as_str()),
+        "a megabyte of text came back changed"
     );
 }
 

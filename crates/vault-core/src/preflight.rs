@@ -47,7 +47,9 @@ const MAX_FIELD_BYTES: u32 = 64 * 1024;
 /// Ceilings on what a database may ask Coffer to compute before it has proved
 /// it is genuine. They are far above anything a real database carries and far
 /// below anything that would take the process down.
-const MAX_ARGON2_MEMORY: u64 = 4 * 1024 * 1024 * 1024;
+/// A gigabyte, which is where KeePassXC's own settings screen stops. Real
+/// databases ask for sixty-four megabytes.
+const MAX_ARGON2_MEMORY: u64 = 1024 * 1024 * 1024;
 const MAX_ARGON2_ITERATIONS: u64 = 100_000;
 const MAX_PARALLELISM: u32 = 1024;
 const MAX_AES_ROUNDS: u64 = 1_000_000_000;

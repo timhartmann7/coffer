@@ -35,6 +35,7 @@ pub struct Holder {
 impl fmt::Debug for Holder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Holder")
+            .field("time", &self.time)
             .field("user", &self.user)
             .field("host", &self.host)
             .field("pid", &self.pid)
