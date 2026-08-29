@@ -72,22 +72,25 @@ impl Session {
     /// long as it is open because KeePass derives a fresh key on every save,
     /// and wipes it on the way out.
     pub fn unlock(&self, password: Zeroizing<Vec<u8>>) -> Result<(), Failure> {
-        let mut held = self.held();
-        let Some(database) = held.database.clone() else {
-            return Err(Failure::no_vault());
+        let database = {
+            let mut held = self.held();
+            // Anything already open is dropped before the new one is opened, so
+            // that reopening the same file does not find Coffer's own lock
+            // beside it and refuse.
+            held.vault = None;
+            held.database.clone().ok_or_else(Failure::no_vault)?
         };
 
-        // Anything already open is dropped before the new one is opened, so
-        // that reopening the same file does not find Coffer's own lock beside
-        // it and refuse.
-        held.vault = None;
-
+        // Key derivation is a second of work, and it happens with nothing held.
+        // A window that asks the session anything meanwhile is answered rather
+        // than left waiting on a lock this thread is holding.
         let vault = Vault::open(
             &database,
             MasterKey::from_password(password),
             LockPolicy::Respect,
         )?;
 
+        let mut held = self.held();
         // The database Coffer opened is the one it followed the links to.
         held.database = Some(vault.path().to_path_buf());
         held.vault = Some(vault);
