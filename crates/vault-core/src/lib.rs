@@ -21,6 +21,7 @@ pub mod key;
 pub mod model;
 pub mod secret;
 pub mod storage;
+pub mod url;
 
 mod history;
 mod preflight;
