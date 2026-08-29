@@ -109,6 +109,39 @@ it('takes the value off the screen when the pane goes', async () => {
 	expect(document.body.textContent).not.toContain(SECRET);
 });
 
+/** A reveal that is still in flight when the pane goes has nowhere to put its
+ * answer, and the answer must not be written into an element that is off the
+ * screen and can no longer be wiped. */
+it('drops a value that arrives after the pane has gone', async () => {
+	let answer: (value: string) => void = () => {};
+	ipc.reveal.mockReturnValue(
+		new Promise<string>((resolve) => {
+			answer = resolve;
+		})
+	);
+
+	const component = show({
+		fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+	});
+	flushSync();
+
+	// The node the value would have gone into, held on to the way a leak would.
+	const target = host.querySelector('[data-value]');
+	if (!target) throw new Error('the pane has nowhere to show a value');
+
+	button('Show').click();
+	flushSync();
+
+	await unmount(component);
+	answer(SECRET);
+	await Promise.resolve();
+	await Promise.resolve();
+	flushSync();
+
+	expect(target.textContent).toBe('');
+	expect(document.body.textContent).not.toContain(SECRET);
+});
+
 it('asks for a password once per reveal and never on its own', async () => {
 	const component = show({
 		fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]

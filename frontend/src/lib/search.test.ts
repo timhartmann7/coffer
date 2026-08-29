@@ -64,6 +64,19 @@ describe('the instant filter', () => {
 		expect(find(rows, 'needle')).toHaveLength(1);
 	});
 
+	/** The attack list asks for fifty thousand entries. The list draws what the
+	 * screen can hold; the filter has to answer for all of them, on every
+	 * keystroke. */
+	it('filters fifty thousand rows on every keystroke', () => {
+		const rows = index(
+			Array.from({ length: 50_000 }, (_, at) => row({ title: `entry ${at}`, username: 'deploy' }))
+		);
+
+		expect(search(rows, 'entry 49999')).toHaveLength(1);
+		expect(search(rows, 'deploy')).toHaveLength(50_000);
+		expect(search(rows, 'nothing here')).toHaveLength(0);
+	});
+
 	it('matches a value that is nothing but markup', () => {
 		const rows = [row({ title: '<script>alert(1)</script>' })];
 		expect(find(rows, '<script>')).toHaveLength(1);

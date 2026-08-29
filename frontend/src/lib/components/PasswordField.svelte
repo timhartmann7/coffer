@@ -59,6 +59,7 @@
 				<!-- The value lives here and nowhere else. -->
 				<span
 					bind:this={node}
+					data-value
 					class="block font-mono text-body leading-snug break-all text-txt select-text"
 				></span>
 			</span>

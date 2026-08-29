@@ -13,10 +13,16 @@
 	// has opened it.
 	$effect(() => {
 		void (async () => {
-			const opening = await status();
-			database = opening.database;
-			if (opening.unlocked) await opened();
-			ready = true;
+			try {
+				const opening = await status();
+				database = opening.database;
+				if (opening.unlocked) await opened();
+			} finally {
+				// Whatever went wrong, the unlock screen is where it can be said
+				// and where the reader can choose another file. A window with
+				// nothing in it says nothing.
+				ready = true;
+			}
 		})();
 	});
 

@@ -21,12 +21,22 @@ export class Revealed {
 
 	#node: HTMLElement | null = null;
 	#countdown: ReturnType<typeof setInterval> | null = null;
+	/** Which reveal is the current one. A value that arrives after the screen
+	 * has moved on has nowhere to go. */
+	#asked = 0;
 
 	/** Puts the value into `node` and starts counting down. */
 	async show(node: HTMLElement, entry: string, field: string): Promise<void> {
+		const asked = ++this.#asked;
 		const value = await reveal(entry, field);
 
+		// Hidden, or asked again, while this one was in flight: the node it was
+		// going into may already be off the screen, and writing there would
+		// leave the value in a element nothing can wipe again.
+		if (asked !== this.#asked) return;
+
 		this.hide();
+		this.#asked = asked;
 		node.textContent = value;
 		this.#node = node;
 		this.showing = true;
@@ -44,6 +54,7 @@ export class Revealed {
 	 * leaving the value behind.
 	 */
 	hide(): void {
+		this.#asked += 1;
 		if (this.#countdown !== null) {
 			clearInterval(this.#countdown);
 			this.#countdown = null;

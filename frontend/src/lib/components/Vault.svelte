@@ -29,7 +29,10 @@
 	const now = new Date();
 
 	const shown = $derived(group === null ? root : (findGroup(root, group) ?? root));
-	const rows = $derived(group === null ? liveEntries(root) : entriesOf(shown));
+	// Walked once. The tree is the whole vault, and three walks of fifty
+	// thousand entries to draw one screen is three too many.
+	const live = $derived(liveEntries(root));
+	const rows = $derived(group === null ? live : entriesOf(shown));
 	const indexed = $derived(index(rows));
 	const found = $derived(search(indexed, query));
 	const bin = $derived(recycleBin(root));
@@ -170,7 +173,7 @@
 				/>
 				<span class="flex-1 text-left">All entries</span>
 				<span class="font-mono text-meta {group === null ? 'text-txt3' : 'text-txt4'}">
-					{liveEntries(root).length}
+					{live.length}
 				</span>
 			</button>
 
@@ -282,7 +285,7 @@
 >
 	<span>
 		{found.length}
-		{found.length === 1 ? 'entry' : 'entries'} here · {liveEntries(root).length} in the vault
+		{found.length === 1 ? 'entry' : 'entries'} here · {live.length} in the vault
 	</span>
 	<span class="truncate">{database.path}</span>
 </div>

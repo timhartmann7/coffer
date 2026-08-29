@@ -43,6 +43,7 @@
 	{/if}
 	<span
 		bind:this={node}
+		data-value
 		class="block font-mono text-small leading-snug break-all text-txt select-text"
 	></span>
 </span>
