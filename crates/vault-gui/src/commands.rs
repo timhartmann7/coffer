@@ -24,7 +24,7 @@ use vault_core::{NewValue, Vault};
 use crate::dto::{self, Database, Entry, Group, Made, Revealed, Rival, Snapshot, Status, Version};
 use crate::error::Failure;
 use crate::session::Session;
-use crate::{clipboard, opener, recent};
+use crate::{clipboard, opener, recent, settings};
 
 /// The session is behind an `Arc` so that a command can take it onto a blocking
 /// thread, which is where key derivation belongs.
@@ -152,11 +152,49 @@ pub fn reveal(entry: String, field: String, session: Held<'_>) -> Result<Reveale
 /// Copies one field's value to the clipboard. Nothing comes back but the number
 /// of seconds until Coffer takes it off again.
 #[tauri::command]
-pub fn copy(entry: String, field: String, session: Held<'_>) -> Result<u64, Failure> {
+pub fn copy(
+    entry: String,
+    field: String,
+    app: AppHandle,
+    session: Held<'_>,
+) -> Result<u64, Failure> {
     let secret = session.reveal(dto::entry_id(&entry)?, &field)?;
+    let after = chosen(&app).clipboard();
 
-    clipboard::copy(text(&secret)?, clipboard::CLEAR_AFTER);
-    Ok(clipboard::CLEAR_AFTER.as_secs())
+    clipboard::copy(text(&secret)?, after);
+    Ok(after.as_secs())
+}
+
+/// What the reader chose, as the commands see it.
+///
+/// Resolved out of managed state rather than taken as an argument: the frontend
+/// names every argument a command declares, and a settings object arriving from
+/// the window is a settings object the window could have made up.
+fn chosen(app: &AppHandle) -> settings::Settings {
+    app.try_state::<Arc<settings::Preferences>>()
+        .map(|held| held.get())
+        .unwrap_or_default()
+}
+
+/// What the reader chose, and what else they could choose.
+#[tauri::command]
+pub fn settings(app: AppHandle) -> dto::Settings {
+    dto::Settings::of(chosen(&app))
+}
+
+/// Puts a choice into effect.
+///
+/// Answers with what was actually stored rather than with what was sent: a
+/// value the screen does not offer is settled onto one it does, and the screen
+/// draws what came back.
+#[tauri::command]
+pub fn set_settings(settings: dto::Settings, app: AppHandle) -> Result<dto::Settings, Failure> {
+    let held = app
+        .try_state::<Arc<settings::Preferences>>()
+        .ok_or_else(|| Failure::internal("this Mac has nowhere to keep a setting"))?;
+
+    let stored = held.set(settings.wanted()).map_err(Failure::io)?;
+    Ok(dto::Settings::of(stored))
 }
 
 /// A revealed value as text.

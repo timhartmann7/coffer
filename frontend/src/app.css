@@ -50,6 +50,7 @@
 	--text-fine: 13px;
 	--text-small: 14px;
 	--text-body: 14.5px;
+	--text-row: 15.5px;
 	--text-base: 15px;
 	--text-lead: 16px;
 	--text-title: 19px;
@@ -70,9 +71,18 @@
 	--radius-lg: 20px;
 
 	/* The one thing that moves on its own: a bar draining while something
-	   counts down. It appears nowhere else. */
+	   counts down. It appears nowhere else.
+
+	   One animation per clipboard timeout the settings screen offers, because a
+	   duration cannot be computed into a class: Tailwind reads the class names
+	   out of the source, and a strict style-src forbids setting the duration
+	   from script. `drain.test.ts` is what keeps this list and the list Rust
+	   offers from parting company. */
 	--animate-drain-reveal: drain 30s linear forwards;
-	--animate-drain-clipboard: drain 60s linear forwards;
+	--animate-drain-clipboard-15: drain 15s linear forwards;
+	--animate-drain-clipboard-30: drain 30s linear forwards;
+	--animate-drain-clipboard-60: drain 60s linear forwards;
+	--animate-drain-clipboard-300: drain 300s linear forwards;
 
 	@keyframes drain {
 		from {

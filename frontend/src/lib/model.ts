@@ -129,6 +129,22 @@ export interface Rival {
 	entries: number | null;
 }
 
+/** What the reader chose about locking and the clipboard.
+ *
+ * The two `Choices` lists are what the screen may offer. They arrive with the
+ * values rather than being written down here, so there is one place that
+ * decides what a reader is allowed to pick. */
+export interface Settings {
+	/** How long an untouched vault stays open. */
+	idleSeconds: number;
+	/** How long a copied password stays on the clipboard. */
+	clipboardSeconds: number;
+	lockOnSleep: boolean;
+	lockOnScreenLock: boolean;
+	idleChoices: number[];
+	clipboardChoices: number[];
+}
+
 /** The kinds of character the generator draws from. */
 export type Alphabet = 'lower' | 'upper' | 'digits' | 'symbols';
 

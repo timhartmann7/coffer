@@ -21,10 +21,6 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSString, ns_string};
 
-/// How long a copied secret stays on the pasteboard. Configurable in slice 4;
-/// until then it is the default the spec asks for.
-pub const CLEAR_AFTER: Duration = Duration::from_secs(60);
-
 /// The type that tells a clipboard manager this value is a secret, and the one
 /// that tells it the value is short-lived. Between them they are what keeps a
 /// password out of clipboard history: <http://nspasteboard.org>.

@@ -59,7 +59,7 @@
 	let saving = $state(false);
 	let conflict = $state<Rival | null>(null);
 	let changedAt = $state<Date | null>(null);
-	let notice = $state<{ message: string; kind: 'copied' | 'failed' } | null>(null);
+	let notice = $state<{ message: string; kind: 'copied' | 'failed'; seconds: number } | null>(null);
 	let countdown: ReturnType<typeof setInterval> | null = null;
 	let fading: ReturnType<typeof setTimeout> | null = null;
 	/** Which copy the toast is about. The bar that drains is a CSS animation and
@@ -284,7 +284,7 @@
 			const beside = await saveCopy();
 			if (!beside) return;
 			conflict = null;
-			notice = { message: `Kept as ${beside.name}`, kind: 'copied' };
+			notice = { message: `Kept as ${beside.name}`, kind: 'copied', seconds: 0 };
 			copies += 1;
 			fade();
 			await takeTheirs();
@@ -326,7 +326,7 @@
 		clear();
 		copies += 1;
 		let left = seconds;
-		notice = { message: message(left), kind: 'copied' };
+		notice = { message: message(left), kind: 'copied', seconds };
 		countdown = setInterval(() => {
 			left -= 1;
 			if (left <= 0) {
@@ -334,7 +334,7 @@
 				notice = null;
 				return;
 			}
-			notice = { message: message(left), kind: 'copied' };
+			notice = { message: message(left), kind: 'copied', seconds };
 		}, 1000);
 	}
 
@@ -345,7 +345,7 @@
 
 	function failed(thrown: unknown) {
 		clear();
-		notice = { message: asFailure(thrown).message, kind: 'failed' };
+		notice = { message: asFailure(thrown).message, kind: 'failed', seconds: 0 };
 		fade();
 	}
 
@@ -741,7 +741,7 @@
 
 	{#if notice}
 		{#key copies}
-			<Toast message={notice.message} kind={notice.kind} />
+			<Toast message={notice.message} kind={notice.kind} seconds={notice.seconds} />
 		{/key}
 	{/if}
 </div>

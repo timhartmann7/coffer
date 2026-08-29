@@ -15,6 +15,7 @@ import type {
 	Group,
 	Made,
 	Rival,
+	Settings,
 	Snapshot,
 	Status,
 	Version
@@ -46,6 +47,24 @@ export async function unlock(password: Uint8Array): Promise<void> {
 
 export function lock(): Promise<void> {
 	return invoke('lock');
+}
+
+/** What the reader chose, and the values they may choose instead. Both come
+ * from Rust: a screen holding its own list would be a second place the answer
+ * lives. */
+export function settings(): Promise<Settings> {
+	return invoke('settings');
+}
+
+/**
+ * Puts a choice into effect.
+ *
+ * Answers with what was actually stored, which is not always what was sent: a
+ * value Rust does not offer is settled onto one it does. The screen draws what
+ * came back.
+ */
+export function setSettings(settings: Settings): Promise<Settings> {
+	return invoke('set_settings', { settings });
 }
 
 export function tree(): Promise<Group> {

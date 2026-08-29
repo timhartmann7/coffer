@@ -236,4 +236,29 @@
 			d="M9.6 6.6A9.7 9.7 0 0 1 12 6.2c6 0 9.5 5.8 9.5 5.8a17 17 0 0 1-3.3 3.9M6.3 8.4A17 17 0 0 0 2.5 12S6 17.8 12 17.8c1 0 1.9-.2 2.7-.4"
 		/></symbol
 	>
+	<symbol
+		id="i-sliders"
+		viewBox="0 0 24 24"
+		fill="none"
+		stroke="currentColor"
+		stroke-width="1.5"
+		stroke-linecap="round"
+	>
+		<path d="M4 7h5M13 7h7M4 12h11M19 12h1M4 17h3M11 17h9" />
+		<circle cx="11" cy="7" r="2" />
+		<circle cx="17" cy="12" r="2" />
+		<circle cx="9" cy="17" r="2" />
+	</symbol>
+	<symbol
+		id="i-clock"
+		viewBox="0 0 24 24"
+		fill="none"
+		stroke="currentColor"
+		stroke-width="1.5"
+		stroke-linecap="round"
+		stroke-linejoin="round"
+	>
+		<circle cx="12" cy="12" r="8.4" />
+		<path d="M12 7.2V12l3 1.9" />
+	</symbol>
 </svg>

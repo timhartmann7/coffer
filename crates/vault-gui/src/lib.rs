@@ -29,6 +29,7 @@ mod error;
 mod opener;
 mod recent;
 mod session;
+mod settings;
 mod window;
 
 use std::sync::Arc;
@@ -48,7 +49,9 @@ pub fn run() {
                 .ok()
                 .and_then(|directory| recent::remembered(&directory));
 
+            let directory = app.path().app_config_dir().ok();
             app.manage(Arc::new(Session::new(remembered)));
+            app.manage(Arc::new(settings::Preferences::load(directory)));
 
             if let Some(main) = app.get_webview_window("main") {
                 window::centre_buttons(&main);
@@ -58,6 +61,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::status,
+            commands::settings,
+            commands::set_settings,
             commands::choose_database,
             commands::unlock,
             commands::lock,

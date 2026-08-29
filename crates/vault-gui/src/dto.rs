@@ -10,9 +10,11 @@
 //! business in a panic message.
 
 use chrono::NaiveDateTime;
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 use vault_core::model::{self, FieldValue, fields};
 use zeroize::Zeroizing;
+
+use crate::settings;
 
 /// The database Coffer has chosen, whether or not it is open.
 #[derive(Serialize)]
@@ -98,6 +100,49 @@ pub struct Status {
     /// Whether this database can be written back at all. A snapshot and a
     /// format Coffer will not write are both read only.
     pub read_only: bool,
+}
+
+/// What the reader chose, and what they may choose instead.
+///
+/// The lists come with the values. A screen that held its own copy of what may
+/// be chosen would be a second place the answer lives, and the two would part
+/// company the first time one of them changed.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Settings {
+    pub idle_seconds: u64,
+    pub clipboard_seconds: u64,
+    pub lock_on_sleep: bool,
+    pub lock_on_screen_lock: bool,
+    #[serde(skip_deserializing)]
+    pub idle_choices: Vec<u64>,
+    #[serde(skip_deserializing)]
+    pub clipboard_choices: Vec<u64>,
+}
+
+impl Settings {
+    pub fn of(held: settings::Settings) -> Settings {
+        Settings {
+            idle_seconds: held.idle_seconds,
+            clipboard_seconds: held.clipboard_seconds,
+            lock_on_sleep: held.lock_on_sleep,
+            lock_on_screen_lock: held.lock_on_screen_lock,
+            idle_choices: settings::IDLE_CHOICES.to_vec(),
+            clipboard_choices: settings::CLIPBOARD_CHOICES.to_vec(),
+        }
+    }
+
+    /// What the window asked for. The lists it was sent do not come back: they
+    /// are this side's to decide, and a message naming others would be the
+    /// window choosing what it may choose.
+    pub fn wanted(&self) -> settings::Settings {
+        settings::Settings {
+            idle_seconds: self.idle_seconds,
+            clipboard_seconds: self.clipboard_seconds,
+            lock_on_sleep: self.lock_on_sleep,
+            lock_on_screen_lock: self.lock_on_screen_lock,
+        }
+    }
 }
 
 /// A previous version of an entry, as the versions block lists them.
