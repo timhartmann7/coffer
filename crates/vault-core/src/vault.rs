@@ -458,7 +458,10 @@ impl Vault {
             return Ok(());
         };
 
-        let sections: Vec<GroupId> = self.sections_of(bin);
+        // The folders directly inside it, not every folder under it: erasing one
+        // takes everything below it, and coming back for a folder that has
+        // already gone is an error about a folder nobody asked to delete.
+        let sections: Vec<GroupId> = self.children_of(bin);
         let entries: Vec<EntryId> = self.entries_of(bin);
 
         for section in sections {
@@ -897,6 +900,14 @@ impl Vault {
             walk(&group, &mut found);
         }
         found
+    }
+
+    /// The folders directly inside this one.
+    fn children_of(&self, id: GroupId) -> Vec<GroupId> {
+        self.database
+            .group(id)
+            .map(|group| group.groups().map(|section| section.id()).collect())
+            .unwrap_or_default()
     }
 
     /// The entries this folder holds directly.

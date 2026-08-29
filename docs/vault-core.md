@@ -256,3 +256,10 @@ surprising:
 
 `unbroken` runs before every write. It has never fired, and it is the last thing
 between a mistake in this module and a database that hands out the wrong file.
+
+One shape only another client can produce is worth naming: KeePass 2 pools
+identical binaries, so **one file can carry two names**, and `rich-kdbx41.kdbx`
+has one. Taking one of the two names away keeps the file exactly where it is,
+which is tested. Making such a file *move* would mean rewriting both names and
+only one can be rewritten, so that is refused - a guard against a database
+Coffer cannot itself produce, and the reason the refusal has no test of its own.

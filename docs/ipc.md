@@ -252,6 +252,24 @@ thousand would draw fifty thousand rows and take its time about it. The filter
 itself is tested at that size; the drawing is not, and the fix when it matters is
 to draw only the rows on screen.
 
+**The command layer itself has no tests.** What is under it does:
+`Session` is covered, `vault-core` is covered, and `contract.test.ts` checks
+that every command the window calls exists in Rust, is in the handler list, and
+takes exactly the arguments the window sends. What is untested is the body of a
+command - the dialog it opens, the thread it moves work onto. Testing one needs
+Tauri's mock runtime and belongs with the window work rather than with this
+slice.
+
+**An entry cannot be moved between folders.** It is made in the folder that is
+open and it stays there until it is deleted, which moves it to the recycle bin.
+The mockup shows dragging a row into another folder; nothing here does that yet.
+
+**A save holds the session while it runs.** Every committed change writes the
+file, and the write derives the key again, so for that second nothing else can
+read the vault. The status bar says `Saving…`. If that ever becomes a wait
+worth avoiding, the answer is to hold the write behind a short delay rather than
+to let two of them overlap.
+
 **A snapshot opened from the unlock screen becomes the chosen database for the
 rest of the session,** and it is read only. Writing to a `.bak` would put the
 change in a file the next save of the database beside it rotates away, so every

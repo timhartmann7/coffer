@@ -73,6 +73,27 @@ fn root_of(vault: &Vault) -> GroupId {
     vault.tree().id
 }
 
+/// The one folder with this name, wherever it sits.
+fn only_group(vault: &Vault, name: &str) -> GroupId {
+    fn walk(group: &vault_core::model::Project, name: &str, into: &mut Vec<GroupId>) {
+        if group.name == name {
+            into.push(group.id);
+        }
+        for section in &group.sections {
+            walk(section, name, into);
+        }
+    }
+
+    let mut found = Vec::new();
+    walk(&vault.tree(), name, &mut found);
+    assert_eq!(
+        found.len(),
+        1,
+        "expected exactly one folder called {name:?}"
+    );
+    found.remove(0)
+}
+
 #[test]
 fn a_new_entry_carries_the_fields_the_database_asks_to_protect() {
     let scratch = tempfile::tempdir().expect("a scratch directory");
@@ -995,18 +1016,36 @@ fn emptying_the_recycle_bin_takes_what_is_in_it_out_of_the_file() {
     let living = only_entry(&vault, "basic");
     vault.delete_entry(living).expect("the entry is deleted");
 
+    // A folder in the bin, with a folder in that. Emptying has to take the
+    // whole branch in one go rather than coming back for a folder that went
+    // with its parent.
+    let project = only_group(&vault, "Personal");
+    let inner = vault
+        .create_group(project, "nested")
+        .expect("the folder is made");
+    vault
+        .create_group(inner, "deeper")
+        .expect("the folder is made");
+    vault.delete_group(project).expect("the folder is deleted");
+
     assert_eq!(vault.count(), 11, "the fixture holds eleven entries");
 
     vault.empty_recycle_bin().expect("the bin is emptied");
     assert!(vault.entry(deleted).is_none(), "the bin still holds it");
     assert!(vault.entry(living).is_none(), "the bin still holds it");
-    assert_eq!(vault.count(), 9);
+    // The entry that was in the bin, the entry deleted into it, and the three
+    // the deleted folder brought with it.
+    assert_eq!(vault.count(), 6);
+    assert!(
+        vault.tree().sections.iter().all(|s| s.name != "Personal"),
+        "the folder that went into the bin is still in the tree"
+    );
 
     vault.save().expect("the database saves");
     drop(vault);
 
     let vault = open(&database, SECRET);
-    assert_eq!(vault.count(), 9, "the entries came back");
+    assert_eq!(vault.count(), 6, "the entries came back");
     assert!(
         vault
             .tree()
@@ -1503,5 +1542,42 @@ fn a_file_replaced_by_one_of_the_same_name_keeps_the_new_bytes_and_the_pool() {
             ),
             ("entry 2".to_owned(), "file 2".to_owned(), vec![2u8; 32]),
         ]
+    );
+}
+
+/// The fixture gives one file two names, which is what a client that pools
+/// identical binaries produces. Taking both away is what makes the file go, and
+/// it is the lowest one in the pool, so every other file in the database has to
+/// move down a slot behind it - four of them, on the entries of two different
+/// entries, all in one change.
+#[test]
+fn taking_the_last_name_off_a_shared_file_moves_everything_above_it_down() {
+    let (_scratch, database) = support::scratch(RICH);
+
+    let before = {
+        let vault = open(&database, SECRET);
+        files(&vault)
+    };
+
+    {
+        let mut vault = open(&database, SECRET);
+        let id = only_entry(&vault, "attachments");
+        vault
+            .remove_attachment(id, "zero-byte.txt")
+            .expect("the first name goes");
+        vault
+            .remove_attachment(id, "../../escape.txt")
+            .expect("the last name goes, and the file with it");
+        vault.save().expect("the database saves");
+    }
+
+    let vault = open(&database, SECRET);
+    assert_eq!(
+        files(&vault),
+        before
+            .into_iter()
+            .filter(|(_, name, _)| name != "zero-byte.txt" && name != "../../escape.txt")
+            .collect::<Vec<_>>(),
+        "closing the pool up handed a file to the wrong entry"
     );
 }

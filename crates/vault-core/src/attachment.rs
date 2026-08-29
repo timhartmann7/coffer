@@ -296,6 +296,14 @@ fn bytes(database: &Database, id: AttachmentId) -> Result<Value<Vec<u8>>, VaultE
 ///
 /// A dangling name is a state nothing may read, so this is never called except
 /// between the checks and the [`forget`] and [`put`] calls that settle it.
+///
+/// One thing it does do is take away every name the entry that *added* the file
+/// gives it, because for that one file the library's own bookkeeping is right.
+/// That is only ever the name the file is about to come back under: a file put
+/// into the pool in this session has exactly one name, so if that name is being
+/// dropped the file is going with it, and if it is not, it is the name
+/// [`drop_names`] hands to [`put`]. A file that arrived in the database has no
+/// bookkeeping at all, and nothing of it is taken away here.
 fn lift(database: &mut Database, id: AttachmentId) {
     if let Some(attachment) = database.attachment_mut(id) {
         attachment.remove();
