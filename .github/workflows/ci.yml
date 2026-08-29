@@ -8,7 +8,10 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
+  # The engine is where the round-trip suite lives, and it needs an external
+  # KeePass implementation to compare against. That comes from apt, which is
+  # why this half runs on Ubuntu even though Coffer only ships for macOS.
+  engine:
     runs-on: ubuntu-latest
 
     steps:
@@ -23,10 +26,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # The round-trip suite is the point of this slice, and it needs an
-      # external implementation to compare against. The suite fails rather than
-      # skips when keepassxc-cli is missing, so a rename of this package cannot
-      # quietly delete the project's main test.
+      # The round-trip suite is the point of the project, and it fails rather
+      # than skips when keepassxc-cli is missing, so a rename of this package
+      # cannot quietly delete the project's main test.
       - name: Install keepassxc-cli
         run: |
           sudo apt-get update
@@ -42,13 +44,74 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy -p vault-core --all-targets --all-features -- -D warnings
 
       - name: Unused dependencies
         run: cargo shear
 
+      # The policy is written for the two targets Coffer ships, so it runs the
+      # same way here as it would on a Mac.
       - name: Licences and banned crates
         run: cargo deny check
 
       - name: Tests, including the round-trip suite
+        run: cargo nextest run -p vault-core --all-features
+
+  # The window is macOS only: it talks to AppKit for the pasteboard, for opening
+  # an address and for the title bar, and `vault-gui` does not compile anywhere
+  # else on purpose.
+  window:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the current stable toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup component add clippy
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install the frontend
+        working-directory: frontend
+        run: npm ci
+
+      - name: Types
+        working-directory: frontend
+        run: npm run check
+
+      - name: Format and lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Unused files, exports and dependencies
+        working-directory: frontend
+        run: npx knip
+
+      - name: Frontend tests
+        working-directory: frontend
+        run: npm test
+
+      # The window embeds the built frontend at compile time, so it has to exist
+      # before anything Rust is built.
+      - name: Build the frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Install cargo tooling
+        run: curl -LsSf https://get.nexte.st/latest/mac | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Tests
         run: cargo nextest run --workspace --all-features
