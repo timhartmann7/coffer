@@ -52,3 +52,39 @@ export function pathTo(root: Group, id: string): Group[] | null {
 export function projects(root: Group): Group[] {
 	return root.sections.filter((section) => !section.isRecycleBin);
 }
+
+/** A line of the tree pane. */
+export interface Line {
+	group: Group;
+	/** How far in it sits, counting from nothing for a project. */
+	depth: number;
+	/** How many entries it holds, its own sections included. */
+	entries: number;
+}
+
+/**
+ * The lines the tree pane draws, top down, leaving out what nobody has opened.
+ *
+ * The walk is a stack rather than a recursion, and the pane draws one flat list
+ * rather than a component inside a component inside a component. A file can
+ * nest a group as deep as it likes, and a hundred of them must not take the
+ * window down with a call stack.
+ */
+export function visible(root: Group, expanded: Set<string>): Line[] {
+	const lines: Line[] = [];
+	const pending: { group: Group; depth: number }[] = projects(root)
+		.map((group) => ({ group, depth: 0 }))
+		.reverse();
+
+	for (let here = pending.pop(); here !== undefined; here = pending.pop()) {
+		lines.push({ ...here, entries: entriesOf(here.group).length });
+
+		if (!expanded.has(here.group.id)) continue;
+		for (let at = here.group.sections.length - 1; at >= 0; at -= 1) {
+			const section = here.group.sections[at];
+			if (!section.isRecycleBin) pending.push({ group: section, depth: here.depth + 1 });
+		}
+	}
+
+	return lines;
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { group, row } from './fixtures';
-import { entriesOf, liveEntries, pathTo, projects, recycleBin } from './tree';
+import { entriesOf, liveEntries, pathTo, projects, recycleBin, visible } from './tree';
 
 describe('walking the tree', () => {
 	it('gathers the entries of a group and of everything under it', () => {
@@ -63,6 +63,49 @@ describe('walking the tree', () => {
 			'Servers'
 		]);
 		expect(pathTo(tree, 'not a group')).toBeNull();
+	});
+
+	it('lists the tree top down, with what nobody opened left out', () => {
+		const servers = group({ name: 'Servers', entries: [row()] });
+		const work = group({ name: 'Work', entries: [row()], sections: [servers] });
+		const personal = group({ name: 'Personal' });
+		const tree = group({
+			sections: [work, personal, group({ name: 'Recycle Bin', isRecycleBin: true })]
+		});
+
+		expect(
+			visible(tree, new Set()).map((line) => [line.group.name, line.depth, line.entries])
+		).toEqual([
+			['Work', 0, 2],
+			['Personal', 0, 0]
+		]);
+
+		expect(
+			visible(tree, new Set([work.id])).map((line) => [line.group.name, line.depth, line.entries])
+		).toEqual([
+			['Work', 0, 2],
+			['Servers', 1, 1],
+			['Personal', 0, 0]
+		]);
+	});
+
+	/** A group nested a hundred deep is a group, and the pane draws it without a
+	 * recursion the browser can run out of. */
+	it('walks a hundred open levels without recursing', () => {
+		let deepest = group({ name: 'level 100' });
+		for (let level = 99; level > 0; level -= 1) {
+			deepest = group({ name: `level ${level}`, sections: [deepest] });
+		}
+		const tree = group({ sections: [deepest] });
+
+		function every(root: ReturnType<typeof group>): string[] {
+			return [root.id, ...root.sections.flatMap(every)];
+		}
+
+		const lines = visible(tree, new Set(every(tree)));
+		expect(lines).toHaveLength(100);
+		expect(lines[99].depth).toBe(99);
+		expect(lines[99].group.name).toBe('level 100');
 	});
 
 	/** The attack list asks for a hundred levels of nesting. */

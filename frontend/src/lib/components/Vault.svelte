@@ -3,7 +3,7 @@
 	import { asFailure, copy as copyToClipboard, entry as loadEntry } from '$lib/ipc';
 	import type { Database, Entry, EntryRow, Group } from '$lib/model';
 	import { index, search } from '$lib/search';
-	import { entriesOf, liveEntries, pathTo, projects, recycleBin } from '$lib/tree';
+	import { entriesOf, liveEntries, pathTo, recycleBin } from '$lib/tree';
 	import Empty from './Empty.svelte';
 	import EntryList from './EntryList.svelte';
 	import EntryListCompact from './EntryListCompact.svelte';
@@ -177,15 +177,13 @@
 				</span>
 			</button>
 
-			{#each projects(root) as project (project.id)}
-				<Tree
-					group={project}
-					selected={group}
-					{expanded}
-					onSelect={select}
-					onToggle={(id) => (expanded.has(id) ? expanded.delete(id) : expanded.add(id))}
-				/>
-			{/each}
+			<Tree
+				{root}
+				selected={group}
+				{expanded}
+				onSelect={select}
+				onToggle={(id) => (expanded.has(id) ? expanded.delete(id) : expanded.add(id))}
+			/>
 		</div>
 
 		{#if bin}
