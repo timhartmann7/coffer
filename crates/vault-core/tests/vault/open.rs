@@ -3,10 +3,7 @@
 use vault_core::model::{FieldValue, fields};
 use vault_core::{LockPolicy, VaultError};
 
-use crate::support::{self, all_entries, entry_titled, fixture, open, password};
-
-const RICH: &str = "rich-kdbx41.kdbx";
-const SECRET: &str = "coffer-test";
+use crate::support::{self, RICH, SECRET, all_entries, entry_titled, fixture, open, password};
 
 #[test]
 fn the_tree_holds_every_group_and_entry() {

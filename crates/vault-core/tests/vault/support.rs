@@ -14,6 +14,11 @@ use vault_core::{LockPolicy, MasterKey, Vault};
 /// goes unproven, so CI never sets it.
 const SKIP_VARIABLE: &str = "COFFER_SKIP_KEEPASSXC";
 
+/// The fixture with the whole feature matrix, and the password every fixture
+/// but the key-file one uses.
+pub const RICH: &str = "rich-kdbx41.kdbx";
+pub const SECRET: &str = "coffer-test";
+
 pub fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }

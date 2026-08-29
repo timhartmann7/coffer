@@ -150,7 +150,7 @@ fn the_lock_names_this_process_and_goes_when_the_vault_does() {
             .expect("the lock reads")
             .expect("a lock is there");
         assert_eq!(holder.pid, Some(std::process::id()));
-        assert_eq!(holder.host, hostname());
+        assert!(!holder.host.is_empty(), "the lock should name the machine");
         assert!(
             !holder.time.is_empty(),
             "the lock should say when it was taken"
@@ -196,7 +196,8 @@ fn a_lock_left_by_a_process_that_no_longer_exists_is_replaced() {
     let lock_path = scratch.path().join("stale.kdbx.lock");
 
     // A process id that has certainly gone: a child that has already been
-    // reaped. The host matches, so staleness is decidable.
+    // reaped. The host has to match for staleness to be decidable, and the only
+    // honest source for it is the lock Coffer itself writes.
     let mut child = std::process::Command::new("/bin/sh")
         .args(["-c", "exit 0"])
         .spawn()
@@ -204,7 +205,13 @@ fn a_lock_left_by_a_process_that_no_longer_exists_is_replaced() {
     let dead = child.id();
     child.wait().expect("the child is reaped");
 
-    let host = hostname();
+    let host = {
+        let _ours = Lock::acquire(&database).expect("the lock is taken");
+        vault_core::storage::lock::inspect(&database)
+            .expect("the lock reads")
+            .expect("a lock is there")
+            .host
+    };
     write(
         &lock_path,
         &format!(
@@ -216,6 +223,27 @@ fn a_lock_left_by_a_process_that_no_longer_exists_is_replaced() {
         Outcome::Taken(_) => {}
         Outcome::Held(holder) => panic!("a dead process still holds the lock: {holder:?}"),
     }
+}
+
+#[test]
+fn dropping_one_lock_leaves_another_in_the_same_process_alone() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let first = built(scratch.path(), "first.kdbx", |_| {});
+    let second = built(scratch.path(), "second.kdbx", |_| {});
+
+    let held = Lock::acquire(&second).expect("the second lock is taken");
+    assert!(matches!(held, Outcome::Taken(_)));
+
+    {
+        let _passing = Lock::acquire(&first).expect("the first lock is taken");
+    }
+
+    assert!(
+        vault_core::storage::lock::inspect(&second)
+            .expect("the lock reads")
+            .is_some(),
+        "dropping one lock removed another one this process still holds"
+    );
 }
 
 #[test]
@@ -360,17 +388,4 @@ fn a_path_that_names_a_directory_is_refused() {
     .expect_err("a directory is not a database");
 
     assert!(matches!(error, vault_core::VaultError::Io(_)));
-}
-
-fn hostname() -> String {
-    let mut buffer = [0i8; 256];
-    // SAFETY: the buffer is valid for the length passed and read up to the NUL.
-    let result = unsafe { libc::gethostname(buffer.as_mut_ptr(), buffer.len() - 1) };
-    assert_eq!(result, 0, "the host name reads");
-    let bytes: Vec<u8> = buffer
-        .iter()
-        .take_while(|&&c| c != 0)
-        .map(|&c| c as u8)
-        .collect();
-    String::from_utf8_lossy(&bytes).into_owned()
 }

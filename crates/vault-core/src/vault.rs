@@ -307,7 +307,7 @@ fn read(path: &Path, key: &MasterKey) -> Result<Database, VaultError> {
     let mut file = file;
     file.read_to_end(&mut bytes)?;
 
-    preflight::check_key_derivation(&bytes)?;
+    preflight::check(&bytes)?;
 
     Ok(Database::parse(&bytes, key.to_database_key()?)?)
 }

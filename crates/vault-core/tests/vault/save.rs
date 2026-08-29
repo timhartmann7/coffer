@@ -7,10 +7,7 @@ use keepass::db::fields;
 use vault_core::storage::snapshot;
 use vault_core::{NewValue, VaultError};
 
-use crate::support::{self, BUILT_PASSWORD, built, entry_titled, open};
-
-const RICH: &str = "rich-kdbx41.kdbx";
-const SECRET: &str = "coffer-test";
+use crate::support::{self, BUILT_PASSWORD, RICH, SECRET, built, entry_titled, open};
 
 /// The notes on the fixture's single entry, as plain text, so that a failing
 /// snapshot assertion says which generation it found.

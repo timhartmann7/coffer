@@ -8,10 +8,7 @@ use zeroize::Zeroizing;
 
 use vault_core::{LockPolicy, MasterKey, Vault, VaultError};
 
-use crate::support::{self, BUILT_PASSWORD, built, built_with, open, password};
-
-const RICH: &str = "rich-kdbx41.kdbx";
-const SECRET: &str = "coffer-test";
+use crate::support::{self, BUILT_PASSWORD, RICH, SECRET, built, built_with, open, password};
 
 fn open_error(path: &Path, secret: &str) -> VaultError {
     Vault::open(path, password(secret), LockPolicy::Respect).expect_err("this should not open")
@@ -22,8 +19,6 @@ fn write_bytes(directory: &Path, name: &str, bytes: &[u8]) -> std::path::PathBuf
     std::fs::write(&path, bytes).expect("the file is written");
     path
 }
-
-// ---------------------------------------------------------------- damaged files
 
 #[test]
 fn a_zero_byte_file_is_not_a_database() {
@@ -149,8 +144,6 @@ fn a_single_flipped_bit_anywhere_is_caught() {
     }
 }
 
-// ------------------------------------------------------------- hostile headers
-
 /// Overwrites the eight-byte value of a one-letter key in the header's key
 /// derivation dictionary. The dictionary is in the clear, outside everything the
 /// header signature covers, which is exactly why it needs checking before it is
@@ -170,6 +163,208 @@ fn forge_kdf_value(bytes: &mut [u8], key: u8, value: u64) -> bool {
     };
     slot.copy_from_slice(&value.to_le_bytes());
     true
+}
+
+/// Builds a KDBX outer header by hand, so that a test can state exactly what a
+/// hostile file says.
+struct Header {
+    bytes: Vec<u8>,
+    wide_lengths: bool,
+}
+
+impl Header {
+    fn kdbx4() -> Header {
+        Header {
+            bytes: Header::version(1, 4),
+            wide_lengths: true,
+        }
+    }
+
+    fn kdbx3() -> Header {
+        Header {
+            bytes: Header::version(1, 3),
+            wide_lengths: false,
+        }
+    }
+
+    fn version(minor: u16, major: u16) -> Vec<u8> {
+        let mut bytes = vec![0x03, 0xd9, 0xa2, 0x9a];
+        bytes.extend_from_slice(&0xb54b_fb67u32.to_le_bytes());
+        bytes.extend_from_slice(&minor.to_le_bytes());
+        bytes.extend_from_slice(&major.to_le_bytes());
+        bytes
+    }
+
+    fn field(mut self, id: u8, data: &[u8]) -> Header {
+        self.bytes.push(id);
+        if self.wide_lengths {
+            let length = u32::try_from(data.len()).expect("the field fits");
+            self.bytes.extend_from_slice(&length.to_le_bytes());
+        } else {
+            let length = u16::try_from(data.len()).expect("the field fits");
+            self.bytes.extend_from_slice(&length.to_le_bytes());
+        }
+        self.bytes.extend_from_slice(data);
+        self
+    }
+
+    fn end(self) -> Vec<u8> {
+        self.field(0, b"\r\n\r\n").bytes
+    }
+}
+
+/// A variant dictionary, as the key derivation parameters are written.
+fn dictionary(entries: &[(&[u8], u8, Vec<u8>)]) -> Vec<u8> {
+    let mut bytes = vec![0x00, 0x01];
+    for (key, tag, value) in entries {
+        bytes.push(*tag);
+        bytes.extend_from_slice(
+            &u32::try_from(key.len())
+                .expect("the key fits")
+                .to_le_bytes(),
+        );
+        bytes.extend_from_slice(key);
+        bytes.extend_from_slice(
+            &u32::try_from(value.len())
+                .expect("the value fits")
+                .to_le_bytes(),
+        );
+        bytes.extend_from_slice(value);
+    }
+    bytes.push(0);
+    bytes
+}
+
+const AES_KDF_UUID: [u8; 16] = [
+    0xc9, 0xd9, 0xf3, 0x9a, 0x62, 0x8a, 0x44, 0x60, 0xbf, 0x74, 0x0d, 0x08, 0xc1, 0x8a, 0x4f, 0xea,
+];
+
+fn aes_kdf(rounds: u64) -> Vec<u8> {
+    dictionary(&[
+        (b"$UUID", 0x42, AES_KDF_UUID.to_vec()),
+        (b"R", 0x05, rounds.to_le_bytes().to_vec()),
+        (b"S", 0x42, vec![0; 32]),
+    ])
+}
+
+/// Whether the library panics on these bytes, which is what the pre-flight
+/// exists to prevent. Run in a scratch process of its own so that a panic does
+/// not take the test with it.
+fn library_panics(bytes: &[u8]) -> bool {
+    let hushed = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let outcome = std::panic::catch_unwind(|| {
+        let _ = keepass::Database::parse(bytes, keepass::DatabaseKey::new().with_password("x"));
+    });
+    std::panic::set_hook(hushed);
+    outcome.is_err()
+}
+
+#[test]
+fn a_header_field_narrower_than_the_parser_reads_is_refused_before_it_panics() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+
+    // Compression id is read as a four-byte integer with no length check.
+    let bytes = Header::kdbx4().field(3, &[]).end();
+    assert!(
+        library_panics(&bytes),
+        "the library was supposed to panic on this, which is the reason the pre-flight exists"
+    );
+
+    let path = write_bytes(scratch.path(), "narrow.kdbx", &bytes);
+    assert!(matches!(
+        open_error(&path, SECRET),
+        VaultError::DamagedHeader
+    ));
+}
+
+#[test]
+fn a_key_derivation_value_narrower_than_its_type_is_refused_before_it_panics() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+
+    // A round count declared as a 64-bit integer, with one byte of value.
+    let parameters = dictionary(&[
+        (b"$UUID", 0x42, AES_KDF_UUID.to_vec()),
+        (b"R", 0x05, vec![1]),
+    ]);
+    let bytes = Header::kdbx4().field(11, &parameters).end();
+
+    assert!(
+        library_panics(&bytes),
+        "the library was supposed to panic on this"
+    );
+
+    let path = write_bytes(scratch.path(), "short-value.kdbx", &bytes);
+    assert!(matches!(
+        open_error(&path, SECRET),
+        VaultError::DamagedHeader
+    ));
+}
+
+#[test]
+fn a_second_set_of_key_derivation_parameters_cannot_hide_behind_the_first() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+
+    // The library keeps the last set it reads. A pre-flight that checked only
+    // the first would let a file state something harmless and then state what
+    // it means.
+    let bytes = Header::kdbx4()
+        .field(11, &aes_kdf(1_000))
+        .field(11, &aes_kdf(u64::MAX))
+        .end();
+
+    let path = write_bytes(scratch.path(), "two-kdfs.kdbx", &bytes);
+    assert!(matches!(
+        open_error(&path, SECRET),
+        VaultError::AbsurdKeyDerivation
+    ));
+}
+
+#[test]
+fn an_absurd_kdbx3_round_count_is_refused() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+
+    // KDBX 3 states its round count in the header rather than a dictionary, and
+    // states field lengths in two bytes rather than four.
+    let bytes = Header::kdbx3().field(6, &u64::MAX.to_le_bytes()).end();
+
+    let path = write_bytes(scratch.path(), "legacy-rounds.kdbx", &bytes);
+    assert!(matches!(
+        open_error(&path, SECRET),
+        VaultError::AbsurdKeyDerivation
+    ));
+}
+
+#[test]
+fn argon2_parameters_that_are_each_legal_but_absurd_together_are_refused() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+
+    const ARGON2ID: [u8; 16] = [
+        0x9e, 0x29, 0x8b, 0x19, 0x56, 0xdb, 0x47, 0x73, 0xb2, 0x3d, 0xfc, 0x3e, 0xc6, 0xf0, 0xa1,
+        0xe6,
+    ];
+
+    // Four gigabytes and a hundred thousand passes over it: both inside their
+    // own ceilings, and days of work together.
+    let parameters = dictionary(&[
+        (b"$UUID", 0x42, ARGON2ID.to_vec()),
+        (
+            b"M",
+            0x05,
+            (4u64 * 1024 * 1024 * 1024).to_le_bytes().to_vec(),
+        ),
+        (b"I", 0x05, 100_000u64.to_le_bytes().to_vec()),
+        (b"P", 0x04, 4u32.to_le_bytes().to_vec()),
+        (b"S", 0x42, vec![0; 32]),
+        (b"V", 0x04, 0x13u32.to_le_bytes().to_vec()),
+    ]);
+    let bytes = Header::kdbx4().field(11, &parameters).end();
+
+    let path = write_bytes(scratch.path(), "slow.kdbx", &bytes);
+    assert!(matches!(
+        open_error(&path, SECRET),
+        VaultError::AbsurdKeyDerivation
+    ));
 }
 
 #[test]
@@ -248,8 +443,6 @@ fn a_zero_iteration_count_is_refused() {
     ));
 }
 
-// ----------------------------------------------------------------- credentials
-
 #[test]
 fn an_empty_password_opens_a_database_that_has_one() {
     let scratch = tempfile::tempdir().expect("a scratch directory");
@@ -312,8 +505,6 @@ fn a_password_that_is_not_text_is_refused_before_key_derivation() {
 
     assert!(matches!(error, VaultError::PasswordNotUtf8));
 }
-
-// -------------------------------------------------------------------- content
 
 #[test]
 fn fifty_thousand_entries_open_and_save() {
@@ -461,8 +652,6 @@ fn a_hundred_megabyte_attachment_survives() {
     assert_eq!(bytes.expose().len(), size);
     assert!(bytes.expose().iter().all(|&byte| byte == 0x5a));
 }
-
-// ------------------------------------------------------------------ behaviour
 
 #[test]
 fn a_hundred_open_and_close_cycles_leave_nothing_behind() {

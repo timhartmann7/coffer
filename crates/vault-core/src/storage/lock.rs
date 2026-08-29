@@ -7,10 +7,10 @@
 //! nothing enforces it.
 
 use std::fmt;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::storage::{atomic::write_atomic, process, sibling};
+use crate::storage::{process, sibling};
 
 const LOCK_SUFFIX: &str = ".lock";
 
@@ -27,6 +27,9 @@ pub struct Holder {
     /// The process that took it, absent in a lock written by a client that does
     /// not record one.
     pub pid: Option<u32>,
+    /// Which lock inside that process took it. A process may hold locks on
+    /// several databases, and dropping one must not remove another's file.
+    token: u64,
 }
 
 impl fmt::Debug for Holder {
@@ -40,13 +43,21 @@ impl fmt::Debug for Holder {
 }
 
 impl Holder {
-    fn current() -> Self {
+    fn current(token: u64) -> Self {
         Holder {
             time: chrono::Utc::now().to_rfc3339(),
             user: process::username(),
             host: process::hostname(),
             pid: Some(process::current()),
+            token,
         }
+    }
+
+    /// Whether this lock is the one a given `Lock` value wrote.
+    fn is(&self, token: u64) -> bool {
+        self.token == token
+            && self.pid == Some(process::current())
+            && self.host == process::hostname()
     }
 
     /// A lock is stale when it was taken on this machine by a process that has
@@ -62,8 +73,8 @@ impl Holder {
     fn render(&self) -> String {
         let pid = self.pid.map(|p| p.to_string()).unwrap_or_default();
         format!(
-            "[Lock]\nTime={}\nUserName={}\nMachine={}\nPID={}\n",
-            self.time, self.user, self.host, pid
+            "[Lock]\nTime={}\nUserName={}\nMachine={}\nPID={}\nToken={}\n",
+            self.time, self.user, self.host, pid, self.token
         )
     }
 
@@ -73,6 +84,7 @@ impl Holder {
             user: String::new(),
             host: String::new(),
             pid: None,
+            token: 0,
         };
 
         for line in text.lines() {
@@ -84,6 +96,7 @@ impl Holder {
                 "UserName" => holder.user = value.trim().to_owned(),
                 "Machine" => holder.host = value.trim().to_owned(),
                 "PID" => holder.pid = value.trim().parse().ok(),
+                "Token" => holder.token = value.trim().parse().unwrap_or_default(),
                 _ => {}
             }
         }
@@ -105,6 +118,7 @@ pub enum Outcome {
 /// A held lock file. Removed when this value is dropped.
 pub struct Lock {
     path: PathBuf,
+    token: u64,
 }
 
 impl fmt::Debug for Lock {
@@ -116,25 +130,39 @@ impl fmt::Debug for Lock {
 impl Lock {
     /// Takes the lock beside `database`.
     ///
-    /// A lock left by a process on this machine that is no longer running is
-    /// replaced without comment: it describes a state of the world that ended
-    /// when that process died. Any other existing lock is reported and left
-    /// exactly as it was found.
+    /// The file is created exclusively, so two processes racing for the same
+    /// database cannot both be told they took it. A lock left by a process on
+    /// this machine that is no longer running is removed and the attempt is
+    /// made again: it describes a state of the world that ended when that
+    /// process died. Any other existing lock is reported and left exactly as it
+    /// was found.
     pub fn acquire(database: &Path) -> Result<Outcome, io::Error> {
         let path = path_for(database)?;
 
-        if let Some(existing) = read(&path)?
-            && !existing.is_stale()
-        {
-            return Ok(Outcome::Held(existing));
+        match create(&path)? {
+            Some(lock) => Ok(Outcome::Taken(lock)),
+            None => {
+                let Some(existing) = read(&path)? else {
+                    // It went between the failed create and the read. One more
+                    // attempt, and no more: a caller stuck in a loop here is
+                    // worse than a caller told somebody else has the database.
+                    return match create(&path)? {
+                        Some(lock) => Ok(Outcome::Taken(lock)),
+                        None => Ok(Outcome::Held(read(&path)?.unwrap_or_else(placeholder))),
+                    };
+                };
+
+                if !existing.is_stale() {
+                    return Ok(Outcome::Held(existing));
+                }
+
+                std::fs::remove_file(&path)?;
+                match create(&path)? {
+                    Some(lock) => Ok(Outcome::Taken(lock)),
+                    None => Ok(Outcome::Held(read(&path)?.unwrap_or_else(placeholder))),
+                }
+            }
         }
-
-        let holder = Holder::current();
-        write_atomic::<io::Error, _>(&path, |writer: &mut dyn Write| {
-            writer.write_all(holder.render().as_bytes())
-        })?;
-
-        Ok(Outcome::Taken(Lock { path }))
     }
 
     /// Takes the lock whether or not somebody else holds it.
@@ -143,24 +171,78 @@ impl Lock {
     /// open anyway.
     pub fn take(database: &Path) -> Result<Lock, io::Error> {
         let path = path_for(database)?;
-        let holder = Holder::current();
 
-        write_atomic::<io::Error, _>(&path, |writer: &mut dyn Write| {
-            writer.write_all(holder.render().as_bytes())
-        })?;
+        loop {
+            if let Some(lock) = create(&path)? {
+                return Ok(lock);
+            }
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
 
-        Ok(Lock { path })
+/// Writes a lock file, or reports that one is already there.
+///
+/// `create_new` is what makes this safe against another Coffer doing the same
+/// thing at the same moment: the file appears or it does not, and only one
+/// caller can be the one that made it.
+fn create(path: &Path) -> Result<Option<Lock>, io::Error> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let token = next_token();
+    let holder = Holder::current(token);
+
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(crate::storage::OWNER_ONLY)
+        .open(path)
+    {
+        Ok(mut file) => {
+            file.write_all(holder.render().as_bytes())?;
+            Ok(Some(Lock {
+                path: path.to_path_buf(),
+                token,
+            }))
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// A distinct number for every lock this process takes.
+fn next_token() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// What to report when a lock file exists but cannot be read back, which means
+/// somebody is holding it and has not finished writing it.
+fn placeholder() -> Holder {
+    Holder {
+        time: String::new(),
+        user: String::new(),
+        host: String::new(),
+        pid: None,
+        token: 0,
     }
 }
 
 impl Drop for Lock {
     fn drop(&mut self) {
-        // Only remove a lock that is still ours. Between taking it and dropping
-        // it somebody may have cleared it and taken their own, and deleting
-        // theirs would be worse than leaving ours behind.
+        // Only remove the lock this value wrote. Between taking it and dropping
+        // it somebody may have cleared it and taken their own - another process,
+        // or another Lock in this one - and deleting theirs would be worse than
+        // leaving ours behind.
         if let Ok(Some(holder)) = read(&self.path)
-            && holder.pid == Some(process::current())
-            && holder.host == process::hostname()
+            && holder.is(self.token)
         {
             let _ = std::fs::remove_file(&self.path);
         }

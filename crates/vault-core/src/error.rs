@@ -96,7 +96,7 @@ pub enum VaultError {
 impl From<keepass::error::DatabaseOpenError> for VaultError {
     fn from(error: keepass::error::DatabaseOpenError) -> Self {
         use keepass::db::{DatabaseFormatError, DatabaseOpenError};
-        use keepass::error::{DatabaseKeyError, DatabaseVersionParseError};
+        use keepass::error::DatabaseVersionParseError;
 
         match error {
             DatabaseOpenError::Io(error) => VaultError::Io(error),
@@ -109,7 +109,9 @@ impl From<keepass::error::DatabaseOpenError> for VaultError {
             }
             DatabaseOpenError::VersionParse(_) => VaultError::UnsupportedFormat,
             DatabaseOpenError::UnsupportedVersion => VaultError::UnsupportedFormat,
-            DatabaseOpenError::Key(DatabaseKeyError::IncorrectKey) => VaultError::WrongCredentials,
+            // Every key error is one message: telling the user which half of a
+            // password-and-key-file pair failed tells an attacker the same
+            // thing.
             DatabaseOpenError::Key(_) => VaultError::WrongCredentials,
             DatabaseOpenError::Cryptography(_) => VaultError::DamagedPayload,
             DatabaseOpenError::Format(format) => match format {

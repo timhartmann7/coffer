@@ -12,7 +12,7 @@ keepass = { version = "=0.13.22", features = ["save_kdbx4"] }
 libc = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 thiserror = "2"
-zeroize = { version = "1", features = ["zeroize_derive"] }
+zeroize = "1"
 
 [dev-dependencies]
 base64 = "0.23"
