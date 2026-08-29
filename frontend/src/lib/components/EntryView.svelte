@@ -139,8 +139,18 @@
 		return field?.name ?? standard;
 	}
 
+	/**
+	 * Opens the field that asks for a name, and closes it again.
+	 *
+	 * The mouse press that reaches this button is stopped from moving the focus
+	 * (see the markup), so the open field does not blur and write a name on the
+	 * way out. Without that the second press would close the field and open a
+	 * fresh one in the same breath, which is what it looked like from the
+	 * outside.
+	 */
 	function addField() {
-		naming = true;
+		naming = !naming;
+		if (!naming) return;
 		queueMicrotask(() => named?.focus());
 	}
 
@@ -317,9 +327,10 @@
 				{#if !readOnly}
 					<button
 						type="button"
+						onmousedown={(event) => event.preventDefault()}
 						onclick={addField}
 						class="text-txt4 transition-colors hover:text-txt2"
-						aria-label="Add a field"
+						aria-label={naming ? 'Never mind the new field' : 'Add a field'}
 					>
 						<Icon name="plus" class="h-4 w-4" />
 					</button>

@@ -141,12 +141,15 @@
 <div class="mt-5">
 	<span class="font-mono text-label tracking-label text-txt3 uppercase">Password</span>
 
-	<div class="mt-1.5 flex items-start gap-3">
+	<!-- The buttons keep their size and the value gets what is left, down to a
+	     floor: below that the three of them go to a line of their own rather
+	     than squeezing the value into a column one word wide. -->
+	<div class="mt-1.5 flex flex-wrap items-start gap-x-3 gap-y-2">
 		<!-- A value can be anything a file can hold: a megabyte of text, or
 		     eight combining accents with no letter under them. It is clipped to
 		     its own box so that whatever it is stays out of the label above and
 		     out of the buttons beside it. -->
-		<span class="min-w-0 flex-1 overflow-hidden">
+		<span class="min-w-[9rem] flex-1 overflow-hidden">
 			{#if !live}
 				{#if empty}
 					<span class="block text-body text-txt4">No password on this entry</span>
@@ -171,31 +174,33 @@
 			/>
 		</span>
 
-		<button
-			type="button"
-			onclick={toggle}
-			class="flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 text-fine text-txt2 transition-colors hover:border-txt3 hover:text-txt"
-		>
-			<Icon name={live ? 'eye-off' : 'eye'} class="h-3.5 w-3.5" />
-			<span>{live ? 'Hide' : empty && !readOnly ? 'Set one' : 'Show'}</span>
-		</button>
-		<button
-			type="button"
-			onclick={() => onCopy(field)}
-			disabled={empty}
-			class="flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 text-fine text-txt2 transition-colors hover:border-txt3 hover:text-txt disabled:cursor-not-allowed disabled:text-txt4 disabled:hover:border-hairline"
-		>
-			<Icon name="copy" class="h-3.5 w-3.5" /> Copy
-		</button>
-		{#if !readOnly}
+		<span class="flex shrink-0 items-center gap-2">
 			<button
 				type="button"
-				onclick={() => (generating = !generating)}
+				onclick={toggle}
 				class="flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 text-fine text-txt2 transition-colors hover:border-txt3 hover:text-txt"
 			>
-				<Icon name="refresh" class="h-3.5 w-3.5" /> Make one
+				<Icon name={live ? 'eye-off' : 'eye'} class="h-3.5 w-3.5" />
+				<span>{live ? 'Hide' : empty && !readOnly ? 'Set one' : 'Show'}</span>
 			</button>
-		{/if}
+			<button
+				type="button"
+				onclick={() => onCopy(field)}
+				disabled={empty}
+				class="flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 text-fine text-txt2 transition-colors hover:border-txt3 hover:text-txt disabled:cursor-not-allowed disabled:text-txt4 disabled:hover:border-hairline"
+			>
+				<Icon name="copy" class="h-3.5 w-3.5" /> Copy
+			</button>
+			{#if !readOnly}
+				<button
+					type="button"
+					onclick={() => (generating = !generating)}
+					class="flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 text-fine text-txt2 transition-colors hover:border-txt3 hover:text-txt"
+				>
+					<Icon name="refresh" class="h-3.5 w-3.5" /> Make one
+				</button>
+			{/if}
+		</span>
 	</div>
 
 	{#if revealed.showing}

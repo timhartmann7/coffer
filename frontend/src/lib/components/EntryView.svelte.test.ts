@@ -660,3 +660,55 @@ it('stops the clock once the reader starts writing a password', async () => {
 		vi.useRealTimers();
 	}
 });
+
+/**
+ * The plus opens the field that asks for a name, and closes it again.
+ *
+ * The press has to be kept from moving the focus, or the open field blurs
+ * first, writes a field, and the press then opens a fresh one - which from the
+ * outside is a button that flickers and never closes.
+ */
+it('closes the field it opened when the plus is pressed again', () => {
+	const component = show({ fields: [] });
+	flushSync();
+
+	const plus = host.querySelector('[aria-label="Add a field"]') as HTMLButtonElement;
+	plus.click();
+	flushSync();
+	expect(host.querySelector('[aria-label="The name of the new field"]')).not.toBeNull();
+
+	// A press that would move the focus is refused, which is what stops the
+	// blur from committing on the way out.
+	const press = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+	const opener = host.querySelector('[aria-label="Never mind the new field"]') as HTMLButtonElement;
+	opener.dispatchEvent(press);
+	expect(press.defaultPrevented).toBe(true);
+
+	opener.click();
+	flushSync();
+
+	expect(host.querySelector('[aria-label="The name of the new field"]')).toBeNull();
+	expect(ipc.setField).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/**
+ * The pane is 384px wide and the password row carries three buttons. They keep
+ * their size, so without somewhere to wrap the value is left with sixty pixels
+ * and reads one word to a line.
+ */
+it('gives the password row somewhere to wrap rather than squeezing the value', () => {
+	const component = show({
+		fields: [field({ name: 'Password', kind: 'password', value: null, empty: true })]
+	});
+	flushSync();
+
+	const value = host.querySelector('[data-value]')?.parentElement;
+	const row = value?.parentElement;
+	expect(row?.className, 'the row has nowhere to wrap').toContain('flex-wrap');
+	expect(value?.className, 'the value does not take the room that is left').toContain('flex-1');
+	expect(value?.className, 'the value has no floor to stop shrinking at').toMatch(/min-w-\[/);
+
+	return unmount(component);
+});

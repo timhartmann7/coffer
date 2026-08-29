@@ -206,8 +206,13 @@
 		}
 	}
 
+	/** Opens the field that asks for a name, and closes it again. The press is
+	 * kept from moving the focus, so the open field does not write a folder on
+	 * its way out and leave the button looking as though it had done nothing. */
 	function addFolder() {
-		naming = true;
+		renaming = false;
+		naming = !naming;
+		if (!naming) return;
 		queueMicrotask(() => named?.focus());
 	}
 
@@ -421,9 +426,13 @@
 				{#if group !== null && !inBin}
 					<button
 						type="button"
-						onclick={() => (renaming = true)}
+						onmousedown={(event) => event.preventDefault()}
+						onclick={() => {
+							naming = false;
+							renaming = !renaming;
+						}}
 						class="text-txt4 transition-colors hover:text-txt2"
-						aria-label="Rename this folder"
+						aria-label={renaming ? 'Leave the name as it is' : 'Rename this folder'}
 					>
 						<Icon name="check" class="h-4 w-4" />
 					</button>
@@ -438,9 +447,10 @@
 				{/if}
 				<button
 					type="button"
+					onmousedown={(event) => event.preventDefault()}
 					onclick={addFolder}
 					class="text-txt4 transition-colors hover:text-txt2"
-					aria-label="New folder"
+					aria-label={naming ? 'Never mind the new folder' : 'New folder'}
 				>
 					<Icon name="plus" class="h-4 w-4" />
 				</button>

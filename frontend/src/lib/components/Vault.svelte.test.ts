@@ -542,3 +542,30 @@ it('leaves a copy made inside a field to the field', async () => {
 
 	return unmount(component);
 });
+
+/** The same plus, in the folder pane: it opens the field that asks for a name
+ * and it closes it again. */
+it('closes the folder name it opened when the plus is pressed again', () => {
+	const component = open();
+	flushSync();
+
+	const plus = host.querySelector('[aria-label="New folder"]') as HTMLButtonElement;
+	plus.click();
+	flushSync();
+	expect(host.querySelector('[aria-label="The name of the new folder"]')).not.toBeNull();
+
+	const press = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+	const opener = host.querySelector(
+		'[aria-label="Never mind the new folder"]'
+	) as HTMLButtonElement;
+	opener.dispatchEvent(press);
+	expect(press.defaultPrevented).toBe(true);
+
+	opener.click();
+	flushSync();
+
+	expect(host.querySelector('[aria-label="The name of the new folder"]')).toBeNull();
+	expect(ipc.createGroup).not.toHaveBeenCalled();
+
+	return unmount(component);
+});

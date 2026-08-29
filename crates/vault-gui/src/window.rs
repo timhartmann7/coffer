@@ -9,6 +9,7 @@
 //! So the three buttons are moved here instead, on the same arithmetic, at
 //! every moment the system may have put them back.
 
+use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{NSWindow, NSWindowButton};
 use objc2_foundation::NSPoint;
@@ -54,9 +55,30 @@ fn balance<R: Runtime>(window: &WebviewWindow<R>) {
         return;
     };
 
-    // Everything below has to happen on the thread that draws.
+    // Everything below has to happen on the thread that draws, and on that
+    // thread it has to happen now.
+    //
+    // A resize arrives here on the drawing thread, in the same pass in which
+    // AppKit has just put the buttons back where a standard title bar wants
+    // them. Handing the work to the queue instead of doing it here lands it a
+    // frame later, so dragging a window edge shows the three buttons jumping
+    // between AppKit's position and Coffer's, once per frame.
+    if MainThreadMarker::new().is_some() {
+        // SAFETY: the check above is the guarantee `lay_out` asks for, and the
+        // window is alive for the length of this call.
+        unsafe { lay_out(&native) };
+        return;
+    }
+
     let native = SendWindow(native);
-    let _ = window.run_on_main_thread(move || unsafe { lay_out(&native) });
+    let _ = window.run_on_main_thread(move || {
+        // The whole carrier is moved across, not the reference inside it:
+        // that reference is the half that is not `Send`.
+        let carried = &native;
+        // SAFETY: this closure runs on the main thread, and the carrier held
+        // the window alive until it got here.
+        unsafe { lay_out(&carried.0) }
+    });
 }
 
 /// A window on its way to the main thread.
@@ -72,11 +94,13 @@ struct SendWindow(Retained<NSWindow>);
 // retaining and releasing are themselves thread-safe.
 unsafe impl Send for SendWindow {}
 
-unsafe fn lay_out(window: &SendWindow) {
-    // SAFETY: the caller is the main thread, and the window is held by the
-    // value that carried it here.
-    let window = &*window.0;
-
+/// Puts the three buttons where the title bar draws them.
+///
+/// # Safety
+///
+/// The caller must be on the main thread: everything here reads and writes the
+/// view hierarchy of a live window.
+unsafe fn lay_out(window: &NSWindow) {
     let (Some(close), Some(miniaturise), Some(zoom)) = (
         window.standardWindowButton(NSWindowButton::CloseButton),
         window.standardWindowButton(NSWindowButton::MiniaturizeButton),
