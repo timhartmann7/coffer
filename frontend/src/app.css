@@ -1,0 +1,137 @@
+@import 'tailwindcss';
+
+/* Every value below is copied from design.html. Tailwind's own palette, type
+   scale, radii and tracking are cleared first, so a class the mockup does not
+   define cannot be written by accident: bg-blue-500 does not compile. */
+@theme {
+	--color-*: initial;
+	--font-*: initial;
+	--text-*: initial;
+	--leading-*: initial;
+	--tracking-*: initial;
+	--radius-*: initial;
+	--animate-*: initial;
+
+	/* Four planes instead of a white field. */
+	--color-canvas: #0d0e10;
+	--color-surface: #141518;
+	--color-surface2: #1a1c20;
+	--color-raised: #212429;
+	--color-hairline: #2b2e35;
+	--color-line: #23262c;
+
+	/* Four steps of text, all of them above 4.5 : 1 on the window plane. */
+	--color-txt: #eceff3;
+	--color-txt2: #a8afba;
+	--color-txt3: #8c939e;
+	--color-txt4: #79808a;
+
+	/* The mark's ultramarine, and the only accent on a screen. */
+	--color-accent: #7b87ff;
+	--color-accenthi: #98a2ff;
+	--color-accentdim: #4e58b8;
+	--color-accentwash: #1c1f3d;
+
+	--color-warn: #d8a657;
+	--color-warnwash: #2a2216;
+	--color-danger: #e5605e;
+	--color-dangerwash: #2c1a1b;
+
+	--color-selection: #2a2f66;
+	/* Not a colour: the absence of one, for a field that paints its own. */
+	--color-transparent: transparent;
+
+	--font-sans: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+	--font-mono: ui-monospace, 'SF Mono', Menlo, 'JetBrains Mono', monospace;
+
+	--text-label: 11px;
+	--text-meta: 12px;
+	--text-sub: 12.5px;
+	--text-fine: 13px;
+	--text-small: 14px;
+	--text-body: 14.5px;
+	--text-base: 15px;
+	--text-lead: 16px;
+	--text-title: 19px;
+	--text-display: 24px;
+
+	--leading-none: 1;
+	--leading-snug: 1.375;
+	--leading-relaxed: 1.625;
+
+	--tracking-tight: -0.025em;
+	--tracking-label: 0.14em;
+	--tracking-wordmark: 0.14em;
+	--tracking-mask: 0.25em;
+
+	--radius-xs: 4px;
+	--radius-sm: 6px;
+	--radius-md: 12px;
+	--radius-lg: 20px;
+
+	/* The one thing that moves on its own: a bar draining while something
+	   counts down. It appears nowhere else. */
+	--animate-drain-reveal: drain 30s linear forwards;
+	--animate-drain-clipboard: drain 60s linear forwards;
+
+	@keyframes drain {
+		from {
+			transform: scaleX(1);
+		}
+		to {
+			transform: scaleX(0);
+		}
+	}
+}
+
+@layer base {
+	:root {
+		color-scheme: dark;
+	}
+
+	html,
+	body {
+		height: 100%;
+	}
+
+	body {
+		/* The window is the surface. The canvas colour is what sits behind a
+		   window in the mockup, and in the application there is no behind. */
+		background: var(--color-surface);
+		color: var(--color-txt);
+		-webkit-font-smoothing: antialiased;
+		overflow: hidden;
+		/* Nothing in the window is a document, so nothing in it is selectable by
+		   dragging. What can be selected says so for itself. */
+		user-select: none;
+		cursor: default;
+	}
+
+	input {
+		user-select: text;
+	}
+
+	::selection {
+		background: var(--color-selection);
+		color: var(--color-txt);
+	}
+
+	/* The focus ring is the one place the accent appears without being asked
+	   for, and it is never removed. A field that draws its own ring turns this
+	   one off with a utility, which wins because utilities come after this
+	   layer. */
+	:focus-visible {
+		outline: 2px solid var(--color-accent);
+		outline-offset: 2px;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		*,
+		*::before,
+		*::after {
+			animation-duration: 0.001ms !important;
+			animation-iteration-count: 1 !important;
+			transition-duration: 0.001ms !important;
+		}
+	}
+}
