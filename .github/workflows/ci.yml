@@ -53,25 +53,46 @@ jobs:
       # thing here that nothing compiles, and the release one has never run.
       - name: Shell and workflows
         run: |
-          sudo apt-get install -y --no-install-recommends shellcheck
-          shellcheck install.sh assets/appicon.sh crates/vault-core/tests/fixtures/generate.sh
+          # Both tools are taken from their own releases rather than from apt,
+          # which carries a shellcheck two versions behind. That is not a
+          # preference: actionlint runs shellcheck over every `run:` block, so
+          # apt's copy would lint this repository by different rules than the
+          # one on a contributor's machine, and a workflow would pass here and
+          # fail there. Or the other way round, which is how this step was
+          # written wrong in the first place.
+          #
+          # Each asset carries its version in its own name, so there is nothing
+          # at /latest/download to ask for. The version comes off the redirect,
+          # the way install.sh finds a release.
+          latest() {
+              curl -fsSLI -o /dev/null -w '%{url_effective}' \
+                  "https://github.com/$1/releases/latest" | sed 's|.*/v||'
+          }
 
-          # Every actionlint asset carries its version in its own name, so there
-          # is nothing at /latest/download to ask for: the version comes off the
-          # redirect first, the same way install.sh finds a release, and the
-          # download is checked against the sums published beside it.
-          latest=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
-            https://github.com/rhysd/actionlint/releases/latest)
-          version=${latest##*/v}
-          base=https://github.com/rhysd/actionlint/releases/download/v$version
-
-          asset=actionlint_${version}_linux_amd64.tar.gz
           work=$(mktemp -d)
+
+          version=$(latest rhysd/actionlint)
+          base=https://github.com/rhysd/actionlint/releases/download/v$version
+          asset=actionlint_${version}_linux_amd64.tar.gz
           curl -fsSL -o "$work/$asset" "$base/$asset"
           curl -fsSL -o "$work/sums" "$base/actionlint_${version}_checksums.txt"
           (cd "$work" && sha256sum --check --ignore-missing sums && tar xzf "$asset" actionlint)
 
-          "$work/actionlint"
+          # No sums are published beside these assets, so there is nothing here
+          # to check them against. A comment cannot open with the tool's own
+          # name either: that is how it spells a directive to itself.
+          version=$(latest koalaman/shellcheck)
+          curl -fsSL \
+            "https://github.com/koalaman/shellcheck/releases/download/v$version/shellcheck-v$version.linux.x86_64.tar.xz" |
+            tar xJ -C "$work" --strip-components=1 "shellcheck-v$version/shellcheck"
+
+          "$work/shellcheck" --version
+          "$work/shellcheck" install.sh assets/appicon.sh \
+            crates/vault-core/tests/fixtures/generate.sh
+
+          # On the path, because actionlint looks for shellcheck there and the
+          # whole point is that it finds this one.
+          PATH="$work:$PATH" "$work/actionlint"
 
       - name: The installer refuses a machine that is not a Mac
         run: |

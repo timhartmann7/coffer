@@ -192,10 +192,10 @@ jobs:
               exit 1
               ;;
           esac
-          [ ${#ARM} -eq 64 ] && [ ${#INTEL} -eq 64 ] || {
+          if [ ${#ARM} -ne 64 ] || [ ${#INTEL} -ne 64 ]; then
             echo "a checksum is not 64 characters: $ARM $INTEL" >&2
             exit 1
-          }
+          fi
 
           sed -i \
             -e "s|^  version \".*\"$|  version \"$VERSION\"|" \
