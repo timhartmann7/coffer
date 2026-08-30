@@ -59,11 +59,15 @@ struct Frame {
 /// it.
 ///
 /// From the configuration rather than by hand. A hand-written builder would
-/// restate the title, the size, the theme and the title-bar style, which are
-/// already written down once; and its URL would have to be chosen, where the
+/// restate the title, the size and the title-bar style, which are already
+/// written down once; and its URL would have to be chosen, where the
 /// configuration's own default resolves to the dev server under `tauri dev` and
 /// to the bundled files in a real build. Getting that wrong shows up as a blank
 /// window in development and nowhere else.
+///
+/// Two things the configuration cannot say are filled in below, because both
+/// belong to the reader rather than to the build: where the window was last
+/// left, and which look it wears.
 pub fn open<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let Some(mut config) = described(app) else {
         return Err(tauri::Error::WebviewNotFound);

@@ -13,11 +13,11 @@ export default defineConfig({
 				runes: ({ filename }) =>
 					filename.split(/[/\\]/).includes('node_modules') ? undefined : true
 			},
-			adapter: adapter(),
-			// The brand files are the ones in the repository root. Copying them
-			// here would leave two of each, and the second one would be the one
-			// that goes stale.
-			files: { assets: '../assets/brand' }
+			adapter: adapter()
+			// No `files.assets`: nothing in the window is fetched by path. The mark
+			// is markup, the icons are a sprite, and the brand files under
+			// `assets/brand` are inputs to the icon build rather than things a
+			// webview should be able to ask for.
 		})
 	],
 	server: {

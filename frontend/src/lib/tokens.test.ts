@@ -47,6 +47,45 @@ describe('the window is drawn in the tokens of design.html', () => {
 	});
 
 	/**
+	 * The mark is drawn twice: once in `assets/brand/coffer-logo-accent.svg`,
+	 * which is the drawing, and once as the table in `Mark.svelte`, which is what
+	 * the window draws. `vite.config.ts` refuses two copies of a brand file for
+	 * exactly this reason, and the copy that survives here is the one that would
+	 * quietly go stale.
+	 */
+	it('draws the same mark the brand file does', () => {
+		const drawing = readFileSync('../assets/brand/coffer-logo-accent.svg', 'utf8');
+		const squares = [
+			...drawing.matchAll(
+				/<rect x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)" rx="([\d.]+)"\/>/g
+			)
+		].map(([, x, y, width, height, corner]) => {
+			expect(width, 'a square in the mark is not square').toBe(height);
+			return [x, y, width, corner].map(Number);
+		});
+
+		const component = readFileSync('src/lib/components/Mark.svelte', 'utf8');
+		const table = [...component.matchAll(/\[([\d.]+), ([\d.]+), ([\d.]+), ([\d.]+)\]/g)].map(
+			([, ...row]) => row.map(Number)
+		);
+
+		expect(squares.length).toBeGreaterThan(100);
+		expect(table).toEqual(squares);
+	});
+
+	/** A mark with a colour baked into it is invisible on one of the two themes,
+	 * and the screen still renders, so nothing else would fail. */
+	it('lets the mark take the colour of whatever draws it', () => {
+		const component = readFileSync('src/lib/components/Mark.svelte', 'utf8');
+		expect(component).toContain('fill="currentColor"');
+		expect(/#[0-9a-fA-F]{3,8}\b/.test(component)).toBe(false);
+
+		for (const { path, text } of sources(['.svelte'])) {
+			expect(/["'(]\/coffer-[\w-]*\.svg/.test(text), `${path} loads a brand file`).toBe(false);
+		}
+	});
+
+	/**
 	 * The Content-Security-Policy is `style-src 'self'`, which covers style
 	 * attributes as well as style elements, and Tauri's nonce only reaches what
 	 * is in the HTML at build time. An inline style is a rule the window would

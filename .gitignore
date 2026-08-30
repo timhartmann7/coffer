@@ -16,3 +16,6 @@ crates/vault-core/tests/fixtures/sources/.tmp.xml
 
 # Tauri writes the capability schemas here
 /crates/vault-gui/gen
+
+# Python leaves these beside a script that was run in place
+__pycache__/

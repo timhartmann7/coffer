@@ -9,6 +9,10 @@
 	 * Every segment is a button of its own, so Tab reaches each of them and there
 	 * is no roving focus to keep. The popup is what made the keyboard Choice's
 	 * job, and there is no popup here.
+	 *
+	 * The mockup draws three spans, so it draws no hover and no pressed state.
+	 * Those are derived here from the same tokens, the way {@link Toggle} derives
+	 * the off state the mockup does not draw.
 	 */
 	let {
 		value,

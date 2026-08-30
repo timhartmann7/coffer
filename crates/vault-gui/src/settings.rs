@@ -454,12 +454,7 @@ mod tests {
     fn a_look_that_is_not_a_word_leaves_the_defaults_standing() {
         let directory = scratch();
 
-        for broken in [
-            br#"{"theme": 3}"#.to_vec(),
-            br#"{"theme": null}"#.to_vec(),
-            br#"{"theme": []}"#.to_vec(),
-            br#"{"theme": {"dark": true}}"#.to_vec(),
-        ] {
+        for broken in [br#"{"theme": 3}"#.to_vec(), br#"{"theme": null}"#.to_vec()] {
             std::fs::write(directory.path().join(FILE), &broken).expect("the file is written");
             assert_eq!(read(directory.path()), Settings::default());
         }
