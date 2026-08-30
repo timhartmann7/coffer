@@ -115,7 +115,7 @@
 </script>
 
 <div class="flex flex-1 items-center justify-center overflow-y-auto px-10 py-10">
-	<div class="w-full {database ? 'max-w-[320px]' : 'max-w-[460px]'}">
+	<div class="w-full max-w-[320px]">
 		<img src="/coffer-logo-light.svg" alt="" class="mx-auto h-11 w-11" />
 		{#if why}
 			<h1 class="mt-6 text-center text-title font-medium tracking-tight text-txt">Locked</h1>
@@ -233,7 +233,7 @@
 			<button
 				type="button"
 				onclick={onCreate}
-				class="mt-9 h-[46px] w-full rounded-full bg-accent px-6 text-base font-medium text-canvas transition-colors hover:bg-accenthi"
+				class="mx-auto mt-9 block h-[46px] w-full max-w-[300px] rounded-full bg-accent px-6 text-base font-medium text-canvas transition-colors hover:bg-accenthi"
 			>
 				Make a vault
 			</button>

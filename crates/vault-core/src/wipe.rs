@@ -141,40 +141,11 @@ fn custom(data: &mut HashMap<String, CustomDataItem>) {
 
 #[cfg(test)]
 mod tests {
-    use keepass::db::{CustomDataItem, fields};
+    use std::cell::Cell;
+
+    use keepass::db::{AutoType, AutoTypeAssociation, CustomDataItem, fields};
 
     use super::*;
-
-    /// Where a value is, so that the same bytes can be read back after the
-    /// value that owned them has been emptied.
-    ///
-    /// Zeroizing keeps the buffer: it writes over the whole capacity and sets
-    /// the length to nothing, and the value goes on owning what it owned. That
-    /// is what makes this assertion exact rather than a search - it looks at
-    /// the one place the value was, rather than hunting for it.
-    struct Where {
-        at: *const u8,
-        len: usize,
-    }
-
-    impl Where {
-        fn of(bytes: &[u8]) -> Where {
-            assert!(!bytes.is_empty(), "an empty value proves nothing");
-            Where {
-                at: bytes.as_ptr(),
-                len: bytes.len(),
-            }
-        }
-
-        /// Whether the buffer this value was in is all zero now.
-        fn emptied(&self) -> bool {
-            // SAFETY: the buffer belongs to a value that is alive for the whole
-            // of the test - the wipe writes over it and never frees it - so the
-            // range is mapped and initialised.
-            let held = unsafe { std::slice::from_raw_parts(self.at, self.len) };
-            held.iter().all(|byte| *byte == 0)
-        }
-    }
 
     const OPEN: &str = "an unprotected value nothing upstream wipes";
     const TAG: &str = "a tag long enough to be worth finding";
@@ -182,28 +153,63 @@ mod tests {
     const NOTE: &str = "what the folder is for, in the user's own words";
     const CUSTOM: &str = "a custom field name is the user's text as well";
     const NAMED: &str = "the file this entry carries";
+    const SEQUENCE: &str = "the keystrokes this entry types for somebody";
+    const WINDOW: &str = "the window title those keystrokes are meant for";
+    const ICON: &str = "a picture somebody chose for this folder";
+    const WROTE: &str = "the client that wrote this database last";
+    const ABOUT: &str = "what the person who made this vault says it is for";
+    const USER: &str = "the login this vault uses when it has no other";
 
-    /// A database with something in every place a value can be.
+    /// Whether a value's whole buffer is zero, capacity and all.
+    ///
+    /// The pointer is derived from this borrow at the moment of reading rather
+    /// than recorded before the wipe. The wipe takes a unique borrow of every
+    /// one of these, which invalidates anything derived from the shared borrow
+    /// that found it, and reading through that afterwards is undefined however
+    /// plainly the bytes are still where they were.
+    fn zeroed(text: &mut String) -> bool {
+        // SAFETY: the pointer comes from the unique borrow held right here, so
+        // it carries the buffer's own provenance. Every byte up to the capacity
+        // is initialised: these values are all `to_owned` of a literal, where
+        // capacity and length are the same, and `Zeroize` writes the whole of
+        // it.
+        let held = unsafe { std::slice::from_raw_parts(text.as_mut_ptr(), text.capacity()) };
+        held.iter().all(|byte| *byte == 0)
+    }
+
+    fn zeroed_bytes(data: &mut Vec<u8>) -> bool {
+        // SAFETY: as above.
+        let held = unsafe { std::slice::from_raw_parts(data.as_mut_ptr(), data.capacity()) };
+        held.iter().all(|byte| *byte == 0)
+    }
+
+    /// A database with something in every place the wipe writes over where it
+    /// lies.
     fn peopled() -> Database {
         let mut database = Database::new();
+        database.meta.generator = Some(WROTE.to_owned());
         database.meta.database_name = Some(OPEN.to_owned());
-        database.meta.custom_data.insert(
-            CUSTOM.to_owned(),
-            CustomDataItem {
-                value: Some(CustomDataValue::String(OPEN.to_owned())),
-                last_modification_time: None,
-            },
-        );
+        database.meta.database_description = Some(ABOUT.to_owned());
+        database.meta.default_username = Some(USER.to_owned());
+        database.meta.custom_data.insert(CUSTOM.to_owned(), item());
 
         let group = database.root_mut().add_group().id();
-        let Some(mut folder) = database.group_mut(group) else {
-            return database;
-        };
-        folder.name = FOLDER.to_owned();
-        folder.notes = Some(NOTE.to_owned());
-        folder.tags = vec![TAG.to_owned()];
+        let entry = {
+            let Some(mut folder) = database.group_mut(group) else {
+                return database;
+            };
+            folder.name = FOLDER.to_owned();
+            folder.notes = Some(NOTE.to_owned());
+            folder.tags = vec![TAG.to_owned()];
+            folder.default_autotype_sequence = Some(SEQUENCE.to_owned());
+            folder.custom_data.insert(CUSTOM.to_owned(), item());
 
-        let entry = folder.add_entry().id();
+            let mut icon = folder.set_icon_custom_new(vec![0x89; 512]);
+            icon.name = Some(ICON.to_owned());
+
+            folder.add_entry().id()
+        };
+
         let Some(mut entry) = database.entry_mut(entry) else {
             return database;
         };
@@ -214,72 +220,171 @@ mod tests {
         });
         entry.tags = vec![TAG.to_owned()];
         entry.override_url = Some(OPEN.to_owned());
+        entry.custom_data.insert(CUSTOM.to_owned(), item());
+        entry.autotype = Some(AutoType {
+            enabled: true,
+            default_sequence: Some(SEQUENCE.to_owned()),
+            associations: vec![AutoTypeAssociation {
+                window: WINDOW.to_owned(),
+                sequence: SEQUENCE.to_owned(),
+            }],
+            ..AutoType::default()
+        });
         entry.add_attachment(NAMED, Value::Unprotected(vec![0x5a; 4096]));
 
         database
     }
 
-    /// Every buffer the wipe writes over where it lies, which is everything the
-    /// library gives mutable access to by anything other than a map key.
-    fn in_place(database: &Database) -> Vec<Where> {
-        let mut found = Vec::new();
-        if let Some(name) = database.meta.database_name.as_deref() {
-            found.push(Where::of(name.as_bytes()));
+    fn item() -> CustomDataItem {
+        CustomDataItem {
+            value: Some(CustomDataValue::String(OPEN.to_owned())),
+            last_modification_time: None,
         }
-        for group in database.iter_all_groups() {
-            if !group.name.is_empty() {
-                found.push(Where::of(group.name.as_bytes()));
-            }
-            if let Some(notes) = group.notes.as_deref() {
-                found.push(Where::of(notes.as_bytes()));
-            }
-            for tag in &group.tags {
-                found.push(Where::of(tag.as_bytes()));
-            }
-        }
-        for entry in database.iter_all_entries() {
-            for tag in &entry.tags {
-                found.push(Where::of(tag.as_bytes()));
-            }
-            if let Some(url) = entry.override_url.as_deref() {
-                found.push(Where::of(url.as_bytes()));
-            }
-        }
-        for attachment in database.iter_all_attachments() {
-            if let Value::Unprotected(data) = &attachment.data {
-                found.push(Where::of(data));
-            }
-        }
-        found
     }
+
+    /// How many of the places the wipe writes over where they lie are not zero.
+    ///
+    /// Counted rather than asserted one by one, so that the same walk says both
+    /// "there is something here to wipe" before and "there is nothing left"
+    /// after. An arm of the wipe that was deleted shows up as a place still
+    /// holding its value.
+    fn unwiped(database: &mut Database) -> usize {
+        let left = Cell::new(0);
+        let text = |value: &mut String| {
+            if !zeroed(value) {
+                left.set(left.get() + 1);
+            }
+        };
+
+        database.foreach_group_mut(|mut group| {
+            if !group.name.is_empty() {
+                text(&mut group.name);
+            }
+            if let Some(notes) = group.notes.as_mut() {
+                text(notes);
+            }
+            for tag in &mut group.tags {
+                text(tag);
+            }
+            if let Some(sequence) = group.default_autotype_sequence.as_mut() {
+                text(sequence);
+            }
+        });
+
+        database.foreach_entry_mut(|mut entry| {
+            for tag in &mut entry.tags {
+                text(tag);
+            }
+            if let Some(url) = entry.override_url.as_mut() {
+                text(url);
+            }
+            if let Some(autotype) = entry.autotype.as_mut() {
+                if let Some(sequence) = autotype.default_sequence.as_mut() {
+                    text(sequence);
+                }
+                for association in &mut autotype.associations {
+                    text(&mut association.window);
+                    text(&mut association.sequence);
+                }
+            }
+        });
+
+        database.foreach_attachment_mut(|mut attachment| {
+            if let Value::Unprotected(data) = &mut attachment.data
+                && !zeroed_bytes(data)
+            {
+                left.set(left.get() + 1);
+            }
+        });
+
+        database.foreach_custom_icon_mut(|mut icon| {
+            if !zeroed_bytes(&mut icon.data) {
+                left.set(left.get() + 1);
+            }
+            if let Some(name) = icon.name.as_mut() {
+                text(name);
+            }
+        });
+
+        for held in [
+            &mut database.meta.generator,
+            &mut database.meta.database_name,
+            &mut database.meta.database_description,
+            &mut database.meta.default_username,
+        ] {
+            if let Some(value) = held.as_mut() {
+                text(value);
+            }
+        }
+
+        left.get()
+    }
+
+    /// Every place the wipe writes over where it lies. Exact on purpose: a
+    /// field the library adds, or a place this module stops covering, changes
+    /// it, and a test that only asserted "all of what I found" would go on
+    /// passing while finding less.
+    const PLACES: usize = 16;
 
     /// The claim, made against the buffers themselves: after the wipe, the
     /// bytes that held a value are zero.
-    ///
-    /// The count is exact on purpose. A field the library adds, or a place this
-    /// module stops covering, changes it, and a test that only asserted "all of
-    /// what I found" would go on passing while finding less.
     #[test]
     fn every_value_left_where_it_lies_is_written_over() {
         let mut held = peopled();
-        let record = in_place(&held);
-
         assert_eq!(
-            record.len(),
-            7,
-            "the database under test has to hold something in every place"
-        );
-        assert!(
-            record.iter().all(|value| !value.emptied()),
-            "the values are not in the database this is about to wipe"
+            unwiped(&mut held),
+            PLACES,
+            "the database under test does not hold something in every place"
         );
 
         database(&mut held);
 
-        assert!(
-            record.iter().all(Where::emptied),
+        assert_eq!(
+            unwiped(&mut held),
+            0,
             "a value survived the wipe in the buffer it was in"
         );
+    }
+
+    /// The names are the half that has to be dropped rather than emptied,
+    /// because a map hands its keys out by shared reference. What can be
+    /// asserted here is that they are gone from the database; that their
+    /// buffers are zero is what the sweep in `tests/vault/wipe.rs` measures.
+    #[test]
+    fn a_wiped_database_holds_nothing_that_could_be_written_back() {
+        let mut held = peopled();
+
+        // The maps are not empty to begin with, or emptiness afterwards would
+        // say nothing.
+        assert!(
+            held.iter_all_entries()
+                .all(|entry| !entry.fields.is_empty())
+        );
+        assert!(
+            held.iter_all_entries()
+                .all(|entry| !entry.custom_data.is_empty())
+        );
+        assert!(!held.meta.custom_data.is_empty());
+
+        database(&mut held);
+
+        assert!(held.iter_all_entries().all(|entry| entry.fields.is_empty()));
+        assert!(
+            held.iter_all_entries()
+                .all(|entry| entry.custom_data.is_empty())
+        );
+        assert!(held.iter_all_entries().all(|entry| entry.history.is_none()));
+        assert!(held.iter_all_groups().all(|group| group.name.is_empty()));
+        assert!(
+            held.iter_all_groups()
+                .all(|group| group.custom_data.is_empty())
+        );
+        assert!(
+            held.iter_all_attachments()
+                .all(|attachment| attachment.data.get().is_empty())
+        );
+        assert!(held.meta.custom_data.is_empty());
+        assert_eq!(held.meta.database_name.as_deref(), Some(""));
     }
 
     /// A vault the size of a real one, nested as deep as the attack list asks
@@ -320,33 +425,5 @@ mod tests {
 
         assert!(held.iter_all_entries().all(|entry| entry.fields.is_empty()));
         assert!(held.iter_all_groups().all(|group| group.name.is_empty()));
-    }
-
-    /// The names are the half that has to be dropped rather than emptied,
-    /// because a map hands its keys out by shared reference. What can be
-    /// asserted here is that they are gone from the database; that their
-    /// buffers are zero is what the sweep in `tests/vault/wipe.rs` measures.
-    #[test]
-    fn a_wiped_database_holds_nothing_that_could_be_written_back() {
-        let mut held = peopled();
-        database(&mut held);
-
-        assert!(held.iter_all_entries().all(|entry| entry.fields.is_empty()));
-        assert!(
-            held.iter_all_entries()
-                .all(|entry| entry.custom_data.is_empty())
-        );
-        assert!(held.iter_all_entries().all(|entry| entry.history.is_none()));
-        assert!(held.iter_all_groups().all(|group| group.name.is_empty()));
-        assert!(
-            held.iter_all_groups()
-                .all(|group| group.custom_data.is_empty())
-        );
-        assert!(
-            held.iter_all_attachments()
-                .all(|attachment| attachment.data.get().is_empty())
-        );
-        assert!(held.meta.custom_data.is_empty());
-        assert_eq!(held.meta.database_name.as_deref(), Some(""));
     }
 }

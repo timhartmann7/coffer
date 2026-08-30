@@ -81,11 +81,10 @@ pub fn open<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let window = tauri::WebviewWindowBuilder::from_config(app, &config)?.build()?;
     buttons::centre_buttons(&window);
 
-    let scale = window.scale_factor().unwrap_or(1.0);
     let held = window.clone();
     window.on_window_event(move |event| match event {
-        WindowEvent::Moved(at) => place(&held, Some(*at), None, scale),
-        WindowEvent::Resized(size) => place(&held, None, Some(*size), scale),
+        WindowEvent::Moved(at) => place(&held, Some(*at), None),
+        WindowEvent::Resized(size) => place(&held, None, Some(*size)),
         _ => {}
     });
 
@@ -112,8 +111,13 @@ fn place<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
     at: Option<PhysicalPosition<i32>>,
     size: Option<PhysicalSize<u32>>,
-    scale: f64,
 ) {
+    // Asked for now rather than remembered from when the window was built. A
+    // window dragged to a display of another scale keeps reporting physical
+    // pixels, and dividing those by the scale of the display it started on
+    // stores a frame off by the ratio between the two.
+    let scale = window.scale_factor().unwrap_or(1.0);
+
     let Some(at) = at.or_else(|| window.outer_position().ok()) else {
         return;
     };

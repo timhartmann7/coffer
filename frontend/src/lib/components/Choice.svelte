@@ -7,6 +7,11 @@
 	 * Not a native `<select>`: macOS draws that popup in its own colours, which
 	 * are not the ones in design.html, and nothing in the window can change
 	 * them.
+	 *
+	 * Which means the keyboard is this component's job rather than the system's.
+	 * The list closes when focus leaves the whole control and not when it leaves
+	 * the button, because those are the same moment for a reader pressing Tab -
+	 * and a list that closed then could only ever be used with a pointer.
 	 */
 	let {
 		value,
@@ -23,20 +28,55 @@
 	} = $props();
 
 	let open = $state(false);
+	let wrapper = $state<HTMLElement>();
+	let trigger = $state<HTMLButtonElement>();
 
 	function choose(chosen: number) {
 		open = false;
+		trigger?.focus();
 		if (chosen !== value) onChoose(chosen);
+	}
+
+	/** Focus left the button. Whether it left the control is the question, and
+	 * `relatedTarget` is what it went to. */
+	function left(event: FocusEvent) {
+		const going = event.relatedTarget;
+		if (going instanceof Node && wrapper?.contains(going)) return;
+		open = false;
+	}
+
+	function key(event: KeyboardEvent) {
+		if (event.key === 'Escape' && open) {
+			event.preventDefault();
+			open = false;
+			trigger?.focus();
+			return;
+		}
+		if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+
+		event.preventDefault();
+		if (!open) {
+			open = true;
+			return;
+		}
+
+		const buttons = [...(wrapper?.querySelectorAll('[role="option"]') ?? [])];
+		const at = buttons.indexOf(document.activeElement as Element);
+		const step = event.key === 'ArrowDown' ? 1 : -1;
+		const next = buttons[(at + step + buttons.length) % buttons.length] ?? buttons[0];
+		if (next instanceof HTMLElement) next.focus();
 	}
 </script>
 
-<div class="relative shrink-0">
+<div bind:this={wrapper} class="relative shrink-0" onfocusout={left}>
 	<button
+		bind:this={trigger}
 		type="button"
 		aria-label={label}
+		aria-haspopup="listbox"
 		aria-expanded={open}
 		onclick={() => (open = !open)}
-		onblur={() => (open = false)}
+		onkeydown={key}
 		class="flex items-center gap-2 rounded-sm border border-hairline bg-surface2 px-3 py-2 font-mono text-fine text-txt transition-colors hover:border-txt4"
 	>
 		{render(value)}
@@ -45,11 +85,16 @@
 
 	{#if open}
 		<div
+			role="listbox"
+			aria-label={label}
 			class="absolute top-full right-0 z-10 mt-1 min-w-full overflow-hidden rounded-sm border border-hairline bg-raised"
 		>
 			{#each choices as choice (choice)}
 				<button
 					type="button"
+					role="option"
+					aria-selected={choice === value}
+					onkeydown={key}
 					onmousedown={(event) => event.preventDefault()}
 					onclick={() => choose(choice)}
 					class="block w-full px-3 py-2 text-right font-mono text-fine whitespace-nowrap transition-colors {choice ===

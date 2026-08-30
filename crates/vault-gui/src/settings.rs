@@ -264,7 +264,36 @@ mod tests {
             300
         );
 
+        // A file somebody edited by hand, holding numbers this version does not
+        // offer. It parses, so the defaults do not cover it: `read` has to
+        // settle it, and without that call the screen shows a value it cannot
+        // change back to.
         let directory = scratch();
+        std::fs::write(
+            directory.path().join(FILE),
+            br#"{"idleSeconds": 86400, "clipboardSeconds": 7}"#,
+        )
+        .expect("the file is written");
+        let found = read(directory.path());
+        assert_eq!(found.idle_seconds, 3600);
+        assert_eq!(found.clipboard_seconds, 15);
+
+        // And the same number arriving from the window rather than from a file.
+        // What comes back is what was stored, which is what the settings screen
+        // draws.
+        let held = Preferences::load(Some(directory.path().to_path_buf()));
+        let stored = held
+            .set(Settings {
+                idle_seconds: 86400,
+                clipboard_seconds: 7,
+                ..Settings::default()
+            })
+            .expect("it is written");
+        assert_eq!(stored.idle_seconds, 3600);
+        assert_eq!(stored.clipboard_seconds, 15);
+        assert_eq!(held.get(), stored);
+        assert_eq!(read(directory.path()), stored);
+
         for broken in [
             br#"{"idleSeconds": -1}"#.to_vec(),
             br#"{"idleSeconds": 1.5}"#.to_vec(),

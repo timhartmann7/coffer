@@ -172,3 +172,97 @@ it('has something to say before a vault has been chosen', () => {
 	expect(host.textContent).toContain('None chosen yet');
 	unmount(component);
 });
+
+/**
+ * The list is not a native one - macOS draws that popup in colours the mockup
+ * does not contain - so reaching it from the keyboard is this window's job. It
+ * closed on the button's own blur, which is the same moment Tab moves into it,
+ * and two of the seven rows could only be changed with a pointer.
+ */
+it('can be opened and chosen from with the keyboard alone', async () => {
+	const onSettings = vi.fn();
+	const component = show({ onSettings });
+	flushSync();
+
+	const idle = chip(IDLE);
+	idle.focus();
+	idle.click();
+	flushSync();
+
+	const options = [...host.querySelectorAll<HTMLElement>('[role="option"]')];
+	expect(options).toHaveLength(CHOSEN.idleChoices.length);
+
+	// Tab moves focus off the button and into the list. The list has to still
+	// be there when it arrives.
+	options[0].focus();
+	idle.dispatchEvent(new FocusEvent('focusout', { relatedTarget: options[0], bubbles: true }));
+	flushSync();
+	expect(host.querySelectorAll('[role="option"]')).toHaveLength(CHOSEN.idleChoices.length);
+
+	options[4].click();
+	await vi.waitFor(() => expect(ipc.setSettings).toHaveBeenCalledTimes(1));
+	expect(ipc.setSettings).toHaveBeenCalledWith({ ...CHOSEN, idleSeconds: 3600 });
+
+	unmount(component);
+});
+
+it('closes when focus leaves the control altogether', () => {
+	const component = show();
+	flushSync();
+
+	const idle = chip(IDLE);
+	idle.click();
+	flushSync();
+	expect(host.querySelectorAll('[role="option"]').length).toBeGreaterThan(0);
+
+	// Somewhere else entirely: another row's control.
+	const elsewhere = chip(SLEEP);
+	idle.dispatchEvent(new FocusEvent('focusout', { relatedTarget: elsewhere, bubbles: true }));
+	flushSync();
+	expect(host.querySelectorAll('[role="option"]')).toHaveLength(0);
+
+	unmount(component);
+});
+
+it('closes on Escape and gives the button its focus back', () => {
+	const component = show();
+	flushSync();
+
+	const idle = chip(IDLE);
+	idle.focus();
+	idle.click();
+	flushSync();
+	expect(host.querySelectorAll('[role="option"]').length).toBeGreaterThan(0);
+
+	idle.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+	flushSync();
+
+	expect(host.querySelectorAll('[role="option"]')).toHaveLength(0);
+	expect(document.activeElement).toBe(idle);
+	expect(ipc.setSettings).not.toHaveBeenCalled();
+
+	unmount(component);
+});
+
+/** A chip says what it is and what it does, so a reader who cannot see it is
+ * told there is a list behind it and which value is on. */
+it('says it opens a list, and which value is chosen', () => {
+	const component = show();
+	flushSync();
+
+	const idle = chip(IDLE);
+	expect(idle.getAttribute('aria-haspopup')).toBe('listbox');
+	expect(idle.getAttribute('aria-expanded')).toBe('false');
+
+	idle.click();
+	flushSync();
+	expect(idle.getAttribute('aria-expanded')).toBe('true');
+
+	const chosen = [...host.querySelectorAll('[role="option"]')].filter(
+		(option) => option.getAttribute('aria-selected') === 'true'
+	);
+	expect(chosen).toHaveLength(1);
+	expect(chosen[0].textContent?.trim()).toBe('5 minutes');
+
+	unmount(component);
+});

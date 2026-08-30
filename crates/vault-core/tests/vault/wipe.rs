@@ -4,9 +4,17 @@
 //! value into a database, let the database go, and count the copies of that
 //! value this process is still holding. The answer has to be none.
 //!
-//! Every needle is read out of the fixture's source at run time. A string
-//! written here would be a constant in the test binary, and the sweep would
-//! find that constant and report a failure nobody could fix.
+//! Every needle is read out of the fixture's source at run time and then made
+//! unique to the test that looks for it. A string written here would be a
+//! constant in the test binary and the sweep would find that constant; a needle
+//! two tests shared would be found by whichever of them ran while the other
+//! still had its database open.
+//!
+//! Which is the other rule: every test here asks a question about the whole
+//! process, so every one of them needs a process of its own. `cargo nextest`,
+//! which the working agreement names as the runner, gives one per test. Under
+//! `cargo test` they would be threads in one process and would see each other's
+//! databases.
 //!
 //! The databases these tests open are deliberately crowded. macOS's own
 //! allocator writes over a freed block up to about sixteen kilobytes, so a
@@ -22,16 +30,19 @@ use keepass::db::fields;
 use crate::scan::Sweep;
 use crate::support::{BUILT_PASSWORD, RICH, SECRET, built, fixtures, open, scratch};
 
-/// The first value the fixture marks as protected. The marker is a word out of
-/// the format, so naming it here names nothing that is in anybody's database.
-fn protected_value() -> String {
-    body(r#"<Value ProtectInMemory="True">"#)
+/// The first value the fixture marks as protected, made this test's own.
+///
+/// The marker is a word out of the format, so naming it here names nothing that
+/// is in anybody's database. `whose` is the name of the test asking: two tests
+/// looking for the same bytes would each find the other's live database.
+fn protected_value(whose: &str) -> String {
+    format!("{whose} {}", body(r#"<Value ProtectInMemory="True">"#))
 }
 
 /// The first note in the fixture. Unprotected, so the library holds it in a
 /// plain `String` that nothing upstream zeroizes.
-fn open_value() -> String {
-    body("<Key>Notes</Key><Value>")
+fn open_value(whose: &str) -> String {
+    format!("{whose} {}", body("<Key>Notes</Key><Value>"))
 }
 
 fn body(after: &str) -> String {
@@ -87,10 +98,17 @@ fn open_and_drop(path: &Path, secret: &str) {
 /// asserted the zero would pass with the scanner switched off.
 #[test]
 fn a_value_in_an_open_database_is_there_to_be_found() {
+    // This one is the exception: it looks for what a fixture really holds, so
+    // its needles are the fixture's own rather than this test's. It is also the
+    // only test here that keeps a database open across a sweep, which is why
+    // every other test's needles have to be its own.
     let (_scratch, path) = scratch(RICH);
     let vault = open(&path, SECRET);
 
-    for needle in [protected_value(), open_value()] {
+    for needle in [
+        body(r#"<Value ProtectInMemory="True">"#),
+        body("<Key>Notes</Key><Value>"),
+    ] {
         let mut sweep = Sweep::for_needle(needle.into_bytes());
         assert!(
             sweep.hits() > 0,
@@ -108,8 +126,8 @@ fn a_value_in_an_open_database_is_there_to_be_found() {
 #[test]
 fn nothing_of_a_database_survives_it_being_dropped() {
     let directory = tempfile::tempdir().expect("a scratch directory");
-    let protected = protected_value();
-    let plain = open_value();
+    let protected = protected_value("dropped");
+    let plain = open_value("dropped");
     let path = crowded(directory.path(), "crowded.kdbx", &protected, &plain);
 
     open_and_drop(&path, BUILT_PASSWORD);
@@ -130,8 +148,8 @@ fn nothing_of_a_database_survives_it_being_dropped() {
 #[test]
 fn a_hundred_opens_and_closes_leave_nothing_behind() {
     let directory = tempfile::tempdir().expect("a scratch directory");
-    let protected = protected_value();
-    let plain = open_value();
+    let protected = protected_value("a hundred");
+    let plain = open_value("a hundred");
     let path = crowded(directory.path(), "crowded.kdbx", &protected, &plain);
 
     for _ in 0..100 {
@@ -151,8 +169,8 @@ fn a_hundred_opens_and_closes_leave_nothing_behind() {
 #[test]
 fn reloading_leaves_none_of_the_tree_it_replaced() {
     let directory = tempfile::tempdir().expect("a scratch directory");
-    let gone = protected_value();
-    let staying = open_value();
+    let gone = protected_value("reloaded away");
+    let staying = open_value("reloaded in");
 
     let path = crowded(directory.path(), "reloaded.kdbx", &gone, &gone);
     let mut vault = open(&path, BUILT_PASSWORD);
@@ -179,8 +197,8 @@ fn reloading_leaves_none_of_the_tree_it_replaced() {
 #[test]
 fn reading_the_file_on_disk_leaves_none_of_it() {
     let directory = tempfile::tempdir().expect("a scratch directory");
-    let held = protected_value();
-    let written = open_value();
+    let held = protected_value("held here");
+    let written = open_value("written there");
 
     let path = crowded(directory.path(), "held.kdbx", &held, &held);
     let vault = open(&path, BUILT_PASSWORD);
