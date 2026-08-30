@@ -194,32 +194,23 @@
 			</div>
 		</div>
 
-		<div class="mt-6 border-t border-line pt-5">
-			<div class="flex items-center justify-between gap-4">
+		{#if !measured}
+			<div class="mt-6 border-t border-line pt-5">
 				<span class="font-mono text-label tracking-label text-txt3 uppercase">
-					{measured ? 'Argon2id, measured on this Mac' : 'Measuring Argon2id on this Mac'}
+					Fitting the lock to this Mac
 				</span>
-				{#if measured}
-					<span class="font-mono text-meta text-accent">{measured.seconds.toFixed(2)} s</span>
-				{/if}
+				<div class="mt-3 h-[2px] w-full overflow-hidden rounded-full bg-line">
+					<!-- Two steps of this screen's own state, as literal classes. A width
+					     computed into a class compiles to nothing, and the window may not
+					     set one from script. -->
+					<div class="h-full rounded-full bg-accent {where ? 'w-2/3' : 'w-1/3'}"></div>
+				</div>
+				<p class="mt-3 text-fine text-txt3">
+					A second or so, once. It is what makes opening this vault take about a second here rather
+					than on somebody else's machine.
+				</p>
 			</div>
-			<div class="mt-3 h-[2px] w-full overflow-hidden rounded-full bg-line">
-				<!-- Three steps of this screen's own state, as literal classes. A width
-				     computed into a class compiles to nothing, and the window may not
-				     set one from script. -->
-				<div
-					class="h-full rounded-full bg-accent {measured ? 'w-full' : where ? 'w-2/3' : 'w-1/3'}"
-				></div>
-			</div>
-			<p class="mt-3 text-fine text-txt3">
-				{#if measured}
-					{measured.iterations} passes go into the file's header. Somebody else's vault always opens with
-					its own.
-				{:else}
-					How many passes a one-second unlock takes here. It goes into the file's header.
-				{/if}
-			</p>
-		</div>
+		{/if}
 
 		{#if failure}
 			<p class="mt-5 text-small text-danger">{failure}</p>
@@ -241,7 +232,7 @@
 				!where ||
 				!measured
 					? 'cursor-not-allowed bg-surface2 text-txt4'
-					: 'bg-accent text-canvas hover:bg-accenthi'}"
+					: 'bg-accent text-canvas hover:bg-accenthi active:bg-accenthi'}"
 			>
 				{busy ? 'Making it…' : 'Make the vault'}
 			</button>

@@ -44,12 +44,17 @@
 
 <div class="absolute inset-0 flex items-center justify-center bg-canvas/75 px-6">
 	<div class="w-full max-w-[520px] rounded-md border border-hairline bg-raised p-8">
-		<div class="flex gap-4">
-			<Icon name="warn" class="mt-0.5 h-5 w-5 shrink-0 text-warn" />
+		<!-- One column, where the mockup draws the icon in a column of its own.
+		     Its buttons sit at the edge of the dialog rather than under the text
+		     beside the icon, which is a step nobody notices until the labels are
+		     long enough to see it. Ours are: the row wrapped, and the last
+		     button landed alone under a text block it was not aligned with. -->
+		<h2 class="flex items-center gap-3 text-title font-medium tracking-tight text-txt">
+			<Icon name="warn" class="h-5 w-5 shrink-0 text-warn" />
+			The file changed while you were working
+		</h2>
+		<div>
 			<div>
-				<h2 class="text-title font-medium tracking-tight text-txt">
-					The file changed while you were working
-				</h2>
 				<p class="mt-3 max-w-[52ch] text-base leading-relaxed text-txt2">
 					The vault was written by another program, or by you on another computer. Nothing has been
 					saved from this window yet.
@@ -78,20 +83,24 @@
 				</p>
 			</div>
 		</div>
+
+		<!-- The two that lose nothing on the left, and the one that writes over
+		     somebody else's work pushed away from them. If the row ever wraps it
+		     wraps there, which is where a reader would put the break themselves. -->
 		<div class="mt-7 flex flex-wrap items-center gap-2">
 			<button
 				type="button"
 				onclick={onReload}
 				disabled={busy}
-				class="h-[46px] rounded-full bg-accent px-6 text-base font-medium text-canvas transition-colors hover:bg-accenthi disabled:cursor-not-allowed"
+				class="h-[46px] rounded-full bg-accent px-6 text-base font-medium text-canvas transition-colors hover:bg-accenthi active:bg-accenthi disabled:cursor-not-allowed"
 			>
-				Take the version on disk
+				Take the file on disk
 			</button>
 			<button
 				type="button"
 				onclick={onCopy}
 				disabled={busy}
-				class="h-[46px] rounded-full border border-hairline px-5 text-base text-txt transition-colors hover:border-txt3 disabled:cursor-not-allowed"
+				class="h-[46px] rounded-full border border-hairline px-5 text-base text-txt transition-colors hover:border-txt3 active:bg-raised disabled:cursor-not-allowed"
 			>
 				Keep both
 			</button>
@@ -99,7 +108,7 @@
 				type="button"
 				onclick={onOverwrite}
 				disabled={busy}
-				class="h-[46px] rounded-full px-5 text-base text-danger transition-colors hover:bg-dangerwash disabled:cursor-not-allowed"
+				class="ml-auto h-[46px] rounded-full px-5 text-base text-danger transition-colors hover:bg-dangerwash active:bg-dangerwash disabled:cursor-not-allowed"
 			>
 				Keep mine
 			</button>

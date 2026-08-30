@@ -60,23 +60,28 @@ function button(label: string): HTMLButtonElement {
 async function ready(over: Record<string, unknown> = {}) {
 	const component = show(over);
 	flushSync();
-	await vi.waitFor(() => expect(host.textContent).toContain('122 passes'));
+	await vi.waitFor(() => expect(host.textContent).not.toContain('Fitting the lock'));
 	await vi.waitFor(() => expect(host.textContent).toContain(HOME.path));
 	return component;
 }
 
-/** The measurement runs as soon as the screen opens, and the number it produces
- * is the only one there is to show: it does not exist until the end. */
-it('measures the machine before anybody has typed anything', async () => {
+/**
+ * The measurement runs as soon as the screen opens, and the screen says so only
+ * while it is happening. A reader came to make a vault; the number of Argon2id
+ * passes is not something they can act on, and the wait is.
+ */
+it('says what it is doing while it measures, and stops when it is done', async () => {
 	const component = show();
 	flushSync();
 
-	expect(host.textContent).toContain('Measuring Argon2id');
-	expect(host.textContent).not.toContain('1.00 s');
+	expect(host.textContent).toContain('Fitting the lock to this Mac');
 
-	await vi.waitFor(() => expect(host.textContent).toContain('1.00 s'));
-	expect(host.textContent).toContain('122 passes');
+	await vi.waitFor(() => expect(host.textContent).not.toContain('Fitting the lock'));
 	expect(ipc.calibrate).toHaveBeenCalledTimes(1);
+
+	// Nothing of the measurement is left on the screen, in any of the words it
+	// used to be spelled with.
+	expect(host.textContent).not.toMatch(/argon|passes|header/i);
 
 	unmount(component);
 });
@@ -239,14 +244,21 @@ it('says the password cannot be recovered, in the largest words on the screen', 
 	unmount(component);
 });
 
-/** The bar is one of three literal classes. A computed width compiles to
- * nothing, and the window's style rules would drop an inline one silently. */
+/** The bar is one of two literal classes. A computed width compiles to nothing,
+ * and the window's style rules would drop an inline one silently. */
 it('draws the measuring bar out of a fixed set of widths', async () => {
+	// Both answers are held back in turn, because the bar is the one thing that
+	// says which of them the screen is still waiting for.
+	let place: (where: unknown) => void = () => {};
+	ipc.defaultNewDatabase.mockReturnValue(new Promise((settle) => (place = settle)));
+	ipc.calibrate.mockReturnValue(new Promise(() => {}));
+
 	const component = show();
 	flushSync();
 	expect(host.querySelector('.w-1\\/3.bg-accent')).not.toBeNull();
 
-	await vi.waitFor(() => expect(host.querySelector('.w-full.bg-accent')).not.toBeNull());
+	place(HOME);
+	await vi.waitFor(() => expect(host.querySelector('.w-2\\/3.bg-accent')).not.toBeNull());
 
 	unmount(component);
 });

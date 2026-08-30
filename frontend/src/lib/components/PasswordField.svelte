@@ -170,7 +170,7 @@
 				oninput={written}
 				onblur={commit}
 				onkeydown={keys}
-				class="block w-full rounded-sm border border-transparent bg-transparent font-mono text-body leading-snug text-txt transition-colors outline-none select-text focus:border-accent focus:bg-surface2 focus:ring-4 focus:ring-accent/15"
+				class="block w-full rounded-sm border border-hairline bg-surface2 px-3 py-2.5 font-mono text-body leading-snug text-txt transition-colors outline-none focus:border-accent focus:ring-4 focus:ring-accent/15"
 			/>
 		</span>
 
@@ -178,7 +178,7 @@
 			<button
 				type="button"
 				onclick={toggle}
-				class="flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 text-fine text-txt2 transition-colors hover:border-txt3 hover:text-txt"
+				class="flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 text-fine text-txt2 transition-colors hover:border-txt3 hover:text-txt active:bg-raised"
 			>
 				<Icon name={live ? 'eye-off' : 'eye'} class="h-3.5 w-3.5" />
 				<span>{live ? 'Hide' : empty && !readOnly ? 'Set one' : 'Show'}</span>
@@ -195,7 +195,7 @@
 				<button
 					type="button"
 					onclick={() => (generating = !generating)}
-					class="flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 text-fine text-txt2 transition-colors hover:border-txt3 hover:text-txt"
+					class="flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 text-fine text-txt2 transition-colors hover:border-txt3 hover:text-txt active:bg-raised"
 				>
 					<Icon name="refresh" class="h-3.5 w-3.5" /> Make one
 				</button>

@@ -7,15 +7,42 @@
 
 use std::cell::Cell;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use tauri::utils::config::WindowConfig;
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, Runtime, WindowEvent};
 
 use crate::{buttons, settings};
 
-/// The window's label, which is also its key in `tauri.conf.json`.
+/// What every one of Coffer's window labels begins with, and the key of the one
+/// in `tauri.conf.json`.
 pub const MAIN: &str = "main";
+
+/// How many times the window has been built again.
+///
+/// The label carries it, because a label cannot be used twice. Building a window
+/// with the label of one that was just destroyed leaves a webview that is made,
+/// registered, sized and visible, and that never loads its page: no script runs
+/// in it and no command ever arrives. On screen it is an empty window the reader
+/// cannot get back into, and nothing anywhere reports an error. Counting up
+/// costs a string and sidesteps it entirely.
+///
+/// `capabilities/main.json` matches `main*` for the same reason.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// The label the window carries now.
+pub fn label() -> String {
+    match GENERATION.load(Ordering::Acquire) {
+        0 => MAIN.to_owned(),
+        generation => format!("{MAIN}-{generation}"),
+    }
+}
+
+/// Moves on to the next label, so that the window about to be built does not
+/// take the name of the one that just went.
+pub fn next_generation() {
+    GENERATION.fetch_add(1, Ordering::AcqRel);
+}
 
 /// Whether the window that is going is going in order to come back.
 ///
@@ -90,6 +117,7 @@ pub fn open<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     // the webview, which is the only answer the screen has until the settings
     // have crossed.
     config.theme = appearance(look(app));
+    config.label = label();
 
     let window = tauri::WebviewWindowBuilder::from_config(app, &config)?.build()?;
     buttons::centre_buttons(&window);
@@ -206,6 +234,28 @@ mod tests {
             Some(tauri::Theme::Light),
             "the light look asked AppKit for something else"
         );
+    }
+
+    /// A window may not take the label of one that was just destroyed: the
+    /// replacement is made, registered and shown, and never loads its page.
+    /// There is no error anywhere; the reader locks the vault and gets an empty
+    /// window back. So every label after the first one is a new one.
+    #[test]
+    fn a_window_never_takes_the_label_of_the_one_before_it() {
+        let mut seen = vec![label()];
+        for _ in 0..4 {
+            next_generation();
+            let now = label();
+            assert!(
+                !seen.contains(&now),
+                "the window was built again as {now}, which has been used"
+            );
+            assert!(
+                now.starts_with(MAIN),
+                "{now} does not begin with the label the configuration file uses"
+            );
+            seen.push(now);
+        }
     }
 
     /// Locking and closing arrive as the same event, and only one of them may

@@ -70,19 +70,16 @@
 	--radius-sm: 6px;
 	--radius-md: 12px;
 
-	/* The one thing that moves on its own: a bar draining while something
-	   counts down. It appears nowhere else.
-
-	   One animation per clipboard timeout the settings screen offers, because a
-	   duration cannot be computed into a class: Tailwind reads the class names
-	   out of the source, and a strict style-src forbids setting the duration
-	   from script. `drain.test.ts` is what keeps this list and the list Rust
-	   offers from parting company. */
+	/* A bar draining while a revealed value counts down to being hidden again.
+	   Its length is the reading, so the duration is written here rather than
+	   computed: Tailwind reads class names out of the source, and a strict
+	   style-src forbids setting a duration from script. `drain.test.ts` is what
+	   keeps it and `reveal.svelte.ts` from parting company. */
 	--animate-drain-reveal: drain 30s linear forwards;
-	--animate-drain-clipboard-15: drain 15s linear forwards;
-	--animate-drain-clipboard-30: drain 30s linear forwards;
-	--animate-drain-clipboard-60: drain 60s linear forwards;
-	--animate-drain-clipboard-300: drain 300s linear forwards;
+
+	/* A notice arriving. Short, and the only thing on a screen that moves for
+	   its own sake, which is why it is the one thing reduced motion silences. */
+	--animate-notice: notice 180ms ease-out;
 
 	@keyframes drain {
 		from {
@@ -90,6 +87,17 @@
 		}
 		to {
 			transform: scaleX(0);
+		}
+	}
+
+	@keyframes notice {
+		from {
+			opacity: 0;
+			transform: translateY(8px);
+		}
+		to {
+			opacity: 1;
+			transform: none;
 		}
 	}
 }
@@ -189,7 +197,14 @@
 		cursor: default;
 	}
 
-	input {
+	/* The window is not a document. A drag that started on a value and swept
+	   across the screen used to take every label and every button with it,
+	   because WebKit extends a selection out of the one element that allows it
+	   and paints everything it crossed. So the only thing that can be selected
+	   is a field somebody typed into: a control contains its own selection, and
+	   a value that is not one has a Copy button instead. */
+	input,
+	textarea {
 		user-select: text;
 	}
 

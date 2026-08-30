@@ -65,7 +65,7 @@
 	<!-- Nothing to write into, so the value is drawn as one. An empty one says
 	     what is missing, in the colour of something that is not there. -->
 	<span
-		class="min-w-0 flex-1 px-2 py-1 break-words whitespace-pre-wrap select-text {value === ''
+		class="min-w-0 flex-1 px-2 py-1 break-words whitespace-pre-wrap {value === ''
 			? 'text-body text-txt4'
 			: classes} {mono ? 'font-mono' : ''}"
 	>

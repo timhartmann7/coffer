@@ -1,6 +1,5 @@
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { Countdown } from '$lib/countdown.svelte';
 import { entry, field, group, row } from '$lib/fixtures';
 import Vault from './Vault.svelte';
 
@@ -76,7 +75,7 @@ afterEach(() => {
 function open(
 	over: {
 		readOnly?: boolean;
-		countdown?: Countdown;
+		onSettings?: () => void;
 		onTree?: (tree: typeof root) => void;
 	} = {}
 ) {
@@ -86,7 +85,7 @@ function open(
 			database,
 			root,
 			readOnly: false,
-			countdown: new Countdown(),
+			onSettings: vi.fn(),
 			onTree: vi.fn(),
 			...over
 		}
@@ -216,7 +215,7 @@ it('copies the open entry through Rust on the keyboard', async () => {
 	await vi.waitFor(() => expect(ipc.copy).toHaveBeenCalledWith(kept.id, 'UserName'));
 
 	await tick();
-	expect(reads()).toContain('Copied. Clipboard clears in 1:00');
+	expect(reads()).toContain('Copied. The clipboard clears in 1 minute.');
 
 	return unmount(component);
 });
@@ -284,20 +283,26 @@ it('says a copy failed without dressing it as one that worked', async () => {
 		expect(toast()?.querySelector('use[href="#i-warn"]')).not.toBeNull();
 		expect(toast()?.querySelector('use[href="#i-copy"]')).toBeNull();
 
-		// A copy that works while the failure is still up keeps its own message
-		// for its own minute: the failure's timer must not take it away.
+		// A copy that works while the failure is still up gets its own message
+		// and its own five seconds: the failure's timer must not take it away.
 		ipc.copy.mockResolvedValue(60);
 		ipc.versions.mockResolvedValue([]);
 		ipc.save.mockResolvedValue(undefined);
 		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', metaKey: true }));
 		await vi.advanceTimersByTimeAsync(0);
 		flushSync();
-		expect(toast()?.textContent).toContain('Copied. Clipboard clears in 1:00');
+		expect(toast()?.textContent).toContain('Copied. The clipboard clears in 1 minute.');
 		expect(toast()?.querySelector('use[href="#i-copy"]')).not.toBeNull();
 
 		await vi.advanceTimersByTimeAsync(4_000);
 		flushSync();
-		expect(toast()?.textContent).toContain('Copied. Clipboard clears in 0:56');
+		expect(toast()?.textContent).toContain('Copied. The clipboard clears in 1 minute.');
+
+		// And then it goes, rather than sitting in the corner for the whole
+		// minute it is talking about.
+		await vi.advanceTimersByTimeAsync(2_000);
+		flushSync();
+		expect(toast()).toBeNull();
 
 		await unmount(component);
 	} finally {
@@ -366,8 +371,8 @@ it('asks which version to keep when the file changed underneath it', async () =>
 	// it is last.
 	const named = [...host.querySelectorAll('button')]
 		.map((each) => each.textContent?.trim())
-		.filter((each) => each === 'Take the version on disk' || each === 'Keep mine');
-	expect(named).toEqual(['Take the version on disk', 'Keep mine']);
+		.filter((each) => each === 'Take the file on disk' || each === 'Keep mine');
+	expect(named).toEqual(['Take the file on disk', 'Keep mine']);
 
 	return unmount(component);
 });
@@ -396,7 +401,7 @@ it('takes the version on disk when that is what the reader chose', async () => {
 	expect(host.textContent).toContain('will not open with this password');
 
 	[...host.querySelectorAll('button')]
-		.find((each) => each.textContent?.trim() === 'Take the version on disk')
+		.find((each) => each.textContent?.trim() === 'Take the file on disk')
 		?.click();
 	await vi.waitFor(() => expect(ipc.reload).toHaveBeenCalledTimes(1));
 	flushSync();
@@ -584,44 +589,36 @@ it('closes the folder name it opened when the plus is pressed again', () => {
 	return unmount(component);
 });
 
-/** The status bar says how long is left, and the bar beside it shrinks with the
- * number. It is drawn only while a vault is open. */
-it('says how long the vault has before it locks itself', () => {
-	const countdown = new Countdown();
-	const component = open({ countdown });
+/**
+ * The status bar used to tick a countdown once a second in the corner of every
+ * screen, which moves for no reason a reader can act on. The settings are what
+ * that corner carries now.
+ */
+it('offers the settings from the status bar, and counts nothing down', () => {
+	const onSettings = vi.fn();
+	const component = open({ onSettings });
 	flushSync();
+
 	expect(reads()).not.toContain('Locks in');
 
-	countdown.sync(300);
-	flushSync();
-	expect(reads()).toContain('Locks in 5:00');
-	expect(host.querySelector('.w-full.bg-accent')).not.toBeNull();
-
-	countdown.left = 30;
-	flushSync();
-	expect(reads()).toContain('Locks in 0:30');
-	expect(host.querySelector('.w-1\\/12.bg-accent')).not.toBeNull();
-
-	countdown.sync(null);
-	flushSync();
-	expect(reads()).not.toContain('Locks in');
+	const button = host.querySelector<HTMLButtonElement>('button[aria-label="Settings"]');
+	expect(button, 'the status bar offers no way to the settings').not.toBeNull();
+	button?.click();
+	expect(onSettings).toHaveBeenCalledTimes(1);
 
 	unmount(component);
 });
 
 /** Two `ml-auto` siblings in a flex row do not both push right: the second one
- * lands wherever the first one left it, which for the countdown is the middle
- * of the status bar. */
+ * lands wherever the first one left it, which is the middle of the status bar. */
 it('keeps everything on the right in one group', () => {
-	const countdown = new Countdown();
-	const component = open({ readOnly: true, countdown });
-	countdown.sync(60);
+	const component = open({ readOnly: true });
 	flushSync();
 
 	const pushed = [...host.querySelectorAll('.ml-auto')];
 	expect(pushed).toHaveLength(1);
 	expect(pushed[0].textContent).toContain('Read only');
-	expect(pushed[0].textContent).toContain('Locks in');
+	expect(pushed[0].textContent).toContain('Settings');
 
 	unmount(component);
 });

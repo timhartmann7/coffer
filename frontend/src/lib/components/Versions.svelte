@@ -171,7 +171,7 @@
 										/>
 									{:else}
 										<span
-											class="min-w-0 flex-1 font-mono text-fine break-all whitespace-pre-wrap text-txt2 select-text"
+											class="min-w-0 flex-1 font-mono text-fine break-all whitespace-pre-wrap text-txt2"
 										>
 											{field.value ?? ''}
 										</span>

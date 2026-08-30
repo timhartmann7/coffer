@@ -286,21 +286,57 @@ fn the_change_watcher_tells_the_three_states_apart() {
     write(&target, "one");
 
     let stamp = Stamp::of(&target).expect("the stamp reads");
+    let content = watch::digest(b"one");
     assert_eq!(
-        watch::since(&target, stamp).expect("it compares"),
+        watch::since(&target, stamp, content).expect("it compares"),
         Change::None
     );
 
     write(&target, "two");
     assert_eq!(
-        watch::since(&target, stamp).expect("it compares"),
+        watch::since(&target, stamp, content).expect("it compares"),
         Change::Modified
     );
 
     std::fs::remove_file(&target).expect("the file goes");
     assert_eq!(
-        watch::since(&target, stamp).expect("it compares"),
+        watch::since(&target, stamp, content).expect("it compares"),
         Change::Gone
+    );
+}
+
+/// The system writes an extended attribute onto a file after an application has
+/// touched it through a save panel, and that moves change time and nothing else.
+/// A client that rewrote the file in place and put the modification time back
+/// looks identical from the outside, so the bytes are what tells them apart.
+#[test]
+fn only_the_bytes_tell_an_attribute_from_a_write_that_hid_itself() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let target = scratch.path().join("db.kdbx");
+    write(&target, "one");
+
+    let stamp = Stamp::of(&target).expect("the stamp reads");
+    let content = watch::digest(b"one");
+
+    support::set_attribute(&target, "com.apple.provenance", b"whatever the system says");
+    assert_eq!(
+        watch::since(&target, stamp, content).expect("it compares"),
+        Change::None,
+        "an attribute the system wrote was taken for somebody else's edit"
+    );
+
+    // The same shape from the outside, and different bytes: a client that wrote
+    // in place and put the modification time back where it found it.
+    let reference = scratch.path().join("when");
+    write(&reference, "");
+    support::copy_modification_time(&target, &reference);
+    write(&target, "two");
+    support::copy_modification_time(&reference, &target);
+
+    assert_eq!(
+        watch::since(&target, stamp, content).expect("it compares"),
+        Change::Modified,
+        "a write that hid its modification time went unnoticed"
     );
 }
 
@@ -317,7 +353,7 @@ fn a_replacement_of_the_same_size_is_still_a_change() {
     std::fs::rename(&replacement, &target).expect("the file is replaced");
 
     assert_eq!(
-        watch::since(&target, stamp).expect("it compares"),
+        watch::since(&target, stamp, watch::digest(b"one")).expect("it compares"),
         Change::Modified,
         "a replacement that kept the size and the contents went unnoticed"
     );

@@ -11,7 +11,7 @@
 		status,
 		tree
 	} from '$lib/ipc';
-	import { Countdown } from '$lib/countdown.svelte';
+	import { Presence } from '$lib/presence';
 	import { wear } from '$lib/theme';
 	import type { Database, Group, Settings as Chosen } from '$lib/model';
 
@@ -23,9 +23,8 @@
 	let showing = $state<'vault' | 'settings' | 'create'>('vault');
 	let reason = $state<string | null>(null);
 
-	/** How long the open vault has left. Rust keeps the deadline; this ticks the
-	 * number between the few messages that ask for it. */
-	const countdown = new Countdown();
+	/** The throttle on telling Rust that somebody is at the machine. */
+	const presence = new Presence();
 
 	// The window opens locked. Nothing is asked of the vault until a password
 	// has opened it.
@@ -65,7 +64,6 @@
 		database = now.database;
 		readOnly = now.readOnly;
 		reason = null;
-		countdown.sync(now.locksIn);
 	}
 
 	/**
@@ -77,7 +75,6 @@
 	async function lock() {
 		root = null;
 		showing = 'vault';
-		countdown.sync(null);
 		await lockVault();
 	}
 
@@ -98,9 +95,9 @@
 	deadline they reset would be a vault that never locks itself.
 -->
 <svelte:window
-	onkeydown={() => countdown.stir()}
-	onpointerdown={() => countdown.stir()}
-	onwheel={() => countdown.stir()}
+	onkeydown={() => presence.stir()}
+	onpointerdown={() => presence.stir()}
+	onwheel={() => presence.stir()}
 />
 
 <div class="flex h-full flex-col">
@@ -115,7 +112,7 @@
 		unlocked={root !== null}
 		{showing}
 		onLock={root !== null ? lock : undefined}
-		onSettings={chosen && showing !== 'create'
+		onSettings={chosen && showing !== 'create' && !(root && database && showing === 'vault')
 			? () => (showing = showing === 'settings' ? 'vault' : 'settings')
 			: undefined}
 	/>
@@ -136,7 +133,13 @@
 			onChoose={choose}
 		/>
 	{:else if root && database}
-		<Vault {database} {root} {readOnly} {countdown} onTree={(tree) => (root = tree)} />
+		<Vault
+			{database}
+			{root}
+			{readOnly}
+			onSettings={() => (showing = 'settings')}
+			onTree={(tree) => (root = tree)}
+		/>
 	{:else if ready}
 		<Unlock
 			{database}

@@ -115,6 +115,33 @@ pub const BUILT_PASSWORD: &str = "built";
 
 /// Whether this process can be stopped by file permissions at all. Running as
 /// root makes every permission test pass without testing anything.
+/// Writes an extended attribute, which is the one thing that moves a file's
+/// change time and nothing else about it. `xattr` is what the system itself
+/// uses; there is no way to do this through `std`.
+pub fn set_attribute(path: &Path, name: &str, value: &[u8]) {
+    let written = std::process::Command::new("/usr/bin/xattr")
+        .arg("-w")
+        .arg(name)
+        .arg(String::from_utf8_lossy(value).into_owned())
+        .arg(path)
+        .status()
+        .expect("xattr runs");
+    assert!(written.success(), "the attribute was not written");
+}
+
+/// Puts `from`'s modification time onto `to`, which is what a client that
+/// wanted to hide a write would do. `touch -r` is the shortest way to it that
+/// needs no crate.
+pub fn copy_modification_time(from: &Path, to: &Path) {
+    let done = std::process::Command::new("/usr/bin/touch")
+        .arg("-r")
+        .arg(from)
+        .arg(to)
+        .status()
+        .expect("touch runs");
+    assert!(done.success(), "the modification time was not copied");
+}
+
 pub fn permissions_apply() -> bool {
     // SAFETY: geteuid reads a process property and touches nothing.
     unsafe { libc::geteuid() != 0 }

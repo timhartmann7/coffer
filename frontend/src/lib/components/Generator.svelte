@@ -96,7 +96,7 @@
 			<span
 				bind:this={node}
 				data-value
-				class="min-w-0 flex-1 font-mono text-base break-all text-txt select-text"
+				class="min-w-0 flex-1 font-mono text-base break-all text-txt"
 			></span>
 			<button
 				type="button"
@@ -174,7 +174,7 @@
 				onclick={insert}
 				disabled={!made}
 				class="h-[46px] shrink-0 rounded-full px-6 text-base font-medium transition-colors {made
-					? 'bg-accent text-canvas hover:bg-accenthi'
+					? 'bg-accent text-canvas hover:bg-accenthi active:bg-accenthi'
 					: 'cursor-not-allowed bg-surface2 text-txt4'}"
 			>
 				Put it in the field

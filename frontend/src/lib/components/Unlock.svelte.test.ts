@@ -95,7 +95,10 @@ it('does not blame the password for a vault that will not open', async () => {
 
 	expect(host.innerHTML).not.toContain('border-danger/60');
 	expect(host.querySelector('use[href="#i-warn"]')).not.toBeNull();
-	expect(reads()).toContain('Choose another file');
+	// The way out is the same pair the screen always offers, wherever it got to:
+	// a vault that will not open is the moment somebody most wants another one.
+	expect(reads()).toContain('Open another database');
+	expect(reads()).toContain('Create new');
 
 	return unmount(component);
 });

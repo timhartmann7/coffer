@@ -709,8 +709,15 @@ fn another_client_writing_the_file_is_noticed_in_either_order() {
     drop(vault);
 
     // The other way round: the other client writes before Coffer ever saves.
+    // A different database this time, because copying the same bytes over the
+    // same bytes changes nothing and there would be nothing to notice.
     let mut vault = open(&path, BUILT_PASSWORD);
-    std::fs::copy(&elsewhere, &path).expect("the other client writes again");
+    let again = built(scratch.path(), "third.kdbx", |database| {
+        database.root_mut().add_entry().edit(|entry| {
+            entry.set_unprotected(fields::TITLE, "written elsewhere again");
+        });
+    });
+    std::fs::copy(&again, &path).expect("the other client writes again");
     assert!(matches!(
         vault.save().expect_err("the save is refused"),
         VaultError::ExternalChange
@@ -720,7 +727,7 @@ fn another_client_writing_the_file_is_noticed_in_either_order() {
     drop(vault);
     assert_eq!(
         open(&path, BUILT_PASSWORD).tree().entries[0].title.open(),
-        Some("written elsewhere")
+        Some("written elsewhere again")
     );
 }
 

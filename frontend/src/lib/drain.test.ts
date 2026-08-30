@@ -1,85 +1,55 @@
 /**
- * The bar that drains while the clipboard holds a password.
+ * The bar that drains while a revealed value counts down to being hidden.
  *
  * Its duration is a CSS animation, and CSS animations are written down at build
  * time: Tailwind reads class names out of the source, and the window's
- * `style-src 'self'` forbids setting a duration from script. So the list of
- * timeouts Rust offers has to have a matching animation in the stylesheet, and
- * nothing but this connects the two.
+ * `style-src 'self'` forbids setting a duration from script. So the seconds the
+ * bar takes to empty and the seconds the value stays on the screen are two
+ * numbers in two files, and nothing but this connects them.
  */
 
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-const settings = readFileSync('../crates/vault-gui/src/settings.rs', 'utf8');
 const css = readFileSync('src/app.css', 'utf8');
-const toast = readFileSync('src/lib/components/Toast.svelte', 'utf8');
+const reveal = readFileSync('src/lib/reveal.svelte.ts', 'utf8');
 const field = readFileSync('src/lib/components/PasswordField.svelte', 'utf8');
 
-/** The seconds Rust will let the reader choose. */
-function offered(): number[] {
-	const found = settings.match(/CLIPBOARD_CHOICES: \[u64; \d+\] = \[([^\]]*)\]/);
-	expect(found, 'settings.rs no longer states the clipboard timeouts it offers').not.toBeNull();
-	return (found?.[1] ?? '')
-		.split(',')
-		.map((one) => Number(one.trim()))
-		.filter((one) => Number.isFinite(one));
-}
+describe('the drain empties in exactly as long as the value is shown', () => {
+	it('gives the reveal a bar of its own length', () => {
+		const shown = reveal.match(/const SECONDS = (\d+)/);
+		expect(shown, 'reveal.svelte.ts no longer states how long a value stays').not.toBeNull();
 
-describe('every clipboard timeout has a bar that empties in exactly that long', () => {
-	it('offers a handful of timeouts and no more', () => {
-		const seconds = offered();
-		expect(seconds.length).toBeGreaterThan(1);
-		expect(seconds.every((one) => one > 0)).toBe(true);
+		expect(css).toContain(`--animate-drain-reveal: drain ${shown?.[1]}s linear forwards;`);
+		expect(field).toContain('animate-drain-reveal');
 	});
 
-	it('defines one animation per offered timeout, of that many seconds', () => {
-		for (const seconds of offered()) {
-			expect(
-				css.includes(`--animate-drain-clipboard-${seconds}: drain ${seconds}s linear forwards;`),
-				`app.css has no ${seconds} second drain, so that choice would show a bar of the wrong length`
-			).toBe(true);
-		}
-	});
-
-	it('names every one of them in the toast, as a literal class', () => {
-		for (const seconds of offered()) {
-			expect(
-				toast.includes(`'animate-drain-clipboard-${seconds}'`),
-				`Toast.svelte cannot draw the ${seconds} second drain`
-			).toBe(true);
+	/** A drain nothing draws with is a rule that compiles into the bundle for
+	 * nobody, and the four clipboard drains became exactly that when the copy
+	 * notice stopped counting a minute down in the corner. */
+	it('defines no drain nothing draws', () => {
+		for (const [, name] of css.matchAll(/--animate-(drain-[\w-]+):/g)) {
+			const drawn = [field, reveal].some((source) => source.includes(`animate-${name}`));
+			expect(drawn, `app.css defines animate-${name}, and nothing draws it`).toBe(true);
 		}
 	});
 
 	/**
-	 * The reduced-motion block empties every animation in the window at once, and
-	 * these two are the exception, keyed off the substring their class names
-	 * share. A drain renamed out of that shape would empty instantly beside a
-	 * label counting down, and nothing else would notice.
+	 * The reduced-motion block empties every animation in the window at once,
+	 * and the drain is the exception: its length is the reading. A bar that
+	 * emptied at once beside "Hides in 0:30" would be saying something untrue.
 	 */
-	it('keeps the drains out of the reduced-motion blanket', () => {
+	it('keeps the drain out of the reduced-motion blanket', () => {
 		const exemption = css.match(/\*:not\(\[class\*='([^']+)'\]\)/);
 		expect(exemption, 'the reduced-motion block spares nothing any more').not.toBeNull();
-		const spared = exemption?.[1] ?? '';
-
-		const drawn = [...toast.matchAll(/'(animate-[\w-]+)'/g), ...field.matchAll(/(animate-[\w-]+)/g)]
-			.map((found) => found[1])
-			.filter((name) => name.length > 'animate-'.length);
-
-		expect(drawn.length).toBeGreaterThan(offered().length);
-		for (const name of drawn) {
-			expect(name, `${name} would empty at once when motion is reduced`).toContain(spared);
-		}
+		expect('animate-drain-reveal').toContain(exemption?.[1] ?? 'nothing at all');
 	});
 
-	/** The other direction: an animation nothing can choose is a rule that
-	 * compiles into the bundle for nobody. */
-	it('defines no clipboard drain nothing offers', () => {
-		const seconds = offered();
-		for (const [, defined] of css.matchAll(/--animate-drain-clipboard-(\d+):/g)) {
-			expect(seconds, `app.css defines a ${defined} second drain nothing offers`).toContain(
-				Number(defined)
-			);
-		}
+	/** The notice is the other way round: it moves for its own sake, so reduced
+	 * motion is right to silence it. */
+	it('leaves the notice inside the blanket', () => {
+		expect(css).toContain('--animate-notice:');
+		const spared = css.match(/\*:not\(\[class\*='([^']+)'\]\)/)?.[1] ?? '';
+		expect('animate-notice'.includes(spared)).toBe(false);
 	});
 });

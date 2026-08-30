@@ -18,8 +18,8 @@
 		tree as loadTree,
 		versions as loadVersions
 	} from '$lib/ipc';
+	import { named as howLong } from '$lib/duration';
 	import type { Database, Entry, EntryRow, Group, Rival, Version } from '$lib/model';
-	import { clock } from '$lib/duration';
 	import { index, search } from '$lib/search';
 	import { entriesOf, liveEntries, pathTo, recycleBin, shownEntries } from '$lib/tree';
 	import Conflict from './Conflict.svelte';
@@ -29,14 +29,13 @@
 	import EntryView from './EntryView.svelte';
 	import Icon from './Icon.svelte';
 	import Toast from './Toast.svelte';
-	import type { Countdown } from '$lib/countdown.svelte';
 	import Tree from './Tree.svelte';
 
 	let {
 		database,
 		root,
 		readOnly,
-		countdown,
+		onSettings,
 		onTree
 	}: {
 		database: Database;
@@ -44,9 +43,10 @@
 		/** A snapshot, or a format Coffer reads and does not write. Nothing on
 		 * the screen offers a change it would only be refused. */
 		readOnly: boolean;
-		/** How long the vault has before it locks itself. The number is Rust's;
-		 * this only draws it. */
-		countdown: Countdown;
+		/** The way to the settings screen while a vault is open. It lives in the
+		 * status bar rather than the title bar, in the corner the countdown used
+		 * to tick in. */
+		onSettings: () => void;
 		onTree: (tree: Group) => void;
 	} = $props();
 
@@ -65,7 +65,7 @@
 	let saving = $state(false);
 	let conflict = $state<Rival | null>(null);
 	let changedAt = $state<Date | null>(null);
-	let notice = $state<{ message: string; kind: 'copied' | 'failed'; seconds: number } | null>(null);
+	let notice = $state<{ message: string; kind: 'copied' | 'failed' } | null>(null);
 	/** The toast's own clock, counting the seconds the clipboard still holds a
 	 * copied value. Not the vault's: that one is Rust's and arrives as a prop. */
 	let ticking: ReturnType<typeof setInterval> | null = null;
@@ -292,9 +292,9 @@
 			const beside = await saveCopy();
 			if (!beside) return;
 			conflict = null;
-			notice = { message: `Kept as ${beside.name}`, kind: 'copied', seconds: 0 };
+			notice = { message: `Kept as ${beside.name}`, kind: 'copied' };
 			copies += 1;
-			fade();
+			fade(6000);
 			await takeTheirs();
 		} catch (thrown) {
 			failed(thrown);
@@ -328,40 +328,31 @@
 		return copy(row.id, name);
 	}
 
-	/** The clipboard holds the value for as long as Rust says it will, and the
-	 * message counts the same seconds down. */
+	/**
+	 * Says what was copied and how long the clipboard will hold it, then goes.
+	 *
+	 * The seconds are Rust's answer and the sentence states them once. Counting
+	 * them down was a notice about something already decided sitting in the
+	 * corner for a whole minute.
+	 */
 	function announce(seconds: number) {
 		clear();
 		copies += 1;
-		let left = seconds;
-		notice = { message: message(left), kind: 'copied', seconds };
-		ticking = setInterval(() => {
-			left -= 1;
-			if (left <= 0) {
-				clear();
-				notice = null;
-				return;
-			}
-			notice = { message: message(left), kind: 'copied', seconds };
-		}, 1000);
-	}
-
-	function message(left: number): string {
-		const minutes = Math.floor(left / 60);
-		return `Copied. Clipboard clears in ${minutes}:${String(left % 60).padStart(2, '0')}`;
+		notice = { message: `Copied. The clipboard clears in ${howLong(seconds)}.`, kind: 'copied' };
+		fade(5000);
 	}
 
 	function failed(thrown: unknown) {
 		clear();
-		notice = { message: asFailure(thrown).message, kind: 'failed', seconds: 0 };
-		fade();
+		notice = { message: asFailure(thrown).message, kind: 'failed' };
+		fade(6000);
 	}
 
-	function fade() {
+	function fade(after: number) {
 		fading = setTimeout(() => {
 			notice = null;
 			fading = null;
-		}, 6000);
+		}, after);
 	}
 
 	function clear() {
@@ -647,7 +638,7 @@
 				<button
 					type="button"
 					onclick={addEntry}
-					class="flex h-9 shrink-0 items-center gap-2 rounded-full border border-hairline px-4 text-small text-txt2 transition-colors hover:border-txt4 hover:text-txt"
+					class="flex h-9 shrink-0 items-center gap-2 rounded-full border border-hairline px-4 text-small text-txt2 transition-colors hover:border-txt4 hover:text-txt active:bg-raised"
 				>
 					<Icon name="plus" class="h-4 w-4" /> Entry
 				</button>
@@ -749,7 +740,7 @@
 
 	{#if notice}
 		{#key copies}
-			<Toast message={notice.message} kind={notice.kind} seconds={notice.seconds} />
+			<Toast message={notice.message} kind={notice.kind} />
 		{/key}
 	{/if}
 </div>
@@ -764,21 +755,21 @@
 	<span class="truncate">{database.path}</span>
 
 	<!-- One group, because two `ml-auto` siblings in a flex row do not both push
-	     right and the countdown would land in the middle of the bar. -->
+	     right. -->
 	<span class="ml-auto flex shrink-0 items-center gap-4">
 		{#if saving}
 			<span class="text-txt3">Saving…</span>
 		{:else if readOnly}
 			<span class="text-txt3">Read only</span>
 		{/if}
-		{#if countdown.left !== null}
-			<span class="flex items-center gap-2 text-txt3">
-				<Icon name="clock" class="h-3.5 w-3.5" />
-				Locks in {clock(countdown.left)}
-				<span class="h-[3px] w-16 overflow-hidden rounded-full bg-line">
-					<span class="block h-full rounded-full bg-accent {countdown.width()}"></span>
-				</span>
-			</span>
-		{/if}
+		<button
+			type="button"
+			onclick={onSettings}
+			aria-label="Settings"
+			class="flex items-center gap-2 tracking-label uppercase transition-colors hover:text-txt2 active:text-txt4"
+		>
+			<Icon name="sliders" class="h-3.5 w-3.5" />
+			Settings
+		</button>
 	</span>
 </div>

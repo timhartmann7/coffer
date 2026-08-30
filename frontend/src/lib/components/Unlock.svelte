@@ -172,58 +172,58 @@
 					disabled={busy}
 					class="mt-5 h-[46px] w-full rounded-full px-6 text-base font-medium transition-colors {busy
 						? 'cursor-not-allowed bg-surface2 text-txt4'
-						: 'bg-accent text-canvas hover:bg-accenthi'}"
+						: 'bg-accent text-canvas hover:bg-accenthi active:bg-accenthi'}"
 				>
 					{busy ? 'Unlocking…' : 'Unlock'}
 				</button>
 			</form>
 
 			{#if failure && !wrongPassword}
-				<div class="mt-6 flex gap-4 border-t border-line pt-5">
-					<Icon name="warn" class="mt-0.5 h-5 w-5 shrink-0 text-warn" />
-					<div>
-						<p class="text-lead text-txt">{failure.message}</p>
-						{#if snapshot}
-							<p class="mt-2 text-small leading-relaxed text-txt2">
-								{#if snapshot.taken}
-									A snapshot from {fully(snapshot.taken, new Date())} sits beside it.
-								{:else}
-									A snapshot Coffer took before one of its own saves sits beside it.
-								{/if}
-								It opens with the same password.
-							</p>
-						{/if}
-						<div class="mt-5 flex flex-wrap gap-2">
-							{#if snapshot}
-								{@const only = snapshot}
-								<button
-									type="button"
-									onclick={() => openSnapshot(only.index)}
-									class="h-9 rounded-full border border-hairline px-5 text-small text-txt transition-colors hover:border-txt3"
-								>
-									Open {only.name}
-								</button>
+				<div class="mt-6 border-t border-line pt-5 text-center">
+					<p class="flex items-center justify-center gap-2 text-lead text-txt">
+						<Icon name="warn" class="h-5 w-5 shrink-0 text-warn" />
+						{failure.message}
+					</p>
+					{#if snapshot}
+						<p class="mx-auto mt-3 max-w-[38ch] text-small leading-relaxed text-txt2">
+							{#if snapshot.taken}
+								A snapshot from {fully(snapshot.taken, new Date())} sits beside it.
+							{:else}
+								A snapshot Coffer took before one of its own saves sits beside it.
 							{/if}
-							<button
-								type="button"
-								onclick={choose}
-								class="h-9 rounded-full px-4 text-small text-txt3 transition-colors hover:text-txt2"
-							>
-								Choose another file
-							</button>
-						</div>
-					</div>
-				</div>
-			{:else}
-				<div class="mt-6 flex justify-center gap-6 text-fine text-txt3">
-					<button type="button" onclick={choose} class="transition-colors hover:text-txt2">
-						Open another database
-					</button>
-					<button type="button" onclick={onCreate} class="transition-colors hover:text-txt2">
-						Create new
-					</button>
+							It opens with the same password.
+						</p>
+						{@const only = snapshot}
+						<button
+							type="button"
+							onclick={() => openSnapshot(only.index)}
+							class="mt-5 h-9 rounded-full border border-hairline px-5 text-small text-txt transition-colors hover:border-txt3 active:bg-surface2"
+						>
+							Open {only.name}
+						</button>
+					{/if}
 				</div>
 			{/if}
+
+			<!-- The same two ways out, wherever the screen got to. A vault that
+			     will not open is the moment somebody most wants to make another
+			     one, and that is where the offer used to disappear. -->
+			<div class="mt-6 flex justify-center gap-6 text-fine text-txt3">
+				<button
+					type="button"
+					onclick={choose}
+					class="transition-colors hover:text-txt2 active:text-txt3"
+				>
+					Open another database
+				</button>
+				<button
+					type="button"
+					onclick={onCreate}
+					class="transition-colors hover:text-txt2 active:text-txt3"
+				>
+					Create new
+				</button>
+			</div>
 		{:else}
 			<h1
 				class="mx-auto mt-7 max-w-[22ch] text-center text-display leading-snug font-medium tracking-tight text-txt"

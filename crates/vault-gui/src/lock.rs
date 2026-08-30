@@ -38,7 +38,7 @@ pub fn lock<R: Runtime>(app: &AppHandle<R>, reason: Reason) {
     // derivation ran on.
     vault_core::scrub::stack();
 
-    if let Some(main) = app.get_webview_window(window::MAIN) {
+    if let Some(main) = app.get_webview_window(&window::label()) {
         // Coffer is closing, so the window is not wanted back. Every other
         // reason is a lock, and a lock is a window that returns asking for a
         // password.

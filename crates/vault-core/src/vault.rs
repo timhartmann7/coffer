@@ -18,7 +18,7 @@ use crate::model::{Attachment, Entry, Field, FieldValue, Project, Timestamps, Ve
 use crate::preflight;
 use crate::secret::SecretValue;
 use crate::storage::lock::{Lock, Outcome};
-use crate::storage::watch::{Change, Stamp};
+use crate::storage::watch::{Change, Content, Stamp};
 use crate::storage::{atomic, snapshot, watch};
 use crate::text;
 use crate::wipe;
@@ -97,6 +97,9 @@ pub struct Vault {
     key: MasterKey,
     source: Source,
     stamp: Stamp,
+    /// The bytes the stamp went with. Read only when the stamp cannot decide on
+    /// its own, which is when nothing but the change time moved.
+    content: Content,
     /// Whether this vault holds a change the file on disk does not.
     changed: bool,
     /// Held for as long as the vault is open; removed when it is dropped.
@@ -195,7 +198,7 @@ impl Vault {
         })?;
 
         let stamp = Stamp::of(&path)?;
-        let database = read(&path, &key)?;
+        let (database, content) = read(&path, &key)?;
         let source = classify(&database, &path);
 
         let lock = match policy {
@@ -212,6 +215,7 @@ impl Vault {
             key,
             source,
             stamp,
+            content,
             changed: false,
             _lock: lock,
         })
@@ -389,7 +393,7 @@ impl Vault {
 
     /// Whether the file on disk is still the one this vault was opened from.
     pub fn external_change(&self) -> Result<Change, VaultError> {
-        Ok(watch::since(&self.path, self.stamp)?)
+        Ok(watch::since(&self.path, self.stamp, self.content)?)
     }
 
     /// Writes the database back.
@@ -460,11 +464,13 @@ impl Vault {
         // and the stamp taken after it is the one that counts.
         if let Ok(stamp) = Stamp::of(&self.path) {
             self.stamp = stamp;
+            self.content = self.on_disk();
         }
 
         staged.commit()?;
 
         self.stamp = Stamp::of(&self.path)?;
+        self.content = self.on_disk();
         self.changed = false;
         Ok(())
     }
@@ -868,18 +874,30 @@ impl Vault {
             // the other one.
             entries: read(&self.path, &self.key)
                 .ok()
-                .map(|database| database.num_entries()),
+                .map(|(database, _)| database.num_entries()),
         }
+    }
+
+    /// The bytes on disk, hashed, or nothing at all when they cannot be read.
+    ///
+    /// A digest that could not be taken is a digest that matches nothing, which
+    /// makes the next save ask rather than assume - the same answer the stamp
+    /// gives when it cannot read the file either.
+    fn on_disk(&self) -> Content {
+        std::fs::read(&self.path)
+            .map(|bytes| watch::digest(&bytes))
+            .unwrap_or_default()
     }
 
     /// Throws away everything in this vault and reads the file again.
     pub fn reload(&mut self) -> Result<(), VaultError> {
         let stamp = Stamp::of(&self.path)?;
-        let database = read(&self.path, &self.key)?;
+        let (database, content) = read(&self.path, &self.key)?;
 
         self.source = classify(&database, &self.path);
         self.database = database;
         self.stamp = stamp;
+        self.content = content;
         self.changed = false;
         Ok(())
     }
@@ -1109,6 +1127,9 @@ fn fill(path: &Path, key: MasterKey, recipe: &Recipe<'_>) -> Result<Vault, Vault
     })?;
 
     let stamp = Stamp::of(&path)?;
+    let content = std::fs::read(&path)
+        .map(|bytes| watch::digest(&bytes))
+        .unwrap_or_default();
     let source = classify(&database, &path);
 
     Ok(Vault {
@@ -1117,6 +1138,7 @@ fn fill(path: &Path, key: MasterKey, recipe: &Recipe<'_>) -> Result<Vault, Vault
         key,
         source,
         stamp,
+        content,
         changed: false,
         _lock: lock,
     })
@@ -1207,7 +1229,7 @@ fn encrypt(
     Ok(counted.written)
 }
 
-fn read(path: &Path, key: &MasterKey) -> Result<Held, VaultError> {
+fn read(path: &Path, key: &MasterKey) -> Result<(Held, Content), VaultError> {
     use std::io::Read;
 
     let file = std::fs::File::open(path)?;
@@ -1223,7 +1245,8 @@ fn read(path: &Path, key: &MasterKey) -> Result<Held, VaultError> {
     preflight::check(&bytes)?;
 
     let database_key = key.to_database_key()?;
-    parse_without_dying(&bytes, database_key).map(Held)
+    let content = watch::digest(&bytes);
+    parse_without_dying(&bytes, database_key).map(|held| (Held(held), content))
 }
 
 /// Parses a database, turning a panic inside the parser into an error.

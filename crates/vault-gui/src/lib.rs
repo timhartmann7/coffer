@@ -147,13 +147,24 @@ pub fn run() {
                 ref label,
                 event: tauri::WindowEvent::Destroyed,
                 ..
-            } if label == window::MAIN && window::wanted_again() => {
-                if let Err(error) = window::open(app) {
-                    // Nothing has been unlocked at this point - the lock that
-                    // destroyed the window wiped the tree first - so there is
-                    // nothing here that could name a secret.
-                    eprintln!("Coffer could not open its window again: {error}");
-                }
+            } if label.starts_with(window::MAIN) && window::wanted_again() => {
+                window::next_generation();
+                // Posted back to the main thread rather than built here. The
+                // runtime takes the window that just went out of its own books
+                // *after* this callback returns, and the replacement carries the
+                // same label - so a window built inline is the one that cleanup
+                // erases. What is left is a frame macOS still draws, with no
+                // page in it and nothing to answer a command: the reader locks
+                // the vault and cannot get back in.
+                let handle = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    if let Err(error) = window::open(&handle) {
+                        // Nothing has been unlocked at this point - the lock
+                        // that destroyed the window wiped the tree first - so
+                        // there is nothing here that could name a secret.
+                        eprintln!("Coffer could not open its window again: {error}");
+                    }
+                });
             }
             // The window toolkit ends its loop by exiting the process, which
             // runs no destructor. Without this, quitting with a vault open

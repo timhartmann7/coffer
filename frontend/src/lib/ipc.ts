@@ -89,12 +89,12 @@ export function lock(): Promise<void> {
 }
 
 /**
- * Says the reader is there, and answers with the seconds the open vault has
- * left.
+ * Says the reader is there, so that the idle timer starts again.
  *
- * Sent on real input and no more than a few times a minute. It is deliberately
- * not what the countdown does as it draws: an idle timer the status bar kept
- * resetting would never fire.
+ * Sent on real input and no more than a few times a minute. What comes back is
+ * the seconds the open vault has left, which nothing draws: a status bar that
+ * asked once a second would be an idle timer resetting itself, and a vault that
+ * never locks.
  */
 export function stirred(): Promise<number | null> {
 	return invoke('stirred');

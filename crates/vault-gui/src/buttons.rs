@@ -61,10 +61,14 @@ thread_local! {
     /// threads, and the notifications only arrive here anyway.
     static WATCHED: RefCell<HashMap<u64, Watch>> = RefCell::new(HashMap::new());
 
-    /// Whether a correction is already running. Moving one button tells the
-    /// other two that a frame changed, and AppKit answers a move with a layout
-    /// of its own; without this the three of them talk each other into a stack
-    /// overflow.
+    /// Whether a correction is already running.
+    ///
+    /// Moving one button tells the other two that a frame changed, and AppKit
+    /// answers a move with a layout of its own. A pass that started while
+    /// another was half way through would measure the spacing between a button
+    /// that had already moved and one that had not, and lay the three of them
+    /// out on a gap that is not the system's - which is the crowding, and the
+    /// one button left jittering, that this module exists to prevent.
     static CORRECTING: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -139,18 +143,11 @@ fn watch(which: u64, window: &NSWindow) {
 
         let held: Retained<NSView> = Retained::into_super(Retained::into_super(button.clone()));
         let block = RcBlock::new(move |_: std::ptr::NonNull<NSNotification>| {
-            if CORRECTING.get() {
-                return;
+            // A notification about this view's frame arrives on the thread that
+            // changed it, which is the thread that draws.
+            if let Some(window) = held.window() {
+                lay_out(&window);
             }
-            // A notification about this view's frame arrives on the thread
-            // that changed it, which is the thread that draws.
-            let Some(window) = held.window() else {
-                return;
-            };
-
-            CORRECTING.set(true);
-            lay_out(&window);
-            CORRECTING.set(false);
         });
 
         // SAFETY: the observer is registered against a button of a live window,
@@ -218,7 +215,19 @@ unsafe impl Send for SendWindow {}
 /// Doing nothing when there is nothing to do is what lets this be called from
 /// more than one place: a call that arrives late finds the work done rather
 /// than moving a button a second time.
+///
+/// One pass at a time, whichever way it was reached. Moving the first button
+/// posts a notification that asks for another pass, and that pass would measure
+/// the spacing across a row that is half moved.
 fn lay_out(window: &NSWindow) {
+    if CORRECTING.replace(true) {
+        return;
+    }
+    settle_row(window);
+    CORRECTING.set(false);
+}
+
+fn settle_row(window: &NSWindow) {
     let (Some(close), Some(miniaturise), Some(zoom)) = (
         window.standardWindowButton(NSWindowButton::CloseButton),
         window.standardWindowButton(NSWindowButton::MiniaturizeButton),

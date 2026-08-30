@@ -456,3 +456,42 @@ fn ten_edits_of_an_entry_with_a_three_kilobyte_attachment_barely_grow_the_file()
         "the attachment came back changed"
     );
 }
+
+/// macOS writes `com.apple.macl` and `com.apple.provenance` onto a file after an
+/// application has touched it through a save panel, and an extended attribute
+/// moves change time without moving a byte of content. A vault that took that
+/// for another client's edit would raise the conflict dialog on every save the
+/// reader made, which is what happened on a real vault in `~/Documents`.
+#[test]
+fn an_attribute_the_system_writes_is_not_somebody_elses_edit() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let path = built(scratch.path(), "attributed.kdbx", |_| {});
+    let mut vault = open(&path, BUILT_PASSWORD);
+    let root = vault.tree().id;
+    let id = vault.create_entry(root).expect("an entry is made");
+
+    vault
+        .set_field(id, fields::NOTES, NewValue::Open("first".to_owned()))
+        .expect("the note is written");
+    vault.save().expect("the first save lands");
+
+    // What the system does, in the one way a test can do it: nothing about the
+    // file changes except its change time.
+    let before = std::fs::metadata(&path).expect("the vault is there");
+    support::set_attribute(&path, "com.apple.provenance", b"whatever the system says");
+    let after = std::fs::metadata(&path).expect("the vault is still there");
+
+    assert_eq!(before.len(), after.len(), "the attribute changed the size");
+    assert_eq!(
+        before.modified().ok(),
+        after.modified().ok(),
+        "the attribute changed the modification time"
+    );
+
+    vault
+        .set_field(id, fields::NOTES, NewValue::Open("second".to_owned()))
+        .expect("the note is written");
+    vault
+        .save()
+        .expect("the vault refused its own file over an attribute the system wrote");
+}

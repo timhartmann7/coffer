@@ -114,7 +114,7 @@
 			<button
 				type="button"
 				onclick={onChoose}
-				class="h-9 shrink-0 rounded-full border border-hairline px-4 text-small text-txt2 transition-colors hover:border-txt4 hover:text-txt"
+				class="h-9 shrink-0 rounded-full border border-hairline px-4 text-small text-txt2 transition-colors hover:border-txt4 hover:text-txt active:bg-raised"
 			>
 				Open another
 			</button>
