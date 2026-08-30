@@ -129,8 +129,9 @@ weight for nothing anyone notices.
 
 `docs/vault-core.md` describes the engine and what the format library underneath
 it gets wrong. `docs/ipc.md` is the contract between the engine and the window,
-and the rule that keeps secrets on the Rust side of it. `docs/releasing.md` is
-how a release is cut.
+and the rule that keeps secrets on the Rust side of it. `docs/design.md` is where
+the window departs from the mockup it is drawn from, and why. `docs/releasing.md`
+is how a release is cut.
 
 ## Licence
 

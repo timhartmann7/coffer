@@ -49,11 +49,15 @@ jobs:
         run: cargo fmt --all --check
 
       # install.sh is the one file in this repository a stranger executes, and
-      # the one file with no compiler behind it.
-      - name: Shell
+      # the one file with no compiler behind it. The workflows are the other
+      # thing here that nothing compiles, and the release one has never run.
+      - name: Shell and workflows
         run: |
           sudo apt-get install -y --no-install-recommends shellcheck
           shellcheck install.sh assets/appicon.sh crates/vault-core/tests/fixtures/generate.sh
+          curl -fsSL https://github.com/rhysd/actionlint/releases/latest/download/actionlint_linux_amd64.tar.gz |
+            tar xz -C /usr/local/bin actionlint
+          actionlint
 
       - name: The installer refuses a machine that is not a Mac
         run: |

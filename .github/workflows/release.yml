@@ -126,7 +126,7 @@ jobs:
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
-          sha256sum *.dmg >checksums.txt
+          sha256sum -- *.dmg >checksums.txt
           cat checksums.txt
           {
             echo "arm=$(awk -v n="Coffer_${VERSION}_aarch64.dmg" '$2 == n || $2 == "*" n { print $1 }' checksums.txt)"
@@ -203,12 +203,12 @@ jobs:
             -e "s|^         intel: \".*\"$|         intel: \"$INTEL\"|" \
             Casks/coffer.rb
 
-          grep -q "version \"$VERSION\"" Casks/coffer.rb &&
-            grep -q "\"$ARM\"" Casks/coffer.rb &&
-            grep -q "\"$INTEL\"" Casks/coffer.rb || {
-              echo "the cask did not take the substitution" >&2
-              exit 1
-            }
+          if ! grep -q "version \"$VERSION\"" Casks/coffer.rb ||
+            ! grep -q "\"$ARM\"" Casks/coffer.rb ||
+            ! grep -q "\"$INTEL\"" Casks/coffer.rb; then
+            echo "the cask did not take the substitution" >&2
+            exit 1
+          fi
 
       - name: Commit it
         env:
