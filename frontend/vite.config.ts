@@ -1,10 +1,17 @@
+import { readFileSync } from 'node:fs';
 import tailwindcss from '@tailwindcss/vite';
 import { defaultClientConditions } from 'vite';
 import { defineConfig } from 'vitest/config';
 import adapter from '@sveltejs/adapter-static';
 import { sveltekit } from '@sveltejs/kit/vite';
 
+// The version is the bundle's, read from the file the bundler reads. The
+// settings screen says it out loud, and a copy written in the frontend would be
+// a second answer that goes stale on the first release.
+const { version } = JSON.parse(readFileSync('../crates/vault-gui/tauri.conf.json', 'utf8'));
+
 export default defineConfig({
+	define: { __COFFER_VERSION__: JSON.stringify(version) },
 	plugins: [
 		tailwindcss(),
 		sveltekit({

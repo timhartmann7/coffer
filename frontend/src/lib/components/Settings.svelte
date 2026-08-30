@@ -145,6 +145,8 @@
 			Argon2id parameters are settled when a vault is made and are not changed here. Somebody else's
 			vault always opens with its own.
 		</p>
-		<p class="mt-2 font-mono text-label text-txt4">coffer 0.1.0 · kdbx 4.1 · network requests: 0</p>
+		<p class="mt-2 font-mono text-label text-txt4">
+			coffer {__COFFER_VERSION__} · kdbx 4.1 · network requests: 0
+		</p>
 	</div>
 </div>
