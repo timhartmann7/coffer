@@ -199,7 +199,7 @@ fn a_lock_left_by_a_process_that_no_longer_exists_is_replaced() {
     // A process id that has certainly gone: a child that has already been
     // reaped. The host has to match for staleness to be decidable, and the only
     // honest source for it is the lock Coffer itself writes.
-    let mut child = std::process::Command::new("/bin/sh")
+    let mut child = std::process::Command::new("sh")
         .args(["-c", "exit 0"])
         .spawn()
         .expect("the child runs");
@@ -305,10 +305,13 @@ fn the_change_watcher_tells_the_three_states_apart() {
     );
 }
 
-/// The system writes an extended attribute onto a file after an application has
-/// touched it through a save panel, and that moves change time and nothing else.
-/// A client that rewrote the file in place and put the modification time back
-/// looks identical from the outside, so the bytes are what tells them apart.
+/// The two writes a stamp cannot tell apart from the outside, and the bytes can.
+///
+/// An extended attribute the system wrote leaves the file's content alone; a
+/// client that rewrote it in place changed the content and can put every
+/// timestamp back. On Linux it does not even have to: both times come from a
+/// clock that moves once a timer tick, so a rewrite of the same length inside
+/// one tick is invisible in metadata. Neither case may be decided by a clock.
 #[test]
 fn only_the_bytes_tell_an_attribute_from_a_write_that_hid_itself() {
     let scratch = tempfile::tempdir().expect("a scratch directory");
@@ -318,7 +321,7 @@ fn only_the_bytes_tell_an_attribute_from_a_write_that_hid_itself() {
     let stamp = Stamp::of(&target).expect("the stamp reads");
     let content = watch::digest(b"one");
 
-    support::set_attribute(&target, "com.apple.provenance", b"whatever the system says");
+    support::set_attribute(&target);
     assert_eq!(
         watch::since(&target, stamp, content).expect("it compares"),
         Change::None,

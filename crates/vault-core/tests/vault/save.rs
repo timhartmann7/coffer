@@ -478,7 +478,7 @@ fn an_attribute_the_system_writes_is_not_somebody_elses_edit() {
     // What the system does, in the one way a test can do it: nothing about the
     // file changes except its change time.
     let before = std::fs::metadata(&path).expect("the vault is there");
-    support::set_attribute(&path, "com.apple.provenance", b"whatever the system says");
+    support::set_attribute(&path);
     let after = std::fs::metadata(&path).expect("the vault is still there");
 
     assert_eq!(before.len(), after.len(), "the attribute changed the size");

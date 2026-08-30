@@ -1,6 +1,9 @@
 //! Shared machinery: where the fixtures are, how to drive keepassxc-cli, and
 //! how to compare two exports of the same database.
 
+use std::ffi::CString;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -113,35 +116,98 @@ pub fn built_with(
 /// The password every database `built` produces uses.
 pub const BUILT_PASSWORD: &str = "built";
 
-/// Whether this process can be stopped by file permissions at all. Running as
-/// root makes every permission test pass without testing anything.
 /// Writes an extended attribute, which is the one thing that moves a file's
-/// change time and nothing else about it. `xattr` is what the system itself
-/// uses; there is no way to do this through `std`.
-pub fn set_attribute(path: &Path, name: &str, value: &[u8]) {
-    let written = std::process::Command::new("/usr/bin/xattr")
-        .arg("-w")
-        .arg(name)
-        .arg(String::from_utf8_lossy(value).into_owned())
-        .arg(path)
-        .status()
-        .expect("xattr runs");
-    assert!(written.success(), "the attribute was not written");
+/// change time and leaves everything else about it alone.
+///
+/// The syscall rather than a command: `xattr` is a Mac's tool and the engine's
+/// suite runs on Linux, where it is not installed under any name. The name is
+/// this module's business rather than the caller's, because the two platforms
+/// do not accept the same ones - Linux allows only the `user.` namespace on an
+/// ordinary filesystem, and rejects everything else with `EOPNOTSUPP`. What the
+/// tests need is any attribute at all.
+pub fn set_attribute(path: &Path) {
+    let path = CString::new(path.as_os_str().as_bytes()).expect("a path with no null in it");
+
+    // On a Mac, one the system itself writes onto a file an application has
+    // touched through a save panel; on Linux, the only namespace a test may
+    // write to.
+    #[cfg(target_os = "macos")]
+    let name = c"com.apple.provenance";
+    #[cfg(not(target_os = "macos"))]
+    let name = c"user.coffer.provenance";
+
+    let value = b"whatever the system says";
+
+    // SAFETY: both pointers are to buffers alive for the call, and the length
+    // is the value's own.
+    let written = unsafe {
+        #[cfg(target_os = "macos")]
+        {
+            libc::setxattr(
+                path.as_ptr(),
+                name.as_ptr(),
+                value.as_ptr().cast(),
+                value.len(),
+                0,
+                0,
+            )
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            libc::setxattr(
+                path.as_ptr(),
+                name.as_ptr(),
+                value.as_ptr().cast(),
+                value.len(),
+                0,
+            )
+        }
+    };
+
+    // Not a skip. A filesystem that refused the attribute is one where these
+    // tests prove nothing, and passing quietly would be worse than stopping.
+    assert_eq!(
+        written,
+        0,
+        "the attribute was refused: {}",
+        std::io::Error::last_os_error()
+    );
 }
 
 /// Puts `from`'s modification time onto `to`, which is what a client that
-/// wanted to hide a write would do. `touch -r` is the shortest way to it that
-/// needs no crate.
+/// wanted to hide a write would do.
+///
+/// To the nanosecond, because that is the resolution the stamp compares at: a
+/// second-granular `touch -r` would leave the two files differing in the one
+/// field this is trying to make identical.
 pub fn copy_modification_time(from: &Path, to: &Path) {
-    let done = std::process::Command::new("/usr/bin/touch")
-        .arg("-r")
-        .arg(from)
-        .arg(to)
-        .status()
-        .expect("touch runs");
-    assert!(done.success(), "the modification time was not copied");
+    let when = std::fs::metadata(from).expect("the file to copy the time from is there");
+
+    let times = [
+        libc::timespec {
+            tv_sec: when.atime() as _,
+            tv_nsec: when.atime_nsec() as _,
+        },
+        libc::timespec {
+            tv_sec: when.mtime() as _,
+            tv_nsec: when.mtime_nsec() as _,
+        },
+    ];
+    let to = CString::new(to.as_os_str().as_bytes()).expect("a path with no null in it");
+
+    // SAFETY: the path and the two times are alive for the call, and the array
+    // is the pair the call expects.
+    let done = unsafe { libc::utimensat(libc::AT_FDCWD, to.as_ptr(), times.as_ptr(), 0) };
+    assert_eq!(
+        done,
+        0,
+        "the modification time was not copied: {}",
+        std::io::Error::last_os_error()
+    );
 }
 
+/// Whether this process can be stopped by file permissions at all. Running as
+/// root makes every permission test pass without testing anything.
 pub fn permissions_apply() -> bool {
     // SAFETY: geteuid reads a process property and touches nothing.
     unsafe { libc::geteuid() != 0 }
