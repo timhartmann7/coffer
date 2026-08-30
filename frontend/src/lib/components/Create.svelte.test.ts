@@ -4,12 +4,14 @@ import Create from './Create.svelte';
 
 const ipc = vi.hoisted(() => ({
 	calibrate: vi.fn(),
+	defaultNewDatabase: vi.fn(),
 	chooseNewDatabase: vi.fn(),
 	createDatabase: vi.fn(),
 	asFailure: vi.fn()
 }));
 vi.mock('$lib/ipc', () => ipc);
 
+const HOME = { path: '/Users/someone/Coffer/vault.kdbx', name: 'vault' };
 const WHERE = { path: '/Users/someone/Vault/personal.kdbx', name: 'personal' };
 
 let host: HTMLElement;
@@ -18,6 +20,7 @@ beforeEach(() => {
 	host = document.createElement('div');
 	document.body.appendChild(host);
 	ipc.calibrate.mockResolvedValue({ iterations: 122, seconds: 1.004 });
+	ipc.defaultNewDatabase.mockResolvedValue(HOME);
 	ipc.chooseNewDatabase.mockResolvedValue(WHERE);
 	ipc.createDatabase.mockResolvedValue(undefined);
 	// The same reading the real one does: a command rejects with the value Rust
@@ -58,8 +61,7 @@ async function ready(over: Record<string, unknown> = {}) {
 	const component = show(over);
 	flushSync();
 	await vi.waitFor(() => expect(host.textContent).toContain('122 passes'));
-	button('Choose a place and a name').click();
-	await vi.waitFor(() => expect(host.textContent).toContain(WHERE.path));
+	await vi.waitFor(() => expect(host.textContent).toContain(HOME.path));
 	return component;
 }
 
@@ -80,16 +82,29 @@ it('measures the machine before anybody has typed anything', async () => {
 });
 
 /** Nothing can be made before there is somewhere to put it and a measurement to
- * put in it. */
+ * put in it. Both arrive on their own now, so each is held back in turn. */
 it('will not make a vault before it knows where or how hard', async () => {
-	const component = show();
+	let place: (where: unknown) => void = () => {};
+	ipc.defaultNewDatabase.mockReturnValue(new Promise((settle) => (place = settle)));
+
+	const waiting = show();
 	flushSync();
 	expect(button('Make the vault').disabled).toBe(true);
+	expect(host.textContent).not.toContain(HOME.path);
+	unmount(waiting);
 
-	await vi.waitFor(() => expect(host.textContent).toContain('122 passes'));
+	place(HOME);
+
+	let measure: (found: unknown) => void = () => {};
+	ipc.defaultNewDatabase.mockResolvedValue(HOME);
+	ipc.calibrate.mockReturnValue(new Promise((settle) => (measure = settle)));
+
+	const component = show();
+	flushSync();
+	await vi.waitFor(() => expect(host.textContent).toContain(HOME.path));
 	expect(button('Make the vault').disabled).toBe(true);
 
-	button('Choose a place and a name').click();
+	measure({ iterations: 122, seconds: 1.004 });
 	await vi.waitFor(() => expect(button('Make the vault').disabled).toBe(false));
 
 	unmount(component);
@@ -207,7 +222,7 @@ it('says what Rust refused, and leaves the screen where it was', async () => {
 
 	await vi.waitFor(() => expect(host.textContent).toContain("Coffer's own snapshots"));
 	expect(onMade).not.toHaveBeenCalled();
-	expect(host.textContent).toContain(WHERE.path);
+	expect(host.textContent).toContain(HOME.path);
 
 	unmount(component);
 });
@@ -232,6 +247,62 @@ it('draws the measuring bar out of a fixed set of widths', async () => {
 	expect(host.querySelector('.w-1\\/3.bg-accent')).not.toBeNull();
 
 	await vi.waitFor(() => expect(host.querySelector('.w-full.bg-accent')).not.toBeNull());
+
+	unmount(component);
+});
+
+/**
+ * The slice is accepted on five actions from a clean machine to a saved entry,
+ * and two of them used to go on answering a save panel. The place is settled
+ * before anybody arrives, so making a vault is a password and nothing else.
+ */
+it('arrives with a place already chosen, and no panel opened', async () => {
+	const component = await ready();
+
+	expect(host.textContent).toContain(HOME.path);
+	expect(ipc.chooseNewDatabase).not.toHaveBeenCalled();
+	expect(button('Make the vault').disabled).toBe(false);
+
+	unmount(component);
+});
+
+it('still lets the reader put it somewhere else', async () => {
+	const component = await ready();
+
+	button('Somewhere else').click();
+	await vi.waitFor(() => expect(host.textContent).toContain(WHERE.path));
+	expect(host.textContent).not.toContain(HOME.path);
+
+	unmount(component);
+});
+
+/** The cursor starts in the field, because the password is the only thing this
+ * screen asks anybody to type. */
+it('puts the cursor where the typing goes', async () => {
+	const component = await ready();
+
+	expect(document.activeElement).toBe(fields()[0]);
+
+	unmount(component);
+});
+
+/**
+ * Return in the first field submitted the form with the second still empty, and
+ * `make` empties both before it compares them - so one stray press destroyed the
+ * password and blamed the reader for mistyping it.
+ */
+it('does not throw the password away when return is pressed too early', async () => {
+	const component = await ready();
+
+	const [first, second] = fields();
+	first.value = 'a long master password';
+	first.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+	flushSync();
+
+	expect(first.value).toBe('a long master password');
+	expect(document.activeElement).toBe(second);
+	expect(ipc.createDatabase).not.toHaveBeenCalled();
+	expect(host.textContent).not.toContain('not the same');
 
 	unmount(component);
 });

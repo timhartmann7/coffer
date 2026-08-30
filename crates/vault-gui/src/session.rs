@@ -206,6 +206,13 @@ impl Session {
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_default();
 
+        // `Vault::create` refuses a parent that is not there rather than guessing
+        // at one, and the place the creation screen offers by default is a folder
+        // that does not exist until the first vault goes into it.
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(Failure::io)?;
+        }
+
         let vault = Vault::create(
             &target,
             MasterKey::from_password(password),

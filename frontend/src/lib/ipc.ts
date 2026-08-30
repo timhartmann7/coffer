@@ -46,6 +46,12 @@ export async function unlock(password: Uint8Array): Promise<void> {
 	}
 }
 
+/** Where a vault goes when the reader has not said. Chosen without a panel, so
+ * that making the first one is a password and nothing else. */
+export function defaultNewDatabase(): Promise<Database> {
+	return invoke('default_new_database');
+}
+
 /** Opens the system's save panel and keeps where the reader wants the new vault.
  * `null` when they closed it. */
 export function chooseNewDatabase(): Promise<Database | null> {

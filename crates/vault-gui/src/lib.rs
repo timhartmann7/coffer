@@ -90,6 +90,7 @@ pub fn run() {
             commands::set_settings,
             commands::choose_database,
             commands::choose_new_database,
+            commands::default_new_database,
             commands::calibrate,
             commands::create_database,
             commands::unlock,

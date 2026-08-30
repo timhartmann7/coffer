@@ -1,5 +1,11 @@
 <script lang="ts">
-	import { asFailure, calibrate, chooseNewDatabase, createDatabase } from '$lib/ipc';
+	import {
+		asFailure,
+		calibrate,
+		chooseNewDatabase,
+		createDatabase,
+		defaultNewDatabase
+	} from '$lib/ipc';
 	import type { Calibration, Database } from '$lib/model';
 	import Icon from './Icon.svelte';
 
@@ -29,12 +35,32 @@
 	$effect(() => {
 		void (async () => {
 			try {
+				where = await defaultNewDatabase();
 				measured = await calibrate();
 			} catch (thrown) {
 				failure = asFailure(thrown).message;
 			}
 		})();
 	});
+
+	// The password is the only thing this screen asks anybody to type, so that is
+	// where the cursor starts. The measurement runs beside it and needs nobody.
+	$effect(() => {
+		first?.focus();
+	});
+
+	/**
+	 * Return in the first field would submit with the second one still empty, and
+	 * `make` empties both before it compares them: one stray press and a typed
+	 * password is gone under a message saying the two did not match. Return in
+	 * the second field still submits, so typing it twice and pressing return
+	 * stays one action.
+	 */
+	function onward(event: KeyboardEvent) {
+		if (event.key !== 'Enter') return;
+		event.preventDefault();
+		second?.focus();
+	}
 
 	async function choose() {
 		failure = null;
@@ -86,22 +112,27 @@
 <div class="flex flex-1 items-center justify-center overflow-y-auto px-10 py-10">
 	<form onsubmit={make} class="w-full max-w-[620px]">
 		<div class="grid gap-5">
-			<label class="block">
+			<div>
 				<span class="mb-2 block font-mono text-label tracking-label text-txt3 uppercase">
 					Where it goes
 				</span>
-				<button
-					type="button"
-					onclick={choose}
-					disabled={busy}
-					class="flex w-full items-center gap-2 rounded-sm border border-hairline bg-surface2 px-3 py-2.5 text-left transition-colors hover:border-txt4 disabled:cursor-not-allowed"
+				<div
+					class="flex items-center gap-2 rounded-sm border border-hairline bg-surface2 px-3 py-2.5"
 				>
 					<Icon name="folder" class="h-4 w-4 shrink-0 text-txt4" />
 					<span class="truncate font-mono text-small {where ? 'text-txt' : 'text-txt4'}">
-						{where ? where.path : 'Choose a place and a name'}
+						{where ? where.path : 'Working out where…'}
 					</span>
-				</button>
-			</label>
+					<button
+						type="button"
+						onclick={choose}
+						disabled={busy}
+						class="ml-auto shrink-0 text-fine text-txt3 transition-colors hover:text-txt disabled:cursor-not-allowed"
+					>
+						Somewhere else
+					</button>
+				</div>
+			</div>
 		</div>
 
 		<div class="mt-5 grid grid-cols-2 gap-5">
@@ -120,6 +151,7 @@
 						autocomplete="new-password"
 						spellcheck="false"
 						oninput={() => (mismatch = false)}
+						onkeydown={onward}
 						class="min-w-0 flex-1 bg-transparent tracking-mask text-txt outline-none"
 					/>
 				</span>

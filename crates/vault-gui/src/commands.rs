@@ -33,6 +33,10 @@ use crate::{clipboard, lock, opener, recent, settings, window};
 /// thread, which is where key derivation belongs.
 type Held<'a> = State<'a, Arc<Session>>;
 
+/// What the file panels call a vault. One string, because three panels offer the
+/// same filter and a second wording would be a second name for one thing.
+const KDBX: &str = "KDBX database";
+
 #[tauri::command]
 pub fn status(app: AppHandle, session: Held<'_>) -> Status {
     let (entries, dirty, read_only) = session
@@ -66,8 +70,8 @@ pub async fn choose_database(
     let mut picker = app
         .dialog()
         .file()
-        .set_title("Open a KeePass database")
-        .add_filter("KeePass database", &["kdbx"]);
+        .set_title("Open a vault")
+        .add_filter(KDBX, &["kdbx"]);
 
     if let Some(directory) = session
         .database()
@@ -157,7 +161,27 @@ fn password_of(body: &InvokeBody) -> Result<Zeroizing<Vec<u8>>, Failure> {
     }
 }
 
-/// Asks where a new vault should go, with the system's own save panel.
+/// Where a first vault goes when nobody has said otherwise.
+///
+/// Not `~/Documents`: a Mac set up with the default answers synchronises that
+/// folder to iCloud, and a vault Coffer put into a sync folder without being
+/// asked is the one thing this application says it does not do.
+///
+/// Nothing is written here. The folder is made at the moment the reader commits,
+/// which is where a refusal can still be reported.
+#[tauri::command]
+pub fn default_new_database(app: AppHandle, session: Held<'_>) -> Result<dto::Database, Failure> {
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|_| Failure::internal("this account has no home directory"))?;
+    let path = home.join("Coffer").join("vault.kdbx");
+
+    session.making(path.clone());
+    Ok(dto::Database::of(&path))
+}
+
+/// Asks where a new vault should go instead, with the system's own save panel.
 ///
 /// The path never comes from the webview here either: the window asks for a
 /// panel, the reader chooses, and Coffer keeps the answer. What comes back is
@@ -175,7 +199,7 @@ pub async fn choose_new_database(
         .dialog()
         .file()
         .set_title("Where should the new vault go?")
-        .add_filter("KeePass database", &["kdbx"])
+        .add_filter(KDBX, &["kdbx"])
         .set_file_name("vault.kdbx");
     if let Some(directory) = session
         .database()
@@ -748,7 +772,7 @@ pub async fn save_copy(app: AppHandle, session: Held<'_>) -> Result<Option<Datab
         .dialog()
         .file()
         .set_title("Keep this version as a file of its own")
-        .add_filter("KeePass database", &["kdbx"])
+        .add_filter(KDBX, &["kdbx"])
         .set_file_name(&suggested);
     if let Some(directory) = database.parent() {
         panel = panel.set_directory(directory);
