@@ -354,12 +354,21 @@ calibration's answer on its way out, so a database Coffer writes cannot be one
 Coffer then refuses to open. At sixty-four megabytes the product ceiling caps
 the count at exactly 1024, long before the count ceiling of 100,000 does.
 
-**Every refusal happens before a byte is written.** A staged write renames over
+**The name is taken rather than asked about.** A staged write renames over
 whatever is at the target and a creation rotates no snapshot, so a creation
-aimed at somebody's vault is the one way this application could destroy one. An
-existing file is refused outright rather than confirmed in a dialog, and so is a
-name of the shape Coffer gives its own snapshots - which would open like any
-other database and then refuse every save, for good.
+aimed at somebody's vault is the one way this application could destroy one -
+and asking whether a file is there and writing one afterwards leaves the whole
+of key derivation, a calibrated second, between the question and the answer. Two
+Coffers at one name both passed that question and the second rename destroyed
+the first one's vault. `atomic::reserve` makes the question and the answer the
+same act: the target is created empty and exclusively, and the caller owns it
+from then on and takes it back off the disk however the creation ends. The lock
+file beside it is taken before any contents are written, so a creation that
+cannot have the database never wrote one.
+
+A name of the shape Coffer gives its own snapshots is refused outright - it
+would open like any other database and then refuse every save, for good - and so
+is a master password with nothing in it.
 
 **A new database is written down in full.** Every `Meta` field is skipped when
 it has no value, so a bare new database writes a `<Meta>` carrying a generator
