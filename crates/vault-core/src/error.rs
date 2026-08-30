@@ -15,12 +15,12 @@ use crate::storage::lock::Holder;
 #[non_exhaustive]
 pub enum VaultError {
     /// The file does not start with the KeePass identifier.
-    #[error("this file is not a KeePass database")]
+    #[error("this file is not a KDBX database")]
     NotADatabase,
 
     /// A KeePass format Coffer cannot read at all, such as the KeePass 2
     /// pre-release layout.
-    #[error("this database is in a KeePass format Coffer cannot read")]
+    #[error("this database is in a format Coffer cannot read")]
     UnsupportedFormat,
 
     /// The password, the key file, or both are wrong. Deliberately one message
@@ -44,7 +44,7 @@ pub enum VaultError {
 
     /// A KeePass 1 database. Coffer reads these and never writes one, because
     /// the format cannot hold what Coffer would have to put back.
-    #[error("KeePass 1 databases are read-only in Coffer")]
+    #[error("KDB databases are read-only in Coffer")]
     ReadOnlyKdb,
 
     /// A KDBX 3 database holding attachments. The reader Coffer is built on
@@ -64,7 +64,7 @@ pub enum VaultError {
     /// The file is larger than any database anybody made. It is read into
     /// memory whole to be decrypted, so its own size is the ceiling on what
     /// opening it costs.
-    #[error("this file is too large to be a KeePass database")]
+    #[error("this file is too large to be a KDBX database")]
     TooLarge,
 
     /// The entry asked for is not in this database.
@@ -125,7 +125,7 @@ pub enum VaultError {
     /// The database is a KDBX 3 file, whose attachments the reader Coffer is
     /// built on collapses onto one. The names are the file's; the bytes behind
     /// them are not, so they are not handed out.
-    #[error("the files in a KeePass 3 database cannot be read reliably")]
+    #[error("the files in a KDBX 3 database cannot be read reliably")]
     UnreadableAttachments,
 
     /// A copy has to go somewhere other than the database it is a copy of.
@@ -143,7 +143,7 @@ pub enum VaultError {
 
     /// A field name or value holds a character XML cannot carry, so writing it
     /// would produce a file no KeePass client can read.
-    #[error("that value contains a character a KeePass file cannot hold")]
+    #[error("that value contains a character a KDBX file cannot hold")]
     UnwritableText,
 
     /// A vault is being made with no master password at all. The library would

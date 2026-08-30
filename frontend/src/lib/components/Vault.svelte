@@ -674,7 +674,7 @@
 			<Empty
 				icon="folder"
 				title="This vault has nothing in it yet"
-				detail="Entries added in Coffer or in any other KeePass client show up here."
+				detail="Entries added in Coffer, or in any other app that opens this file, show up here."
 			>
 				{#snippet action()}
 					{#if !readOnly}
