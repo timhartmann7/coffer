@@ -17,13 +17,6 @@ use zeroize::Zeroizing;
 use crate::autolock::Reason;
 use crate::error::Failure;
 
-/// A vault that does not exist yet, and what it will cost to open.
-#[derive(Clone)]
-struct Making {
-    target: PathBuf,
-    work: Option<Work>,
-}
-
 pub struct Session {
     held: Mutex<Held>,
 }
@@ -35,11 +28,19 @@ struct Held {
     /// Why the vault that was open is not open any more, when it is worth
     /// saying. Cleared by the next unlock.
     locked_by: Option<Reason>,
-    /// The vault being made, if one is. Kept apart from `database`, which is
-    /// the file the unlock screen offers to open: there is nothing at this path
-    /// yet, and pointing the unlock screen at it would be offering to open a
-    /// file that does not exist.
-    making: Option<Making>,
+    /// Where a vault being made will go, if one is. Kept apart from
+    /// `database`, which is the file the unlock screen offers to open: there is
+    /// nothing at this path yet, and pointing the unlock screen at it would be
+    /// offering to open a file that does not exist.
+    making: Option<PathBuf>,
+    /// What a one-second unlock costs on this machine.
+    ///
+    /// A property of the Mac and not of the file, which is why it is here and
+    /// not beside the path. The screen measures as it opens and asks where to
+    /// put the vault afterwards, so a measurement kept beside the place would
+    /// be thrown away by the question that comes next - and the vault could
+    /// never be made at all.
+    measured: Option<Work>,
     /// The open database. Dropping it wipes the decrypted tree and removes the
     /// lock file beside the database.
     vault: Option<Vault>,
@@ -56,6 +57,7 @@ impl Session {
                 database,
                 locked_by: None,
                 making: None,
+                measured: None,
                 vault: None,
                 generation: 0,
             }),
@@ -171,15 +173,13 @@ impl Session {
     /// it. Choosing somewhere else replaces this, and so does measuring the
     /// work: the two are halves of one answer.
     pub fn making(&self, target: PathBuf) {
-        self.held().making = Some(Making { target, work: None });
+        self.held().making = Some(target);
     }
 
     /// What a one-second unlock costs on this machine, remembered for the
     /// creation that is about to happen.
     pub fn measured(&self, work: Work) {
-        if let Some(making) = self.held().making.as_mut() {
-            making.work = Some(work);
-        }
+        self.held().measured = Some(work);
     }
 
     /// Makes the chosen vault and opens it.
@@ -188,27 +188,26 @@ impl Session {
     /// derived, and a creation that finishes after the session has been pointed
     /// somewhere else does not land.
     pub fn create(&self, password: Zeroizing<Vec<u8>>) -> Result<(), Failure> {
-        let (making, generation) = {
+        let (target, work, generation) = {
             let mut held = self.held();
             held.vault = None;
-            let making = held
+            let target = held
                 .making
                 .clone()
                 .ok_or_else(|| Failure::refused("nowhere has been chosen for the new vault"))?;
-            (making, held.generation)
+            let work = held.measured.ok_or_else(|| {
+                Failure::refused("the vault's key derivation has not been measured yet")
+            })?;
+            (target, work, held.generation)
         };
 
-        let work = making.work.ok_or_else(|| {
-            Failure::refused("the vault's key derivation has not been measured yet")
-        })?;
-        let name = making
-            .target
+        let name = target
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_default();
 
         let vault = Vault::create(
-            &making.target,
+            &target,
             MasterKey::from_password(password),
             &Recipe { name: &name, work },
         )?;
@@ -639,6 +638,34 @@ mod tests {
 
         // The vault made is the vault open, so there is nothing left to make.
         assert!(session.create(password(SECRET)).is_err());
+    }
+
+    /// The screen measures the machine as it opens and asks where to put the
+    /// vault afterwards, so the measurement has to survive the question. It did
+    /// not, and a creation was refused for want of a number it already had.
+    #[test]
+    fn a_measurement_survives_being_asked_where_the_vault_goes() {
+        let directory = tempfile::tempdir().expect("a scratch directory");
+
+        for (round, order) in [true, false].into_iter().enumerate() {
+            let target = directory.path().join(format!("either-way-{round}.kdbx"));
+            let session = Session::new(None);
+
+            // Both orders, because either is a screen somebody might build and
+            // only one of them used to work.
+            if order {
+                session.measured(Work::at(1));
+                session.making(target.clone());
+            } else {
+                session.making(target.clone());
+                session.measured(Work::at(1));
+            }
+
+            session
+                .create(password(SECRET))
+                .expect("the vault is made whichever way round the two arrived");
+            assert!(session.is_unlocked());
+        }
     }
 
     /// Nothing is written until both halves of the answer are there.

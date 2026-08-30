@@ -10,7 +10,6 @@
 //! with `rt`, `rt-multi-thread`, `sync`, `fs` and `io-util`, and not `time`, so
 //! `sleep`, `interval` and `timeout` are not compiled at all.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -35,7 +34,6 @@ struct Shared {
     /// one and a test recorder, and `Fn` already is that trait.
     fire: Box<dyn Fn(Reason) + Send + Sync>,
     woken: Condvar,
-    stopping: AtomicBool,
 }
 
 struct Held {
@@ -43,6 +41,14 @@ struct Held {
     /// How long the watcher should wait, or nothing when there is nothing to
     /// wait for.
     waiting: Option<Duration>,
+    /// Whether the timer is going away.
+    ///
+    /// In here, under the mutex, rather than beside it as a flag of its own.
+    /// The watcher reads it while holding the mutex and goes on holding it
+    /// until the wait parks, so a stop published without taking the mutex can
+    /// land in that gap and be signalled to nobody - and the watcher then parks
+    /// with no timeout and the destructor waits on it for good.
+    stopping: bool,
 }
 
 impl Timer {
@@ -51,10 +57,10 @@ impl Timer {
             held: Mutex::new(Held {
                 deadline,
                 waiting: None,
+                stopping: false,
             }),
             fire: Box::new(fire),
             woken: Condvar::new(),
-            stopping: AtomicBool::new(false),
         });
 
         let watching = Arc::clone(&shared);
@@ -77,7 +83,7 @@ impl Timer {
 
 impl Drop for Timer {
     fn drop(&mut self) {
-        self.shared.stopping.store(true, Ordering::Release);
+        self.shared.state().stopping = true;
         self.shared.woken.notify_all();
         if let Some(watcher) = self.watcher.take() {
             let _ = watcher.join();
@@ -119,11 +125,12 @@ impl Shared {
 
     fn watch(&self) {
         loop {
-            // The state is taken before the stop flag is read and is still held
-            // when the wait begins, so a message that arrives in between cannot
-            // be signalled into a thread that has not started listening yet.
+            // The state is taken before anything is read and is still held when
+            // the wait begins, which is what makes a message that arrives in
+            // between impossible to lose: it cannot be written at all until
+            // this thread is listening for it.
             let held = self.state();
-            if self.stopping.load(Ordering::Acquire) {
+            if held.stopping {
                 return;
             }
 
@@ -153,7 +160,7 @@ impl Shared {
             // moved while it slept, so the question is asked rather than
             // assumed - which is also what makes a wait left over from a vault
             // that has already gone do nothing at all.
-            if elapsed {
+            if elapsed && !self.state().stopping {
                 self.post(Event::Elapsed);
             }
         }
@@ -162,7 +169,7 @@ impl Shared {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 

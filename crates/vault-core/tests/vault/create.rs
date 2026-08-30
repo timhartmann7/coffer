@@ -139,6 +139,81 @@ fn a_vault_is_never_written_over_a_file_that_is_already_there() {
     ));
 }
 
+/// Two Coffers making a vault at one name, at once.
+///
+/// The window between asking whether a file is there and writing one is the
+/// whole of key derivation - a calibrated second. Both used to pass the
+/// question, and the second rename destroyed the first one's vault with no
+/// snapshot behind it, which is the one way this application can lose one.
+#[test]
+fn two_creations_at_one_name_leave_one_whole_vault() {
+    let (_scratch, path) = scratch();
+
+    // Heavy enough that the two are inside key derivation together.
+    let recipe = || Recipe {
+        name: "Work",
+        work: Work::at(40),
+    };
+
+    let (first, second) = std::thread::scope(|scope| {
+        let racing = path.clone();
+        let other = scope.spawn(move || {
+            Vault::create(&racing, password(SECRET), &recipe()).map(|made| {
+                drop(made);
+            })
+        });
+        let mine = Vault::create(&path, password(SECRET), &recipe()).map(|made| {
+            drop(made);
+        });
+        (mine, other.join().expect("the racing thread finishes"))
+    });
+
+    // Exactly one of them made it, and what is on the disk is that one's vault
+    // rather than half of each.
+    assert_ne!(
+        first.is_ok(),
+        second.is_ok(),
+        "both creations claimed the same name"
+    );
+    for outcome in [first, second] {
+        if let Err(refused) = outcome {
+            assert!(matches!(refused, VaultError::DatabaseExists), "{refused:?}");
+        }
+    }
+    assert_eq!(open(&path, SECRET).tree().name, "Work");
+}
+
+/// A creation that cannot have the database leaves nothing behind, so the next
+/// attempt at the same name is not refused as a file that is already there.
+#[test]
+fn a_creation_that_cannot_take_the_lock_leaves_the_name_free() {
+    let (_scratch, path) = scratch();
+    let held = make(&path, SECRET, "Work").expect("the vault is made");
+
+    let beside = path.with_file_name("second.kdbx");
+    let holder = vault_core::storage::lock::inspect(&path)
+        .expect("the lock file reads")
+        .expect("the vault is held");
+    let _ = holder;
+
+    // A lock beside a name nothing has written yet: the file is reserved, the
+    // lock is refused, and the reservation has to go with it.
+    std::fs::copy(
+        path.with_file_name("new.kdbx.lock"),
+        beside.with_file_name("second.kdbx.lock"),
+    )
+    .expect("the lock file copies");
+
+    let refused = make(&beside, SECRET, "Work").expect_err("a held database is refused");
+    assert!(matches!(refused, VaultError::Locked(_)));
+    assert!(
+        !beside.exists(),
+        "a creation that was refused left a file at the name"
+    );
+
+    drop(held);
+}
+
 /// A name of the shape Coffer gives its own snapshots opens like any other
 /// database and then refuses every save, for good.
 #[test]

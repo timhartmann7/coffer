@@ -239,9 +239,6 @@ impl Vault {
         if snapshot::slot_of(path).is_some() {
             return Err(VaultError::ReservedName);
         }
-        if path.try_exists()? {
-            return Err(VaultError::DatabaseExists);
-        }
         // The parent has to be there: a staged write puts its temporary file
         // beside the target, and a directory that is not there is a clearer
         // answer than a failed rename.
@@ -250,35 +247,26 @@ impl Vault {
             return Err(VaultError::DatabaseGone);
         }
 
-        let mut database = Held(blank::database(recipe.name, recipe.work)?);
-        settle(&mut database)?;
-
-        let mut written = 0;
-        atomic::write_atomic::<VaultError, _>(path, |writer: &mut dyn Write| {
-            written = encrypt(&database, &key, writer)?;
-            if written > MAX_DATABASE_BYTES {
-                return Err(VaultError::TooLarge);
-            }
-            Ok(())
+        // The name is taken rather than asked about. Asking and then writing
+        // leaves the whole of key derivation between the two, and a database
+        // that arrived in that second would be renamed away with nothing behind
+        // it - which is the one way this application can destroy a vault.
+        atomic::reserve(path).map_err(|error| match error.kind() {
+            std::io::ErrorKind::AlreadyExists => VaultError::DatabaseExists,
+            _ => VaultError::Io(error),
         })?;
 
-        let path = path.canonicalize()?;
-        let stamp = Stamp::of(&path)?;
-        let source = classify(&database, &path);
-        let lock = match Lock::acquire(&path)? {
-            Outcome::Taken(lock) => lock,
-            Outcome::Held(holder) => return Err(VaultError::Locked(holder)),
-        };
-
-        Ok(Vault {
-            database,
-            path,
-            key,
-            source,
-            stamp,
-            changed: false,
-            _lock: lock,
-        })
+        // From here the empty file at `path` is Coffer's, and every way out
+        // that is not a vault has to take it back off the disk. A creation that
+        // failed and left a file behind would refuse every retry as a database
+        // that is already there.
+        match fill(path, key, recipe) {
+            Ok(vault) => Ok(vault),
+            Err(error) => {
+                let _ = std::fs::remove_file(path);
+                Err(error)
+            }
+        }
     }
 
     /// Where the database lives, after symbolic links have been followed.
@@ -1091,6 +1079,47 @@ impl Vault {
     fn recycle_bin(&self) -> Option<keepass::db::GroupId> {
         self.database.recycle_bin().map(|group| group.id())
     }
+}
+
+/// Fills a name a creation has already taken.
+///
+/// Split out so that the one caller can take the reserved name back off the
+/// disk however this ends. Every failure in here happens with an empty file at
+/// `path` and nothing else disturbed.
+fn fill(path: &Path, key: MasterKey, recipe: &Recipe<'_>) -> Result<Vault, VaultError> {
+    let mut database = Held(blank::database(recipe.name, recipe.work)?);
+    settle(&mut database)?;
+
+    // The name exists now, so it can be resolved before anything is written -
+    // and the lock is taken before the contents, so a creation that cannot have
+    // the database never wrote one.
+    let path = path.canonicalize()?;
+    let lock = match Lock::acquire(&path)? {
+        Outcome::Taken(lock) => lock,
+        Outcome::Held(holder) => return Err(VaultError::Locked(holder)),
+    };
+
+    let mut written = 0;
+    atomic::write_atomic::<VaultError, _>(&path, |writer: &mut dyn Write| {
+        written = encrypt(&database, &key, writer)?;
+        if written > MAX_DATABASE_BYTES {
+            return Err(VaultError::TooLarge);
+        }
+        Ok(())
+    })?;
+
+    let stamp = Stamp::of(&path)?;
+    let source = classify(&database, &path);
+
+    Ok(Vault {
+        database,
+        path,
+        key,
+        source,
+        stamp,
+        changed: false,
+        _lock: lock,
+    })
 }
 
 /// Gives something newly made a date to go with the fact that it never expires.

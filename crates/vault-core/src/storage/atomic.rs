@@ -83,6 +83,25 @@ where
     Ok(staged)
 }
 
+/// Takes a name, atomically, without putting anything in it.
+///
+/// Asking whether a file is there and then writing one are two acts, and
+/// everything between them is a window: creating a vault spends the whole of a
+/// calibrated second of key derivation in it, and a database that arrived
+/// meanwhile would be renamed away with no snapshot behind it. Taking the name
+/// is the question and the answer at once.
+///
+/// The caller owns what it reserved, and has to take it back off the disk if it
+/// then decides not to fill it.
+pub fn reserve(path: &Path) -> Result<(), io::Error> {
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(OWNER_ONLY)
+        .open(path)
+        .map(drop)
+}
+
 /// Fills and commits in one step, for writers with nothing to do in between.
 pub fn write_atomic<E, F>(path: &Path, fill: F) -> Result<(), E>
 where

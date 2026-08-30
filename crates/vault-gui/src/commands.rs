@@ -126,11 +126,19 @@ pub async fn unlock(
     .await
     .map_err(|_| Failure::internal("the database could not be opened"))??;
 
-    // The clock starts here and nowhere else.
+    opened(&app);
+    Ok(())
+}
+
+/// Says that a vault is now open, which is what starts the clock that locks it.
+///
+/// Both ways in go through here. An unlock and a creation are the same event as
+/// far as the deadline is concerned, and the one that forgot to say so was a
+/// vault nothing could ever lock.
+fn opened(app: &AppHandle) {
     if let Some(timer) = app.try_state::<Arc<Timer>>() {
         timer.post(Event::Unlocked);
     }
-    Ok(())
 }
 
 /// The master password out of a message, and only out of a message that
@@ -216,7 +224,11 @@ pub async fn calibrate(session: Held<'_>) -> Result<dto::Calibration, Failure> {
 /// which is why where the vault goes and what it costs to open were settled by
 /// the two commands above rather than sent alongside it.
 #[tauri::command]
-pub async fn create_database(request: Request<'_>, session: Held<'_>) -> Result<(), Failure> {
+pub async fn create_database(
+    request: Request<'_>,
+    app: AppHandle,
+    session: Held<'_>,
+) -> Result<(), Failure> {
     let password = password_of(request.body())?;
     let session = Arc::clone(&session);
 
@@ -226,7 +238,10 @@ pub async fn create_database(request: Request<'_>, session: Held<'_>) -> Result<
         made
     })
     .await
-    .map_err(|_| Failure::internal("the vault could not be made"))?
+    .map_err(|_| Failure::internal("the vault could not be made"))??;
+
+    opened(&app);
+    Ok(())
 }
 
 /// Wipes the decrypted database out of memory and takes the window down with
@@ -802,6 +817,39 @@ mod tests {
 
         let object = serde_json::json!({ "password": "hunter2" });
         assert!(password_of(&InvokeBody::Json(object)).is_err());
+    }
+
+    /// Every way a vault can come to be open has to start the clock that locks
+    /// it. There are two, and the second one forgot: a vault made through the
+    /// creation screen armed nothing and could not be locked by any route.
+    ///
+    /// Read out of this file's own source, the way `contract.test.ts` reads it
+    /// from the other side. Nothing else connects the two, and a third way in
+    /// would be silent.
+    #[test]
+    fn every_command_that_opens_a_vault_starts_the_clock() {
+        // Everything above the test module: this test's own source names the
+        // two calls it is looking for, and would count itself.
+        let source = include_str!("commands.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or_default();
+        let mut checked = 0;
+
+        for body in source.split("#[tauri::command]").skip(1) {
+            let body = body.split("\n#[tauri::command").next().unwrap_or(body);
+            if !body.contains("session.unlock(") && !body.contains("session.create(") {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                body.contains("opened(&app)"),
+                "a command opens a vault without starting the clock that locks it:\n{}",
+                body.lines().take(3).collect::<Vec<_>>().join("\n")
+            );
+        }
+
+        assert_eq!(checked, 2, "there are two ways a vault comes to be open");
     }
 
     #[test]
