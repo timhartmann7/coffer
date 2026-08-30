@@ -1,0 +1,225 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # A release whose version does not agree with its tag goes unnoticed until a
+  # cask points at a file the release does not carry. Two lines, and they run
+  # before the two builds rather than after them.
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.agree.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The tag, the workspace and the window say one version
+        id: agree
+        run: |
+          tag=${GITHUB_REF_NAME#v}
+          workspace=$(sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml |
+            sed -n 's/^version = "\(.*\)"$/\1/p')
+          window=$(jq -r .version crates/vault-gui/tauri.conf.json)
+
+          if [ "$tag" != "$workspace" ] || [ "$tag" != "$window" ]; then
+            echo "tag $GITHUB_REF_NAME, Cargo.toml $workspace, tauri.conf.json $window" >&2
+            exit 1
+          fi
+          echo "version=$tag" >>"$GITHUB_OUTPUT"
+
+  # The whole suite, on the commit the tag names. The same file a branch push
+  # runs, called rather than copied, so there is one definition of green. It
+  # roughly doubles the wall clock of a release, and a release is the one
+  # artefact where "the suite was green on this exact commit" has to be a fact.
+  suite:
+    needs: version
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  # Each build on the architecture it is for. Cross-compiling x86_64 from an arm
+  # runner works, and it would make the Intel disk image the one artefact nobody
+  # has ever run on the machine it targets.
+  build:
+    needs: [version, suite]
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            target: aarch64-apple-darwin
+            architecture: aarch64
+          - runner: macos-26-intel
+            target: x86_64-apple-darwin
+            architecture: x64
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the current stable toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install the frontend
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install the Tauri CLI
+        run: cargo install tauri-cli --version '^2' --locked
+
+      # tauri.conf.json names the command that builds the frontend, so the
+      # bundle can only hold what that command produced. --locked because the
+      # lockfile is what the suite above was green on.
+      - name: Build
+        run: cargo tauri build --target ${{ matrix.target }} -- --locked
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Coffer_${{ needs.version.outputs.version }}_${{ matrix.architecture }}
+          path: target/${{ matrix.target }}/release/bundle/dmg/Coffer_${{ needs.version.outputs.version }}_${{ matrix.architecture }}.dmg
+          if-no-files-found: error
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      arm: ${{ steps.checksums.outputs.arm }}
+      intel: ${{ steps.checksums.outputs.intel }}
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Checksums
+        id: checksums
+        working-directory: release
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          sha256sum *.dmg >checksums.txt
+          cat checksums.txt
+          {
+            echo "arm=$(awk -v n="Coffer_${VERSION}_aarch64.dmg" '$2 == n || $2 == "*" n { print $1 }' checksums.txt)"
+            echo "intel=$(awk -v n="Coffer_${VERSION}_x64.dmg" '$2 == n || $2 == "*" n { print $1 }' checksums.txt)"
+          } >>"$GITHUB_OUTPUT"
+
+      # A second run on a tag that already has a release fails here, and that is
+      # the right answer: it means something went wrong and somebody should look.
+      # Deleting a published release breaks every install.sh mid-download.
+      - name: Publish
+        working-directory: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          cat >notes.md <<EOF
+          Install with:
+
+              curl -fsSL -O https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/install.sh && bash install.sh
+
+          It picks the build from \`uname -m\`, checks it against \`checksums.txt\`,
+          and puts Coffer in /Applications.
+
+          \`Coffer_${VERSION}_aarch64.dmg\` is for Apple Silicon and
+          \`Coffer_${VERSION}_x64.dmg\` is for Intel. Neither is signed with a
+          Developer ID and neither is notarised. A disk image curl fetched carries
+          no quarantine attribute and opens on the first try; one a browser fetched
+          does, and the README says what to do about that.
+          EOF
+
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Coffer $VERSION" \
+            --notes-file notes.md \
+            "Coffer_${VERSION}_aarch64.dmg" \
+            "Coffer_${VERSION}_x64.dmg" \
+            checksums.txt
+
+  # The two hashes go into the cask by machine. A hand-copied hash is wrong
+  # rarely and silently, and the way it shows itself is a stranger's brew install
+  # refusing the download. It runs last, so a failure here never costs the
+  # release; docs/releasing.md says how to do it by hand.
+  cask:
+    needs: [version, release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Point the cask at this release
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          ARM: ${{ needs.release.outputs.arm }}
+          INTEL: ${{ needs.release.outputs.intel }}
+        run: |
+          case "$ARM$INTEL" in
+            '' | *[!0-9a-f]*)
+              echo "a checksum is not a hash: $ARM $INTEL" >&2
+              exit 1
+              ;;
+          esac
+          [ ${#ARM} -eq 64 ] && [ ${#INTEL} -eq 64 ] || {
+            echo "a checksum is not 64 characters: $ARM $INTEL" >&2
+            exit 1
+          }
+
+          sed -i \
+            -e "s|^  version \".*\"$|  version \"$VERSION\"|" \
+            -e "s|^  sha256 arm:   \".*\",$|  sha256 arm:   \"$ARM\",|" \
+            -e "s|^         intel: \".*\"$|         intel: \"$INTEL\"|" \
+            Casks/coffer.rb
+
+          grep -q "version \"$VERSION\"" Casks/coffer.rb &&
+            grep -q "\"$ARM\"" Casks/coffer.rb &&
+            grep -q "\"$INTEL\"" Casks/coffer.rb || {
+              echo "the cask did not take the substitution" >&2
+              exit 1
+            }
+
+      - name: Commit it
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          if git diff --quiet -- Casks/coffer.rb; then
+            echo "the cask already names this release"
+            exit 0
+          fi
+          git config user.name "Tim Hartmann"
+          git config user.email "timhartmann7@proton.me"
+          git add Casks/coffer.rb
+          git commit -m "point the cask at $VERSION"
+          git push origin HEAD:main

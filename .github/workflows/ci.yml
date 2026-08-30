@@ -1,8 +1,13 @@
 name: CI
 
 on:
+  # Branches only. A tag push runs this through the release workflow instead,
+  # which needs it green before it builds anything, so without the filter the
+  # whole suite would run twice for every tag.
   push:
+    branches: ['**']
   pull_request:
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install the current stable toolchain
         run: |
@@ -43,6 +48,20 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
+      # install.sh is the one file in this repository a stranger executes, and
+      # the one file with no compiler behind it.
+      - name: Shell
+        run: |
+          sudo apt-get install -y --no-install-recommends shellcheck
+          shellcheck install.sh assets/appicon.sh crates/vault-core/tests/fixtures/generate.sh
+
+      - name: The installer refuses a machine that is not a Mac
+        run: |
+          if bash install.sh; then
+            echo "install.sh ran to completion on Linux" >&2
+            exit 1
+          fi
+
       - name: Clippy
         run: cargo clippy -p vault-core --all-targets --all-features -- -D warnings
 
@@ -64,7 +83,7 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install the current stable toolchain
         run: |
@@ -75,7 +94,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -115,3 +134,12 @@ jobs:
 
       - name: Tests
         run: cargo nextest run --workspace --all-features
+
+      # Both refusals have to happen before anything is downloaded. The second
+      # one is the guard that keeps an empty checksum from ever being compared
+      # against a real one.
+      - name: The installer refuses a version that is not one
+        run: |
+          ! COFFER_VERSION=not-a-version bash install.sh
+          ! COFFER_VERSION=0.0.0 bash install.sh
+          test ! -e /Applications/Coffer.app
