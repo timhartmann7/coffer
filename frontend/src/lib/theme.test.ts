@@ -37,13 +37,24 @@ function colours(body: string): Map<string, string> {
 	return new Map([...body.matchAll(/--color-([a-z0-9]+):\s*([^;]+);/g)].map((m) => [m[1], m[2]]));
 }
 
+/** Everything a rule declares, not only its colours: `color-scheme` decides the
+ * scrollbars, the caret and the range control, and it drifts as easily as a hex. */
+function declarations(body: string): Map<string, string> {
+	return new Map(
+		[...body.matchAll(/([a-z-]+(?:-[a-z0-9]+)*):\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()])
+	);
+}
+
 /** The dark palette is the `@theme` block, whose declarations carry exactly one
  * tab. Everything inside `@layer base` is nested at least twice. */
 const dark = new Map(
 	[...css.matchAll(/^\t--color-([a-z0-9]+):\s*([^;]+);/gm)].map((m) => [m[1], m[2]])
 );
-const followed = colours(ruleBody(":root:not([data-theme='dark'])"));
-const forced = colours(ruleBody(":root[data-theme='light']"));
+/** The same palette twice: once for the Mac's own answer, once for a reader who
+ * said. A media query and an attribute cannot share a selector list. */
+const followedBody = ruleBody(":root:not([data-theme='dark'])");
+const forcedBody = ruleBody(":root[data-theme='light']");
+const forced = colours(forcedBody);
 
 /** Not a colour: the absence of one, in either palette. */
 const NOT_A_COLOUR = 'transparent';
@@ -70,7 +81,10 @@ describe('the light theme answers the dark one', () => {
 	/** Two copies of a palette part company silently: a forced light window
 	 * quietly differs from one the Mac chose, and nothing else notices. */
 	it('says the same thing to the media query and to the attribute', () => {
-		expect(Object.fromEntries(forced)).toEqual(Object.fromEntries(followed));
+		const followed = declarations(followedBody);
+
+		expect(followed.get('color-scheme'), 'the light rule sets no colour scheme').toBe('light');
+		expect(Object.fromEntries(declarations(forcedBody))).toEqual(Object.fromEntries(followed));
 	});
 
 	it('has a light value for every colour the dark theme names', () => {

@@ -624,6 +624,43 @@ mod tests {
         assert!(!session.is_unlocked());
     }
 
+    /// The place the creation screen offers by default is a folder that does not
+    /// exist until the first vault goes into it, so making one has to make the
+    /// folder too - and a folder it cannot make is a refusal that still says
+    /// something true rather than a panic or a half-written file.
+    #[test]
+    fn a_vault_makes_the_folder_it_is_going_into() {
+        let directory = tempfile::tempdir().expect("a scratch directory");
+        let target = directory.path().join("Coffer/nested/deeper/vault.kdbx");
+
+        let session = Session::new(None);
+        session.making(target.clone());
+        session.measured(Work::at(1));
+        session.create(password(SECRET)).expect("the vault is made");
+
+        assert!(target.is_file(), "the vault is not where it was asked for");
+        assert!(session.is_unlocked());
+
+        // A folder whose parent is a file. `create_dir_all` cannot make it, and
+        // neither could anything else.
+        let blocked = directory.path().join("a-file");
+        std::fs::write(&blocked, b"not a folder").expect("the file is written");
+
+        let session = Session::new(None);
+        session.making(blocked.join("under/vault.kdbx"));
+        session.measured(Work::at(1));
+        assert!(session.create(password(SECRET)).is_err());
+        assert!(
+            !session.is_unlocked(),
+            "a vault opened that was never written"
+        );
+        assert_eq!(
+            std::fs::read(&blocked).expect("the file is still there"),
+            b"not a folder",
+            "the file in the way was written over"
+        );
+    }
+
     /// Making a vault is an unlock that happens to write the file first, and it
     /// is held to the same terms.
     #[test]

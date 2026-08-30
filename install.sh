@@ -74,15 +74,27 @@ esac
 # office shares and runs out of, and a redirect needs no JSON parser.
 version=${COFFER_VERSION:-}
 if [ -z "$version" ]; then
-    latest=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+    # Without -f, so that github.com answering can be told apart from github.com
+    # not being reachable. With -f every one of them is curl exiting 22, and the
+    # reader is told to check a network that is working.
+    latest=$(curl -sSLI -o /dev/null -w '%{http_code} %{url_effective}' \
         "https://github.com/$REPOSITORY/releases/latest") ||
         die "Could not reach github.com to find the newest release."
+
+    case ${latest%% *} in
+        200) ;;
+        404) die "github.com has no $REPOSITORY to take a release from." ;;
+        *) die "github.com answered ${latest%% *} when asked for the newest release." ;;
+    esac
+
+    # A release redirects to its own tag. A repository that has none redirects to
+    # the list instead, which ends in the word rather than in a version.
     version=${latest##*/}
+    [ "$version" != releases ] ||
+        die "There are no releases of Coffer yet. See https://github.com/$REPOSITORY/releases."
 fi
 version=${version#v}
 
-# A repository with no releases redirects to the list rather than to a tag, so
-# this catches that as well as a version somebody typed wrong.
 case $version in
     '' | *[!0-9.]*) die "Expected a version like 0.1.0, and got \"$version\"." ;;
 esac

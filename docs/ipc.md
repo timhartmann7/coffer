@@ -85,15 +85,25 @@ Everything slice 4 added:
 | `settings` | | the two timers, the two switches, the look, and the values each may be set to |
 | `set_settings` | `settings` | what was actually stored, which is not always what was sent |
 | `stirred` | | the seconds the open vault has left, or nothing when none is open |
-| `choose_new_database` | | where the reader wants the new vault |
+| `default_new_database` | | where a first vault goes when nobody has said |
+| `choose_new_database` | | where the reader wants the new vault instead |
 | `calibrate` | | how many Argon2id passes a one-second unlock costs here, and what that measured |
 | `create_database` | the master password, as the raw body | nothing |
 
 **A creation is an unlock that writes the file first.** Where the vault goes and
-what its key derivation costs are settled by the two commands before it, for the
-same reason the database to open is: the password is the whole body of the
-message and nothing can travel beside it. `create_database` refuses a JSON body
-exactly as `unlock` does.
+what its key derivation costs are settled by the commands before it, for the same
+reason the database to open is: the password is the whole body of the message and
+nothing can travel beside it. `create_database` refuses a JSON body exactly as
+`unlock` does.
+
+**The place is settled before the screen is drawn, not by a panel.**
+`default_new_database` picks `~/Coffer/vault.kdbx` and keeps it, so that making a
+first vault is a password and nothing else - which is what the slice's five
+actions are counted against. It writes nothing; the folder is made at the moment
+the reader commits, where a refusal can still be reported. `choose_new_database`
+is the same answer through a save panel, for a reader who wants it somewhere
+else, and it is the only one of the two that a locked vault guards, because the
+picker is reachable from a screen a vault can be open behind.
 
 **`settings` sends the lists as well as the values.** What a reader may choose is
 Rust's to decide, and a screen holding its own copy would be a second place the
