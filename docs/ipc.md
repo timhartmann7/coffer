@@ -415,11 +415,29 @@ the alias that carries 7; `knip.json` names it, because nothing imports it.
 
 ```bash
 cd crates/vault-gui
-cargo tauri dev          # starts vite on 1420 and opens the window
-cargo tauri build        # the same, as a release binary
+cargo tauri dev                                  # starts vite on 1420
+cargo tauri build --target aarch64-apple-darwin  # a .app and a .dmg
+cargo tauri build --target x86_64-apple-darwin   # the other architecture
 ```
 
-The window icon at `crates/vault-gui/icons/icon.png` is generated from the brand
-file with `assets/rasterise.py`. It exists because `generate_context!` will not
-compile without one. The full icon set, the `.icns` and the installer are slice
-5's.
+There is no universal binary. Merging both halves with `lipo` doubles the weight
+for nothing the reader notices, so the two architectures are two builds and two
+release assets, and `install.sh` picks between them on `uname -m`.
+
+The icon files under `crates/vault-gui/icons` are generated from the brand mark
+by `assets/appicon.sh` and committed, because CI has no SVG renderer and
+`generate_context!` reads one of them at compile time. `icon.icns` is what the
+bundle ships and what the dmg wears as its volume icon. `icon.png` is 128 squares
+because macOS never draws a window icon and the file is compiled into the binary
+as raw pixels, so a 1024 square would cost four megabytes for nothing.
+
+The mark is drawn into the middle 824 of a 1024 square. macOS masks nothing and
+scales an icon to whatever size the file gives it, so an icon drawn to the edge
+stands a quarter wider than everything beside it in the Dock.
+
+**The bundle declares macOS 13.3, not 12.** Tailwind v4 compiles `color-mix` and
+`@property` into the stylesheet, and Safari 16.4 is the first release that reads
+both. Below it six utilities fall back to a colour literal frozen at build time,
+which is the dark one - so on an older Mac the light theme would paint a dark
+scrim, dark row hovers and dark focus rings. Declaring the floor is cheaper than
+carrying a second stylesheet for a version of macOS that is three years old.

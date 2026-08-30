@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Turns a brand SVG into the PNG the application window needs.
+"""Draws a brand SVG as one square of the macOS application icon.
 
 The brand files are the source, and they hold nothing but a filled polygon and
 rounded rectangles, so a full SVG renderer is not needed to read them. The
-output is drawn at four times the size and scaled down, which is what gives the
-rounded corners their edges.
+output is drawn at four times the size and averaged down, which is what gives
+the rounded corners their edges.
 
-    python3 assets/rasterise.py assets/brand/coffer-icon-dark-accent.svg \
-        crates/vault-gui/icons/icon.png 1024
+`assets/appicon.sh` calls this once for every size the icon set needs.
 """
 
 import re
@@ -16,6 +15,12 @@ import sys
 from PIL import Image, ImageDraw
 
 SUPERSAMPLE = 4
+
+# macOS masks nothing and scales an application icon to whatever size the file
+# gives it, so the margin that keeps Coffer the same width as its neighbours in
+# the Dock has to be in the file. Apple's own grid draws on the middle 824 of
+# 1024, measured off the icons already on this machine.
+GROUND = 824 / 1024
 
 
 def colour(value):
@@ -26,9 +31,12 @@ def colour(value):
 def render(svg, size):
     box = re.search(r'viewBox="0 0 ([\d.]+) ([\d.]+)"', svg)
     width = float(box.group(1))
-    scale = size * SUPERSAMPLE / width
 
-    canvas = Image.new("RGBA", (size * SUPERSAMPLE,) * 2, (0, 0, 0, 0))
+    side = size * SUPERSAMPLE
+    scale = side * GROUND / width
+    inset = side * (1 - GROUND) / 2
+
+    canvas = Image.new("RGBA", (side,) * 2, (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
 
     for element in re.finditer(r"<(path|rect|g)\b[^>]*>", svg):
@@ -42,7 +50,7 @@ def render(svg, size):
 
         if element.group(1) == "path":
             points = [
-                (float(x) * scale, float(y) * scale)
+                (float(x) * scale + inset, float(y) * scale + inset)
                 for x, y in re.findall(r"[ML]\s*([\d.-]+)[ ,]([\d.-]+)", text)
             ]
             draw.polygon(points, fill=paint)
@@ -51,14 +59,18 @@ def render(svg, size):
                 found = re.search(rf'{name}="([\d.-]+)"', text)
                 return float(found.group(1)) if found else 0.0
 
-            x, y = number("x") * scale, number("y") * scale
+            x = number("x") * scale + inset
+            y = number("y") * scale + inset
             draw.rounded_rectangle(
                 (x, y, x + number("width") * scale, y + number("height") * scale),
                 radius=number("rx") * scale,
                 fill=paint,
             )
 
-    return canvas.resize((size, size), Image.LANCZOS)
+    # An average over the supersampled square. A filter with a negative lobe
+    # rings around the mark's dots and smears them together at the sizes the
+    # Dock actually draws.
+    return canvas.resize((size, size), Image.BOX)
 
 
 def main():
