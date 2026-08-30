@@ -38,23 +38,23 @@ pub(crate) fn current() -> u32 {
 /// id means anything to us. A lock written on another machine, on a shared
 /// volume, is never stale as far as we are concerned.
 pub(crate) fn hostname() -> String {
-    let mut buffer = [0i8; 256];
+    // Bytes, and the pointer cast once at the call. `c_char` is signed on x86_64
+    // and on every Apple target and unsigned on aarch64 Linux, so an array of it
+    // needs a per-element cast that is a compile error on one of the two and an
+    // unnecessary-cast warning on the other. A name is bytes either way.
+    let mut buffer = [0u8; 256];
 
     // SAFETY: the buffer is valid for the length passed, and the result is only
     // read up to the first NUL.
-    let result = unsafe { libc::gethostname(buffer.as_mut_ptr(), buffer.len() - 1) };
+    let result = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len() - 1) };
 
     if result != 0 {
         return String::new();
     }
 
-    let bytes: Vec<u8> = buffer
-        .iter()
-        .take_while(|&&c| c != 0)
-        .map(|&c| c as u8)
-        .collect();
+    let name: Vec<u8> = buffer.iter().copied().take_while(|&c| c != 0).collect();
 
-    String::from_utf8_lossy(&bytes).into_owned()
+    String::from_utf8_lossy(&name).into_owned()
 }
 
 /// The account this process runs as. Only ever shown to the user, to name who
