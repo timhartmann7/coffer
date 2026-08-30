@@ -152,6 +152,36 @@ cargo clippy -p vault-core --all-targets --all-features \
 check compiles without linking, which is enough to find every conditional
 compilation mistake this crate can make.
 
+That catches what will not compile. It does not catch what compiles and then
+behaves differently, and this crate has had three of those. Two turned CI red
+after a green run on a Mac: Linux reads a file's timestamps from a clock that
+only moves once a timer tick, so two watcher tests saw no change where a Mac
+sees one, and `xattr` and `touch` are not where a Mac keeps them, so a helper
+naming their paths panicked. The third never went red at all - a container has
+neither `USER` nor `LOGNAME`, so the lock test compared the empty string it had
+computed against the empty string the engine returned, and passed having
+checked nothing.
+
+That last one is the reason to run the suite here rather than only read it: a
+Linux machine finds assertions that are vacuous as well as ones that fail.
+
+```
+docker build -t coffer-engine -f docs/engine.Dockerfile .
+docker volume create coffer-target
+docker run --rm -v "$PWD:/src:ro" -v coffer-target:/home/runner/target \
+    -e CARGO_TARGET_DIR=/home/runner/target coffer-engine \
+    sh -c 'cd /src && cargo test -p vault-core --all-features --locked \
+        -- --skip too_large_to_open_again'
+```
+
+The source is mounted read-only and the target directory is a named volume, so
+a run cannot touch the working tree and a second run does not recompile the
+world. `-p vault-core`, never `--workspace`: `vault-gui` is macOS and will not
+build here. The skipped test is
+`a_database_that_would_be_too_large_to_open_again_is_not_written`, which wants
+more memory than Docker Desktop gives its VM by default and is killed rather
+than failed; it is left to CI, which has enough.
+
 ## Where Coffer departs from SPEC.md
 
 **The master password lives as long as the vault does.** `SPEC.md` says it is
