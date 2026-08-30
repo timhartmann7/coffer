@@ -12,6 +12,7 @@ mod generate;
 mod history;
 mod normalise;
 mod open;
+mod portable;
 mod property;
 mod round_trip;
 mod save;
