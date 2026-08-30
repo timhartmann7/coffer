@@ -24,6 +24,11 @@ struct Fixture {
     /// another, which makes a handful of format-only elements appear or
     /// disappear.
     cross_version: bool,
+    /// What keepassxc-cli finds in this fixture. Both sides of the attachment
+    /// comparison are read through the same parser, so a parser that answered
+    /// nothing would compare nothing and pass. These are what say it looked.
+    entries: usize,
+    attachments: usize,
 }
 
 #[test]
@@ -33,6 +38,8 @@ fn kdbx41_round_trips() {
         password: "coffer-test",
         key_file: None,
         cross_version: false,
+        entries: 10,
+        attachments: 6,
     });
 }
 
@@ -43,6 +50,8 @@ fn kdbx40_round_trips() {
         password: "coffer-test",
         key_file: None,
         cross_version: false,
+        entries: 10,
+        attachments: 6,
     });
 }
 
@@ -53,6 +62,8 @@ fn minimal_round_trips() {
         password: "coffer-test",
         key_file: None,
         cross_version: false,
+        entries: 1,
+        attachments: 0,
     });
 }
 
@@ -63,6 +74,8 @@ fn key_file_database_round_trips() {
         password: "coffer-keyfile",
         key_file: Some("keyfile.key"),
         cross_version: false,
+        entries: 1,
+        attachments: 0,
     });
 }
 
@@ -73,6 +86,8 @@ fn kdbx31_round_trips_as_kdbx41() {
         password: "coffer-test",
         key_file: None,
         cross_version: true,
+        entries: 0,
+        attachments: 0,
     });
 }
 
@@ -140,14 +155,24 @@ fn assert_attachments_survive(
     let entries = support::entry_paths(tool, original, secret, key_file);
 
     assert_eq!(
+        entries.len(),
+        fixture.entries,
+        "{} does not hold the entries this comparison is built on",
+        fixture.file
+    );
+
+    assert_eq!(
         entries,
         support::entry_paths(tool, saved, secret, key_file),
         "{} changed which entries exist",
         fixture.file
     );
 
+    let mut compared = 0;
+
     for entry in &entries {
         let names = support::attachment_names(tool, original, secret, key_file, entry);
+        compared += names.len();
         assert_eq!(
             names,
             support::attachment_names(tool, saved, secret, key_file, entry),
@@ -188,6 +213,12 @@ fn assert_attachments_survive(
             );
         }
     }
+
+    assert_eq!(
+        compared, fixture.attachments,
+        "{} does not hold the attachments this comparison is built on",
+        fixture.file
+    );
 }
 
 #[test]

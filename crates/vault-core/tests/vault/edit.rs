@@ -785,10 +785,15 @@ fn keepassxc_sees_the_files_coffer_left_on_the_entries_that_had_them() {
         .iter()
         .find(|path| path.ends_with("/attachments"))
         .expect("keepassxc lists the entry that had the file");
-    let names = support::attachment_names(&tool, &database, SECRET, None, holder);
-    assert!(
-        !names.contains(&"all-256-bytes.bin".to_owned()),
-        "keepassxc still lists the file Coffer removed"
+    // The files it kept, and only those. Naming them rather than asking whether
+    // the removed one is absent: an empty answer, from a parser that stopped
+    // understanding the tool's output, satisfies the second and proves nothing.
+    let mut names = support::attachment_names(&tool, &database, SECRET, None, holder);
+    names.sort();
+    assert_eq!(
+        names,
+        ["../../escape.txt", "nested/path/name.txt", "zero-byte.txt"],
+        "keepassxc does not list what Coffer left on the entry it edited"
     );
 
     // The entry that shared nothing with it still has its own, byte for byte.
