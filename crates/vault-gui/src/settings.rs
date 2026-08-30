@@ -1,6 +1,6 @@
 //! What the reader chose, and where it is kept.
 //!
-//! Four values, in one file, in the application's own configuration directory.
+//! Five values, in one file, in the application's own configuration directory.
 //! None of them is a secret and none of them is the user's data, but they say
 //! how long a vault stays open and how long a password stays on the clipboard,
 //! so the file is written owner-only like everything else Coffer writes.
@@ -10,13 +10,17 @@
 //! every value that arrives - from the window, from a file somebody edited, from
 //! a version of Coffer that offered something else - is put onto the nearest
 //! thing this list holds before anything reads it.
+//!
+//! The look is the one value that does not settle that way, because a word has
+//! no nearest. It settles where it is read instead: a name this version does
+//! not know becomes the default, rather than a file Coffer refuses whole.
 
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 const FILE: &str = "settings.json";
 
@@ -29,6 +33,58 @@ pub const IDLE_CHOICES: [u64; 5] = [60, 300, 900, 1800, 3600];
 /// How long a copied password stays on the clipboard, in seconds.
 pub const CLIPBOARD_CHOICES: [u64; 4] = [15, 30, 60, 300];
 
+/// Which look the window is drawn in.
+///
+/// `System` is not a look of its own. It is the reader saying the Mac decides,
+/// and the two halves resolve it their own way: AppKit for the window, the
+/// media query for what is inside it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Theme {
+    System,
+    /// The spec's default, and the one `design.html` is drawn in.
+    #[default]
+    Dark,
+    Light,
+}
+
+/// The three, in the order the mockup puts them.
+pub const THEME_CHOICES: [Theme; 3] = [Theme::System, Theme::Dark, Theme::Light];
+
+impl Theme {
+    /// The word that goes into the file and across to the window. Written here
+    /// and nowhere else: a second list of words would be a second answer to
+    /// what the reader chose.
+    fn name(self) -> &'static str {
+        match self {
+            Theme::System => "system",
+            Theme::Dark => "dark",
+            Theme::Light => "light",
+        }
+    }
+}
+
+impl Serialize for Theme {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
+impl<'de> Deserialize<'de> for Theme {
+    /// A word this version does not know is the default rather than a refusal.
+    ///
+    /// The numbers get that from `settled`, which cannot help here, so the
+    /// tolerance sits at the door - and it is the same door for the file and
+    /// for the window. A later Coffer offering a fourth look would otherwise
+    /// take both timers down with it on the way past.
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Theme, D::Error> {
+        let said = String::deserialize(deserializer)?;
+        Ok(THEME_CHOICES
+            .into_iter()
+            .find(|theme| theme.name() == said)
+            .unwrap_or_default())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
@@ -36,24 +92,28 @@ pub struct Settings {
     pub clipboard_seconds: u64,
     pub lock_on_sleep: bool,
     pub lock_on_screen_lock: bool,
+    pub theme: Theme,
 }
 
 impl Default for Settings {
     /// The defaults the spec states: five minutes idle, a minute on the
-    /// clipboard, and both machine triggers on.
+    /// clipboard, both machine triggers on, and the dark look `design.html` is
+    /// drawn in.
     fn default() -> Settings {
         Settings {
             idle_seconds: 300,
             clipboard_seconds: 60,
             lock_on_sleep: true,
             lock_on_screen_lock: true,
+            theme: Theme::Dark,
         }
     }
 }
 
 impl Settings {
     /// The same settings, with every number forced onto the list the screen
-    /// offers.
+    /// offers. The look is already one of three by construction, so it rides
+    /// along on `..self` and a clause for it would be a no-op.
     pub fn settled(self) -> Settings {
         Settings {
             idle_seconds: nearest(self.idle_seconds, &IDLE_CHOICES),
@@ -311,17 +371,97 @@ mod tests {
 
         for idle in IDLE_CHOICES {
             for clipboard in CLIPBOARD_CHOICES {
-                for machine in [true, false] {
-                    let wanted = Settings {
-                        idle_seconds: idle,
-                        clipboard_seconds: clipboard,
-                        lock_on_sleep: machine,
-                        lock_on_screen_lock: !machine,
-                    };
-                    write(directory.path(), wanted).expect("it is written");
-                    assert_eq!(read(directory.path()), wanted);
+                for theme in THEME_CHOICES {
+                    for machine in [true, false] {
+                        let wanted = Settings {
+                            idle_seconds: idle,
+                            clipboard_seconds: clipboard,
+                            lock_on_sleep: machine,
+                            lock_on_screen_lock: !machine,
+                            theme,
+                        };
+                        write(directory.path(), wanted).expect("it is written");
+                        assert_eq!(read(directory.path()), wanted);
+                    }
                 }
             }
+        }
+    }
+
+    /// The word is the value. A `Serialize` and a `Deserialize` that disagreed
+    /// about one would still round-trip through each other, so the word itself
+    /// is what this asserts.
+    #[test]
+    fn the_word_that_goes_into_the_file_is_the_word_the_window_reads() {
+        let written = serde_json::to_string(&Settings::default()).expect("it serialises");
+        assert!(
+            written.contains(r#""theme":"dark""#),
+            "the default look is not written as a bare word: {written}"
+        );
+
+        for theme in THEME_CHOICES {
+            let word = serde_json::to_string(&theme).expect("it serialises");
+            assert!(
+                word.starts_with('"') && word.to_lowercase() == word,
+                "{theme:?} crosses as {word} rather than as a lowercase word"
+            );
+            assert_eq!(
+                serde_json::from_str::<Theme>(&word).expect("it parses"),
+                theme
+            );
+        }
+    }
+
+    /// A copy-paste in `name` that gave two looks one word would make one of
+    /// them unreachable from the file and unwritable from the screen, and every
+    /// round-trip test would still pass because it goes through the mistake.
+    #[test]
+    fn no_two_looks_answer_to_the_same_word() {
+        let words: Vec<&str> = THEME_CHOICES.iter().map(|theme| theme.name()).collect();
+        for (at, word) in words.iter().enumerate() {
+            assert!(!words[..at].contains(word), "two looks answer to {word}");
+        }
+    }
+
+    /// The tolerance is about the name, not about one name. A later Coffer
+    /// offering a fourth look must not take the two timers down with it.
+    #[test]
+    fn a_look_from_a_later_coffer_does_not_take_the_timers_with_it() {
+        let directory = scratch();
+
+        for invented in [
+            "sepia".to_string(),
+            "Dark".to_string(),
+            "".to_string(),
+            "a".repeat(1024 * 1024),
+        ] {
+            let document =
+                format!(r#"{{"idleSeconds": 900, "clipboardSeconds": 15, "theme": "{invented}"}}"#);
+            std::fs::write(directory.path().join(FILE), &document).expect("the file is written");
+
+            let found = read(directory.path());
+            assert_eq!(found.theme, Theme::Dark);
+            assert_eq!(found.idle_seconds, 900);
+            assert_eq!(found.clipboard_seconds, 15);
+        }
+    }
+
+    /// The other side of that boundary, pinned so that widening it is a
+    /// deliberate edit to a test. A number where a word belongs is a broken
+    /// file, not a later version of Coffer, and it gets what every other broken
+    /// field gets.
+    #[test]
+    fn a_look_that_is_not_a_word_leaves_the_defaults_standing() {
+        let directory = scratch();
+
+        for broken in [
+            br#"{"theme": 3}"#.to_vec(),
+            br#"{"theme": null}"#.to_vec(),
+            br#"{"theme": []}"#.to_vec(),
+            br#"{"theme": {"dark": true}}"#.to_vec(),
+        ] {
+            std::fs::write(directory.path().join(FILE), &broken).expect("the file is written");
+            assert_eq!(read(directory.path()), Settings::default());
         }
     }
 
@@ -408,6 +548,21 @@ mod tests {
         for clipboard in CLIPBOARD_CHOICES {
             assert_eq!(nearest(clipboard, &CLIPBOARD_CHOICES), clipboard);
         }
+        // The look settles by being one of three rather than by being nearest,
+        // so the invariant is stated here rather than the mechanism: whatever
+        // the screen offers survives the trip.
+        for theme in THEME_CHOICES {
+            assert_eq!(
+                Settings {
+                    theme,
+                    ..Settings::default()
+                }
+                .settled()
+                .theme,
+                theme
+            );
+        }
+        assert_eq!(Settings::default().theme, Theme::Dark);
         assert_eq!(Settings::default().settled(), Settings::default());
     }
 }

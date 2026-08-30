@@ -12,6 +12,7 @@
 		tree
 	} from '$lib/ipc';
 	import { Countdown } from '$lib/countdown.svelte';
+	import { wear } from '$lib/theme';
 	import type { Database, Group, Settings as Chosen } from '$lib/model';
 
 	let database = $state<Database | null>(null);
@@ -49,6 +50,12 @@
 			}
 		})();
 	});
+
+	// Worn before the settings arrive as well as after. Rust built this window in
+	// the look the reader chose, so what the Mac reports is already their answer
+	// until the message lands, and there is no dark frame in front of a light
+	// window.
+	$effect(() => wear(chosen?.theme ?? 'system'));
 
 	/** Runs inside the unlock screen's own attempt, so that a vault which opens
 	 * and then will not answer is reported where the reader is looking. */

@@ -16,8 +16,10 @@ const CHOSEN: Chosen = {
 	clipboardSeconds: 60,
 	lockOnSleep: true,
 	lockOnScreenLock: true,
+	theme: 'dark',
 	idleChoices: [60, 300, 900, 1800, 3600],
-	clipboardChoices: [15, 30, 60, 300]
+	clipboardChoices: [15, 30, 60, 300],
+	themeChoices: ['system', 'dark', 'light']
 };
 
 beforeEach(() => {
@@ -57,6 +59,13 @@ function chip(label: string): HTMLButtonElement {
 const IDLE = 'How long an untouched vault stays open';
 const CLIPBOARD = 'How long a copied password stays on the clipboard';
 const SLEEP = 'Lock when this Mac goes to sleep';
+const THEME = 'How the window is drawn';
+
+function segments(): HTMLButtonElement[] {
+	const group = host.querySelector(`[role="group"][aria-label="${THEME}"]`);
+	if (!group) throw new Error('no segmented control for the look');
+	return [...group.querySelectorAll('button')];
+}
 
 it('draws what was chosen, in words rather than in seconds', () => {
 	const component = show();
@@ -263,6 +272,45 @@ it('says it opens a list, and which value is chosen', () => {
 	);
 	expect(chosen).toHaveLength(1);
 	expect(chosen[0].textContent?.trim()).toBe('5 minutes');
+
+	unmount(component);
+});
+
+it('draws all three looks and lights the one the window is wearing', () => {
+	const component = show();
+	flushSync();
+
+	expect(segments().map((one) => one.textContent?.trim())).toEqual(['System', 'Dark', 'Light']);
+	expect(segments().filter((one) => one.getAttribute('aria-pressed') === 'true')).toHaveLength(1);
+	expect(segments()[1].getAttribute('aria-pressed')).toBe('true');
+
+	unmount(component);
+});
+
+/** A segmented control writes a settings file on every click unless it checks,
+ * and the reader clicking the look they are already wearing is the common one. */
+it('says nothing when the look that is already on is chosen again', () => {
+	const component = show();
+	flushSync();
+
+	segments()[1].click();
+	flushSync();
+
+	expect(ipc.setSettings).not.toHaveBeenCalled();
+
+	unmount(component);
+});
+
+/** The spread is what carries the rest of the settings back. A row that sent
+ * only its own field would reset both timers to whatever Rust defaults to. */
+it('sends the whole of what was chosen when the look changes', async () => {
+	const component = show();
+	flushSync();
+
+	segments()[2].click();
+	await vi.waitFor(() => expect(ipc.setSettings).toHaveBeenCalledTimes(1));
+
+	expect(ipc.setSettings).toHaveBeenCalledWith({ ...CHOSEN, theme: 'light' });
 
 	unmount(component);
 });

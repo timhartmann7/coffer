@@ -1,9 +1,11 @@
 <script lang="ts">
 	import { asFailure, setSettings } from '$lib/ipc';
 	import { named } from '$lib/duration';
+	import { LOOKS } from '$lib/theme';
 	import type { Database, Settings } from '$lib/model';
 	import Choice from './Choice.svelte';
 	import Icon from './Icon.svelte';
+	import Segmented from './Segmented.svelte';
 	import Toggle from './Toggle.svelte';
 
 	/**
@@ -88,6 +90,17 @@
 				label="How long a copied password stays on the clipboard"
 				render={named}
 				onChoose={(clipboardSeconds) => change({ ...settings, clipboardSeconds })}
+			/>
+		</div>
+
+		<div class="flex items-center justify-between gap-6 px-8 py-5">
+			<div class="text-row text-txt">Theme</div>
+			<Segmented
+				value={settings.theme}
+				choices={settings.themeChoices}
+				label="How the window is drawn"
+				render={(theme) => LOOKS[theme]}
+				onChoose={(theme) => change({ ...settings, theme })}
 			/>
 		</div>
 

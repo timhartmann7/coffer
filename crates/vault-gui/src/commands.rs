@@ -27,7 +27,7 @@ use crate::autolock::{Event, Reason};
 use crate::dto::{self, Database, Entry, Group, Made, Revealed, Rival, Snapshot, Status, Version};
 use crate::error::Failure;
 use crate::session::Session;
-use crate::{clipboard, lock, opener, recent, settings};
+use crate::{clipboard, lock, opener, recent, settings, window};
 
 /// The session is behind an `Arc` so that a command can take it onto a blocking
 /// thread, which is where key derivation belongs.
@@ -342,6 +342,12 @@ pub fn set_settings(settings: dto::Settings, app: AppHandle) -> Result<dto::Sett
     if let Some(timer) = app.try_state::<Arc<Timer>>() {
         timer.post(Event::TimeoutChanged(stored.idle()));
     }
+
+    // The open vault stays open. Only the appearance changes, and AppKit carries
+    // it into the webview, where `prefers-color-scheme` is what the screen reads
+    // for a reader who asked for the Mac's own.
+    window::retune(&app, stored.theme);
+
     Ok(dto::Settings::of(stored))
 }
 

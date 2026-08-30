@@ -26,7 +26,6 @@
         "minWidth": 920,
         "minHeight": 560,
         "center": true,
-        "theme": "Dark",
         "titleBarStyle": "Overlay",
         "hiddenTitle": true
       }

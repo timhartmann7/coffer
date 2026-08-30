@@ -119,10 +119,13 @@ pub struct Settings {
     pub clipboard_seconds: u64,
     pub lock_on_sleep: bool,
     pub lock_on_screen_lock: bool,
+    pub theme: settings::Theme,
     #[serde(skip_deserializing)]
     pub idle_choices: Vec<u64>,
     #[serde(skip_deserializing)]
     pub clipboard_choices: Vec<u64>,
+    #[serde(skip_deserializing)]
+    pub theme_choices: Vec<settings::Theme>,
 }
 
 impl Settings {
@@ -132,20 +135,24 @@ impl Settings {
             clipboard_seconds: held.clipboard_seconds,
             lock_on_sleep: held.lock_on_sleep,
             lock_on_screen_lock: held.lock_on_screen_lock,
+            theme: held.theme,
             idle_choices: settings::IDLE_CHOICES.to_vec(),
             clipboard_choices: settings::CLIPBOARD_CHOICES.to_vec(),
+            theme_choices: settings::THEME_CHOICES.to_vec(),
         }
     }
 
     /// What the window asked for. The lists it was sent do not come back: they
     /// are this side's to decide, and a message naming others would be the
-    /// window choosing what it may choose.
+    /// window choosing what it may choose. A look it invented lands on the
+    /// default the same way one out of a settings file does.
     pub fn wanted(&self) -> settings::Settings {
         settings::Settings {
             idle_seconds: self.idle_seconds,
             clipboard_seconds: self.clipboard_seconds,
             lock_on_sleep: self.lock_on_sleep,
             lock_on_screen_lock: self.lock_on_screen_lock,
+            theme: self.theme,
         }
     }
 }
@@ -713,6 +720,31 @@ mod tests {
         let payload = json(&Entry::of(&entry));
         assert!(payload.contains(r#""name":"../../escape.txt","size":0"#));
         assert!(payload.contains(r#""name":"nested/path/name.txt","size":104857600"#));
+    }
+
+    /// The window is told what it may choose. A message that answered with a
+    /// list of its own would be the window widening that, which is what the
+    /// `skip_deserializing` on the lists is for - and what a new list could
+    /// quietly miss.
+    #[test]
+    fn a_look_the_window_made_up_is_settled_like_a_number_nobody_offered() {
+        let asked: Settings = serde_json::from_str(
+            r#"{"idleSeconds":900,"clipboardSeconds":15,"lockOnSleep":false,
+                "lockOnScreenLock":true,"theme":"neon","themeChoices":["neon"]}"#,
+        )
+        .expect("the window's message parses");
+
+        assert!(
+            asked.theme_choices.is_empty(),
+            "the window sent a list back"
+        );
+        assert!(asked.idle_choices.is_empty() && asked.clipboard_choices.is_empty());
+
+        let wanted = asked.wanted();
+        assert_eq!(wanted.theme, settings::Theme::Dark);
+        assert_eq!(wanted.idle_seconds, 900);
+        assert_eq!(wanted.clipboard_seconds, 15);
+        assert!(!wanted.lock_on_sleep && wanted.lock_on_screen_lock);
     }
 
     #[test]

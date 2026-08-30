@@ -82,7 +82,7 @@ Everything slice 4 added:
 
 | Command | Takes | Answers |
 |---|---|---|
-| `settings` | | the two timers, the two switches, and the values each may be set to |
+| `settings` | | the two timers, the two switches, the look, and the values each may be set to |
 | `set_settings` | `settings` | what was actually stored, which is not always what was sent |
 | `stirred` | | the seconds the open vault has left, or nothing when none is open |
 | `choose_new_database` | | where the reader wants the new vault |
@@ -99,6 +99,20 @@ exactly as `unlock` does.
 Rust's to decide, and a screen holding its own copy would be a second place the
 answer lives. What comes back from `set_settings` is what was stored, because a
 value the screen does not offer is settled onto one it does.
+
+**The look crosses as a word, and each side does the half only it can.**
+`settings` sends `theme` as one of `system`, `dark` or `light`, and
+`themeChoices` as the three of them, the same way it sends the two lists of
+seconds. Rust builds the window with it, which is what decides the traffic
+lights, the native file panel and what `prefers-color-scheme` reports inside the
+webview, and it hands the same word to the application when the reader changes
+one — so a new look costs nothing and does not take the open vault with it. The
+window writes `data-theme` on the `html` element, resolving `system` through
+`prefers-color-scheme` itself, so `app.css` holds one light palette rather than a
+third copy for a look that is really a question. Dark is the default, which is
+what every settings file written before slice 5 reads as. A word this version
+does not know settles on dark rather than being refused: a later Coffer offering
+a fourth look would otherwise take both timers down with its own name.
 
 **`stirred` is how the countdown stays honest, and it is deliberately rare.** The
 window sends it on real input and at most once every fifteen seconds, and ticks
@@ -391,11 +405,6 @@ change count checked before the clear and the contents never read.
 default layout. Coffer has one workspace with two crates, as the same document
 says two paragraphs earlier, so the capability files, the configuration and the
 window icon live in the crate that runs `tauri_build::build()`.
-
-**The theme is not in the settings screen.** `design.html` draws a three-way
-control there. The light theme is slice 5's, and a control where two of three
-choices change nothing is dead code wearing a user interface, so the row waits
-for the theme it switches between.
 
 **TypeScript needs two majors installed.** `svelte-check` will not run against
 TypeScript 7 unless 6 is installed beside it and the check is given `--tsgo`,

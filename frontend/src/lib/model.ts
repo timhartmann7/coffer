@@ -142,9 +142,14 @@ export interface Calibration {
 	seconds: number;
 }
 
-/** What the reader chose about locking and the clipboard.
+/** Which look the window is drawn in. `system` is the reader saying the Mac
+ * decides; it never reaches the document, because the window resolves it into
+ * one of the other two first. */
+export type Theme = 'system' | 'dark' | 'light';
+
+/** What the reader chose about locking, the clipboard and the look.
  *
- * The two `Choices` lists are what the screen may offer. They arrive with the
+ * The three `Choices` lists are what the screen may offer. They arrive with the
  * values rather than being written down here, so there is one place that
  * decides what a reader is allowed to pick. */
 export interface Settings {
@@ -154,8 +159,10 @@ export interface Settings {
 	clipboardSeconds: number;
 	lockOnSleep: boolean;
 	lockOnScreenLock: boolean;
+	theme: Theme;
 	idleChoices: number[];
 	clipboardChoices: number[];
+	themeChoices: Theme[];
 }
 
 /** The kinds of character the generator draws from. */

@@ -20,7 +20,11 @@
 	--color-hairline: #2b2e35;
 	--color-line: #23262c;
 
-	/* Four steps of text, all of them above 4.5 : 1 on the window plane. */
+	/* Four steps of text, all of them above 4.5 : 1 on the window plane. The
+	   faintest falls under it on the two planes above - 4.28 on the chrome, 3.90
+	   on a selected row - and these are the mockup's values, not ours to retune.
+	   The light theme clears 4.5 on all three, which is why its ramp is not a
+	   plain inversion of this one. */
 	--color-txt: #eceff3;
 	--color-txt2: #a8afba;
 	--color-txt3: #8c939e;
@@ -29,8 +33,6 @@
 	/* The mark's ultramarine, and the only accent on a screen. */
 	--color-accent: #7b87ff;
 	--color-accenthi: #98a2ff;
-	--color-accentdim: #4e58b8;
-	--color-accentwash: #1c1f3d;
 
 	--color-warn: #d8a657;
 	--color-warnwash: #2a2216;
@@ -56,7 +58,6 @@
 	--text-title: 19px;
 	--text-display: 24px;
 
-	--leading-none: 1;
 	--leading-snug: 1.375;
 	--leading-relaxed: 1.625;
 
@@ -68,7 +69,6 @@
 	--radius-xs: 4px;
 	--radius-sm: 6px;
 	--radius-md: 12px;
-	--radius-lg: 20px;
 
 	/* The one thing that moves on its own: a bar draining while something
 	   counts down. It appears nowhere else.
@@ -97,6 +97,78 @@
 @layer base {
 	:root {
 		color-scheme: dark;
+	}
+
+	/* The mockup draws one theme. The light one is the same palette read from
+	   the other end: every value keeps its hue and its chroma and takes the
+	   lightness its dark counterpart has, counted down from the top of the ramp
+	   instead of up from the bottom. Its accent is #4e58b8, which is the mockup's
+	   own; the hover is the only value here the mockup does not name, and it is
+	   the dark hover's step of 1.325 taken in the other direction.
+
+	   Canvas does not invert with the planes, because it is not a plane here. The
+	   window is the surface; canvas is the ink an accent fill carries and the veil
+	   over a dimmed window, and mirroring it is what keeps both readable.
+
+	   Written twice because a media query and an attribute cannot share a
+	   selector list, and both are needed: Rust builds the window in the chosen
+	   appearance, so the media query has the right answer before the first paint,
+	   and the attribute is how a change reaches the screen without waiting for
+	   AppKit to carry it. `light-dark()` would collapse the pair into one
+	   declaration per token and needs a Safari four versions past the one this
+	   bundle targets. `theme.test.ts` is what keeps the two copies together. */
+	@media (prefers-color-scheme: light) {
+		:root:not([data-theme='dark']) {
+			color-scheme: light;
+
+			--color-canvas: #fbfdff;
+			--color-surface: #f0f2f6;
+			--color-surface2: #e5e8ee;
+			--color-raised: #d9dde4;
+			--color-hairline: #cbcfd9;
+			--color-line: #d6dae2;
+
+			--color-txt: #080a0c;
+			--color-txt2: #333942;
+			--color-txt3: #4a515b;
+			--color-txt4: #5c626c;
+
+			--color-accent: #4e58b8;
+			--color-accenthi: #3e44a3;
+
+			--color-warn: #865800;
+			--color-warnwash: #e7dccc;
+			--color-danger: #b33136;
+			--color-dangerwash: #f6dcdc;
+
+			--color-selection: #b4c0ff;
+		}
+	}
+
+	:root[data-theme='light'] {
+		color-scheme: light;
+
+		--color-canvas: #fbfdff;
+		--color-surface: #f0f2f6;
+		--color-surface2: #e5e8ee;
+		--color-raised: #d9dde4;
+		--color-hairline: #cbcfd9;
+		--color-line: #d6dae2;
+
+		--color-txt: #080a0c;
+		--color-txt2: #333942;
+		--color-txt3: #4a515b;
+		--color-txt4: #5c626c;
+
+		--color-accent: #4e58b8;
+		--color-accenthi: #3e44a3;
+
+		--color-warn: #865800;
+		--color-warnwash: #e7dccc;
+		--color-danger: #b33136;
+		--color-dangerwash: #f6dcdc;
+
+		--color-selection: #b4c0ff;
 	}
 
 	html,

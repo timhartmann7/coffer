@@ -6,12 +6,13 @@
 //! a way nobody tested.
 
 use std::cell::Cell;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::utils::config::WindowConfig;
-use tauri::{AppHandle, PhysicalPosition, PhysicalSize, Runtime, WindowEvent};
+use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, Runtime, WindowEvent};
 
-use crate::buttons;
+use crate::{buttons, settings};
 
 /// The window's label, which is also its key in `tauri.conf.json`.
 pub const MAIN: &str = "main";
@@ -78,6 +79,14 @@ pub fn open<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         config.height = frame.height;
     }
 
+    // What the window is born wearing, rather than what it is told afterwards.
+    // The title bar, the three buttons and the native file panel are drawn once,
+    // and a window that opened dark and turned light would do it where the
+    // reader is looking. It is also what `prefers-color-scheme` reports inside
+    // the webview, which is the only answer the screen has until the settings
+    // have crossed.
+    config.theme = appearance(look(app));
+
     let window = tauri::WebviewWindowBuilder::from_config(app, &config)?.build()?;
     buttons::centre_buttons(&window);
 
@@ -89,6 +98,33 @@ pub fn open<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     });
 
     Ok(())
+}
+
+/// The look the reader chose, or the default on a Mac with nowhere to keep one.
+fn look<R: Runtime>(app: &AppHandle<R>) -> settings::Theme {
+    app.try_state::<Arc<settings::Preferences>>()
+        .map(|held| held.get().theme)
+        .unwrap_or_default()
+}
+
+/// What AppKit is told. Nothing means the Mac's own, which is what `System` is
+/// asking for and what Tauri reads an absent theme as.
+fn appearance(theme: settings::Theme) -> Option<tauri::Theme> {
+    match theme {
+        settings::Theme::System => None,
+        settings::Theme::Dark => Some(tauri::Theme::Dark),
+        settings::Theme::Light => Some(tauri::Theme::Light),
+    }
+}
+
+/// Retunes the window that is already open.
+///
+/// A look is not worth a lock, and building the window again is a lock: it wipes
+/// the tree and asks for the password back. macOS keeps the appearance on the
+/// application rather than on one window, so this is the application's own
+/// setter, which is also why it works when nothing is unlocked.
+pub fn retune<R: Runtime>(app: &AppHandle<R>, theme: settings::Theme) {
+    app.set_theme(appearance(theme));
 }
 
 /// The entry for the main window in the configuration file.
@@ -142,6 +178,31 @@ fn place<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The inversion this would ship is a window forced dark for a reader who
+    /// asked for the Mac's own, and it looks like nothing being wrong until
+    /// somebody's Mac is light.
+    #[test]
+    fn only_the_macs_own_look_leaves_the_window_to_the_mac() {
+        for theme in settings::THEME_CHOICES {
+            assert_eq!(
+                appearance(theme).is_none(),
+                theme == settings::Theme::System,
+                "{theme:?} was handed the wrong appearance"
+            );
+        }
+
+        assert_eq!(
+            appearance(settings::Theme::Dark),
+            Some(tauri::Theme::Dark),
+            "the dark look asked AppKit for something else"
+        );
+        assert_eq!(
+            appearance(settings::Theme::Light),
+            Some(tauri::Theme::Light),
+            "the light look asked AppKit for something else"
+        );
+    }
 
     /// Locking and closing arrive as the same event, and only one of them may
     /// build the window again.
