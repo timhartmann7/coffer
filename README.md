@@ -29,6 +29,10 @@ brew tap timhartmann7/coffer https://github.com/timhartmann7/coffer
 brew install --cask coffer
 ```
 
+Homebrew marks what it downloads, so the cask takes the mark back off after
+installing; the line it runs is in `Casks/coffer.rb`, and the next section says
+why it is needed.
+
 ### Five actions to the first saved entry
 
 1. Run the line above.
@@ -46,11 +50,12 @@ you can move the file afterwards like any other file.
 The builds are not signed with a Developer ID and they are not notarised. There
 is no certificate behind this project.
 
-That is invisible when `install.sh` or Homebrew does the fetching, because
-`curl` does not mark what it downloads. A browser does: it writes a quarantine
-attribute onto the disk image, macOS refuses the first launch, and since
-macOS 15 the right-click-and-Open way past that is gone. If Coffer is in
-`/Applications` and will not open, either
+`install.sh` does not run into that, because `curl` does not mark what it
+downloads. Homebrew and a browser both do: they write a quarantine attribute
+onto the download, macOS refuses the first launch, and since macOS 15 the
+right-click-and-Open way past that is gone. The cask takes the attribute off
+again for you. Nothing takes it off a disk image you fetched yourself, so if
+Coffer is in `/Applications` and will not open, either
 
 ```
 xattr -dr com.apple.quarantine /Applications/Coffer.app

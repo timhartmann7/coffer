@@ -135,11 +135,18 @@ jobs:
       - name: Tests
         run: cargo nextest run --workspace --all-features
 
-      # Both refusals have to happen before anything is downloaded. The second
-      # one is the guard that keeps an empty checksum from ever being compared
-      # against a real one.
+      # Written as `if ... then exit 1` rather than with a `!`, because bash
+      # exempts an inverted command from `set -e` and both lines would then
+      # assert nothing at all. The first refusal happens before any request is
+      # made; the second is a real one, refused by a release that is not there.
       - name: The installer refuses a version that is not one
         run: |
-          ! COFFER_VERSION=not-a-version bash install.sh
-          ! COFFER_VERSION=0.0.0 bash install.sh
+          if COFFER_VERSION=not-a-version bash install.sh; then
+            echo "install.sh accepted a version that is not one" >&2
+            exit 1
+          fi
+          if COFFER_VERSION=0.0.0 bash install.sh; then
+            echo "install.sh accepted a release that is not there" >&2
+            exit 1
+          fi
           test ! -e /Applications/Coffer.app

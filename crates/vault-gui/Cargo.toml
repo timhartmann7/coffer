@@ -10,6 +10,11 @@ license.workspace = true
 tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
+# The version is here as well as on the path because `cargo deny` bans a
+# wildcard dependency, and a path without one is a wildcard. Which makes this a
+# third place the workspace's version lives, and `version.test.ts` is what stops
+# a bump leaving it behind - the failure otherwise is Cargo refusing to resolve,
+# on a message that names neither the tag nor this line.
 vault-core = { path = "../vault-core", version = "0.1.0" }
 tauri = { version = "2.11.5", features = [] }
 tauri-plugin-dialog = "2.7.2"

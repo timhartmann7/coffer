@@ -5,10 +5,18 @@ real download and a second architecture, and the reasons the order is the order.
 
 ## Before the tag
 
-The version is written in two files and they drift. Bump both in one commit:
+The version is written in three files and they drift. Bump all three in one
+commit:
 
 - `Cargo.toml`, `[workspace.package] version`
 - `crates/vault-gui/tauri.conf.json`, `version`
+- `crates/vault-gui/Cargo.toml`, the `version` beside `vault-core`'s path
+
+The third is there because `cargo deny` bans a wildcard dependency, and a path
+with no version is one. Missing it does not fail the version job: it fails later,
+inside the suite, as Cargo refusing to resolve a caret range, on a message that
+names neither the tag nor the line. `frontend/src/lib/version.test.ts` is what
+catches all three, and it runs long before a tag exists.
 
 The bundler builds the asset names out of the second one, so a tauri.conf.json
 that lags the tag produces `Coffer_0.1.0_aarch64.dmg` under a `v0.2.0` release
@@ -88,9 +96,15 @@ list for the release itself; the vault's own list is in the spec.
 - The disk image downloaded in a browser: confirm macOS refuses it, then confirm
   the `xattr` line in the README gets past it and the System Settings route is
   still where the README says.
-- `brew tap` and `brew install --cask coffer`, then
-  `brew uninstall --cask --zap coffer` on a Mac with a real vault. The `.kdbx`,
-  its ten `.bak` snapshots and any `.lock` are all still there, and only the five
-  `app.coffer.vault` paths are gone.
-- `brew style Casks/coffer.rb` and `brew audit --cask --online Casks/coffer.rb`.
-  Expect the Gatekeeper finding, because the build is unsigned, and nothing else.
+- `brew tap timhartmann7/coffer https://github.com/timhartmann7/coffer` and
+  `brew install --cask coffer`, then open Coffer. It has to launch on the first
+  try: Homebrew stamps its downloads with `com.apple.quarantine` and the cask's
+  postflight is what takes it off again, so this is the check that the Homebrew
+  route reaches a saved entry at all.
+- Then `brew uninstall --cask --zap coffer` on a Mac with a real vault. The
+  `.kdbx`, its ten `.bak` snapshots and any `.lock` are all still there, and only
+  the five `app.coffer.vault` paths are gone.
+- `brew style Casks/coffer.rb`, which is clean once the workflow has put the two
+  real hashes in, and `brew audit --cask --online timhartmann7/coffer/coffer`
+  through the tap the check above installed. `brew audit` no longer takes a path.
+  Expect the signing finding, because the build is unsigned, and nothing else.

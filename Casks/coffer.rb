@@ -17,9 +17,21 @@ cask "coffer" do
 
   # The bundle asks for 13.3. Homebrew names whole releases, so this is the
   # nearest thing it can say.
-  depends_on macos: ">= :ventura"
+  depends_on macos: :ventura
 
   app "Coffer.app"
+
+  # Homebrew stamps every cask download with com.apple.quarantine, and Coffer is
+  # not signed with a Developer ID, so macOS would refuse the first launch and
+  # since macOS 15 there is no right click past it. This is the same line the
+  # README gives a reader who fetched the disk image by hand, run here so that
+  # both documented ways in behave the same. It is written out rather than hidden
+  # because a cask that quietly strips a security attribute is exactly the shape
+  # of one that should not be trusted.
+  postflight do
+    system_command "/usr/bin/xattr",
+                   args: ["-dr", "com.apple.quarantine", "#{appdir}/Coffer.app"]
+  end
 
   # An AppleEvent rather than a signal, so Coffer runs its own exit: the lock
   # file beside the vault goes and the clipboard is cleared. Nothing is lost by
@@ -38,7 +50,9 @@ cask "coffer" do
   ]
 
   caveats <<~EOS
-    Coffer is not signed with a Developer ID and is not notarised. Homebrew
-    fetches with curl, which marks nothing, so it opens on the first try.
+    Coffer is not signed with a Developer ID and is not notarised. Homebrew marks
+    what it downloads, so this cask takes the quarantine attribute back off
+    Coffer.app after installing it; without that macOS would refuse to open it
+    and offer no way through. The line it runs is in the cask.
   EOS
 end

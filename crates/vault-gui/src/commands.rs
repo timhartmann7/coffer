@@ -352,13 +352,21 @@ pub fn settings(app: AppHandle) -> dto::Settings {
 /// Answers with what was actually stored rather than with what was sent: a
 /// value the screen does not offer is settled onto one it does, and the screen
 /// draws what came back.
+///
+/// A choice that cannot be written down is still in force for this run -
+/// `Preferences` decides that, so that a reader who cannot write to their own
+/// configuration directory can still change a timer. Which means the two values
+/// that need pushing somewhere have to be pushed before the write is reported,
+/// or three of the five would apply and two would not, and the two that did not
+/// would arrive anyway at the next lock.
 #[tauri::command]
 pub fn set_settings(settings: dto::Settings, app: AppHandle) -> Result<dto::Settings, Failure> {
     let held = app
         .try_state::<Arc<settings::Preferences>>()
         .ok_or_else(|| Failure::internal("this Mac has nowhere to keep a setting"))?;
 
-    let stored = held.set(settings.wanted()).map_err(Failure::io)?;
+    let written = held.set(settings.wanted());
+    let stored = held.get();
 
     // A shorter timeout applies to the vault that is open now, not to the next
     // one. Shortening it past what has already gone locks immediately, which is
@@ -372,6 +380,7 @@ pub fn set_settings(settings: dto::Settings, app: AppHandle) -> Result<dto::Sett
     // for a reader who asked for the Mac's own.
     window::retune(&app, stored.theme);
 
+    written.map_err(Failure::io)?;
     Ok(dto::Settings::of(stored))
 }
 

@@ -98,7 +98,14 @@ leave() {
         hdiutil detach "$mount" -force -quiet >/dev/null 2>&1 || true
     rm -rf "$work"
 }
-trap leave EXIT HUP INT TERM
+# A handler that only tidied up would return, and bash would carry on into the
+# next line with the image unmounted underneath it: the run would go on to
+# accuse the release of holding no Coffer.app, or to delete the installed copy
+# and have nothing left to put back. So a signal ends the run. `leave` is
+# idempotent, and the EXIT trap running it again costs nothing.
+trap leave EXIT
+trap 'leave; exit 130' INT
+trap 'leave; exit 143' HUP TERM
 
 say "Fetching Coffer $version for $architecture."
 fetch "$base/$asset" "$work/$asset"
