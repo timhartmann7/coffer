@@ -7,37 +7,27 @@
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
-use std::time::SystemTime;
 
 use sha2::{Digest, Sha256};
 
 /// What the database looked like the last time Coffer and the disk agreed.
 ///
-/// Modification time alone is not enough. Its granularity is a second on some
-/// filesystems, so a change inside the same tick is invisible; and every client
-/// that saves the way Coffer does replaces the file by rename, which changes the
-/// inode without necessarily moving the clock. Size, inode and device close
-/// those gaps between them.
+/// Deliberately no timestamps. Neither of the two a file carries can decide this
+/// question on both of the machines this crate runs on:
 ///
-/// Change time is the one field a writer cannot set for itself, which is why it
-/// is here - and why it cannot be trusted on its own. macOS writes
-/// `com.apple.macl` and `com.apple.provenance` onto a file after an application
-/// has touched it through a save panel, and an extended attribute moves change
-/// time and nothing else: not the size, not the modification time, not the
-/// inode. A vault that read that as another client's edit refused to save its
-/// own file and asked the reader to resolve a conflict with themselves, on every
-/// write they made.
+/// - macOS writes `com.apple.macl` and `com.apple.provenance` onto a file after
+///   an application has touched it through a save panel. That moves change time
+///   and nothing else, and a vault that read it as somebody else's edit refused
+///   to save its own file.
+/// - Linux takes both times from a clock that only advances once a timer tick,
+///   so a rewrite of the same length inside one tick leaves every field of this
+///   identical - and a vault that trusted that would write over the other
+///   client's work without ever asking.
 ///
-/// So when change time is the only thing that moved, the bytes decide. That is
-/// the one case where the metadata cannot: an extended attribute the system
-/// wrote and a client that rewrote the file in place and put the modification
-/// time back look exactly alike from the outside.
+/// So what is here is only what cannot be wrong: a file of another length, or at
+/// another inode, is a different file. Everything else the bytes answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {
-    modified: Option<SystemTime>,
-    /// Seconds and nanoseconds kept apart, because `SystemTime` cannot hold a
-    /// change time from before 1970 and a file can carry one.
-    changed: (i64, i64),
     len: u64,
     inode: u64,
     device: u64,
@@ -48,20 +38,10 @@ impl Stamp {
     pub fn of(path: &Path) -> Result<Stamp, io::Error> {
         let metadata = std::fs::metadata(path)?;
         Ok(Stamp {
-            modified: metadata.modified().ok(),
-            changed: (metadata.ctime(), metadata.ctime_nsec()),
             len: metadata.len(),
             inode: metadata.ino(),
             device: metadata.dev(),
         })
-    }
-
-    /// Whether these two differ in nothing but change time.
-    fn same_but_for_change_time(self, other: Stamp) -> bool {
-        Stamp {
-            changed: other.changed,
-            ..self
-        } == other
     }
 }
 
@@ -97,21 +77,18 @@ pub fn since(path: &Path, stamp: Stamp, content: Content) -> Result<Change, io::
         Err(error) => return Err(error),
     };
 
-    if current == stamp {
-        return Ok(Change::None);
+    // A different length, or a different file at the same name. Neither can be
+    // hidden and neither needs the bytes read to be seen.
+    if current != stamp {
+        return Ok(Change::Modified);
     }
 
-    // The file is read only here, and only when the metadata cannot answer: an
-    // attribute the system wrote and a client that put the modification time
-    // back are the same shape from the outside.
-    if current.same_but_for_change_time(stamp) {
-        let found = digest(&std::fs::read(path)?);
-        return Ok(if found == content {
-            Change::None
-        } else {
-            Change::Modified
-        });
-    }
-
-    Ok(Change::Modified)
+    // And then the bytes, every time. This is the only thing that answers a
+    // client which rewrote the file in place: it can put the modification time
+    // back, and on Linux it does not even have to.
+    Ok(if digest(&std::fs::read(path)?) == content {
+        Change::None
+    } else {
+        Change::Modified
+    })
 }
