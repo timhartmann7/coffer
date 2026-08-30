@@ -12,8 +12,6 @@
 //! before it is searched, because a scanner that finds its own needle finds one
 //! every time.
 
-use std::ffi::c_int;
-
 /// A value, and the machinery for counting how many copies of it this process
 /// is still holding.
 ///
@@ -135,7 +133,7 @@ fn count(haystack: &[u8], needle: &[u8]) -> usize {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::*;
+    use std::ffi::c_int;
 
     // The kernel's own declarations. `libc` carries the types and the constants
     // and not these three calls, and its `mach_task_self_` is deprecated in

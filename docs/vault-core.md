@@ -131,6 +131,27 @@ cargo llvm-cov nextest --workspace --summary-only \
     -E 'not (test(killing_the_process) + test(a_save_that_runs_out_of_room))'
 ```
 
+## Compiling it for the machine CI runs on
+
+This crate is the half that is not macOS, and CI proves that by building it on
+Ubuntu. A Mac cannot see a Linux-only break: the memory scan in
+`tests/vault/scan.rs` has a block per platform, and an import that only one of
+them needs compiles cleanly on the platform that needs it and fails on the other
+under `#![deny(unused_imports)]`. That failure has nothing to do with the change
+that provoked it and everything to do with where it was compiled.
+
+So before pushing anything that touches this crate, run the engine job's own
+check against its own target:
+
+```
+cargo clippy -p vault-core --all-targets --all-features \
+    --target x86_64-unknown-linux-gnu -- -D warnings
+```
+
+`rustup target add x86_64-unknown-linux-gnu` once, and it needs no linker: a
+check compiles without linking, which is enough to find every conditional
+compilation mistake this crate can make.
+
 ## Where Coffer departs from SPEC.md
 
 **The master password lives as long as the vault does.** `SPEC.md` says it is
