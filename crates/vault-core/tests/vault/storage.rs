@@ -337,17 +337,30 @@ fn only_the_bytes_tell_an_attribute_from_a_write_that_hid_itself() {
     );
 
     // The same shape from the outside, and different bytes: a client that wrote
-    // in place and put the modification time back where it found it.
+    // in place and put the modification time back where it found it. A stamp
+    // carries no timestamp today, so putting it back decides nothing on its
+    // own; it stays here so that a stamp which ever grows one again is still
+    // caught by the bytes rather than passing on a clock.
     let reference = scratch.path().join("when");
     write(&reference, "");
     support::copy_modification_time(&target, &reference);
     write(&target, "two");
     support::copy_modification_time(&reference, &target);
 
+    // Both writes are three bytes on purpose, and this is what says so. A
+    // second write of another length would be caught by the stamp, the
+    // assertion below would still pass, and the digest this test exists for
+    // would never be reached.
+    assert_eq!(
+        Stamp::of(&target).expect("the stamp reads"),
+        stamp,
+        "the second write changed the file's shape, so the bytes were never asked"
+    );
+
     assert_eq!(
         watch::since(&target, stamp, content).expect("it compares"),
         Change::Modified,
-        "a write that hid its modification time went unnoticed"
+        "a write that changed the bytes and nothing else went unnoticed"
     );
 }
 
