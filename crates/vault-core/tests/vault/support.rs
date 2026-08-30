@@ -116,8 +116,10 @@ pub fn built_with(
 /// The password every database `built` produces uses.
 pub const BUILT_PASSWORD: &str = "built";
 
-/// Writes an extended attribute, which is the one thing that moves a file's
-/// change time and leaves everything else about it alone.
+/// Puts an extended attribute on a file, leaving its length, its inode and
+/// every byte of its contents alone. That is what the callers need: something a
+/// system does to a file behind the user's back, which a vault must not read as
+/// another client's edit.
 ///
 /// The syscall rather than a command: `xattr` is a Mac's tool and the engine's
 /// suite runs on Linux, where it is not installed under any name. The name is
@@ -172,6 +174,31 @@ pub fn set_attribute(path: &Path) {
         "the attribute was refused: {}",
         std::io::Error::last_os_error()
     );
+
+    // And read back, because a call that returned zero is not yet an attribute
+    // on a file. Asking for the length rather than the value on purpose: macOS
+    // owns `com.apple.provenance` and stores eleven bytes of its own whatever
+    // it is handed, so the value that lands is not the value written and only
+    // its presence is the caller's business.
+    //
+    // SAFETY: the path outlives the call, and a null destination with a length
+    // of zero is how both platforms are asked for the size alone.
+    let present = unsafe {
+        #[cfg(target_os = "macos")]
+        {
+            libc::getxattr(path.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0, 0, 0)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            libc::getxattr(path.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0)
+        }
+    };
+
+    assert!(
+        present >= 0,
+        "the attribute was accepted and is not on the file: {}",
+        std::io::Error::last_os_error()
+    );
 }
 
 /// Puts `from`'s modification time onto `to`, which is what a client that
@@ -183,10 +210,14 @@ pub fn set_attribute(path: &Path) {
 pub fn copy_modification_time(from: &Path, to: &Path) {
     let when = std::fs::metadata(from).expect("the file to copy the time from is there");
 
+    // The access time is left where it is. `utimensat` takes both or neither,
+    // and `UTIME_OMIT` is how it is told to keep one - which is what the name
+    // of this function promises, and one fewer difference between the file a
+    // test is describing and the file a client would have left.
     let times = [
         libc::timespec {
-            tv_sec: when.atime() as _,
-            tv_nsec: when.atime_nsec() as _,
+            tv_sec: 0,
+            tv_nsec: libc::UTIME_OMIT,
         },
         libc::timespec {
             tv_sec: when.mtime() as _,
