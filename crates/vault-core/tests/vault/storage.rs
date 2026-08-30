@@ -155,7 +155,15 @@ fn the_lock_names_this_process_and_goes_when_the_vault_does() {
             !holder.time.is_empty(),
             "the lock should say when it was taken"
         );
-        assert_eq!(holder.user, std::env::var("USER").unwrap_or_default());
+        // Not the environment recomputed: which variable wins, and what the
+        // engine falls back to when neither is set, is the engine's rule, and a
+        // test holding its own copy would agree with itself. Under a container,
+        // which sets neither, that copy was `""` and this compared nothing to
+        // nothing.
+        assert!(
+            !holder.user.is_empty(),
+            "the lock does not name the account holding it"
+        );
     }
 
     assert!(!lock_path.exists(), "the lock outlived the vault");
