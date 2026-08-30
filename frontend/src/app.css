@@ -193,6 +193,42 @@
 		user-select: text;
 	}
 
+	/* The mockup draws the generator's length slider by hand: a three-pixel rail,
+	   and a knob the colour of text with a hairline around it. A range input is
+	   otherwise the one control in this window macOS draws itself, in its own
+	   colours, which puts a second accent on a screen that has one.
+
+	   The filled part of the rail is the one thing the mockup has and this does
+	   not. WebKit exposes no pseudo-element for it, and the only other way to
+	   draw it is a width computed into a style attribute, which this window's
+	   `style-src 'self'` throws away. The number beside the label is what says
+	   where the handle is. */
+	input[type='range'] {
+		-webkit-appearance: none;
+		appearance: none;
+		width: 100%;
+		background: transparent;
+	}
+
+	input[type='range']::-webkit-slider-runnable-track {
+		height: 3px;
+		border-radius: 999px;
+		background: var(--color-line);
+	}
+
+	input[type='range']::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		appearance: none;
+		width: 16px;
+		height: 16px;
+		/* Half the difference between the knob and the rail, so the knob sits on
+		   the middle of it rather than on its top edge. */
+		margin-top: -6.5px;
+		border: 1px solid var(--color-hairline);
+		border-radius: 999px;
+		background: var(--color-txt);
+	}
+
 	::selection {
 		background: var(--color-selection);
 		color: var(--color-txt);
@@ -207,8 +243,12 @@
 		outline-offset: 2px;
 	}
 
+	/* The two draining bars are left out of this on purpose. Their length is the
+	   reading: a bar that emptied at once beside "Hides in 0:30" would be saying
+	   something that is not true, and a rail crossing a screen over half a minute
+	   is not the kind of motion this preference is asking about. */
 	@media (prefers-reduced-motion: reduce) {
-		*,
+		*:not([class*='animate-drain']),
 		*::before,
 		*::after {
 			animation-duration: 0.001ms !important;

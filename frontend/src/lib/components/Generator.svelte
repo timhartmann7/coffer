@@ -123,7 +123,7 @@
 				max={LONGEST}
 				bind:value={length}
 				onchange={draw}
-				class="mt-3 w-full accent-accent"
+				class="mt-3 w-full"
 			/>
 			<div class="mt-2 flex justify-between font-mono text-label text-txt4">
 				<span>{SHORTEST}</span><span>{LONGEST}</span>

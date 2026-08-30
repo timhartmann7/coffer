@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 const settings = readFileSync('../crates/vault-gui/src/settings.rs', 'utf8');
 const css = readFileSync('src/app.css', 'utf8');
 const toast = readFileSync('src/lib/components/Toast.svelte', 'utf8');
+const field = readFileSync('src/lib/components/PasswordField.svelte', 'utf8');
 
 /** The seconds Rust will let the reader choose. */
 function offered(): number[] {
@@ -47,6 +48,27 @@ describe('every clipboard timeout has a bar that empties in exactly that long', 
 				toast.includes(`'animate-drain-clipboard-${seconds}'`),
 				`Toast.svelte cannot draw the ${seconds} second drain`
 			).toBe(true);
+		}
+	});
+
+	/**
+	 * The reduced-motion block empties every animation in the window at once, and
+	 * these two are the exception, keyed off the substring their class names
+	 * share. A drain renamed out of that shape would empty instantly beside a
+	 * label counting down, and nothing else would notice.
+	 */
+	it('keeps the drains out of the reduced-motion blanket', () => {
+		const exemption = css.match(/\*:not\(\[class\*='([^']+)'\]\)/);
+		expect(exemption, 'the reduced-motion block spares nothing any more').not.toBeNull();
+		const spared = exemption?.[1] ?? '';
+
+		const drawn = [...toast.matchAll(/'(animate-[\w-]+)'/g), ...field.matchAll(/(animate-[\w-]+)/g)]
+			.map((found) => found[1])
+			.filter((name) => name.length > 'animate-'.length);
+
+		expect(drawn.length).toBeGreaterThan(offered().length);
+		for (const name of drawn) {
+			expect(name, `${name} would empty at once when motion is reduced`).toContain(spared);
 		}
 	});
 

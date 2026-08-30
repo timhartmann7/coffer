@@ -149,7 +149,7 @@
 		     eight combining accents with no letter under them. It is clipped to
 		     its own box so that whatever it is stays out of the label above and
 		     out of the buttons beside it. -->
-		<span class="min-w-[9rem] flex-1 overflow-hidden">
+		<span class="min-w-36 flex-1 overflow-hidden">
 			{#if !live}
 				{#if empty}
 					<span class="block text-body text-txt4">No password on this entry</span>

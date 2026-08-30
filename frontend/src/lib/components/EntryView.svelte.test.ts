@@ -708,7 +708,7 @@ it('gives the password row somewhere to wrap rather than squeezing the value', (
 	const row = value?.parentElement;
 	expect(row?.className, 'the row has nowhere to wrap').toContain('flex-wrap');
 	expect(value?.className, 'the value does not take the room that is left').toContain('flex-1');
-	expect(value?.className, 'the value has no floor to stop shrinking at').toMatch(/min-w-\[/);
+	expect(value?.className, 'the value has no floor to stop shrinking at').toMatch(/min-w-\d/);
 
 	return unmount(component);
 });

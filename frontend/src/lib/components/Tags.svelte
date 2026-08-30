@@ -63,7 +63,7 @@
 					class="text-txt4 transition-colors hover:text-danger"
 					aria-label="Remove the tag {tag}"
 				>
-					<Icon name="x" class="h-3 w-3" />
+					<Icon name="x" class="h-3.5 w-3.5" />
 				</button>
 			{/if}
 		</span>
