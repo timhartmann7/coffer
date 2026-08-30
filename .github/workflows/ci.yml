@@ -55,9 +55,23 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends shellcheck
           shellcheck install.sh assets/appicon.sh crates/vault-core/tests/fixtures/generate.sh
-          curl -fsSL https://github.com/rhysd/actionlint/releases/latest/download/actionlint_linux_amd64.tar.gz |
-            tar xz -C /usr/local/bin actionlint
-          actionlint
+
+          # Every actionlint asset carries its version in its own name, so there
+          # is nothing at /latest/download to ask for: the version comes off the
+          # redirect first, the same way install.sh finds a release, and the
+          # download is checked against the sums published beside it.
+          latest=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+            https://github.com/rhysd/actionlint/releases/latest)
+          version=${latest##*/v}
+          base=https://github.com/rhysd/actionlint/releases/download/v$version
+
+          asset=actionlint_${version}_linux_amd64.tar.gz
+          work=$(mktemp -d)
+          curl -fsSL -o "$work/$asset" "$base/$asset"
+          curl -fsSL -o "$work/sums" "$base/actionlint_${version}_checksums.txt"
+          (cd "$work" && sha256sum --check --ignore-missing sums && tar xzf "$asset" actionlint)
+
+          "$work/actionlint"
 
       - name: The installer refuses a machine that is not a Mac
         run: |
@@ -77,8 +91,16 @@ jobs:
       - name: Licences and banned crates
         run: cargo deny check
 
+      # The escape hatch the macOS job uses must never reach this one: it turns
+      # every comparison against an outside implementation into an early return,
+      # and the suite would go green having checked nothing that matters.
       - name: Tests, including the round-trip suite
-        run: cargo nextest run -p vault-core --all-features
+        run: |
+          if [ -n "${COFFER_SKIP_KEEPASSXC:-}" ]; then
+            echo "the round-trip criterion cannot be skipped in this job" >&2
+            exit 1
+          fi
+          cargo nextest run -p vault-core --all-features
 
   # The window is macOS only: it talks to AppKit for the pasteboard, for opening
   # an address and for the title bar, and `vault-gui` does not compile anywhere
@@ -136,7 +158,14 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+      # The round-trip suite is the Ubuntu job's, because that is where an
+      # external implementation of the format comes from apt. Here the same
+      # tests would find no `keepassxc-cli` and stop the run - deliberately, so
+      # that a renamed package cannot quietly delete the project's main test.
+      # What this job is for is the half that only compiles on a Mac.
       - name: Tests
+        env:
+          COFFER_SKIP_KEEPASSXC: '1'
         run: cargo nextest run --workspace --all-features
 
       # Written as `if ... then exit 1` rather than with a `!`, because bash
