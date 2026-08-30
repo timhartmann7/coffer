@@ -3,6 +3,7 @@
 	import { fully } from '$lib/format';
 	import type { Database, Failure, Snapshot } from '$lib/model';
 	import Icon from './Icon.svelte';
+	import Mark from './Mark.svelte';
 
 	let {
 		database,
@@ -116,7 +117,7 @@
 
 <div class="flex flex-1 items-center justify-center overflow-y-auto px-10 py-10">
 	<div class="w-full max-w-[320px]">
-		<img src="/coffer-logo-light.svg" alt="" class="mx-auto h-11 w-11" />
+		<Mark class="mx-auto h-11 w-11 text-txt" />
 		{#if why}
 			<h1 class="mt-6 text-center text-title font-medium tracking-tight text-txt">Locked</h1>
 			<p class="mx-auto mt-3 max-w-[38ch] text-center text-body leading-relaxed text-txt2">
@@ -218,6 +219,9 @@
 					<button type="button" onclick={choose} class="transition-colors hover:text-txt2">
 						Open another database
 					</button>
+					<button type="button" onclick={onCreate} class="transition-colors hover:text-txt2">
+						Create new
+					</button>
 				</div>
 			{/if}
 		{:else}
@@ -246,7 +250,7 @@
 					I already have a vault file
 				</button>
 				<p class="mt-2 text-fine text-txt4">
-					A .kdbx file from KeePassXC, KeePass or another computer will do
+					A .kdbx file from another app, or from another computer, will do
 				</p>
 			</div>
 			{#if failure}
