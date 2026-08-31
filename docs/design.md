@@ -147,6 +147,20 @@ default, where the halftone reads clearly.
 the bundler's defaults already put the application and the Applications alias
 where a reader expects them.
 
+## The list beside an open entry
+
+The mockup gives this list the wide one's rule: a hairline under every row, and
+a plane behind the one being read. At two hundred and thirty pixels that reads
+as one block of stripes rather than as a list of entries, which is the width the
+mockup draws it at and the width it is wrong at.
+
+So it takes the folder list's language instead - the same window's answer to the
+same question at the same width. A card with a hairline that appears under the
+pointer, the raised plane and an accent bar down the side of the one being read,
+and the key or clip the wide list marks a row with. Nothing here is a value the
+mockup does not contain; what changed is which of its own patterns this list
+belongs to.
+
 ## The list row
 
 The mockup draws a row as a `div` that lights up under the pointer, and says

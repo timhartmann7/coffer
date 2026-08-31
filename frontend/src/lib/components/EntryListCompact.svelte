@@ -1,9 +1,19 @@
 <script lang="ts">
 	import type { EntryRow } from '$lib/model';
+	import Icon from './Icon.svelte';
 	import Mask from './Mask.svelte';
 
-	/** The list as it is drawn beside an open entry: two lines, no columns, and
-	 * the open one marked with the same bar the tree uses. */
+	/**
+	 * The list as it is drawn beside an open entry: two lines and no columns.
+	 *
+	 * Drawn as cards rather than as full-width bands. The mockup gives this list
+	 * the same rule as the wide one - a hairline under every row and a plane
+	 * behind the selected one - and at two hundred and thirty pixels that reads
+	 * as one block of stripes rather than as a list of entries. So it takes the
+	 * folder list's language instead, which is the same window's answer to the
+	 * same question at the same width: a card that lifts under the pointer, and
+	 * an accent bar down the side of the one being read.
+	 */
 	let {
 		rows,
 		open,
@@ -40,30 +50,41 @@
 <div
 	role="presentation"
 	onclick={(event) => event.target === event.currentTarget && onDismiss()}
-	class="flex-1 overflow-y-auto"
+	class="flex-1 overflow-y-auto p-2"
 >
 	{#each rows as row (row.id)}
 		{@const here = row.id === open}
 		<button
 			type="button"
 			onclick={() => onOpen(row.id)}
-			class="relative block w-full border-b border-line px-4 py-3 text-left transition-colors {here
-				? 'bg-raised'
-				: 'hover:bg-raised/50'}"
+			class="relative mb-1 block w-full overflow-hidden rounded-sm border px-3 py-2.5 text-left transition {here
+				? 'border-hairline bg-raised'
+				: 'border-transparent hover:border-hairline hover:bg-raised/50'}"
 		>
 			{#if here}
-				<span class="absolute top-0 left-0 h-full w-[2px] bg-accent" aria-hidden="true"></span>
+				<span
+					class="absolute top-1 bottom-1 left-0 w-[2px] rounded-full bg-accent"
+					aria-hidden="true"
+				></span>
 			{/if}
-			<div class="truncate text-body {here ? 'text-txt' : 'text-txt2'}">
-				{#if row.title === null}
-					<Mask />
-				{:else}
-					{row.title}
-				{/if}
-			</div>
-			<div class="mt-1 truncate font-mono text-sub {here ? 'text-txt3' : 'text-txt4'}">
+			<span class="flex min-w-0 items-center gap-2">
+				<Icon
+					name={row.hasPassword || row.attachments === 0 ? 'key' : 'clip'}
+					class="h-3.5 w-3.5 shrink-0 {here ? 'text-txt3' : 'text-txt4'}"
+				/>
+				<span class="min-w-0 flex-1 truncate text-body {here ? 'text-txt' : 'text-txt2'}">
+					{#if row.title === null}
+						<Mask />
+					{:else}
+						{row.title}
+					{/if}
+				</span>
+			</span>
+			<span
+				class="mt-1 block truncate pl-[22px] font-mono text-sub {here ? 'text-txt3' : 'text-txt4'}"
+			>
 				{subtitle(row)}
-			</div>
+			</span>
 		</button>
 	{/each}
 </div>
