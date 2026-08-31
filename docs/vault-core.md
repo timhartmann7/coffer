@@ -12,7 +12,7 @@ hazards are waiting for the slices that come next.
 
 ## The library underneath
 
-Coffer is built on `keepass`, pinned to exactly `=0.13.23`. The pin is not
+Coffer is built on `keepass`, pinned to exactly `=0.13.25`. The pin is not
 caution: `0.13.x` has shipped breaking refactors inside patch releases. Bump it
 by hand and run the round-trip suite.
 
@@ -23,7 +23,7 @@ Only the `save_kdbx4` feature is enabled. `totp` is out of scope, and
 ### What the library gets wrong, and what Coffer does about it
 
 Line references are into
-`~/.cargo/registry/src/index.crates.io-*/keepass-0.13.23/`.
+`~/.cargo/registry/src/index.crates.io-*/keepass-0.13.25/`.
 
 **Every KDBX 3 attachment collapses onto one.**
 `format/xml_db/mod.rs:108-123` assigns each `Meta/Binaries` entry
