@@ -119,7 +119,26 @@ pub fn open<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     config.theme = appearance(look(app));
     config.label = label();
 
-    let window = tauri::WebviewWindowBuilder::from_config(app, &config)?.build()?;
+    // Shown when the page has drawn, rather than as the window is built. A
+    // webview is white until its first frame, whatever the window around it is
+    // wearing and whatever the document says about its colour scheme, and a
+    // lock shows that as a flash between the vault and the password screen.
+    // There is nothing to look at in the meantime: the window is a rectangle of
+    // the reader's desktop until the screen it carries exists.
+    config.visible = false;
+
+    let window = tauri::WebviewWindowBuilder::from_config(app, &config)?
+        .on_page_load(|window, payload| {
+            if payload.event() != tauri::webview::PageLoadEvent::Finished {
+                return;
+            }
+            let _ = window.show();
+            // Asked for as well as shown: the window that was destroyed took
+            // the application's focus with it, and the password field is what
+            // the next keystroke is for.
+            let _ = window.set_focus();
+        })
+        .build()?;
     buttons::centre_buttons(&window);
 
     let held = window.clone();

@@ -403,6 +403,15 @@ had the window in its hands. Every one of them is free when there is nothing to
 do: a check that finds the row in place does not touch it, which is what makes
 them safe to answer while a window is being dragged.
 
+**The window is shown when its page has drawn, not when it is built.** A webview
+is white until its first frame, whatever the window around it is wearing and
+whatever `app.html` says about its colour scheme, and a lock is the one moment a
+whole window is built while the reader watches. So `visible` is false in the
+window Rust builds and the page's own load event is what shows it. The cost is a
+beat with no window during a lock, where there was a beat of white before; the
+risk is a page that never finishes loading, which is a dev server that is not
+running and a window that does not appear rather than one that is blank.
+
 **A save holds the session while it runs.** Every committed change writes the
 file, and the write derives the key again, so for that second nothing else can
 read the vault. The status bar says `Saving…`. If that ever becomes a wait

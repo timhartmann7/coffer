@@ -16,6 +16,7 @@ const settings = readFileSync('../crates/vault-gui/src/settings.rs', 'utf8');
 const page = readFileSync('src/routes/+page.svelte', 'utf8');
 const document = readFileSync('src/app.html', 'utf8');
 const configuration = JSON.parse(readFileSync('../crates/vault-gui/tauri.conf.json', 'utf8'));
+const opening = readFileSync('../crates/vault-gui/src/window.rs', 'utf8');
 
 /** The body of the rule a selector opens, found by counting braces so that a
  * nested block cannot end it early. */
@@ -188,6 +189,23 @@ describe('the looks the screen offers are the looks Rust knows', () => {
 	it('tells the document its colour scheme before a stylesheet can', () => {
 		expect(document, 'the first frame is white again').toMatch(
 			/<meta name="color-scheme" content="light dark"\s*\/>/
+		);
+	});
+
+	/**
+	 * The other half of the same frame.
+	 *
+	 * A document that knows its colour scheme is still nothing at all until the
+	 * webview has drawn it once, and a webview is white until then whatever the
+	 * window around it is wearing. So the window is built with nothing on the
+	 * screen and shown when the page has drawn - which is what a lock, the one
+	 * moment a whole window is built while the reader watches, would otherwise
+	 * show as a white flash.
+	 */
+	it('shows the window when the page has drawn rather than when it is built', () => {
+		expect(opening, 'the window is built onto the screen').toContain('config.visible = false');
+		expect(opening, 'nothing shows the window again').toMatch(
+			/PageLoadEvent::Finished[\s\S]{0,200}\.show\(\)/
 		);
 	});
 });
