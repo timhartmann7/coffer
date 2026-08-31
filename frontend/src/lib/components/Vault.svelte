@@ -75,6 +75,10 @@
 	let deleting = $state(false);
 	let saving = $state(false);
 	let conflict = $state<Rival | null>(null);
+	/** Whether the dialog is about a file somebody rewrote or one that is not
+	 * there any more. The two ask different questions and offer different ways
+	 * out: nothing can be reloaded from a file that is gone. */
+	let missing = $state(false);
 	let changedAt = $state<Date | null>(null);
 	let notice = $state<{ message: string; kind: 'copied' | 'failed' } | null>(null);
 	/** The toast's own clock, counting the seconds the clipboard still holds a
@@ -140,14 +144,22 @@
 	 *
 	 * There is no save button, so this is what one means: the change is already
 	 * in the window, and this is the moment it reaches the file. A file somebody
-	 * else wrote in the meantime stops here and asks.
+	 * else wrote in the meantime stops here and asks, and so does one that is not
+	 * there any more.
+	 *
+	 * Both have to ask rather than report. A save that only raised a notice left
+	 * the reader editing into a window whose every write failed - a renamed file,
+	 * an unmounted disk - with a whole session's work in memory and nothing in
+	 * the application able to put it anywhere.
 	 */
 	async function persist() {
 		saving = true;
 		try {
 			await save();
 		} catch (thrown) {
-			if (asFailure(thrown).code === 'externalChange') {
+			const refused = asFailure(thrown);
+			if (refused.code === 'externalChange' || refused.code === 'gone') {
+				missing = refused.code === 'gone';
 				conflict = await rival().catch(() => ({ modified: null, entries: null }));
 			} else {
 				failed(thrown);
@@ -318,6 +330,7 @@
 			versions = [];
 			changedAt = null;
 			conflict = null;
+			missing = false;
 		} catch (thrown) {
 			failed(thrown);
 		} finally {
@@ -334,7 +347,12 @@
 			notice = { message: `Kept as ${beside.name}`, kind: 'copied' };
 			copies += 1;
 			fade(6000);
-			await takeTheirs();
+			// Only where there is a file to take instead. When the vault itself
+			// is gone there is nothing to read back, and the window goes on
+			// holding the version the copy was made from - which is still the
+			// only one, and can still be written back where it belongs.
+			if (!missing) await takeTheirs();
+			missing = false;
 		} catch (thrown) {
 			failed(thrown);
 		} finally {
@@ -347,6 +365,7 @@
 			saving = true;
 			await saveOver();
 			conflict = null;
+			missing = false;
 		} catch (thrown) {
 			failed(thrown);
 		} finally {
@@ -866,6 +885,7 @@
 	{#if conflict}
 		<Conflict
 			rival={conflict}
+			{missing}
 			entries={entriesOf(root).length}
 			{changedAt}
 			{now}

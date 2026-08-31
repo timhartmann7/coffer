@@ -446,6 +446,75 @@ it('keeps this version and writes over the file when asked to', async () => {
 	return unmount(component);
 });
 
+/**
+ * A file that is not there any more: renamed in Finder, moved, deleted, or on a
+ * disk that was unplugged. Every save from here on fails, so a screen that only
+ * raised a notice left the reader editing into a window with a whole session's
+ * work in memory and nothing in the application able to write it anywhere.
+ */
+it('asks what to do when the vault file is gone, rather than only reporting it', async () => {
+	ipc.save.mockRejectedValue({ code: 'gone', message: 'the database file is gone' });
+	ipc.rival.mockResolvedValue({ modified: null, entries: null });
+	ipc.saveOver.mockResolvedValue(undefined);
+	ipc.createEntry.mockResolvedValue({ tree: root, entry: kept.id });
+	ipc.entry.mockResolvedValue(entry({ id: kept.id, group: root.id }));
+
+	const component = open();
+	flushSync();
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Entry')
+		?.click();
+	await vi.waitFor(() => expect(host.textContent).toContain('not there any more'));
+	flushSync();
+
+	// Nothing to reload from a file that is gone, so that way out is not offered.
+	const named = [...host.querySelectorAll('button')].map((each) => each.textContent?.trim());
+	expect(named).toContain('Put it back');
+	expect(named).toContain('Keep it elsewhere');
+	expect(named).not.toContain('Take the file on disk');
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Put it back')
+		?.click();
+	await vi.waitFor(() => expect(ipc.saveOver).toHaveBeenCalledTimes(1));
+	flushSync();
+
+	expect(host.textContent).not.toContain('not there any more');
+
+	return unmount(component);
+});
+
+/** The other way out keeps the work somewhere else, and must not then try to
+ * read back a file that is not there. */
+it('keeps the work elsewhere when the vault file is gone', async () => {
+	ipc.save.mockRejectedValue({ code: 'gone', message: 'the database file is gone' });
+	ipc.rival.mockResolvedValue({ modified: null, entries: null });
+	ipc.saveCopy.mockResolvedValue({ path: '/Users/someone/rescued.kdbx', name: 'rescued' });
+	ipc.createEntry.mockResolvedValue({ tree: root, entry: kept.id });
+	ipc.entry.mockResolvedValue(entry({ id: kept.id, group: root.id }));
+
+	const component = open();
+	flushSync();
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Entry')
+		?.click();
+	await vi.waitFor(() => expect(host.textContent).toContain('not there any more'));
+	flushSync();
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Keep it elsewhere')
+		?.click();
+	await vi.waitFor(() => expect(ipc.saveCopy).toHaveBeenCalledTimes(1));
+	flushSync();
+
+	expect(ipc.reload, 'it read back a file that is not there').not.toHaveBeenCalled();
+	expect(host.textContent).toContain('Kept as rescued');
+
+	return unmount(component);
+});
+
 /** A vault Coffer will not write back offers nothing that would only be
  * refused. */
 it('offers no change at all on a database it cannot write', () => {
