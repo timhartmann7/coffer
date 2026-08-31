@@ -8,13 +8,22 @@
 	 * goes. It used to stay for the whole minute and count every second of it
 	 * down, which is a notice about something already decided sitting on the
 	 * screen for a minute.
+	 *
+	 * It arrives on a keyframe and it leaves on a transition, which are two
+	 * mechanisms for one movement and the reason is the movement itself: nothing
+	 * can animate an element that has already been taken out of the document, so
+	 * a notice that is going has to still be here while it goes. `leaving` is
+	 * what says it is, and the window takes it away once it has.
 	 */
-	let { message, kind }: { message: string; kind: 'copied' | 'failed' } = $props();
+	let { message, kind, leaving }: { message: string; kind: 'copied' | 'failed'; leaving: boolean } =
+		$props();
 </script>
 
 <div
 	data-notice
-	class="pointer-events-none absolute right-5 bottom-5 z-40 w-[292px] animate-rise overflow-hidden rounded-sm border border-hairline bg-raised"
+	class="pointer-events-none absolute right-5 bottom-5 z-40 w-[292px] animate-rise overflow-hidden rounded-sm border border-hairline bg-raised transition duration-[170ms] ease-out {leaving
+		? 'translate-y-2 opacity-0'
+		: ''}"
 >
 	<div class="flex items-center gap-3 px-4 py-3">
 		{#if kind === 'copied'}

@@ -20,6 +20,7 @@
 		versions as loadVersions
 	} from '$lib/ipc';
 	import { named as howLong } from '$lib/duration';
+	import { RISE, span } from '$lib/motion';
 	import type { Database, Entry, EntryRow, Group, Rival, Version } from '$lib/model';
 	import { index, search } from '$lib/search';
 	import { entriesOf, liveEntries, pathTo, recycleBin, shownEntries } from '$lib/tree';
@@ -80,6 +81,9 @@
 	 * copied value. Not the vault's: that one is Rust's and arrives as a prop. */
 	let ticking: ReturnType<typeof setInterval> | null = null;
 	let fading: ReturnType<typeof setTimeout> | null = null;
+	/** Whether the notice on the screen is on its way out. Nothing animates an
+	 * element that has already gone, so it says so first and goes after. */
+	let leaving = $state(false);
 	/** Which copy the toast is about. The bar that drains is a CSS animation and
 	 * an animation does not start again on its own, so the toast is rebuilt. */
 	let copies = $state(0);
@@ -358,10 +362,23 @@
 		fade(6000);
 	}
 
+	/**
+	 * Takes the notice away, once it has been read and once it has finished
+	 * going.
+	 *
+	 * Two waits rather than one: the first is how long the sentence is worth
+	 * reading, the second is the length of the movement that takes it off the
+	 * screen, and `motion.test.ts` is what keeps that second one and the
+	 * stylesheet saying the same number.
+	 */
 	function fade(after: number) {
 		fading = setTimeout(() => {
-			notice = null;
-			fading = null;
+			leaving = true;
+			fading = setTimeout(() => {
+				notice = null;
+				leaving = false;
+				fading = null;
+			}, span(RISE));
 		}, after);
 	}
 
@@ -374,6 +391,9 @@
 			clearTimeout(fading);
 			fading = null;
 		}
+		// A notice that is replaced while it is going arrives fully faded out
+		// otherwise, because the class that is taking it away is still on it.
+		leaving = false;
 	}
 
 	$effect(() => () => clear());
@@ -449,10 +469,25 @@
 		on the settings screen saved it to the file. `inert` is the one attribute
 		that answers all three at once.
 	-->
+	<!--
+		Three tracks whether or not an entry is open, and the third one is what
+		opens and closes.
+
+		The pane used to be a column that existed or did not, so opening an entry
+		was the whole screen relaid out between two frames: the folders narrowed,
+		the list narrowed, and a pane appeared in the gap, all at once and with
+		nothing to follow. A track can be animated where a column that is not
+		there cannot, so the closed state is the same three tracks with the last
+		one at nothing, and the width is what moves.
+
+		The pane inside keeps its own three hundred and eighty-four pixels and is
+		clipped by the track, so the entry is never laid out at a width nobody
+		asked for on its way in.
+	-->
 	<div
-		class="grid flex-1 overflow-hidden {opened
+		class="grid flex-1 overflow-hidden transition-[grid-template-columns] duration-200 ease-out {opened
 			? 'grid-cols-[200px_minmax(230px,1fr)_384px]'
-			: 'grid-cols-[228px_1fr]'}"
+			: 'grid-cols-[228px_minmax(230px,1fr)_0px]'}"
 		inert={settings !== undefined}
 	>
 		<aside class="flex flex-col overflow-hidden border-r border-hairline bg-surface2">
@@ -763,21 +798,25 @@
 			{/if}
 		</div>
 
-		{#if opened}
-			<EntryView
-				entry={opened}
-				{path}
-				{versions}
-				{now}
-				{readOnly}
-				onCopy={copy}
-				onChanged={changed}
-				onVersions={versionsChanged}
-				onClose={() => (opened = null)}
-				onDelete={removeEntry}
-				onFailure={failed}
-			/>
-		{/if}
+		<div class="overflow-hidden">
+			{#if opened}
+				<div class="h-full w-[384px]">
+					<EntryView
+						entry={opened}
+						{path}
+						{versions}
+						{now}
+						{readOnly}
+						onCopy={copy}
+						onChanged={changed}
+						onVersions={versionsChanged}
+						onClose={() => (opened = null)}
+						onDelete={removeEntry}
+						onFailure={failed}
+					/>
+				</div>
+			{/if}
+		</div>
 	</div>
 
 	{#if settings}
@@ -803,7 +842,7 @@
 
 	{#if notice}
 		{#key copies}
-			<Toast message={notice.message} kind={notice.kind} />
+			<Toast message={notice.message} kind={notice.kind} {leaving} />
 		{/key}
 	{/if}
 </div>

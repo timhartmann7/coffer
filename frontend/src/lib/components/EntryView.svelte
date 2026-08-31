@@ -232,7 +232,7 @@
 				<button
 					type="button"
 					onclick={onDelete}
-					class="text-txt4 transition-colors hover:text-danger"
+					class="shrink-0 text-txt4 transition-colors hover:text-danger"
 					aria-label="Delete this entry"
 				>
 					<Icon name="trash" class="h-4 w-4" />

@@ -120,6 +120,19 @@ nothing defines a fourth:
 None is longer than a fifth of a second, and every one is silenced by reduced
 motion — which is the whole difference between them and the two drains above.
 
+**A pane opens by its column and not by itself.** The entry pane used to be a
+column that existed or did not, so opening an entry relaid the whole screen out
+between two frames. The grid keeps three tracks either way and the last one is
+what opens and closes; the pane inside keeps its own width and is clipped by the
+track, so an entry is never laid out at a width nobody asked for on its way in.
+
+**A notice leaves on a transition, which is the one thing a keyframe cannot
+do.** Nothing animates an element that has already been taken out of the
+document, so a notice that is going stays until it has gone. That is the only
+motion in the window whose length is written down twice — once in the
+stylesheet, once in the window that removes it. `motion.svelte.test.ts` keeps
+the two saying the same number.
+
 ## The application icon
 
 The mockup draws the icon as a tile: a rounded square filled `canvas`, with the
