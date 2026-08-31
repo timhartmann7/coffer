@@ -1,4 +1,4 @@
-import { flushSync, mount, tick, unmount } from 'svelte';
+import { createRawSnippet, flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { entry, field, group, row } from '$lib/fixtures';
 import Vault from './Vault.svelte';
@@ -72,9 +72,14 @@ afterEach(() => {
 	host.remove();
 });
 
+/** The settings screen, which this component only ever renders and never
+ * builds: what is in it belongs to the window above. */
+const sheet = createRawSnippet(() => ({ render: () => '<p>The settings</p>' }));
+
 function open(
 	over: {
 		readOnly?: boolean;
+		settings?: typeof sheet;
 		onSettings?: () => void;
 		onTree?: (tree: typeof root) => void;
 	} = {}
@@ -619,6 +624,95 @@ it('keeps everything on the right in one group', () => {
 	expect(pushed).toHaveLength(1);
 	expect(pushed[0].textContent).toContain('Read only');
 	expect(pushed[0].textContent).toContain('Settings');
+
+	unmount(component);
+});
+
+/**
+ * The way out of an open entry, for a pointer.
+ *
+ * Escape has always closed it and nothing else did, so an entry opened with the
+ * mouse could only be put away with the keyboard. The empty part of either pane
+ * to the left of it is what a reader reaches for, and it is only the empty part:
+ * a press on a folder or on a row arrives at the same element on its way up, and
+ * that one means what it says.
+ */
+it('puts the open entry away when the empty part of a pane is pressed', async () => {
+	ipc.entry.mockResolvedValue(
+		entry({
+			id: kept.id,
+			group: root.id,
+			fields: [field({ name: 'Title', kind: 'title', value: 'node-3', empty: false })]
+		})
+	);
+
+	const component = open();
+	flushSync();
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('node-3'))
+		?.click();
+	await vi.waitFor(() => expect(ipc.entry).toHaveBeenCalledWith(kept.id));
+	flushSync();
+	expect(host.querySelector('h1 input'), 'the entry never opened').not.toBeNull();
+
+	const empty = [...host.querySelectorAll('[role="presentation"]')];
+	expect(empty, 'the folders and the list offer nowhere to press').toHaveLength(2);
+
+	for (const area of empty) {
+		const inside = area.querySelector('button');
+		if (!inside) throw new Error('a pane with nothing in it proves nothing');
+		inside.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		await tick();
+		flushSync();
+	}
+
+	empty[1].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+	flushSync();
+	expect(host.querySelector('h1 input'), 'the list kept the entry open').toBeNull();
+
+	unmount(component);
+});
+
+/**
+ * The settings sit over the panes and not over the status bar, because the way
+ * in to them is in the status bar. A settings screen that took the whole window
+ * moved its own button from the bottom right corner to the top left one, in the
+ * moment it was pressed.
+ */
+it('keeps the way out of the settings where the way in was', () => {
+	const onSettings = vi.fn();
+	const component = open({ onSettings, settings: sheet });
+	flushSync();
+
+	expect(reads(), 'the settings are not on the screen').toContain('The settings');
+
+	const corner = host.querySelector('.ml-auto');
+	const back = corner?.querySelector<HTMLButtonElement>('button[aria-label="Back to the vault"]');
+	expect(back, 'the settings moved their own button out of the corner').not.toBeNull();
+
+	back?.click();
+	expect(onSettings).toHaveBeenCalledTimes(1);
+
+	unmount(component);
+});
+
+/** Escape is the way back out of everything else here, and the list it would
+ * otherwise act on is not on the screen. */
+it('lets Escape out of the settings, and leaves the list alone while they are open', () => {
+	const onSettings = vi.fn();
+	const component = open({ onSettings, settings: sheet });
+	flushSync();
+
+	window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true }));
+	flushSync();
+	expect(document.activeElement, 'a shortcut reached the list under the settings').not.toBe(
+		search()
+	);
+
+	window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+	flushSync();
+	expect(onSettings).toHaveBeenCalledTimes(1);
 
 	unmount(component);
 });

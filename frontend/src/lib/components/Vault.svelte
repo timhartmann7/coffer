@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import {
 		asFailure,
@@ -35,6 +36,7 @@
 		database,
 		root,
 		readOnly,
+		settings,
 		onSettings,
 		onTree
 	}: {
@@ -43,9 +45,17 @@
 		/** A snapshot, or a format Coffer reads and does not write. Nothing on
 		 * the screen offers a change it would only be refused. */
 		readOnly: boolean;
-		/** The way to the settings screen while a vault is open. It lives in the
-		 * status bar rather than the title bar, in the corner the countdown used
-		 * to tick in. */
+		/**
+		 * The settings screen, when it is the one being read.
+		 *
+		 * Drawn here rather than in place of this whole screen so that the way in
+		 * to it stays where it was pressed. It sits in the status bar, and a
+		 * settings screen that replaced the status bar as well moved its own
+		 * button to the other corner of the window the moment it opened - which
+		 * is a button walking away from the finger that is still on it.
+		 */
+		settings?: Snippet;
+		/** Opens the settings screen, and closes it again. */
 		onSettings: () => void;
 		onTree: (tree: Group) => void;
 	} = $props();
@@ -378,6 +388,14 @@
 	}
 
 	function shortcut(event: KeyboardEvent) {
+		// The settings screen is over the list, so nothing that acts on the list
+		// is what a key means while it is open. Escape is the way back out of it,
+		// which is the same way back out that Escape is everywhere else here.
+		if (settings) {
+			if (event.key === 'Escape') onSettings();
+			return;
+		}
+
 		if (!event.metaKey) {
 			if (event.key === 'Escape') {
 				if (query !== '') query = '';
@@ -523,7 +541,16 @@
 			</div>
 		{/if}
 
-		<div class="flex-1 overflow-y-auto px-2 pb-2 text-body">
+		<!--
+			The empty part under the folders puts the open entry away. A press that
+			landed on a folder is a press on that folder and arrives here on its way
+			up, which is what `currentTarget` tells the two of them apart by.
+		-->
+		<div
+			role="presentation"
+			onclick={(event) => event.target === event.currentTarget && (opened = null)}
+			class="flex-1 overflow-y-auto px-2 pb-2 text-body"
+		>
 			<button
 				type="button"
 				onclick={() => select(null)}
@@ -708,7 +735,12 @@
 				{/snippet}
 			</Empty>
 		{:else if opened}
-			<EntryListCompact rows={found} open={opened.id} onOpen={open} />
+			<EntryListCompact
+				rows={found}
+				open={opened.id}
+				onOpen={open}
+				onDismiss={() => (opened = null)}
+			/>
 		{:else}
 			<EntryList rows={found} {now} onOpen={open} onCopy={copyFrom} />
 		{/if}
@@ -724,9 +756,18 @@
 			onCopy={copy}
 			onChanged={changed}
 			onVersions={versionsChanged}
+			onClose={() => (opened = null)}
 			onDelete={removeEntry}
 			onFailure={failed}
 		/>
+	{/if}
+
+	{#if settings}
+		<!-- Over the panes and not over the status bar, which is where the button
+		     that opened this is and where it stays. -->
+		<div class="absolute inset-0 z-20 flex animate-fade flex-col overflow-hidden bg-surface">
+			{@render settings()}
+		</div>
 	{/if}
 
 	{#if conflict}
@@ -769,10 +810,13 @@
 		<button
 			type="button"
 			onclick={onSettings}
-			aria-label="Settings"
-			class="flex items-center gap-2 tracking-label uppercase transition-colors hover:text-txt2 active:text-txt4"
+			aria-label={settings ? 'Back to the vault' : 'Settings'}
+			aria-expanded={settings !== undefined}
+			class="flex items-center gap-2 tracking-label uppercase transition-colors active:text-txt4 {settings
+				? 'text-txt2'
+				: 'hover:text-txt2'}"
 		>
-			<Icon name="sliders" class="h-3.5 w-3.5" />
+			<Icon name={settings ? 'x' : 'sliders'} class="h-3.5 w-3.5" />
 			Settings
 		</button>
 	</span>

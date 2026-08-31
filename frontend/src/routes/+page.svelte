@@ -78,6 +78,12 @@
 		await lockVault();
 	}
 
+	/** The way in to the settings is the way back out of them, wherever it is
+	 * drawn. */
+	function toggleSettings() {
+		showing = showing === 'settings' ? 'vault' : 'settings';
+	}
+
 	/** The settings screen offers another vault, which is the unlock screen's
 	 * picker under another name. */
 	async function choose() {
@@ -100,6 +106,17 @@
 	onwheel={() => presence.stir()}
 />
 
+{#snippet settingsScreen()}
+	{#if chosen}
+		<Settings
+			settings={chosen}
+			{database}
+			onSettings={(settled) => (chosen = settled)}
+			onChoose={choose}
+		/>
+	{/if}
+{/snippet}
+
 <div class="flex h-full flex-col">
 	<Titlebar
 		name={showing === 'settings'
@@ -112,9 +129,7 @@
 		unlocked={root !== null}
 		{showing}
 		onLock={root !== null ? lock : undefined}
-		onSettings={chosen && showing !== 'create' && !(root && database && showing === 'vault')
-			? () => (showing = showing === 'settings' ? 'vault' : 'settings')
-			: undefined}
+		onSettings={chosen && showing !== 'create' && !(root && database) ? toggleSettings : undefined}
 	/>
 
 	{#if showing === 'create'}
@@ -125,21 +140,22 @@
 			}}
 			onCancel={() => (showing = 'vault')}
 		/>
-	{:else if showing === 'settings' && chosen}
-		<Settings
-			settings={chosen}
-			{database}
-			onSettings={(settled) => (chosen = settled)}
-			onChoose={choose}
-		/>
 	{:else if root && database}
+		<!-- An open vault keeps the screen, and the settings go over it. There is
+		     one way in and out of them while a vault is open, it is in the status
+		     bar, and it does not move when it is pressed. -->
 		<Vault
 			{database}
 			{root}
 			{readOnly}
-			onSettings={() => (showing = 'settings')}
+			settings={showing === 'settings' ? settingsScreen : undefined}
+			onSettings={toggleSettings}
 			onTree={(tree) => (root = tree)}
 		/>
+	{:else if showing === 'settings' && chosen}
+		<!-- Nothing is open, so there is nothing to lay them over: the way in was
+		     the title bar, and that is where it stays. -->
+		{@render settingsScreen()}
 	{:else if ready}
 		<Unlock
 			{database}
