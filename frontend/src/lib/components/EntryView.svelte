@@ -184,38 +184,46 @@
 	}
 </script>
 
-<section class="flex animate-fade flex-col overflow-hidden bg-surface">
+<section class="flex h-full animate-fade flex-col overflow-hidden bg-surface">
 	<header class="shrink-0 border-b border-hairline px-6 py-5">
-		<!-- The way out first and the way to lose the entry last, with a gap
-		     between them: the mockup's rule is that a destructive action stands
-		     at the end of a row so that missing it costs a movement. -->
-		<div class="flex items-start gap-4">
-			<div class="min-w-0 flex-1">
-				<div class="font-mono text-label tracking-label text-txt4 uppercase">
-					{path.map((group) => group.name).join(' · ')}
-				</div>
-				{#if title && title.value === null}
-					<h1 class="mt-2 truncate text-title font-medium tracking-tight text-txt">
-						<Mask />
-					</h1>
-				{:else}
-					<h1 class="mt-1.5 -ml-2 flex">
-						<Editable
-							value={title?.value ?? ''}
-							label="Title"
-							placeholder="Untitled"
-							classes="text-title font-medium tracking-tight text-txt"
-							readonly={readOnly}
-							bare
-							onCommit={(value) => write(nameOf(title, 'Title'), value, title?.protected ?? false)}
-						/>
-					</h1>
-				{/if}
+		<!--
+			The folders down to this entry, and only when there are any. An entry at
+			the top of a vault has none, and the empty line it used to leave was
+			what pushed the title below the two buttons beside it.
+		-->
+		{#if path.length > 0}
+			<div class="mb-1.5 truncate font-mono text-label tracking-label text-txt4 uppercase">
+				{path.map((group) => group.name).join(' · ')}
 			</div>
+		{/if}
+
+		<!-- The name and the two things that can be done to the entry, on one
+		     line and centred against each other. The way out first and the way to
+		     lose the entry last, with a gap between them: the mockup's rule is
+		     that a destructive action stands at the end of a row so that missing
+		     it costs a movement. -->
+		<div class="flex items-center gap-4">
+			{#if title && title.value === null}
+				<h1 class="min-w-0 flex-1 truncate text-title font-medium tracking-tight text-txt">
+					<Mask />
+				</h1>
+			{:else}
+				<h1 class="-ml-2 flex min-w-0 flex-1">
+					<Editable
+						value={title?.value ?? ''}
+						label="Title"
+						placeholder="Untitled"
+						classes="text-title font-medium tracking-tight text-txt"
+						readonly={readOnly}
+						bare
+						onCommit={(value) => write(nameOf(title, 'Title'), value, title?.protected ?? false)}
+					/>
+				</h1>
+			{/if}
 			<button
 				type="button"
 				onclick={onClose}
-				class="text-txt4 transition-colors hover:text-txt2"
+				class="shrink-0 text-txt4 transition-colors hover:text-txt2"
 				aria-label="Close this entry"
 			>
 				<Icon name="x" class="h-4 w-4" />
