@@ -382,14 +382,16 @@ another with the same label, and the runtime delivers the old one's teardown
 after the callback that built its replacement.
 
 Where the row goes is measured down from the top of the window and converted
-into the coordinates of whatever view AppKit is keeping the buttons in. Reading
-that view's own height instead is what used to move the whole row after a zoom:
-its height is AppKit's to change and it changes, while Coffer's title bar hangs
-from the top of the window and does not. The gap between two buttons is believed
-only from a row that is evenly spaced and remembered when it is - a row AppKit
-has half put back is not even, and laying three buttons out on the gap across it
-moved the rightmost one twice as far as the error, which is the one seen
-jittering during a live resize.
+into the coordinates of whatever view AppKit is keeping the buttons in. Both of
+the numbers that go into it are believed only when two readings agree, and
+remembered when they do. The gap between two buttons is one of them: a row
+AppKit has half put back is not evenly spaced, and laying three buttons out on
+the gap across it moves the rightmost one twice as far as the error. The height
+is the other: the window's frame and the view's place inside it are read a
+moment apart, and while a window is being dragged the first has already moved
+and the second has not, so every frame of the drag answers something different.
+A window nobody is dragging answers the same thing twice, and that is the answer
+the row is placed on.
 
 **A save holds the session while it runs.** Every committed change writes the
 file, and the write derives the key again, so for that second nothing else can

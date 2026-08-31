@@ -90,9 +90,13 @@ thread_local! {
     /// [`spacing`].
     static SPACING: Cell<f64> = const { Cell::new(0.0) };
 
-    /// How far up the view holding them the row sits, remembered from a window
-    /// that was not being dragged. See [`height_above_the_bottom`].
+    /// How far up the view holding them the row sits, remembered from two
+    /// readings that agreed. See [`height_above_the_bottom`].
     static BOTTOM: Cell<Option<f64>> = const { Cell::new(None) };
+
+    /// What the last reading said, which is the only thing the next one has to
+    /// agree with to be believed.
+    static LAST: Cell<Option<f64>> = const { Cell::new(None) };
 }
 
 /// The observers one window holds, taken off the notification centre when it is
@@ -314,27 +318,45 @@ fn settle_row(window: &NSWindow) {
 /// of the view the buttons are in, because those are the coordinates a frame
 /// origin is set in and the two are not the same space.
 ///
-/// Remembered, for the same reason the gap between two buttons is. That is two
-/// readings a moment apart - the window's height, and where the view sits
-/// inside it - and during a drag the window has already grown while the view
-/// has not caught up, so they disagree by however far the pointer moved that
-/// frame. The row rode up the window while it was being dragged and dropped
-/// back when the pointer stopped. Where the row goes is a constant of the
-/// window's chrome, so it is read when nothing is moving and kept.
+/// Believed only from two readings that agree, and remembered when they do -
+/// which is the same rule the gap between two buttons is measured by, for the
+/// same reason. It is two readings a moment apart: the window's height, and
+/// where the view sits inside it. While the window is being dragged the first
+/// has already moved and the second has not, so every frame answers something
+/// different and the row rides up the window and drops back when the pointer
+/// stops. A window nobody is dragging answers the same thing twice.
+///
+/// Two readings rather than asking AppKit whether a drag is in progress:
+/// `inLiveResize` is a view's own state, and the view the buttons are in is not
+/// in the content hierarchy a live resize is announced to. Agreement is a
+/// property of the numbers themselves, and it needs nobody's permission.
 fn height_above_the_bottom(inside: &NSView, close: &NSButton) -> Option<f64> {
-    if !inside.inLiveResize() {
-        let above = below_the_top(
-            inside.window()?.frame().size.height,
-            close.frame().size.height,
-        );
-        BOTTOM.set(Some(
-            inside
-                .convertPoint_fromView(NSPoint::new(0.0, above), None)
-                .y,
-        ));
-    }
+    let Some(window) = inside.window() else {
+        return BOTTOM.get();
+    };
 
-    BOTTOM.get()
+    let above = below_the_top(window.frame().size.height, close.frame().size.height);
+    Some(settled(
+        inside
+            .convertPoint_fromView(NSPoint::new(0.0, above), None)
+            .y,
+    ))
+}
+
+/// The remembering of the above, with nothing of AppKit in it.
+fn settled(now: f64) -> f64 {
+    if LAST
+        .get()
+        .is_some_and(|before| (before - now).abs() < SAME_PLACE)
+    {
+        BOTTOM.set(Some(now));
+    }
+    LAST.set(Some(now));
+
+    // Nothing has settled yet, and a row placed on this reading is better than
+    // a row left where AppKit put it: the first pass of a window's life runs
+    // before anything is moving.
+    BOTTOM.get().unwrap_or(now)
 }
 
 /// The gap AppKit leaves between two of the buttons.
@@ -443,23 +465,41 @@ mod tests {
 
     /// Where the row goes is read from two things a moment apart - the window's
     /// height, and where the view holding the buttons sits inside it - and
-    /// mid-drag the first has moved and the second has not. So it is read when
-    /// nothing is moving and kept, and a drag uses what was kept.
+    /// mid-drag the first has moved while the second has not. Every frame of a
+    /// drag therefore answers something different, and a row placed on those
+    /// answers rides up the window and drops back when the pointer stops. Two
+    /// readings that agree are a window nobody is dragging.
     #[test]
-    fn a_drag_uses_the_place_the_row_settled_in_rather_than_reading_it_again() {
+    fn a_drag_places_the_row_where_it_settled_rather_than_where_a_frame_says() {
         BOTTOM.set(None);
+        LAST.set(None);
+
+        // The first pass of a window's life. Nothing has settled, and a row
+        // placed here beats a row left where AppKit put it.
+        assert_eq!(settled(3.0), 3.0, "the first row of all was not placed");
         assert_eq!(
-            BOTTOM.get(),
-            None,
-            "a row that has never settled has no place"
+            settled(3.0),
+            3.0,
+            "a window that is not moving did not settle"
         );
 
-        BOTTOM.set(Some(3.0));
-        assert_eq!(
-            BOTTOM.get(),
-            Some(3.0),
-            "the place the row settled in was not kept"
-        );
+        // A drag. Every frame is a different answer, and not one of them is
+        // believed.
+        for riding in [11.0, 19.0, 27.0, 35.0, 43.0] {
+            assert_eq!(
+                settled(riding),
+                3.0,
+                "the row rode up the window while it was being dragged"
+            );
+        }
+
+        // The pointer stops, and the answer that repeats is the one taken.
+        assert_eq!(settled(3.0), 3.0, "the row did not come back");
+
+        // A window on a display of another scale has another answer, and it
+        // settles too rather than being refused for ever.
+        assert_eq!(settled(5.0), 3.0, "one reading was enough to move the row");
+        assert_eq!(settled(5.0), 5.0, "the row never took the new place");
     }
 
     /// A button AppKit is taller than the bar Coffer draws would take the row
