@@ -52,7 +52,9 @@ const root = group({
 	name: 'Root',
 	entries: [kept],
 	sections: [
-		group({ name: 'Work', entries: [other] }),
+		// A folder with a folder in it, so the tree draws the chevron that expands
+		// without selecting. That press is the one the dismiss guard is about.
+		group({ name: 'Work', entries: [other], sections: [group({ name: 'Clients' })] }),
 		group({ name: 'Recycle Bin', isRecycleBin: true, entries: [deleted] })
 	]
 });
@@ -701,6 +703,37 @@ it('puts the open entry away when the empty part of the folders is pressed', asy
 	folders.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 	flushSync();
 	expect(host.querySelector('h1 input'), 'the folders kept the entry open').toBeNull();
+
+	unmount(component);
+});
+
+/**
+ * The guard the folder pane's dismiss handler needs, which nothing else states.
+ *
+ * The tree draws a chevron that expands a folder without selecting it, and that
+ * chevron is inside the same element the empty part of the pane is. Without the
+ * guard, opening a folder to look for something closes the entry being looked
+ * at.
+ */
+it('leaves the open entry alone when a folder is only expanded', async () => {
+	ipc.entry.mockResolvedValue(
+		entry({
+			id: kept.id,
+			group: root.id,
+			fields: [field({ name: 'Title', kind: 'title', value: 'node-3', empty: false })]
+		})
+	);
+
+	const component = open();
+	flushSync();
+	await opened();
+
+	const chevron = host.querySelector<HTMLButtonElement>('button[aria-label^="Expand"]');
+	expect(chevron, 'the tree drew no folder to expand').not.toBeNull();
+	chevron?.click();
+	flushSync();
+
+	expect(host.querySelector('h1 input'), 'expanding a folder put the entry away').not.toBeNull();
 
 	unmount(component);
 });

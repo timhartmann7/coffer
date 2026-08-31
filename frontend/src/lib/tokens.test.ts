@@ -128,8 +128,17 @@ describe('the window is drawn in the tokens of design.html', () => {
 		expect(css, 'the chrome paints a selection again').toMatch(
 			/(?<![-\w])::selection\s*\{[^}]*background:\s*transparent/
 		);
-		expect(css, 'a revealed value is no longer painted where it is selected').toMatch(
-			/\[data-value\]::selection/
-		);
+		// The three that may be selected are named in both rules: what is allowed
+		// to hold a selection, and what is allowed to paint one. A value dropped
+		// from either list is a value that cannot be read back off the screen, or
+		// one selected invisibly.
+		for (const who of ['input', 'textarea', '\\[data-value\\]']) {
+			expect(css, `${who} may no longer hold a selection`).toMatch(
+				new RegExp(`${who}[,\\s][^{]*\\{[^}]*-webkit-user-select:\\s*text`)
+			);
+			expect(css, `${who} is selected without being painted`).toMatch(
+				new RegExp(`${who}::selection`)
+			);
+		}
 	});
 });

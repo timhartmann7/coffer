@@ -358,15 +358,16 @@
 						<ProtectedValue entry={entry.id} field={field.name} {onFailure} />
 					{:else}
 						<!-- A protected field that is empty comes back with no value to
-						     reveal, and it goes back protected: the file said so. -->
+						     reveal, and it goes back protected: what the file says about
+						     a field is what is written back, and nothing here decides it
+						     again. -->
 						<Editable
 							value={field.value ?? ''}
 							label={field.name}
 							placeholder="Empty"
 							mono
 							readonly={readOnly}
-							onCommit={(value) =>
-								write(field.name, value, field.value === null || field.protected)}
+							onCommit={(value) => write(field.name, value, field.protected)}
 						/>
 					{/if}
 					{#if !readOnly}

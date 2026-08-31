@@ -427,6 +427,90 @@ it('writes a field back with the protection it arrived with', () => {
 });
 
 /**
+ * What a field can be asked to hold, from the standing attack list.
+ *
+ * The box every value now sits in has a floor and clips to its own edges, so
+ * the thing to prove is that neither of those loses anything: a megabyte still
+ * arrives whole, a right-to-left override does not reach out of the field it is
+ * in, and the fields under a long one are still on the screen to be read.
+ */
+it('holds a value of any size or direction without losing what is under it', () => {
+	const LONG = 'a'.repeat(1_000_000);
+	const FLIPPED = 'note\u202Egnihtemos';
+	const NULLED = 'before\u0000after';
+
+	const component = show({
+		fields: [
+			field({ name: 'Title', kind: 'title', value: 'an entry', empty: false }),
+			field({ name: 'Notes', kind: 'notes', value: LONG, empty: false }),
+			field({ name: 'Flipped', kind: 'custom', value: FLIPPED, empty: false }),
+			field({ name: 'Nulled', kind: 'custom', value: NULLED, empty: false })
+		]
+	});
+	flushSync();
+
+	const notes = host.querySelector('textarea[aria-label="Notes"]') as HTMLTextAreaElement;
+	expect(notes?.value, 'a megabyte was truncated on the way to the screen').toHaveLength(
+		LONG.length
+	);
+
+	// The fields after it are still drawn. A box that grew without bound inside a
+	// pane that scrolls is a long note pushing the rest of the entry away, not out
+	// of the document - and this is what says so.
+	const flipped = host.querySelector('[aria-label="Flipped"]') as HTMLInputElement;
+	const nulled = host.querySelector('[aria-label="Nulled"]') as HTMLInputElement;
+	expect(flipped?.value, 'the override reached out of its own field').toBe(FLIPPED);
+	expect(nulled?.value, 'the null byte was dropped or split the value').toBe(NULLED);
+
+	// Each of them is in a box of its own, and that box clips - so a value
+	// cannot be drawn over the label of the field below it. Anchored to the box
+	// rather than to any clipping ancestor, because the pane clips too.
+	for (const each of [notes, flipped, nulled]) {
+		const box = each?.closest('[class*="min-h-"]');
+		expect(box, 'a value is drawn outside a field box').not.toBeNull();
+		expect(box?.className, 'the box a value is drawn in does not clip').toContain(
+			'overflow-hidden'
+		);
+	}
+
+	return unmount(component);
+});
+
+/**
+ * The same rule for a field of the reader's own, which is the one the pane has
+ * to decide rather than read off a standard name.
+ *
+ * A protected custom field that is empty has no value to reveal, so it is drawn
+ * as a field like any other - and the protection has to survive that. Writing it
+ * back unprotected puts a value the database was keeping protected into the file
+ * as plain text, which is the one thing this boundary exists to prevent, and
+ * nothing else in the window would notice.
+ */
+it('writes a custom field back with the protection it arrived with', () => {
+	ipc.setField.mockResolvedValue(entry());
+
+	const component = show({
+		fields: [
+			field({ name: 'Region', kind: 'custom', value: 'eu-central', empty: false }),
+			field({ name: 'API token', kind: 'custom', value: null, empty: true, protected: true })
+		]
+	});
+	flushSync();
+
+	const plain = host.querySelector('[aria-label="Region"]') as HTMLInputElement;
+	plain.value = 'eu-west';
+	plain.dispatchEvent(new Event('blur'));
+	expect(ipc.setField).toHaveBeenCalledWith(expect.any(String), 'Region', 'eu-west', false);
+
+	const kept = host.querySelector('[aria-label="API token"]') as HTMLInputElement;
+	kept.value = 'a new token';
+	kept.dispatchEvent(new Event('blur'));
+	expect(ipc.setField).toHaveBeenCalledWith(expect.any(String), 'API token', 'a new token', true);
+
+	return unmount(component);
+});
+
+/**
  * A file a previous version still holds cannot go: the format keeps versions
  * inside the entry and nothing can rewrite one. The pane says so and offers the
  * one sequence that works, rather than reporting a failure the reader can do
