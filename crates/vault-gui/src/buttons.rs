@@ -28,12 +28,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use block2::RcBlock;
 use objc2::MainThreadMarker;
+use objc2::Message;
 use objc2::rc::Retained;
 use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2_app_kit::{
     NSButton, NSView, NSViewFrameDidChangeNotification, NSWindow, NSWindowButton, NSWindowStyleMask,
 };
-use objc2_foundation::{NSNotification, NSNotificationCenter, NSPoint};
+use objc2_foundation::{
+    NSNotification, NSNotificationCenter, NSPoint, NSRunLoop, NSRunLoopCommonModes, NSTimer,
+};
 use tauri::{Runtime, WebviewWindow, WindowEvent};
 
 /// The height of the title bar in `frontend/src/lib/components/Titlebar.svelte`,
@@ -48,6 +51,13 @@ const FROM_LEFT: f64 = 16.0;
 /// Under anything AppKit moves a button by, and over what a coordinate
 /// conversion rounds away.
 const SAME_PLACE: f64 = 0.5;
+
+/// How often the row is put back while a window is being dragged.
+///
+/// A drag lays the row out on every frame the display draws, so this is that:
+/// once per frame at sixty hertz. Anything slower is a row that spends part of
+/// every drag where AppKit put it.
+const A_FRAME: f64 = 1.0 / 60.0;
 
 /// Which window a set of observers belongs to.
 ///
@@ -97,6 +107,10 @@ thread_local! {
     /// What the last reading said, which is the only thing the next one has to
     /// agree with to be believed.
     static LAST: Cell<Option<f64>> = const { Cell::new(None) };
+
+    /// The timer that keeps the row in place while a window is being dragged.
+    /// One at a time, and only for as long as the drag. See [`keep_up`].
+    static TRACKING: RefCell<Option<Retained<NSTimer>>> = const { RefCell::new(None) };
 }
 
 /// The observers one window holds, taken off the notification centre when it is
@@ -195,13 +209,21 @@ fn watch(which: u64, window: &NSWindow) {
 
 fn unwatch<R: Runtime>(window: &WebviewWindow<R>, which: u64) {
     if MainThreadMarker::new().is_some() {
-        WATCHED.with(|watched| watched.borrow_mut().remove(&which));
+        stop_watching(which);
         return;
     }
 
-    let _ = window.run_on_main_thread(move || {
-        WATCHED.with(|watched| watched.borrow_mut().remove(&which));
-    });
+    let _ = window.run_on_main_thread(move || stop_watching(which));
+}
+
+/// Everything one window left running. The timer holds the window it is putting
+/// buttons back in, and a lock destroys that window - so it goes with it rather
+/// than keeping it alive until its next tick.
+fn stop_watching(which: u64) {
+    WATCHED.with(|watched| watched.borrow_mut().remove(&which));
+    if let Some(timer) = TRACKING.with(|held| held.borrow_mut().take()) {
+        timer.invalidate();
+    }
 }
 
 fn balance<R: Runtime>(window: &WebviewWindow<R>) {
@@ -252,6 +274,56 @@ unsafe impl Send for SendWindow {}
 /// they agreed would be a hang where the complaint was a flicker.
 fn lay_out(window: &NSWindow) {
     one_pass_at_a_time(|| settle_row(window));
+    keep_up(window);
+}
+
+/// Puts the row back on every frame for as long as the window is being dragged.
+///
+/// This is the half that answering events cannot do. A drag runs the main loop
+/// in event tracking mode and lays the row out on every frame the display
+/// draws, which is far more often than a resize event arrives and more often
+/// than a frame notification survives being coalesced - so a correction that
+/// only answers events is one the drag outruns. The row then spends the whole
+/// drag where AppKit put it and snaps back the moment the pointer stops, which
+/// is what a reader sees as the buttons jumping when they let go.
+///
+/// The timer goes on the run loop's common modes for the same reason: a timer
+/// in the default mode does not fire at all while a drag is tracking. It stops
+/// itself when the drag ends, and there is only ever one.
+fn keep_up(window: &NSWindow) {
+    if !window.inLiveResize() {
+        return;
+    }
+    if TRACKING.with(|held| held.borrow().is_some()) {
+        return;
+    }
+
+    let watched = window.retain();
+    // SAFETY: the block runs on the main thread, which is the thread the run
+    // loop it is added to belongs to and the only one AppKit is touched from.
+    let timer = unsafe {
+        NSTimer::timerWithTimeInterval_repeats_block(
+            A_FRAME,
+            true,
+            &RcBlock::new(move |timer: std::ptr::NonNull<NSTimer>| {
+                if watched.inLiveResize() {
+                    one_pass_at_a_time(|| settle_row(&watched));
+                    return;
+                }
+                // The timer is the one this block was made for, and it is
+                // invalidated once.
+                timer.as_ref().invalidate();
+                TRACKING.with(|held| held.borrow_mut().take());
+            }),
+        )
+    };
+
+    // SAFETY: adding a timer this call owns to the run loop of the thread it is
+    // running on.
+    unsafe {
+        NSRunLoop::currentRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
+    }
+    TRACKING.with(|held| *held.borrow_mut() = Some(timer));
 }
 
 /// The protocol of the above, with nothing of AppKit in it: a pass runs alone,

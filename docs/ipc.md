@@ -393,6 +393,16 @@ and the second has not, so every frame of the drag answers something different.
 A window nobody is dragging answers the same thing twice, and that is the answer
 the row is placed on.
 
+Answering events is not enough while a window is being dragged. A drag runs the
+main loop in event tracking mode and lays the row out on every frame the display
+draws, which is more often than a resize event arrives and more often than a
+frame notification survives being coalesced - so a correction that only answers
+events is one the drag outruns, and the row sits where AppKit put it until the
+pointer stops. A timer on the run loop's common modes puts it back once a frame
+for as long as the drag lasts, and stops itself when it ends. The common modes
+are not decoration: a timer in the default mode does not fire at all while a
+drag is tracking.
+
 **A save holds the session while it runs.** Every committed change writes the
 file, and the write derives the key again, so for that second nothing else can
 read the vault. The status bar says `Saving…`. If that ever becomes a wait
