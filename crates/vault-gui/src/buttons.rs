@@ -30,7 +30,9 @@ use block2::RcBlock;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::{NSObjectProtocol, ProtocolObject};
-use objc2_app_kit::{NSButton, NSView, NSViewFrameDidChangeNotification, NSWindow, NSWindowButton};
+use objc2_app_kit::{
+    NSButton, NSView, NSViewFrameDidChangeNotification, NSWindow, NSWindowButton, NSWindowStyleMask,
+};
 use objc2_foundation::{NSNotification, NSNotificationCenter, NSPoint};
 use tauri::{Runtime, WebviewWindow, WindowEvent};
 
@@ -41,6 +43,11 @@ const TITLE_BAR: f64 = 44.0;
 /// How far the leftmost button sits from the left edge. The bar's own padding
 /// is `px-4`, and the buttons line up with it.
 const FROM_LEFT: f64 = 16.0;
+
+/// How far apart two coordinates may be and still count as the same place.
+/// Under anything AppKit moves a button by, and over what a coordinate
+/// conversion rounds away.
+const SAME_PLACE: f64 = 0.5;
 
 /// Which window a set of observers belongs to.
 ///
@@ -64,12 +71,24 @@ thread_local! {
     /// Whether a correction is already running.
     ///
     /// Moving one button tells the other two that a frame changed, and AppKit
-    /// answers a move with a layout of its own. A pass that started while
-    /// another was half way through would measure the spacing between a button
-    /// that had already moved and one that had not, and lay the three of them
-    /// out on a gap that is not the system's - which is the crowding, and the
-    /// one button left jittering, that this module exists to prevent.
+    /// answers a move with a layout of its own, so a pass reached from inside
+    /// another one is a pass that would fight it.
     static CORRECTING: Cell<bool> = const { Cell::new(false) };
+
+    /// Whether something asked for a pass while one was running.
+    ///
+    /// The ask is kept rather than dropped. A frame notification arriving
+    /// mid-pass is usually this module's own move and means nothing, but it is
+    /// also how AppKit says it has just put a button back, and dropping one of
+    /// those leaves that button where AppKit wanted it with nothing left to
+    /// notice. It is the last button in the row that it happens to, because
+    /// that is the one still being moved when the notification lands.
+    static AGAIN: Cell<bool> = const { Cell::new(false) };
+
+    /// The gap AppKit leaves between two buttons, remembered from a row that
+    /// was evenly spaced rather than measured again on every pass. See
+    /// [`spacing`].
+    static SPACING: Cell<f64> = const { Cell::new(0.0) };
 }
 
 /// The observers one window holds, taken off the notification centre when it is
@@ -216,18 +235,37 @@ unsafe impl Send for SendWindow {}
 /// more than one place: a call that arrives late finds the work done rather
 /// than moving a button a second time.
 ///
-/// One pass at a time, whichever way it was reached. Moving the first button
-/// posts a notification that asks for another pass, and that pass would measure
-/// the spacing across a row that is half moved.
+/// One pass at a time, whichever way it was reached, and never a pass that is
+/// lost: an ask arriving mid-pass is answered once the pass is over.
+///
+/// Twice at most. The second pass is for the button AppKit moved back while the
+/// first one was running; a third would only be wanted if AppKit and Coffer were
+/// moving the row against each other inside one pass, and spinning here until
+/// they agreed would be a hang where the complaint was a flicker.
 fn lay_out(window: &NSWindow) {
     if CORRECTING.replace(true) {
+        AGAIN.set(true);
         return;
     }
+
     settle_row(window);
+    if AGAIN.replace(false) {
+        settle_row(window);
+    }
+
+    AGAIN.set(false);
     CORRECTING.set(false);
 }
 
 fn settle_row(window: &NSWindow) {
+    // A full screen takes the title bar out of this window and hangs it in one
+    // of AppKit's own, where the row is revealed by a mouse at the top edge
+    // rather than drawn by anybody's title bar. A position measured against
+    // this window's frame would land nowhere near the buttons that come back.
+    if window.styleMask().contains(NSWindowStyleMask::FullScreen) {
+        return;
+    }
+
     let (Some(close), Some(miniaturise), Some(zoom)) = (
         window.standardWindowButton(NSWindowButton::CloseButton),
         window.standardWindowButton(NSWindowButton::MiniaturizeButton),
@@ -236,40 +274,78 @@ fn settle_row(window: &NSWindow) {
         return;
     };
 
-    // The buttons sit in the view the system keeps for the title bar it is not
-    // drawing, which is anchored to the top of the window and stays the height
-    // a standard title bar would be.
+    // The buttons sit in a view the system keeps for the title bar it is not
+    // drawing. Which view that is, and how tall, is AppKit's business.
     // SAFETY: reading the view hierarchy of a live window on the main thread.
     let Some(inside) = (unsafe { close.superview() }) else {
         return;
     };
 
-    // AppKit counts from the bottom, and the bottom of that view is where a
-    // standard title bar would end rather than where Coffer's does.
-    let height = close.frame().size.height;
-    let above = ((TITLE_BAR - height) / 2.0).max(0.0);
-    let bottom = (inside.frame().size.height - above - height).max(0.0);
-
-    // Whatever the system leaves between them, kept as it is. A run that
-    // measured nothing would pile all three on top of each other, so it does
-    // not run at all.
-    let spacing = miniaturise.frame().origin.x - close.frame().origin.x;
-    if spacing <= 0.0 {
+    let Some(spacing) = spacing(&close, &miniaturise, &zoom) else {
         return;
-    }
+    };
+
+    // Measured down from the top of the window rather than up from the bottom
+    // of the view the buttons are in. That view's height is AppKit's to change,
+    // and it changes: on a zoom, on a live resize, on a toolbar arriving. A
+    // position taken from it therefore lands somewhere new after each of those,
+    // while Coffer's title bar has not moved at all, because it hangs from the
+    // top of the window. So the top of the window is what the row is placed
+    // against, and the row stopped moving when the window was zoomed.
+    let bottom = below_the_top(window.frame().size.height, close.frame().size.height);
 
     for (index, each) in [close, miniaturise, zoom].into_iter().enumerate() {
-        settle(
-            &each,
+        // `None` is the window's own coordinate system, whose origin is the
+        // bottom left corner of its frame. Converting rather than assuming is
+        // what keeps this right when AppKit gives the view holding the buttons
+        // an origin or a height of its own.
+        let wanted = inside.convertPoint_fromView(
             NSPoint::new(FROM_LEFT + index as f64 * spacing, bottom),
+            None,
         );
+        settle(&each, wanted);
     }
+}
+
+/// The gap AppKit leaves between two of the buttons.
+///
+/// Believed only from a row that is evenly spaced, and remembered when it is.
+/// The two rows this module ever sees are AppKit's and Coffer's, and Coffer's is
+/// AppKit's moved sideways, so both are even and either one answers. A row where
+/// AppKit has put some of the buttons back and not the others cannot be even,
+/// and the gap across it is a number nobody chose: laying the three of them out
+/// on it crowds the row, and the rightmost button, placed two gaps along, moves
+/// twice as far as any of the error - which is the one seen jittering.
+fn spacing(close: &NSButton, miniaturise: &NSButton, zoom: &NSButton) -> Option<f64> {
+    even_gap(
+        miniaturise.frame().origin.x - close.frame().origin.x,
+        zoom.frame().origin.x - miniaturise.frame().origin.x,
+    )
+}
+
+/// The arithmetic of the above, with nothing of AppKit in it.
+fn even_gap(left: f64, right: f64) -> Option<f64> {
+    if left > 0.0 && (left - right).abs() < SAME_PLACE {
+        SPACING.set(left);
+    }
+
+    // Nothing until a row has been seen whole. A run that guessed would pile
+    // all three buttons on top of each other.
+    let kept = SPACING.get();
+    (kept > 0.0).then_some(kept)
+}
+
+/// Where the bottom edge of a button goes, in the window's own coordinates,
+/// so that the button is centred in the title bar the window draws itself.
+fn below_the_top(window_height: f64, button_height: f64) -> f64 {
+    let above = ((TITLE_BAR - button_height) / 2.0).max(0.0);
+    window_height - above - button_height
 }
 
 /// Moves one button, and only when it is not already there.
 fn settle(button: &NSButton, wanted: NSPoint) {
     let at = button.frame().origin;
-    if (at.x - wanted.x).abs() < 0.5 && (at.y - wanted.y).abs() < 0.5 {
+    if (at.x - wanted.x).abs() < SAME_PLACE && (at.y - wanted.y).abs() < SAME_PLACE {
         return;
     }
     button.setFrameOrigin(wanted);
@@ -307,5 +383,84 @@ mod tests {
 
             watched.remove(&second);
         });
+    }
+
+    /// The row is anchored to the top of the window, which is where the title
+    /// bar that has to hold it is anchored. Reading it off the view the buttons
+    /// live in is what used to move them on a zoom: that view's height is
+    /// AppKit's, and a taller window put the row somewhere else.
+    #[test]
+    fn the_row_sits_the_same_distance_below_the_top_whatever_the_window_is_doing() {
+        let button = 14.0;
+        let mut seen = Vec::new();
+
+        for window in [560.0, 720.0, 1329.5, 2160.0] {
+            let bottom = below_the_top(window, button);
+            seen.push(window - bottom - button);
+        }
+
+        for below in &seen {
+            assert!(
+                (below - seen[0]).abs() < SAME_PLACE,
+                "the row moved when the window was resized: {seen:?}"
+            );
+        }
+
+        let centre = seen[0] + button / 2.0;
+        assert!(
+            (centre - TITLE_BAR / 2.0).abs() < SAME_PLACE,
+            "the row is not centred in the title bar: {centre} of {TITLE_BAR}"
+        );
+    }
+
+    /// A button AppKit is taller than the bar Coffer draws would take the row
+    /// off the top of the window if the padding above it were allowed to go
+    /// negative.
+    #[test]
+    fn a_button_taller_than_the_bar_is_still_inside_the_window() {
+        let window = 720.0;
+        let bottom = below_the_top(window, TITLE_BAR + 10.0);
+        assert!((window - bottom - (TITLE_BAR + 10.0)).abs() < SAME_PLACE);
+    }
+
+    /// The measurement that used to jitter. AppKit lays the row out while a pass
+    /// is half way through it, so the gap between the first two buttons is
+    /// Coffer's and the gap between the last two is AppKit's - and a row laid
+    /// out on the difference puts the rightmost button two of those errors away
+    /// from where it belongs.
+    #[test]
+    fn a_row_that_is_half_moved_is_not_believed() {
+        SPACING.set(0.0);
+        assert_eq!(
+            even_gap(20.0, 20.0),
+            Some(20.0),
+            "an even row is the answer"
+        );
+
+        assert_eq!(
+            even_gap(4.0, 20.0),
+            Some(20.0),
+            "a half moved row was measured, and the buttons crowded"
+        );
+        assert_eq!(
+            even_gap(20.0, 36.0),
+            Some(20.0),
+            "a half moved row was measured, and the buttons spread"
+        );
+
+        assert_eq!(
+            even_gap(24.0, 24.0),
+            Some(24.0),
+            "a row that is even again is the new answer"
+        );
+    }
+
+    /// Before any row has been seen there is no gap to lay one out on, and
+    /// guessing puts all three buttons in the same place.
+    #[test]
+    fn nothing_is_moved_until_a_whole_row_has_been_seen() {
+        SPACING.set(0.0);
+        assert_eq!(even_gap(0.0, 0.0), None, "a row of nothing was believed");
+        assert_eq!(even_gap(-20.0, -20.0), None, "a backwards row was believed");
     }
 }
