@@ -115,7 +115,7 @@ impl From<VaultError> for Failure {
                 Code::Damaged
             }
             VaultError::Locked(_) => Code::HeldByAnother,
-            VaultError::AttachmentInHistory { .. } => Code::AttachmentInHistory,
+            VaultError::AttachmentInHistory => Code::AttachmentInHistory,
             VaultError::ExternalChange => Code::ExternalChange,
             VaultError::ReadOnlyKdb
             | VaultError::ReadOnlyKdbx3Attachments
@@ -195,10 +195,7 @@ mod tests {
             (VaultError::ExternalChange, "externalChange"),
             (VaultError::NoSuchGroup, "noSuchEntry"),
             (VaultError::NoSuchVersion, "noSuchEntry"),
-            (
-                VaultError::AttachmentInHistory { versions: 2 },
-                "attachmentInHistory",
-            ),
+            (VaultError::AttachmentInHistory, "attachmentInHistory"),
             (VaultError::AttachmentPinned, "refused"),
             (VaultError::AttachmentTooLarge, "refused"),
             (VaultError::CannotMoveRoot, "refused"),

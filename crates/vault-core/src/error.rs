@@ -83,11 +83,16 @@ pub enum VaultError {
     #[error("that entry has no such version")]
     NoSuchVersion,
 
-    /// The file is still held by previous versions of an entry, which the
-    /// format keeps inside the entry and the library cannot rewrite. Removing
-    /// the file would take it out of those versions as well.
-    #[error("{versions} earlier versions still hold that file")]
-    AttachmentInHistory { versions: usize },
+    /// The file, or one whose number would have to change for it to go, is held
+    /// by previous versions of an entry. The format keeps those inside the entry
+    /// and the library cannot rewrite what one points at, so the versions have
+    /// to go first.
+    ///
+    /// No count: the versions holding a file are not always the ones on the
+    /// entry the reader is looking at, and a number that is sometimes about one
+    /// entry and sometimes about two says less than a plain sentence.
+    #[error("earlier versions of an entry still hold that file in place")]
+    AttachmentInHistory,
 
     /// Removing the file would renumber another one that a previous version, or
     /// a second name, points at.

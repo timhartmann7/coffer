@@ -834,3 +834,51 @@ it('lets Escape out of the settings, and leaves the list alone while they are op
 
 	unmount(component);
 });
+
+/**
+ * A file that a previous version of some other entry names has to keep the
+ * number it has, so now and then an entry in the bin cannot be erased yet.
+ *
+ * Emptying is best-effort in Rust: whatever can go has gone by the time the
+ * refusal comes back. The screen therefore has to read the tree again and say
+ * what to do next, rather than report a failure and leave a bin drawn fuller
+ * than it is with no way forward.
+ */
+it('says what to do when part of the bin cannot be emptied yet', async () => {
+	const emptied = group({
+		name: 'Root',
+		entries: [kept],
+		sections: [group({ name: 'Recycle Bin', isRecycleBin: true, entries: [] })]
+	});
+	ipc.emptyRecycleBin.mockRejectedValue({
+		code: 'attachmentInHistory',
+		message: 'earlier versions of an entry still hold that file in place'
+	});
+	ipc.tree.mockResolvedValue(emptied);
+
+	const onTree = vi.fn();
+	const component = open({ onTree });
+	flushSync();
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('Recycle Bin'))
+		?.click();
+	flushSync();
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Empty the bin')
+		?.click();
+	flushSync();
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Empty it')
+		?.click();
+
+	await vi.waitFor(() => expect(host.textContent).toContain('Some of it stayed'));
+	// What did go is off the screen: the tree is read again rather than left
+	// drawing a bin that is fuller than the file's.
+	expect(onTree).toHaveBeenCalledWith(emptied);
+	// And it reaches the file. Emptying is all-or-nothing per entry, so the ones
+	// that went are out of the vault in memory and nowhere else until this runs.
+	await vi.waitFor(() => expect(ipc.save).toHaveBeenCalled());
+
+	return unmount(component);
+});

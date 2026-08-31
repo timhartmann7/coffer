@@ -1,12 +1,14 @@
-//! Serialisation properties: whatever tree goes in comes back out.
+//! Properties: whatever goes in comes back out, over trees and runs of changes
+//! nobody chose.
 //!
 //! The round-trip suite proves fidelity against KeePassXC on a fixed set of
-//! fixtures. This proves it against trees nobody chose, which is where the
+//! fixtures. This proves it against shapes nobody thought of, which is where the
 //! cases nobody thought of live.
 
 use keepass::Database;
 use keepass::db::Value;
 use proptest::prelude::*;
+use zeroize::Zeroizing;
 
 use crate::support::{BUILT_PASSWORD, built, open};
 
@@ -234,5 +236,214 @@ proptest! {
 
         let reopened = open(&path, BUILT_PASSWORD);
         prop_assert_eq!(before, observe(&reopened));
+    }
+}
+
+/// One thing a reader can do that touches the pool of files.
+#[derive(Debug, Clone)]
+enum Act {
+    Add(usize, u8),
+    Remove(usize, usize),
+    RemoveWithVersions(usize, usize),
+    /// Any ordinary edit, which is what writes a version - and a version is what
+    /// holds a file in the number it has.
+    Edit(usize),
+    ClearHistory(usize),
+    DeleteEntry(usize),
+    EmptyBin,
+}
+
+fn act() -> impl Strategy<Value = Act> {
+    prop_oneof![
+        (0usize..8, any::<u8>()).prop_map(|(entry, byte)| Act::Add(entry, byte)),
+        (0usize..8, 0usize..4).prop_map(|(entry, file)| Act::Remove(entry, file)),
+        (0usize..8, 0usize..4).prop_map(|(entry, file)| Act::RemoveWithVersions(entry, file)),
+        (0usize..8).prop_map(Act::Edit),
+        (0usize..8).prop_map(Act::ClearHistory),
+        (0usize..8).prop_map(Act::DeleteEntry),
+        Just(Act::EmptyBin),
+    ]
+}
+
+/// Every entry in the vault, the bin included, and the files each one names with
+/// the bytes behind them.
+///
+/// Byte for byte on purpose. The failure this is looking for is not a file that
+/// vanishes but a file that comes back on somebody else's entry, which is what a
+/// hole in the pool produces and what nothing but the bytes can catch.
+fn files(
+    vault: &vault_core::Vault,
+) -> std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<u8>>> {
+    fn walk(
+        group: &vault_core::model::Project,
+        vault: &vault_core::Vault,
+        into: &mut std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<u8>>>,
+    ) {
+        for summary in &group.entries {
+            let mut held = std::collections::BTreeMap::new();
+            if let Some(entry) = vault.entry(summary.id) {
+                for attachment in &entry.attachments {
+                    let bytes = vault
+                        .attachment(summary.id, &attachment.name)
+                        .map(|value| value.expose().to_vec())
+                        .unwrap_or_default();
+                    held.insert(attachment.name.clone(), bytes);
+                }
+            }
+            into.insert(summary.id.to_string(), held);
+        }
+        for section in &group.sections {
+            walk(section, vault, into);
+        }
+    }
+
+    let mut found = std::collections::BTreeMap::new();
+    walk(&vault.tree(), vault, &mut found);
+    found
+}
+
+fn entry_ids(vault: &vault_core::Vault) -> Vec<vault_core::model::EntryId> {
+    fn walk(group: &vault_core::model::Project, into: &mut Vec<vault_core::model::EntryId>) {
+        for entry in &group.entries {
+            into.push(entry.id);
+        }
+        for section in &group.sections {
+            walk(section, into);
+        }
+    }
+
+    let mut found = Vec::new();
+    walk(&vault.tree(), &mut found);
+    found
+}
+
+proptest! {
+    // Each case is a whole vault built, changed a dozen times, and saved and
+    // reopened after every change.
+    #![proptest_config(ProptestConfig::with_cases(24))]
+
+    /// A random run of the things that move files about, with the file the
+    /// reader can see checked against the file that comes back off the disk
+    /// after every one of them.
+    ///
+    /// The pool has to stay an unbroken run from zero or the next reader gets
+    /// somebody else's bytes, and the arithmetic that keeps it that way now has
+    /// to leave the files a previous version names on the numbers they have.
+    /// That is far too much to hold in one's head, which is what this is for.
+    #[test]
+    fn no_run_of_changes_hands_a_file_to_the_wrong_entry(acts in prop::collection::vec(act(), 1..14)) {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let path = scratch.path().join("pool.kdbx");
+        let mut vault = vault_core::Vault::create(
+            &path,
+            crate::support::password(BUILT_PASSWORD),
+            &vault_core::Recipe { name: "Work", work: vault_core::kdf::Work::at(1) },
+        ).expect("the vault is made");
+
+        // Four entries, two of them carrying a file, and one already edited so
+        // that a version is holding a file before anything else happens.
+        let root = vault.tree().id;
+        for round in 0..4u8 {
+            let id = vault.create_entry(root).expect("the entry is made");
+            vault
+                .set_field(id, "Title", vault_core::NewValue::Open(format!("entry {round}")))
+                .expect("the title is written");
+            if round < 2 {
+                vault
+                    .add_attachment(id, &format!("start-{round}.bin"), Zeroizing::new(vec![round; 48]))
+                    .expect("the file is added");
+            }
+            if round == 1 {
+                vault
+                    .set_field(id, "UserName", vault_core::NewValue::Open("edited".to_owned()))
+                    .expect("the login is written");
+            }
+        }
+        vault.save().expect("the database saves");
+
+        for (step, act) in acts.iter().enumerate() {
+            let ids = entry_ids(&vault);
+            if ids.is_empty() {
+                break;
+            }
+            let pick = |n: usize| ids[n % ids.len()];
+            let before = files(&vault);
+
+            // What the vault should hold once this has happened. A refusal
+            // leaves it exactly as it was, which is half of what is checked
+            // here: an operation that was answered no must cost nothing.
+            let mut expected = before.clone();
+            let outcome = match act {
+                Act::Add(entry, byte) => {
+                    let id = pick(*entry);
+                    let name = format!("added-{step}.bin");
+                    let bytes = vec![*byte; 32 + step];
+                    let done = vault.add_attachment(id, &name, Zeroizing::new(bytes.clone()));
+                    if done.is_ok() {
+                        expected.entry(id.to_string()).or_default().insert(name, bytes);
+                    }
+                    done
+                }
+                Act::Remove(entry, file) | Act::RemoveWithVersions(entry, file) => {
+                    let id = pick(*entry);
+                    let held: Vec<String> = before
+                        .get(&id.to_string())
+                        .map(|files| files.keys().cloned().collect())
+                        .unwrap_or_default();
+                    if held.is_empty() {
+                        continue;
+                    }
+                    let name = held[*file % held.len()].clone();
+                    let done = match act {
+                        Act::Remove(..) => vault.remove_attachment(id, &name),
+                        _ => vault.remove_attachment_and_versions(id, &name),
+                    };
+                    if done.is_ok() {
+                        expected.entry(id.to_string()).or_default().remove(&name);
+                    }
+                    done
+                }
+                Act::Edit(entry) => vault.set_field(
+                    pick(*entry),
+                    "Notes",
+                    vault_core::NewValue::Open(format!("note {step}")),
+                ),
+                Act::ClearHistory(entry) => vault.clear_history(pick(*entry)),
+                Act::DeleteEntry(entry) => {
+                    let id = pick(*entry);
+                    let done = vault.delete_entry(id);
+                    // Into the bin it stays an entry; out of the bin it is gone.
+                    if done.is_ok() && vault.entry(id).is_none() {
+                        expected.remove(&id.to_string());
+                    }
+                    done
+                }
+                Act::EmptyBin => {
+                    let done = vault.empty_recycle_bin();
+                    // Whatever could go has gone, refusal or not, so what the
+                    // vault holds now is what the file has to come back with.
+                    expected = files(&vault);
+                    done
+                }
+            };
+            let _ = outcome;
+
+            // The one thing that may never fail. A save that refuses here is the
+            // pool having lost its order, which is the corruption this is about.
+            vault.save().unwrap_or_else(|error| {
+                panic!("step {step} left a database that will not save: {error}")
+            });
+            drop(vault);
+
+            let reopened = open(&path, BUILT_PASSWORD);
+            prop_assert_eq!(
+                files(&reopened),
+                expected,
+                "step {} ({:?}) changed what the file gives back",
+                step,
+                act
+            );
+            vault = reopened;
+        }
     }
 }

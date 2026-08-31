@@ -594,10 +594,15 @@ it('offers to clear the versions that are holding a file back', async () => {
 	expect(onChanged).not.toHaveBeenCalled();
 
 	// One call, not two: the versions go only if the file then goes.
-	button('Clear the versions and remove it').click();
+	button('Clear those versions and remove it').click();
 	await vi.waitFor(() => expect(ipc.removeAttachmentAndVersions).toHaveBeenCalledTimes(1));
 	await vi.waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
-	expect(onVersions).toHaveBeenCalledWith([]);
+
+	// The list is not emptied from here. Only the versions that were holding the
+	// file go, and which ones those were is the engine's answer: saying so from
+	// the pane drew an entry as having no history when it still had most of it,
+	// and wrote the whole vault a second time to say it.
+	expect(onVersions).not.toHaveBeenCalled();
 
 	return unmount(component);
 });
@@ -939,6 +944,46 @@ it('still offers the way out when there is nothing else in the header', () => {
 	expect(out, 'a read only entry cannot be put away').not.toBeNull();
 	out?.click();
 	expect(onClose).toHaveBeenCalledTimes(1);
+
+	return unmount(component);
+});
+
+/**
+ * A file under a name the entry already has replaces the one there, and the one
+ * there can be held in place by previous versions like any other. The two
+ * cannot be one step: the bytes the reader chose are gone by the time the
+ * refusal comes back, so a bare error message left them with nothing to do.
+ */
+it('says what to do when a file cannot be replaced yet', async () => {
+	const onFailure = vi.fn();
+	ipc.addAttachment.mockRejectedValue({
+		code: 'attachmentInHistory',
+		message: 'earlier versions of an entry still hold that file in place'
+	});
+
+	const component = mount(EntryView, {
+		target: host,
+		props: {
+			entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
+			path: [group({ name: 'Work' })],
+			versions: [],
+			now: new Date('2026-08-29T14:30:00Z'),
+			readOnly: false,
+			onCopy: vi.fn(),
+			onChanged: vi.fn(),
+			onVersions: vi.fn(),
+			onClose: vi.fn(),
+			onDelete: vi.fn(),
+			onFailure
+		}
+	});
+	flushSync();
+
+	host.querySelector<HTMLButtonElement>('[aria-label="Add a file"]')?.click();
+	await vi.waitFor(() => expect(host.textContent).toContain('Take that one off first'));
+
+	// A refusal the reader can act on is not an error message.
+	expect(onFailure).not.toHaveBeenCalled();
 
 	return unmount(component);
 });

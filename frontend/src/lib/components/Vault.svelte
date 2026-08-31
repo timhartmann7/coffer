@@ -273,6 +273,19 @@
 		}
 	}
 
+	/**
+	 * Empties the bin, and says what to do about anything that would not go.
+	 *
+	 * A file that a previous version of some other entry names has to keep the
+	 * number it has, and the pool of files has to stay an unbroken run from
+	 * zero, so now and then an entry cannot be erased until those versions go.
+	 * The message has to name the way out, because nothing on this screen shows
+	 * which entry is in the way: open the one still in the bin and take its file
+	 * off, which clears the versions holding it wherever they are.
+	 *
+	 * Whatever could go has gone by the time this is read, so pressing it again
+	 * after that is a shorter list every time and never a longer one.
+	 */
 	async function empty() {
 		emptying = false;
 		try {
@@ -280,7 +293,19 @@
 			opened = null;
 			await reshaped(tree);
 		} catch (thrown) {
-			failed(thrown);
+			if (asFailure(thrown).code === 'attachmentInHistory') {
+				// The refusal is about what stayed, not about what went: emptying
+				// the bin is all-or-nothing per entry and the ones that could go
+				// are already out of the vault in memory. So this is read back and
+				// written like any other change - a screen that only reported the
+				// refusal drew a bin that was emptier than the file, and lost the
+				// erasures at the next lock.
+				opened = null;
+				await reshaped(await loadTree().catch(() => root));
+				warn('Some of it stayed: open what is left in the bin and remove its file first.');
+			} else {
+				failed(thrown);
+			}
 		}
 	}
 
@@ -356,10 +381,21 @@
 		fade(5000);
 	}
 
-	function failed(thrown: unknown) {
+	/**
+	 * Puts a sentence on the screen and takes it away again.
+	 *
+	 * The clock of whatever notice was there is stopped first: without that, a
+	 * timer left over from the last one takes this one away early, and the class
+	 * that was fading it out arrives already on it.
+	 */
+	function warn(message: string) {
 		clear();
-		notice = { message: asFailure(thrown).message, kind: 'failed' };
+		notice = { message, kind: 'failed' };
 		fade(6000);
+	}
+
+	function failed(thrown: unknown) {
+		warn(asFailure(thrown).message);
 	}
 
 	/**
