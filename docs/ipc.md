@@ -368,40 +368,31 @@ slice.
 open and it stays there until it is deleted, which moves it to the recycle bin.
 The mockup shows dragging a row into another folder; nothing here does that yet.
 
-**The three window buttons are moved, and the moving has one right moment.**
-macOS puts the close, minimise and zoom buttons a fixed distance below the top
-of the window, and lays them out again on every resize.
-[`buttons.rs`](../crates/vault-gui/src/buttons.rs) corrects them from each
-button's own frame notification, which is the only hook that arrives *after*
-AppKit has placed them - the title bar container's notification arrives before,
-and a correction made from a resize event arrives a frame later, which is a
-resize that shows them flickering between the two positions. The observers are
-taken off the notification centre when the window goes, and they are keyed by
-which window rather than by its label: locking destroys the window and builds
-another with the same label, and the runtime delivers the old one's teardown
-after the callback that built its replacement.
+**The three window buttons are not moved at all.** macOS puts the close,
+minimise and zoom buttons a fixed distance below the top of the window, and it
+lays them out again on every pass - which, while a window is being dragged, is
+every frame the display draws. Every version of this that moved them afterwards
+flickered, and had to: a correction that answers a notification, an event or a
+timer is one that sometimes lands after the frame it belonged to, and each of
+those is a frame drawn with the row where AppKit put it.
 
-Where the row goes is measured down from the top of the window and converted
-into the coordinates of whatever view AppKit is keeping the buttons in. Both of
-the numbers that go into it are believed only when two readings agree, and
-remembered when they do. The gap between two buttons is one of them: a row
-AppKit has half put back is not evenly spaced, and laying three buttons out on
-the gap across it moves the rightmost one twice as far as the error. The height
-is the other: the window's frame and the view's place inside it are read a
-moment apart, and while a window is being dragged the first has already moved
-and the second has not, so every frame of the drag answers something different.
-A window nobody is dragging answers the same thing twice, and that is the answer
-the row is placed on.
+So [`buttons.rs`](../crates/vault-gui/src/buttons.rs) changes the view the
+buttons are in instead. AppKit writes the row's place in the coordinates of
+whichever view holds them, and it writes the same two numbers every time: an
+offset from that view's left edge, and an offset up from its bottom. The three
+buttons are taken into a view of Coffer's own, sized so that those two numbers
+land at `px-4` from the left and in the middle of the `h-11` title bar. AppKit
+then goes on placing the row as often as it likes and every placement is already
+right, so there is nothing to correct and no moment at which a correction can be
+late. While the window is dragged the view follows the top of it on a flexible
+bottom margin, which AppKit applies inside the call that resizes the window
+rather than in answer to it.
 
-Answering events is not enough while a window is being dragged. A drag runs the
-main loop in event tracking mode and lays the row out on every frame the display
-draws, which is more often than a resize event arrives and more often than a
-frame notification survives being coalesced - so a correction that only answers
-events is one the drag outruns, and the row sits where AppKit put it until the
-pointer stops. A timer on the run loop's common modes puts it back once a frame
-for as long as the drag lasts, and stops itself when it ends. The common modes
-are not decoration: a timer in the default mode does not fire at all while a
-drag is tracking.
+The view answers a click only where a button is, because the reader drags the
+window by the title bar beside them. It is asked for again on every resize, and a
+resize that finds the row already in it does nothing: the row leaves only for a
+full screen, which hangs the title bar in a window of AppKit's own, and tao
+reports the return from one as a resize.
 
 **A save holds the session while it runs.** Every committed change writes the
 file, and the write derives the key again, so for that second nothing else can

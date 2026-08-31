@@ -6,37 +6,36 @@
 //! `trafficLightPosition` cannot fix it, because the inset it stores is applied
 //! when the native view redraws and the webview covers that view for good.
 //!
-//! So the three buttons are moved here instead. The hard part is not the
-//! arithmetic, it is *when*: AppKit lays them out again on every resize, and a
-//! correction that arrives even one frame later is a resize that shows them
-//! jumping between the system's position and Coffer's, once per frame.
+//! Moving the buttons afterwards cannot fix it either, and that is the whole
+//! lesson of this module. Measured on macOS 26:
 //!
-//! Measured on a real window, in this order:
+//! - AppKit lays the row out again on every pass, and it writes the same two
+//!   numbers every time: an offset from the left of the view the buttons are
+//!   in, and an offset up from its bottom. It does not ask where the buttons
+//!   are, so nothing that moves them is remembered.
+//! - A drag lays the row out on every frame the display draws. A correction
+//!   that answers a notification, an event or a timer is a correction that
+//!   sometimes lands after the frame it belonged to, and each one of those is a
+//!   frame where the row is drawn where AppKit put it. That is the flicker.
 //!
-//! - AppKit puts the middle of a button a fixed distance below the top of the
-//!   *window*, whatever the title bar container is doing. Resizing that
-//!   container, which is what `tao` does for a window it draws itself, moves
-//!   nothing.
-//! - The container's own frame notification arrives **before** AppKit places
-//!   the buttons, so a correction made there is overwritten immediately.
-//! - A button's own frame notification arrives **after**. That is the moment,
-//!   and it is the only one: correcting from there holds through every resize.
+//! So the row is not moved. The view it sits in is replaced instead: the three
+//! buttons are taken into a view of Coffer's own, positioned so that AppKit's
+//! own two numbers land in the middle of Coffer's title bar. AppKit goes on
+//! placing the row exactly as it likes, as often as it likes, and every one of
+//! those placements is already right. There is nothing to correct, so there is
+//! no moment at which the correction can be late.
+//!
+//! While the window is dragged, the view follows the top of the window on its
+//! autoresizing mask, which AppKit applies inside the same call that resizes the
+//! window. Nothing about the row is read a second time, so nothing about it can
+//! disagree with itself mid-drag.
 
-use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-use block2::RcBlock;
-use objc2::MainThreadMarker;
-use objc2::Message;
 use objc2::rc::Retained;
-use objc2::runtime::{NSObjectProtocol, ProtocolObject};
+use objc2::{ClassType, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSButton, NSView, NSViewFrameDidChangeNotification, NSWindow, NSWindowButton, NSWindowStyleMask,
+    NSAutoresizingMaskOptions, NSButton, NSView, NSWindow, NSWindowButton, NSWindowStyleMask,
 };
-use objc2_foundation::{
-    NSNotification, NSNotificationCenter, NSPoint, NSRunLoop, NSRunLoopCommonModes, NSTimer,
-};
+use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize};
 use tauri::{Runtime, WebviewWindow, WindowEvent};
 
 /// The height of the title bar in `frontend/src/lib/components/Titlebar.svelte`,
@@ -47,110 +46,82 @@ const TITLE_BAR: f64 = 44.0;
 /// is `px-4`, and the buttons line up with it.
 const FROM_LEFT: f64 = 16.0;
 
-/// How far apart two coordinates may be and still count as the same place.
-/// Under anything AppKit moves a button by, and over what a coordinate
-/// conversion rounds away.
-const SAME_PLACE: f64 = 0.5;
-
-/// How often the row is put back while a window is being dragged.
-///
-/// A drag lays the row out on every frame the display draws, so this is that:
-/// once per frame at sixty hertz. Anything slower is a row that spends part of
-/// every drag where AppKit put it.
-const A_FRAME: f64 = 1.0 / 60.0;
-
-/// Which window a set of observers belongs to.
-///
-/// Not the window's label. Locking destroys the window and builds another with
-/// the same label, and the two overlap: the runtime delivers a window's own
-/// `Destroyed` listeners *after* the callback that rebuilt it, so a map keyed
-/// by label has the old window's teardown taking the observers off its
-/// replacement. The replacement then loses its corrections and its buttons jump
-/// on every resize, with no error and nothing leaked - the exact flicker this
-/// module exists to prevent, on the first auto-lock.
-static NEXT: AtomicU64 = AtomicU64::new(0);
-
-thread_local! {
-    /// What each window is watching, so that it can stop when the window goes.
+define_class!(
+    /// The view the three buttons are moved into.
     ///
-    /// On the main thread and nowhere else, which is where every one of these
-    /// is made and dropped: an AppKit reference is not a thing to send between
-    /// threads, and the notifications only arrive here anyway.
-    static WATCHED: RefCell<HashMap<u64, Watch>> = RefCell::new(HashMap::new());
-
-    /// Whether a correction is already running.
+    /// It draws nothing and holds nothing of its own. Its frame is the whole
+    /// mechanism: AppKit writes the row's place in the coordinates of whichever
+    /// view the buttons are in, so where that view is decides where the row is.
     ///
-    /// Moving one button tells the other two that a frame changed, and AppKit
-    /// answers a move with a layout of its own, so a pass reached from inside
-    /// another one is a pass that would fight it.
-    static CORRECTING: Cell<bool> = const { Cell::new(false) };
+    /// SAFETY:
+    /// - `NSView` has no subclassing requirement beyond the main thread, which
+    ///   `MainThreadOnly` states.
+    /// - The class holds no instance variables and implements no `Drop`, so
+    ///   nothing of Rust's outlives the view AppKit owns.
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "CofferWindowButtons"]
+    struct Row;
 
-    /// Whether something asked for a pass while one was running.
-    ///
-    /// The ask is kept rather than dropped. A frame notification arriving
-    /// mid-pass is usually this module's own move and means nothing, but it is
-    /// also how AppKit says it has just put a button back, and dropping one of
-    /// those leaves that button where AppKit wanted it with nothing left to
-    /// notice. It is the last button in the row that it happens to, because
-    /// that is the one still being moved when the notification lands.
-    static AGAIN: Cell<bool> = const { Cell::new(false) };
+    unsafe impl NSObjectProtocol for Row {}
 
-    /// The gap AppKit leaves between two buttons, remembered from a row that
-    /// was evenly spaced rather than measured again on every pass. See
-    /// [`spacing`].
-    static SPACING: Cell<f64> = const { Cell::new(0.0) };
-
-    /// How far up the view holding them the row sits, remembered from two
-    /// readings that agreed. See [`height_above_the_bottom`].
-    static BOTTOM: Cell<Option<f64>> = const { Cell::new(None) };
-
-    /// What the last reading said, which is the only thing the next one has to
-    /// agree with to be believed.
-    static LAST: Cell<Option<f64>> = const { Cell::new(None) };
-
-    /// The timer that keeps the row in place while a window is being dragged.
-    /// One at a time, and only for as long as the drag. See [`keep_up`].
-    static TRACKING: RefCell<Option<Retained<NSTimer>>> = const { RefCell::new(None) };
-}
-
-/// The observers one window holds, taken off the notification centre when it is
-/// dropped.
-struct Watch {
-    tokens: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
-}
-
-impl Drop for Watch {
-    fn drop(&mut self) {
-        let centre = NSNotificationCenter::defaultCenter();
-        for token in self.tokens.drain(..) {
-            // SAFETY: the token came from this centre and is removed once.
-            unsafe { centre.removeObserver(ProtocolObject::as_ref(&*token)) };
+    impl Row {
+        /// Only the buttons answer a click; the gaps between them are the
+        /// window's.
+        ///
+        /// A view of this size laid over the title bar would otherwise swallow
+        /// everything that lands beside a button, and beside the buttons is
+        /// where the reader drags the window.
+        #[unsafe(method_id(hitTest:))]
+        fn hit_test(&self, at: NSPoint) -> Option<Retained<NSView>> {
+            // The point arrives in the coordinates of the view this one sits
+            // in, and a button wants it in this one's.
+            let inside =
+                unsafe { self.convertPoint_fromView(at, self.superview().as_deref()) };
+            // In the order they were added, which is the order they were made:
+            // three buttons in a row, none of them over another.
+            self.subviews()
+                .iter()
+                .find_map(|button| button.hitTest(inside))
         }
     }
-}
+);
 
 /// Centres the window buttons, and keeps them centred.
 pub fn centre_buttons<R: Runtime>(window: &WebviewWindow<R>) {
+    take(window);
+
+    let handle = window.clone();
+    window.on_window_event(move |event| match event {
+        // Full screen takes the row back into a title bar of AppKit's own, and
+        // returning from it leaves the row there. Both arrive as a resize, and
+        // a resize that finds the row already in place does nothing at all -
+        // which is what makes this safe to answer while a window is being
+        // dragged.
+        WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => take(&handle),
+        _ => {}
+    });
+}
+
+/// Takes the three buttons into Coffer's own view, on the thread that draws.
+fn take<R: Runtime>(window: &WebviewWindow<R>) {
     let Some(native) = native(window) else {
         return;
     };
 
-    let which = NEXT.fetch_add(1, Ordering::Relaxed);
-    balance(window);
-    watch(which, &native);
+    if let Some(mtm) = MainThreadMarker::new() {
+        hold(&native, mtm);
+        return;
+    }
 
-    let handle = window.clone();
-    window.on_window_event(move |event| match event {
-        // A window that has gone stops being watched. The buttons are the
-        // system's and outlive nothing, but the observers are Coffer's, and
-        // this window is built again on every unlock.
-        WindowEvent::Destroyed => unwatch(&handle, which),
-        // The notification covers every layout AppKit does on its own. This
-        // covers what it might not: a move to a display of another scale, where
-        // the buttons change size. It moves nothing that is already in place,
-        // so it can never be the late half of a flicker.
-        WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => balance(&handle),
-        _ => {}
+    let native = SendWindow(native);
+    let _ = window.run_on_main_thread(move || {
+        // The whole carrier is moved across, not the reference inside it: that
+        // reference is the half that is not `Send`.
+        let carried = &native;
+        if let Some(mtm) = MainThreadMarker::new() {
+            hold(&carried.0, mtm);
+        }
     });
 }
 
@@ -160,89 +131,6 @@ fn native<R: Runtime>(window: &WebviewWindow<R>) -> Option<Retained<NSWindow>> {
     // SAFETY: `ns_window` hands back the `NSWindow` this webview lives in, and
     // AppKit owns it for as long as the window is open.
     unsafe { Retained::retain(handle.cast::<NSWindow>()) }
-}
-
-/// Asks each button to say when its frame changes, and puts it back when it
-/// does.
-fn watch(which: u64, window: &NSWindow) {
-    if MainThreadMarker::new().is_none() {
-        return;
-    }
-
-    let centre = NSNotificationCenter::defaultCenter();
-    let mut tokens = Vec::new();
-
-    for kind in [
-        NSWindowButton::CloseButton,
-        NSWindowButton::MiniaturizeButton,
-        NSWindowButton::ZoomButton,
-    ] {
-        let Some(button) = window.standardWindowButton(kind) else {
-            continue;
-        };
-        button.setPostsFrameChangedNotifications(true);
-
-        let held: Retained<NSView> = Retained::into_super(Retained::into_super(button.clone()));
-        let block = RcBlock::new(move |_: std::ptr::NonNull<NSNotification>| {
-            // A notification about this view's frame arrives on the thread that
-            // changed it, which is the thread that draws.
-            if let Some(window) = held.window() {
-                lay_out(&window);
-            }
-        });
-
-        // SAFETY: the observer is registered against a button of a live window,
-        // and the token it hands back is removed when `Watch` is dropped.
-        let token = unsafe {
-            centre.addObserverForName_object_queue_usingBlock(
-                Some(NSViewFrameDidChangeNotification),
-                Some(&*button),
-                None,
-                &block,
-            )
-        };
-        tokens.push(token);
-    }
-
-    WATCHED.with(|watched| watched.borrow_mut().insert(which, Watch { tokens }));
-}
-
-fn unwatch<R: Runtime>(window: &WebviewWindow<R>, which: u64) {
-    if MainThreadMarker::new().is_some() {
-        stop_watching(which);
-        return;
-    }
-
-    let _ = window.run_on_main_thread(move || stop_watching(which));
-}
-
-/// Everything one window left running. The timer holds the window it is putting
-/// buttons back in, and a lock destroys that window - so it goes with it rather
-/// than keeping it alive until its next tick.
-fn stop_watching(which: u64) {
-    WATCHED.with(|watched| watched.borrow_mut().remove(&which));
-    if let Some(timer) = TRACKING.with(|held| held.borrow_mut().take()) {
-        timer.invalidate();
-    }
-}
-
-fn balance<R: Runtime>(window: &WebviewWindow<R>) {
-    let Some(native) = native(window) else {
-        return;
-    };
-
-    if MainThreadMarker::new().is_some() {
-        lay_out(&native);
-        return;
-    }
-
-    let native = SendWindow(native);
-    let _ = window.run_on_main_thread(move || {
-        // The whole carrier is moved across, not the reference inside it: that
-        // reference is the half that is not `Send`.
-        let carried = &native;
-        lay_out(&carried.0);
-    });
 }
 
 /// A window on its way to the main thread.
@@ -258,411 +146,222 @@ struct SendWindow(Retained<NSWindow>);
 // retaining and releasing are themselves thread-safe.
 unsafe impl Send for SendWindow {}
 
-/// Puts the three buttons where the title bar draws them, and leaves alone
-/// anything that is already there.
+/// Moves the row into Coffer's view, and does nothing at all if it is already
+/// there.
 ///
-/// Doing nothing when there is nothing to do is what lets this be called from
-/// more than one place: a call that arrives late finds the work done rather
-/// than moving a button a second time.
-///
-/// One pass at a time, whichever way it was reached, and never a pass that is
-/// lost: an ask arriving mid-pass is answered once the pass is over.
-///
-/// Twice at most. The second pass is for the button AppKit moved back while the
-/// first one was running; a third would only be wanted if AppKit and Coffer were
-/// moving the row against each other inside one pass, and spinning here until
-/// they agreed would be a hang where the complaint was a flicker.
-fn lay_out(window: &NSWindow) {
-    one_pass_at_a_time(|| settle_row(window));
-    keep_up(window);
-}
-
-/// Puts the row back on every frame for as long as the window is being dragged.
-///
-/// This is the half that answering events cannot do. A drag runs the main loop
-/// in event tracking mode and lays the row out on every frame the display
-/// draws, which is far more often than a resize event arrives and more often
-/// than a frame notification survives being coalesced - so a correction that
-/// only answers events is one the drag outruns. The row then spends the whole
-/// drag where AppKit put it and snaps back the moment the pointer stops, which
-/// is what a reader sees as the buttons jumping when they let go.
-///
-/// The timer goes on the run loop's common modes for the same reason: a timer
-/// in the default mode does not fire at all while a drag is tracking. It stops
-/// itself when the drag ends, and there is only ever one.
-fn keep_up(window: &NSWindow) {
-    if !window.inLiveResize() {
-        return;
-    }
-    if TRACKING.with(|held| held.borrow().is_some()) {
-        return;
-    }
-
-    let watched = window.retain();
-    // SAFETY: the block runs on the main thread, which is the thread the run
-    // loop it is added to belongs to and the only one AppKit is touched from.
-    let timer = unsafe {
-        NSTimer::timerWithTimeInterval_repeats_block(
-            A_FRAME,
-            true,
-            &RcBlock::new(move |timer: std::ptr::NonNull<NSTimer>| {
-                if watched.inLiveResize() {
-                    one_pass_at_a_time(|| settle_row(&watched));
-                    return;
-                }
-                // The timer is the one this block was made for, and it is
-                // invalidated once.
-                timer.as_ref().invalidate();
-                TRACKING.with(|held| held.borrow_mut().take());
-            }),
-        )
-    };
-
-    // SAFETY: adding a timer this call owns to the run loop of the thread it is
-    // running on.
-    unsafe {
-        NSRunLoop::currentRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
-    }
-    TRACKING.with(|held| *held.borrow_mut() = Some(timer));
-}
-
-/// The protocol of the above, with nothing of AppKit in it: a pass runs alone,
-/// an ask that arrives while one is running is answered once, and a second ask
-/// inside that answer is where it stops.
-fn one_pass_at_a_time(mut pass: impl FnMut()) {
-    if CORRECTING.replace(true) {
-        AGAIN.set(true);
-        return;
-    }
-
-    pass();
-    if AGAIN.replace(false) {
-        pass();
-    }
-
-    AGAIN.set(false);
-    CORRECTING.set(false);
-}
-
-fn settle_row(window: &NSWindow) {
-    // A full screen takes the title bar out of this window and hangs it in one
-    // of AppKit's own, where the row is revealed by a mouse at the top edge
-    // rather than drawn by anybody's title bar. A position measured against
-    // this window's frame would land nowhere near the buttons that come back.
+/// Doing nothing is the common case by far: this is reached from every resize,
+/// and the row leaves only for full screen.
+fn hold(window: &NSWindow, mtm: MainThreadMarker) {
+    // A full screen hangs the title bar in a window of AppKit's own, where the
+    // row is revealed by a mouse at the top edge rather than drawn by anybody's
+    // title bar. Coffer's title bar is not up there to centre anything in.
     if window.styleMask().contains(NSWindowStyleMask::FullScreen) {
         return;
     }
 
-    let (Some(close), Some(miniaturise), Some(zoom)) = (
-        window.standardWindowButton(NSWindowButton::CloseButton),
-        window.standardWindowButton(NSWindowButton::MiniaturizeButton),
-        window.standardWindowButton(NSWindowButton::ZoomButton),
-    ) else {
+    let Some(row) = row(window) else {
+        return;
+    };
+    let Some(content) = window.contentView() else {
+        return;
+    };
+    // The view the whole window is drawn in, which is the one the title bar and
+    // the webview are both inside. SAFETY: reading the view hierarchy of a live
+    // window on the main thread.
+    let Some(host) = (unsafe { content.superview() }) else {
         return;
     };
 
-    // The buttons sit in a view the system keeps for the title bar it is not
-    // drawing. Which view that is, and how tall, is AppKit's business.
-    // SAFETY: reading the view hierarchy of a live window on the main thread.
-    let Some(inside) = (unsafe { close.superview() }) else {
-        return;
+    let holder = match ours(&host) {
+        Some(holder) if row.iter().all(|button| sits_in(button, &holder)) => return,
+        Some(holder) => holder,
+        None => make(&host, mtm),
     };
 
-    let Some(spacing) = spacing(&close, &miniaturise, &zoom) else {
-        return;
-    };
-
-    let Some(bottom) = height_above_the_bottom(&inside, &close) else {
-        return;
-    };
-
-    for (index, each) in [close, miniaturise, zoom].into_iter().enumerate() {
-        settle(
-            &each,
-            NSPoint::new(FROM_LEFT + index as f64 * spacing, bottom),
-        );
+    let [close, _, zoom] = &row;
+    holder.setFrame(place(close.frame(), zoom.frame(), host.frame().size));
+    for button in &row {
+        // The row leaves whichever view it was in: a view has one superview,
+        // and this is how it is moved between two of them.
+        holder.addSubview(button);
     }
 }
 
-/// How far up the view holding them the row sits.
+/// The three buttons, or nothing if this window is missing one of them.
 ///
-/// Measured down from the top of the window and converted into the coordinates
-/// of the view the buttons are in, because those are the coordinates a frame
-/// origin is set in and the two are not the same space.
-///
-/// Believed only from two readings that agree, and remembered when they do -
-/// which is the same rule the gap between two buttons is measured by, for the
-/// same reason. It is two readings a moment apart: the window's height, and
-/// where the view sits inside it. While the window is being dragged the first
-/// has already moved and the second has not, so every frame answers something
-/// different and the row rides up the window and drops back when the pointer
-/// stops. A window nobody is dragging answers the same thing twice.
-///
-/// Two readings rather than asking AppKit whether a drag is in progress:
-/// `inLiveResize` is a view's own state, and the view the buttons are in is not
-/// in the content hierarchy a live resize is announced to. Agreement is a
-/// property of the numbers themselves, and it needs nobody's permission.
-fn height_above_the_bottom(inside: &NSView, close: &NSButton) -> Option<f64> {
-    let Some(window) = inside.window() else {
-        return BOTTOM.get();
+/// All three or none: the row is laid out as a row, and a holder sized from a
+/// row with a hole in it is a holder sized from the wrong button.
+fn row(window: &NSWindow) -> Option<[Retained<NSView>; 3]> {
+    let of = |kind| {
+        window
+            .standardWindowButton(kind)
+            .map(|button: Retained<NSButton>| Retained::into_super(Retained::into_super(button)))
     };
 
-    let above = below_the_top(window.frame().size.height, close.frame().size.height);
-    Some(settled(
-        inside
-            .convertPoint_fromView(NSPoint::new(0.0, above), None)
-            .y,
-    ))
+    Some([
+        of(NSWindowButton::CloseButton)?,
+        of(NSWindowButton::MiniaturizeButton)?,
+        of(NSWindowButton::ZoomButton)?,
+    ])
 }
 
-/// The remembering of the above, with nothing of AppKit in it.
-fn settled(now: f64) -> f64 {
-    if LAST
-        .get()
-        .is_some_and(|before| (before - now).abs() < SAME_PLACE)
-    {
-        BOTTOM.set(Some(now));
-    }
-    LAST.set(Some(now));
-
-    // Nothing has settled yet, and a row placed on this reading is better than
-    // a row left where AppKit put it: the first pass of a window's life runs
-    // before anything is moving.
-    BOTTOM.get().unwrap_or(now)
+/// Coffer's view, if this window has been given one already.
+fn ours(host: &NSView) -> Option<Retained<NSView>> {
+    let ours = <Row as ClassType>::class();
+    host.subviews().iter().find(|view| view.isKindOfClass(ours))
 }
 
-/// The gap AppKit leaves between two of the buttons.
+fn make(host: &NSView, mtm: MainThreadMarker) -> Retained<NSView> {
+    let holder = Row::alloc(mtm).set_ivars(());
+    let holder: Retained<Row> = unsafe { msg_send![super(holder), init] };
+
+    // The one thing that keeps the row in place while the window is dragged.
+    // A flexible bottom margin is a view that keeps its height and its distance
+    // from the top, and AppKit applies it inside the call that resizes the
+    // window rather than in answer to it.
+    holder.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinYMargin);
+
+    // Last in the list is above the webview, which is where the buttons have
+    // to be drawn.
+    host.addSubview(&holder);
+    Retained::into_super(holder)
+}
+
+fn sits_in(button: &NSView, holder: &NSView) -> bool {
+    // SAFETY: reading the view hierarchy on the main thread.
+    unsafe { button.superview() }
+        .is_some_and(|at| std::ptr::eq(&*at as *const NSView, holder as *const NSView))
+}
+
+/// Where the holder goes, so that AppKit's own placement inside it is the
+/// placement Coffer's title bar wants.
 ///
-/// Believed only from a row that is evenly spaced, and remembered when it is.
-/// The two rows this module ever sees are AppKit's and Coffer's, and Coffer's is
-/// AppKit's moved sideways, so both are even and either one answers. A row where
-/// AppKit has put some of the buttons back and not the others cannot be even,
-/// and the gap across it is a number nobody chose: laying the three of them out
-/// on it crowds the row, and the rightmost button, placed two gaps along, moves
-/// twice as far as any of the error - which is the one seen jittering.
-fn spacing(close: &NSButton, miniaturise: &NSButton, zoom: &NSButton) -> Option<f64> {
-    even_gap(
-        miniaturise.frame().origin.x - close.frame().origin.x,
-        zoom.frame().origin.x - miniaturise.frame().origin.x,
+/// AppKit writes the row at a fixed offset from the left of the holder and a
+/// fixed offset up from its bottom, and it writes those two numbers whatever
+/// the holder is doing. So the holder's left edge carries the row to
+/// [`FROM_LEFT`], and the holder's height - measured from the top of the
+/// window, where its own autoresizing keeps it - carries the row to the middle
+/// of [`TITLE_BAR`].
+///
+/// The holder is never shorter than the row is tall. A button that AppKit made
+/// taller than Coffer's title bar would otherwise be carried up past the top of
+/// the window, where half of it cannot be drawn or clicked.
+fn place(first: NSRect, last: NSRect, host: NSSize) -> NSRect {
+    let height = (TITLE_BAR / 2.0 + first.origin.y + first.size.height / 2.0)
+        .max(first.origin.y + first.size.height);
+
+    NSRect::new(
+        NSPoint::new(FROM_LEFT - first.origin.x, host.height - height),
+        NSSize::new((last.origin.x + last.size.width).max(0.0), height),
     )
-}
-
-/// The arithmetic of the above, with nothing of AppKit in it.
-fn even_gap(left: f64, right: f64) -> Option<f64> {
-    if left > 0.0 && (left - right).abs() < SAME_PLACE {
-        SPACING.set(left);
-    }
-
-    // Nothing until a row has been seen whole. A run that guessed would pile
-    // all three buttons on top of each other.
-    let kept = SPACING.get();
-    (kept > 0.0).then_some(kept)
-}
-
-/// Where the bottom edge of a button goes, in the window's own coordinates, so
-/// that the button is centred in the title bar the window draws itself.
-fn below_the_top(window_height: f64, button_height: f64) -> f64 {
-    let above = ((TITLE_BAR - button_height) / 2.0).max(0.0);
-    window_height - above - button_height
-}
-
-/// Moves one button, and only when it is not already there.
-fn settle(button: &NSButton, wanted: NSPoint) {
-    let at = button.frame().origin;
-    if (at.x - wanted.x).abs() < SAME_PLACE && (at.y - wanted.y).abs() < SAME_PLACE {
-        return;
-    }
-    button.setFrameOrigin(wanted);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Two windows, one label. The first one's teardown must not take the
-    /// second one's observers with it.
-    ///
-    /// This is the whole of the bug an auto-lock used to have: the runtime
-    /// delivers a window's `Destroyed` listeners after the callback that built
-    /// its replacement, so a map keyed by label loses the replacement's
-    /// corrections on the first relock, silently. Nothing about AppKit is
-    /// needed to state it - only that two windows are told apart.
+    /// What AppKit does with the row once it is in the holder: it writes the
+    /// same offsets it always writes, in the holder's own coordinates.
+    fn as_appkit_would(holder: NSRect, button: NSRect, host: NSSize) -> (f64, f64) {
+        let left = holder.origin.x + button.origin.x;
+        let centre = host.height - (holder.origin.y + button.origin.y + button.size.height / 2.0);
+        (left, centre)
+    }
+
+    /// The whole of the fix: whatever AppKit chooses, the choice lands in the
+    /// middle of Coffer's title bar. Nothing corrects it afterwards, so this is
+    /// the only thing that can put the row in the right place.
     #[test]
-    fn a_window_that_goes_takes_only_its_own_observers() {
-        let first = NEXT.fetch_add(1, Ordering::Relaxed);
-        let second = NEXT.fetch_add(1, Ordering::Relaxed);
-        assert_ne!(first, second);
-
-        WATCHED.with(|watched| {
-            let mut watched = watched.borrow_mut();
-            watched.insert(first, Watch { tokens: Vec::new() });
-            watched.insert(second, Watch { tokens: Vec::new() });
-
-            watched.remove(&first);
-            assert!(!watched.contains_key(&first));
-            assert!(
-                watched.contains_key(&second),
-                "the window that went took its replacement's observers with it"
+    fn appkits_own_placement_lands_in_the_middle_of_the_title_bar() {
+        // Measured on macOS 26, and the same window with a toolbar, which puts
+        // the row somewhere else entirely.
+        for button in [(9.0, 9.0, 14.0), (12.0, 13.0, 14.0), (19.0, 33.0, 14.0)] {
+            let first = NSRect::new(
+                NSPoint::new(button.0, button.1),
+                NSSize::new(button.2, button.2),
+            );
+            let last = NSRect::new(
+                NSPoint::new(button.0 + 46.0, button.1),
+                NSSize::new(button.2, button.2),
             );
 
-            watched.remove(&second);
-        });
-    }
+            for height in [560.0, 720.0, 1329.5, 2160.0] {
+                let host = NSSize::new(1080.0, height);
+                let (left, centre) = as_appkit_would(place(first, last, host), first, host);
 
-    /// The row is anchored to the top of the window, which is where the title
-    /// bar that has to hold it is anchored, and it is centred in that bar.
-    #[test]
-    fn the_row_sits_the_same_distance_below_the_top_whatever_the_window_is_doing() {
-        let button = 14.0;
-        let mut seen = Vec::new();
-
-        for window in [560.0, 720.0, 1329.5, 2160.0] {
-            let bottom = below_the_top(window, button);
-            seen.push(window - bottom - button);
-        }
-
-        for below in &seen {
-            assert!(
-                (below - seen[0]).abs() < SAME_PLACE,
-                "the row moved when the window was resized: {seen:?}"
-            );
-        }
-
-        let centre = seen[0] + button / 2.0;
-        assert!(
-            (centre - TITLE_BAR / 2.0).abs() < SAME_PLACE,
-            "the row is not centred in the title bar: {centre} of {TITLE_BAR}"
-        );
-    }
-
-    /// Where the row goes is read from two things a moment apart - the window's
-    /// height, and where the view holding the buttons sits inside it - and
-    /// mid-drag the first has moved while the second has not. Every frame of a
-    /// drag therefore answers something different, and a row placed on those
-    /// answers rides up the window and drops back when the pointer stops. Two
-    /// readings that agree are a window nobody is dragging.
-    #[test]
-    fn a_drag_places_the_row_where_it_settled_rather_than_where_a_frame_says() {
-        BOTTOM.set(None);
-        LAST.set(None);
-
-        // The first pass of a window's life. Nothing has settled, and a row
-        // placed here beats a row left where AppKit put it.
-        assert_eq!(settled(3.0), 3.0, "the first row of all was not placed");
-        assert_eq!(
-            settled(3.0),
-            3.0,
-            "a window that is not moving did not settle"
-        );
-
-        // A drag. Every frame is a different answer, and not one of them is
-        // believed.
-        for riding in [11.0, 19.0, 27.0, 35.0, 43.0] {
-            assert_eq!(
-                settled(riding),
-                3.0,
-                "the row rode up the window while it was being dragged"
-            );
-        }
-
-        // The pointer stops, and the answer that repeats is the one taken.
-        assert_eq!(settled(3.0), 3.0, "the row did not come back");
-
-        // A window on a display of another scale has another answer, and it
-        // settles too rather than being refused for ever.
-        assert_eq!(settled(5.0), 3.0, "one reading was enough to move the row");
-        assert_eq!(settled(5.0), 5.0, "the row never took the new place");
-    }
-
-    /// A button AppKit is taller than the bar Coffer draws would take the row
-    /// off the top of the window if the padding above it were allowed to go
-    /// negative.
-    #[test]
-    fn a_button_taller_than_the_bar_is_still_inside_the_window() {
-        let window = 720.0;
-        let bottom = below_the_top(window, TITLE_BAR + 10.0);
-        assert!((window - bottom - (TITLE_BAR + 10.0)).abs() < SAME_PLACE);
-    }
-
-    /// The measurement that used to jitter. AppKit lays the row out while a pass
-    /// is half way through it, so the gap between the first two buttons is
-    /// Coffer's and the gap between the last two is AppKit's - and a row laid
-    /// out on the difference puts the rightmost button two of those errors away
-    /// from where it belongs.
-    #[test]
-    fn a_row_that_is_half_moved_is_not_believed() {
-        SPACING.set(0.0);
-        assert_eq!(
-            even_gap(20.0, 20.0),
-            Some(20.0),
-            "an even row is the answer"
-        );
-
-        assert_eq!(
-            even_gap(4.0, 20.0),
-            Some(20.0),
-            "a half moved row was measured, and the buttons crowded"
-        );
-        assert_eq!(
-            even_gap(20.0, 36.0),
-            Some(20.0),
-            "a half moved row was measured, and the buttons spread"
-        );
-
-        assert_eq!(
-            even_gap(24.0, 24.0),
-            Some(24.0),
-            "a row that is even again is the new answer"
-        );
-    }
-
-    /// Before any row has been seen there is no gap to lay one out on, and
-    /// guessing puts all three buttons in the same place.
-    #[test]
-    fn nothing_is_moved_until_a_whole_row_has_been_seen() {
-        SPACING.set(0.0);
-        assert_eq!(even_gap(0.0, 0.0), None, "a row of nothing was believed");
-        assert_eq!(even_gap(-20.0, -20.0), None, "a backwards row was believed");
-    }
-
-    /// Moving a button is itself a frame change, so a pass is always reached
-    /// from inside another one. Dropping those was what left the last button of
-    /// the row wherever AppKit had just put it, with nothing left to notice.
-    #[test]
-    fn an_ask_that_arrives_mid_pass_is_answered_once_the_pass_is_over() {
-        CORRECTING.set(false);
-        AGAIN.set(false);
-
-        let mut passes = 0;
-        one_pass_at_a_time(|| {
-            passes += 1;
-            // What moving a button does: it asks for a pass from inside one.
-            // Answering it there would be two passes fighting over one row.
-            if passes == 1 {
-                one_pass_at_a_time(|| unreachable!("a pass ran inside another one"));
+                assert!(
+                    (left - FROM_LEFT).abs() < f64::EPSILON,
+                    "the row was left at {left} rather than {FROM_LEFT}"
+                );
+                assert!(
+                    (centre - TITLE_BAR / 2.0).abs() < f64::EPSILON,
+                    "the row's middle was {centre} below the top of a {TITLE_BAR} bar"
+                );
             }
-        });
-
-        assert_eq!(passes, 2, "the ask that arrived mid-pass was dropped");
+        }
     }
 
-    /// And it stops there. A pass that asks for another every time is AppKit and
-    /// Coffer moving the row against each other, and spinning until they agree
-    /// is a hang where the complaint was a flicker.
+    /// The holder is anchored to the top of the window, which is what its
+    /// autoresizing mask keeps it at while the window is dragged. A holder
+    /// placed any other way would need putting back, and putting it back is the
+    /// thing that used to arrive a frame late.
     #[test]
-    fn a_row_that_never_settles_is_left_rather_than_spun_on() {
-        CORRECTING.set(false);
-        AGAIN.set(false);
+    fn the_holder_reaches_the_top_of_the_window_at_every_height() {
+        let first = NSRect::new(NSPoint::new(9.0, 9.0), NSSize::new(14.0, 14.0));
+        let last = NSRect::new(NSPoint::new(55.0, 9.0), NSSize::new(14.0, 14.0));
 
-        let mut passes = 0;
-        one_pass_at_a_time(|| {
-            passes += 1;
-            assert!(passes < 10, "the second pass asked for a third, and got it");
-            one_pass_at_a_time(|| unreachable!("a pass ran inside another one"));
-        });
+        for height in [560.0, 561.0, 720.0, 2160.0] {
+            let holder = place(first, last, NSSize::new(1080.0, height));
+            assert!(
+                (holder.origin.y + holder.size.height - height).abs() < f64::EPSILON,
+                "the holder's top was {} below the window's at height {height}",
+                height - holder.origin.y - holder.size.height
+            );
+        }
+    }
 
-        assert_eq!(passes, 2, "a row that never settles was not left alone");
-        assert!(!CORRECTING.get(), "the guard was left standing");
-        assert!(!AGAIN.get(), "an ask was left for the next pass to answer");
+    /// The holder has to reach the last button, or a click on the zoom button
+    /// lands on the window behind it.
+    #[test]
+    fn the_holder_reaches_the_far_side_of_the_last_button() {
+        let first = NSRect::new(NSPoint::new(9.0, 9.0), NSSize::new(14.0, 14.0));
+        let last = NSRect::new(NSPoint::new(55.0, 9.0), NSSize::new(14.0, 14.0));
+        let holder = place(first, last, NSSize::new(1080.0, 720.0));
+
+        assert!(
+            holder.size.width >= last.origin.x + last.size.width,
+            "the holder stops at {} and the row ends at {}",
+            holder.size.width,
+            last.origin.x + last.size.width
+        );
+    }
+
+    /// A button AppKit made taller than Coffer's title bar would be carried off
+    /// the top of the window by a holder sized to centre it, and the half of it
+    /// that is outside cannot be drawn or clicked.
+    #[test]
+    fn a_button_taller_than_the_title_bar_stays_inside_the_window() {
+        let tall = NSSize::new(14.0, TITLE_BAR + 20.0);
+        let first = NSRect::new(NSPoint::new(9.0, 9.0), tall);
+        let host = NSSize::new(1080.0, 720.0);
+        let holder = place(first, first, host);
+
+        let top = holder.origin.y + first.origin.y + first.size.height;
+        assert!(
+            top <= host.height,
+            "the row reached {top} of a window {} tall",
+            host.height
+        );
+    }
+
+    /// A row AppKit has not laid out yet answers with nothing rather than with
+    /// a rectangle AppKit will not accept.
+    #[test]
+    fn a_row_of_nothing_does_not_make_a_backwards_holder() {
+        let nothing = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0));
+        let holder = place(nothing, nothing, NSSize::new(1080.0, 720.0));
+
+        assert!(holder.size.width >= 0.0, "the holder was {holder:?}");
+        assert!(holder.size.height >= 0.0, "the holder was {holder:?}");
     }
 }
