@@ -30,12 +30,15 @@
 //! window. Nothing about the row is read a second time, so nothing about it can
 //! disagree with itself mid-drag.
 
+use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::{ClassType, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{ClassType, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSButton, NSView, NSWindow, NSWindowButton, NSWindowStyleMask,
 };
-use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize};
+use objc2_foundation::{
+    NSArray, NSObjectProtocol, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize,
+};
 use tauri::{Runtime, WebviewWindow, WindowEvent};
 
 /// The height of the title bar in `frontend/src/lib/components/Titlebar.svelte`,
@@ -84,33 +87,67 @@ define_class!(
                 .iter()
                 .find_map(|button| button.hitTest(inside))
         }
+
+        /// AppKit taking one of the buttons back.
+        ///
+        /// It does that for a full screen, and it does it in the setup that
+        /// follows a window being built - which is how a lock used to end with
+        /// the row where macOS wanted it. There is no notification for a view
+        /// changing hands, and none is needed: the view it is leaving is asked
+        /// first, and this is that view.
+        ///
+        /// Asked again rather than pulled back here: AppKit is in the middle of
+        /// the move, and the answer is only worth anything once it has finished.
+        #[unsafe(method(willRemoveSubview:))]
+        fn will_remove(&self, button: &NSView) {
+            let _: () = unsafe { msg_send![super(self), willRemoveSubview: button] };
+            if let Some(window) = self.window() {
+                later(&window);
+            }
+        }
     }
 );
 
 /// Centres the window buttons, and keeps them centred.
 pub fn centre_buttons<R: Runtime>(window: &WebviewWindow<R>) {
-    take(window);
+    on_the_thread_that_draws(window, |native, mtm| {
+        hold(native, mtm);
+        // And once more when the window has finished being built. Coffer is
+        // handed the window before AppKit has done with it, and the setup that
+        // follows hands the row back to the title bar it came from.
+        later(native);
+    });
 
     let handle = window.clone();
     window.on_window_event(move |event| match event {
-        // Full screen takes the row back into a title bar of AppKit's own, and
-        // returning from it leaves the row there. Both arrive as a resize, and
-        // a resize that finds the row already in place does nothing at all -
-        // which is what makes this safe to answer while a window is being
-        // dragged.
-        WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => take(&handle),
+        // Three things that mean AppKit has had the window in its hands.
+        // Returning from a full screen leaves the row in a title bar of
+        // AppKit's own and tao reports it as a resize; a display of another
+        // scale and a window coming forward are the two others, and the second
+        // of them is when a reader would see a row that had gone astray.
+        //
+        // Answering all three costs nothing: a check that finds the row in
+        // place does not touch it, which is what makes this safe to answer
+        // while a window is being dragged.
+        WindowEvent::Resized(_)
+        | WindowEvent::ScaleFactorChanged { .. }
+        | WindowEvent::Focused(_) => on_the_thread_that_draws(&handle, hold),
         _ => {}
     });
 }
 
-/// Takes the three buttons into Coffer's own view, on the thread that draws.
-fn take<R: Runtime>(window: &WebviewWindow<R>) {
+/// Runs the work against the window AppKit knows, on the thread AppKit allows.
+fn on_the_thread_that_draws<R, W>(window: &WebviewWindow<R>, work: W)
+where
+    R: Runtime,
+    W: FnOnce(&NSWindow, MainThreadMarker) + Send + 'static,
+{
     let Some(native) = native(window) else {
         return;
     };
 
     if let Some(mtm) = MainThreadMarker::new() {
-        hold(&native, mtm);
+        work(&native, mtm);
         return;
     }
 
@@ -120,9 +157,33 @@ fn take<R: Runtime>(window: &WebviewWindow<R>) {
         // reference is the half that is not `Send`.
         let carried = &native;
         if let Some(mtm) = MainThreadMarker::new() {
-            hold(&carried.0, mtm);
+            work(&carried.0, mtm);
         }
     });
+}
+
+/// Asks for the row again on the next turn of the run loop.
+///
+/// Once, and from the two places that know the answer is about to change: a
+/// window that has just been built, and a row AppKit has just taken. Neither
+/// asks again from inside the answer, so nothing here can spin.
+fn later(window: &NSWindow) {
+    let carried = window.retain();
+    let block = RcBlock::new(move || {
+        if let Some(mtm) = MainThreadMarker::new() {
+            hold(&carried, mtm);
+        }
+    });
+
+    // The common modes, so that a row taken while the window is being dragged
+    // comes back during the drag rather than after it.
+    //
+    // SAFETY: the block only touches AppKit, and the main run loop only runs it
+    // on the main thread.
+    unsafe {
+        NSRunLoop::mainRunLoop()
+            .performInModes_block(&NSArray::from_slice(&[NSRunLoopCommonModes]), &block);
+    }
 }
 
 fn native<R: Runtime>(window: &WebviewWindow<R>) -> Option<Retained<NSWindow>> {

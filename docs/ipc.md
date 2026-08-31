@@ -389,10 +389,19 @@ bottom margin, which AppKit applies inside the call that resizes the window
 rather than in answer to it.
 
 The view answers a click only where a button is, because the reader drags the
-window by the title bar beside them. It is asked for again on every resize, and a
-resize that finds the row already in it does nothing: the row leaves only for a
-full screen, which hangs the title bar in a window of AppKit's own, and tao
-reports the return from one as a resize.
+window by the title bar beside them.
+
+AppKit takes the row back sometimes - for a full screen, and in the setup that
+follows a window being built, which a lock showed as a row back where macOS
+wanted it. There is no notification for a view changing hands and none is needed:
+the view a subview is leaving is asked first, and that view is Coffer's, so
+`willRemoveSubview:` is where the row is asked for again. It is asked on the next
+turn of the run loop rather than there and then, because AppKit is in the middle
+of the move. The same ask runs once after a window is built, and on a resize, a
+scale change and a window coming forward - the three events that mean AppKit has
+had the window in its hands. Every one of them is free when there is nothing to
+do: a check that finds the row in place does not touch it, which is what makes
+them safe to answer while a window is being dragged.
 
 **A save holds the session while it runs.** Every committed change writes the
 file, and the write derives the key again, so for that second nothing else can
