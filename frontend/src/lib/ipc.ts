@@ -46,6 +46,33 @@ export async function unlock(password: Uint8Array): Promise<void> {
 	}
 }
 
+/**
+ * Opens the vault even though somebody's lock file sits beside it.
+ *
+ * Only ever after `unlock` rejected with `heldByAnother` and the reader was
+ * shown who holds it. A lock left by a Mac that lost power cannot be told from
+ * one held right now, so the answer is a person's rather than Coffer's.
+ */
+export async function unlockTakingOver(password: Uint8Array): Promise<void> {
+	try {
+		await invoke('unlock_over', password);
+	} finally {
+		password.fill(0);
+	}
+}
+
+/** Opens the system's file picker for the key file some databases need beside
+ * the password, and keeps it for the next unlock. `null` when the reader closed
+ * the picker. */
+export function chooseKeyFile(): Promise<Database | null> {
+	return invoke('choose_key_file');
+}
+
+/** Takes the key file back off, for a reader who picked the wrong one. */
+export function forgetKeyFile(): Promise<void> {
+	return invoke('forget_key_file');
+}
+
 /** Where a vault goes when the reader has not said. Chosen without a panel, so
  * that making the first one is a password and nothing else. */
 export function defaultNewDatabase(): Promise<Database> {

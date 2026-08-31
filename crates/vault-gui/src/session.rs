@@ -28,6 +28,15 @@ struct Held {
     /// Why the vault that was open is not open any more, when it is worth
     /// saying. Cleared by the next unlock.
     locked_by: Option<Reason>,
+    /// The key file the next unlock will use alongside the password, when the
+    /// database asks for one.
+    ///
+    /// Beside `database` and settled before the password is asked for, for the
+    /// same reason `making` is: the password arrives as the whole body of its
+    /// message and carries no named arguments beside it. It survives a lock,
+    /// because the rebuilt window is asking for the same vault, and it goes
+    /// when the session is pointed at a different one.
+    key_file: Option<PathBuf>,
     /// Where a vault being made will go, if one is. Kept apart from
     /// `database`, which is the file the unlock screen offers to open: there is
     /// nothing at this path yet, and pointing the unlock screen at it would be
@@ -56,6 +65,7 @@ impl Session {
             held: Mutex::new(Held {
                 database,
                 locked_by: None,
+                key_file: None,
                 making: None,
                 measured: None,
                 vault: None,
@@ -92,6 +102,10 @@ impl Session {
         let mut held = self.held();
         held.vault = None;
         held.database = Some(database);
+        // A key file belongs to the vault it opens. Carrying one over to a
+        // different file would turn a right password into a wrong one, with
+        // nothing on the screen to explain it.
+        held.key_file = None;
         held.generation += 1;
     }
 
@@ -99,13 +113,39 @@ impl Session {
         self.held().vault.is_some()
     }
 
+    /// The key file the next unlock will use, if one has been chosen.
+    pub fn key_file(&self) -> Option<PathBuf> {
+        self.held().key_file.clone()
+    }
+
+    /// Chooses a key file for the next unlock, or takes the choice back.
+    pub fn use_key_file(&self, path: Option<PathBuf>) {
+        self.held().key_file = path;
+    }
+
+    /// Points the session at one of this database's own snapshots.
+    ///
+    /// [`Session::choose`] with the key file put back. A snapshot is a copy of
+    /// the same vault and opens with the same credentials, so forgetting the key
+    /// file - which is right for any other file - would leave a snapshot of a
+    /// database that wants one impossible to open.
+    pub fn choose_snapshot(&self, snapshot: PathBuf) {
+        let key_file = self.key_file();
+        self.choose(snapshot);
+        self.use_key_file(key_file);
+    }
+
     /// Opens the chosen database.
     ///
     /// The password is consumed: it goes into the vault, which holds it for as
     /// long as it is open because KeePass derives a fresh key on every save,
     /// and wipes it on the way out.
-    pub fn unlock(&self, password: Zeroizing<Vec<u8>>) -> Result<(), Failure> {
-        let (database, generation) = {
+    ///
+    /// `policy` is how a lock file beside the database is answered. Only a
+    /// reader who has been shown who holds it, and said to open anyway, gets
+    /// [`LockPolicy::TakeOver`]; nothing decides that on their behalf.
+    pub fn unlock(&self, password: Zeroizing<Vec<u8>>, policy: LockPolicy) -> Result<(), Failure> {
+        let (database, key_file, generation) = {
             let mut held = self.held();
             // Anything already open is dropped before the new one is opened, so
             // that reopening the same file does not find Coffer's own lock
@@ -113,18 +153,25 @@ impl Session {
             held.vault = None;
             (
                 held.database.clone().ok_or_else(Failure::no_vault)?,
+                held.key_file.clone(),
                 held.generation,
             )
         };
 
+        let mut key = MasterKey::from_password(password);
+        if let Some(path) = &key_file {
+            // Named rather than passed through: a key file that has been moved
+            // or unplugged since it was chosen comes back from the filesystem as
+            // a bare errno, which on this screen reads as the vault being gone.
+            key = key
+                .with_key_file(path)
+                .map_err(|_| Failure::refused("the key file could not be read"))?;
+        }
+
         // Key derivation is a second of work, and it happens with nothing held.
         // A window that asks the session anything meanwhile is answered rather
         // than left waiting on a lock this thread is holding.
-        let vault = Vault::open(
-            &database,
-            MasterKey::from_password(password),
-            LockPolicy::Respect,
-        )?;
+        let vault = Vault::open(&database, key, policy)?;
 
         let mut held = self.held();
         if held.generation != generation {
@@ -228,6 +275,10 @@ impl Session {
         held.vault = Some(vault);
         held.locked_by = None;
         held.making = None;
+        // Coffer never makes a vault that wants a key file, so one chosen for
+        // whatever was on the unlock screen before must not follow the new vault
+        // into the next unlock.
+        held.key_file = None;
         Ok(())
     }
 
@@ -313,7 +364,7 @@ mod tests {
         let (directory, database) = scratch(name);
         let session = Session::new(Some(database));
         session
-            .unlock(password(SECRET))
+            .unlock(password(SECRET), LockPolicy::Respect)
             .expect("the database opens");
         (directory, session)
     }
@@ -388,7 +439,7 @@ mod tests {
 
         for _ in 0..3 {
             session
-                .unlock(password(SECRET))
+                .unlock(password(SECRET), LockPolicy::Respect)
                 .expect("the database opens");
             session.lock(Reason::ByHand);
         }
@@ -405,7 +456,9 @@ mod tests {
     #[test]
     fn unlocking_an_open_database_again_replaces_it() {
         let (_scratch, session) = unlocked(RICH);
-        session.unlock(password(SECRET)).expect("it opens again");
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("it opens again");
         assert!(session.is_unlocked());
     }
 
@@ -415,12 +468,16 @@ mod tests {
         let session = Session::new(Some(database));
 
         for wrong in [b"".as_slice(), b"coffer-tes".as_slice(), &[0xff, 0xfe]] {
-            assert!(session.unlock(password(wrong)).is_err());
+            assert!(
+                session
+                    .unlock(password(wrong), LockPolicy::Respect)
+                    .is_err()
+            );
             assert!(!session.is_unlocked());
         }
 
         session
-            .unlock(password(SECRET))
+            .unlock(password(SECRET), LockPolicy::Respect)
             .expect("the right one opens");
     }
 
@@ -443,7 +500,11 @@ mod tests {
     #[test]
     fn there_is_nothing_to_unlock_until_something_is_chosen() {
         let session = Session::new(None);
-        assert!(session.unlock(password(SECRET)).is_err());
+        assert!(
+            session
+                .unlock(password(SECRET), LockPolicy::Respect)
+                .is_err()
+        );
     }
 
     /// Key derivation happens with nothing held, so the session can move while
@@ -459,7 +520,7 @@ mod tests {
         let session = Arc::new(Session::new(Some(one)));
         let unlocking = {
             let session = Arc::clone(&session);
-            std::thread::spawn(move || session.unlock(password(SECRET)))
+            std::thread::spawn(move || session.unlock(password(SECRET), LockPolicy::Respect))
         };
 
         // Long enough for the unlock to be inside key derivation, which takes
@@ -484,12 +545,12 @@ mod tests {
         let (_scratch, database) = scratch(RICH);
         let holding = Session::new(Some(database.clone()));
         holding
-            .unlock(password(SECRET))
+            .unlock(password(SECRET), LockPolicy::Respect)
             .expect("the first one opens");
 
         let second = Session::new(Some(database));
         let failure = second
-            .unlock(password(SECRET))
+            .unlock(password(SECRET), LockPolicy::Respect)
             .expect_err("the second one is refused");
 
         let payload = serde_json::to_value(&failure).expect("a failure serialises");
@@ -526,7 +587,7 @@ mod tests {
         );
 
         session
-            .unlock(password(SECRET))
+            .unlock(password(SECRET), LockPolicy::Respect)
             .expect("the database opens");
         let root = session.tree().expect("the tree comes back").id;
         session
@@ -608,7 +669,7 @@ mod tests {
 
         let unlocking = {
             let session = Arc::clone(&session);
-            std::thread::spawn(move || session.unlock(password(SECRET)))
+            std::thread::spawn(move || session.unlock(password(SECRET), LockPolicy::Respect))
         };
 
         // Long enough for the unlock to be inside key derivation, and short
@@ -763,5 +824,97 @@ mod tests {
             Some(elsewhere.canonicalize().expect("the copy is there"))
         );
         assert!(!session.is_unlocked());
+    }
+
+    /// A database whose owner chose a key file in KeePassXC. `vault-core` has
+    /// read one since slice 1; until the window could ask for it, every one of
+    /// these was a vault Coffer answered with "wrong password" and no way on.
+    #[test]
+    fn a_key_file_database_opens_once_the_key_file_has_been_chosen() {
+        let (directory, database) = scratch("keyfile-kdbx41.kdbx");
+        let session = Session::new(Some(database));
+
+        assert!(
+            session
+                .unlock(password(b"coffer-keyfile"), LockPolicy::Respect)
+                .is_err(),
+            "the password alone opened a database that wants a key file"
+        );
+
+        session.use_key_file(Some(fixture("keyfile.key")));
+        session
+            .unlock(password(b"coffer-keyfile"), LockPolicy::Respect)
+            .expect("both halves open it");
+        assert!(session.is_unlocked());
+        drop(directory);
+    }
+
+    /// A key file belongs to one vault. Following the reader to the next one
+    /// would turn a right password into a wrong one with nothing to explain it.
+    #[test]
+    fn pointing_the_session_at_another_database_forgets_the_key_file() {
+        let (_directory, database) = scratch("keyfile-kdbx41.kdbx");
+        let session = Session::new(Some(database));
+        session.use_key_file(Some(fixture("keyfile.key")));
+
+        let (_elsewhere, other) = scratch(RICH);
+        session.choose(other);
+
+        assert_eq!(session.key_file(), None);
+    }
+
+    /// A snapshot of a vault that wants a key file wants the same one. Choosing
+    /// any other file forgets it, which is right, and a snapshot forgetting it
+    /// left the offer the unlock screen makes for a database that will not open
+    /// leading somewhere that could never be opened either.
+    #[test]
+    fn opening_a_snapshot_keeps_the_key_file_the_vault_needs() {
+        let (_directory, database) = scratch("keyfile-kdbx41.kdbx");
+        let session = Session::new(Some(database.clone()));
+        session.use_key_file(Some(fixture("keyfile.key")));
+
+        let mut snapshot = database.into_os_string();
+        snapshot.push(".1.bak");
+        session.choose_snapshot(PathBuf::from(snapshot));
+
+        assert_eq!(session.key_file(), Some(fixture("keyfile.key")));
+    }
+
+    /// A lock file from a Mac that lost power cannot be told from one held by a
+    /// Coffer running right now: the process id belongs to a machine that has
+    /// rebooted, or the host name has changed since. Respecting it is right, and
+    /// so is letting a reader who has been shown who holds it say to open
+    /// anyway - without that, the vault could never be opened again.
+    #[test]
+    fn a_lock_nobody_can_prove_stale_is_respected_and_can_still_be_taken_over() {
+        let (_directory, database) = scratch(RICH);
+
+        // A lock naming another machine, which is never stale as far as this one
+        // is concerned.
+        let mut lock = database.clone().into_os_string();
+        lock.push(".lock");
+        std::fs::write(
+            &lock,
+            "[Lock]\nTime=2026-08-30T10:00:00Z\nUserName=someone\nMachine=another-mac\nPID=1\nToken=1\n",
+        )
+        .expect("the lock file is written");
+
+        let session = Session::new(Some(database));
+        let refused = session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect_err("somebody else's lock is respected");
+        // `Failure` derives `Debug` because every part of it is written to be
+        // shown, which is what makes this readable from here.
+        let said = format!("{refused:?}");
+        assert!(said.contains("HeldByAnother"), "{said}");
+        assert!(
+            said.contains("another-mac") && said.contains("someone"),
+            "the reader is not told who holds it: {said}"
+        );
+
+        session
+            .unlock(password(SECRET), LockPolicy::TakeOver)
+            .expect("a reader who said to open anyway gets in");
+        assert!(session.is_unlocked());
     }
 }

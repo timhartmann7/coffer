@@ -16,6 +16,8 @@
 	import type { Database, Group, Settings as Chosen } from '$lib/model';
 
 	let database = $state<Database | null>(null);
+	/** The key file the next unlock will use, when Rust is holding one. */
+	let keyFile = $state<Database | null>(null);
 	let root = $state<Group | null>(null);
 	let readOnly = $state(false);
 	let ready = $state(false);
@@ -38,6 +40,7 @@
 			try {
 				const opening = await status();
 				database = opening.database;
+				keyFile = opening.keyFile;
 				reason = opening.lockedBy;
 				chosen = await loadSettings();
 				if (opening.unlocked) await opened();
@@ -90,6 +93,9 @@
 		const picked = await chooseDatabase().catch(() => null);
 		if (picked) {
 			database = picked;
+			// Rust forgot the key file when the session was pointed elsewhere,
+			// and the screen has to say the same thing.
+			keyFile = null;
 			showing = 'vault';
 		}
 	}
@@ -159,8 +165,10 @@
 	{:else if ready}
 		<Unlock
 			{database}
+			{keyFile}
 			{reason}
 			onChoose={(picked) => (database = picked)}
+			onKeyFile={(chosen) => (keyFile = chosen)}
 			onCreate={() => (showing = 'create')}
 			onUnlocked={opened}
 		/>

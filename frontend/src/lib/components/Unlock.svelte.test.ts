@@ -4,9 +4,12 @@ import Unlock from './Unlock.svelte';
 
 const ipc = vi.hoisted(() => ({
 	unlock: vi.fn(),
+	unlockTakingOver: vi.fn(),
 	snapshots: vi.fn(),
 	chooseDatabase: vi.fn(),
 	chooseSnapshot: vi.fn(),
+	chooseKeyFile: vi.fn(),
+	forgetKeyFile: vi.fn(),
 	asFailure: (thrown: unknown) => thrown as { code: string; message: string }
 }));
 vi.mock('$lib/ipc', () => ipc);
@@ -19,6 +22,7 @@ beforeEach(() => {
 	host = document.createElement('div');
 	document.body.appendChild(host);
 	ipc.snapshots.mockResolvedValue([]);
+	ipc.forgetKeyFile.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -28,7 +32,13 @@ afterEach(() => {
 function open(onUnlocked = vi.fn().mockResolvedValue(undefined)) {
 	const component = mount(Unlock, {
 		target: host,
-		props: { database, onChoose: vi.fn(), onCreate: vi.fn(), onUnlocked }
+		props: {
+			database,
+			onChoose: vi.fn(),
+			onKeyFile: vi.fn(),
+			onCreate: vi.fn(),
+			onUnlocked
+		}
 	});
 	flushSync();
 	return component;
@@ -175,7 +185,14 @@ it('says why the vault locked, when there is something to say', () => {
 	]) {
 		const component = mount(Unlock, {
 			target: host,
-			props: { database, reason, onChoose: vi.fn(), onCreate: vi.fn(), onUnlocked: vi.fn() }
+			props: {
+				database,
+				reason,
+				onChoose: vi.fn(),
+				onKeyFile: vi.fn(),
+				onCreate: vi.fn(),
+				onUnlocked: vi.fn()
+			}
 		});
 		flushSync();
 
@@ -210,6 +227,7 @@ it('has something to say about a reason it does not know', () => {
 			database,
 			reason: 'somethingLater',
 			onChoose: vi.fn(),
+			onKeyFile: vi.fn(),
 			onCreate: vi.fn(),
 			onUnlocked: vi.fn()
 		}
@@ -218,4 +236,180 @@ it('has something to say about a reason it does not know', () => {
 
 	expect(host.textContent).toContain('The vault was locked.');
 	unmount(component);
+});
+
+/**
+ * A lock file a crash left behind cannot be told from one a Coffer is holding
+ * right now: the process id belongs to a Mac that has rebooted since, or the
+ * host name has changed. Without this the vault could never be opened again
+ * from inside the application, and the only way back in was deleting a sibling
+ * file nothing on the screen names.
+ */
+it('offers to take over a lock, and takes the password again to do it', async () => {
+	ipc.unlock.mockRejectedValue({
+		code: 'heldByAnother',
+		message: 'someone has it open on another-mac, since 2026-08-30T10:00:00Z'
+	});
+	ipc.unlockTakingOver.mockResolvedValue(undefined);
+	const component = open();
+
+	submit('correct horse battery staple');
+	await vi.waitFor(() => expect(reads()).toContain('another-mac'));
+	flushSync();
+
+	const anyway = [...host.querySelectorAll('button')].find(
+		(each) => each.textContent?.trim() === 'Open it anyway'
+	);
+	expect(anyway, 'a lock nobody can prove stale left no way in').toBeDefined();
+	anyway?.click();
+	flushSync();
+
+	// Nothing has happened yet: the first password is derived and gone, and
+	// keeping it here to retry with is the one thing this screen must not do.
+	expect(ipc.unlockTakingOver).not.toHaveBeenCalled();
+	expect(reads()).toContain('Type the password again');
+
+	submit('correct horse battery staple');
+	await vi.waitFor(() => expect(ipc.unlockTakingOver).toHaveBeenCalledTimes(1));
+	expect(ipc.unlock, 'the second attempt went through the ordinary door').toHaveBeenCalledTimes(1);
+
+	return unmount(component);
+});
+
+/** Nothing decides a take-over on the reader's behalf: an ordinary unlock is
+ * the ordinary command, every time. */
+it('never takes a lock over without being asked', async () => {
+	ipc.unlock.mockResolvedValue(undefined);
+	const component = open();
+
+	submit('correct horse battery staple');
+	await vi.waitFor(() => expect(ipc.unlock).toHaveBeenCalledTimes(1));
+	expect(ipc.unlockTakingOver).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/** Coffer never makes a vault that wants a key file, so a database from another
+ * client whose owner chose one there had no way in at all. */
+it('asks for a key file and shows the one that was chosen', async () => {
+	const chosen = { path: '/Users/someone/personal.key', name: 'personal' };
+	ipc.chooseKeyFile.mockResolvedValue(chosen);
+	const onKeyFile = vi.fn();
+
+	const component = mount(Unlock, {
+		target: host,
+		props: {
+			database,
+			onChoose: vi.fn(),
+			onKeyFile,
+			onCreate: vi.fn(),
+			onUnlocked: vi.fn()
+		}
+	});
+	flushSync();
+
+	const offer = [...host.querySelectorAll('button')].find(
+		(each) => each.textContent?.trim() === 'This vault also needs a key file'
+	);
+	expect(offer).toBeDefined();
+	offer?.click();
+
+	await vi.waitFor(() => expect(onKeyFile).toHaveBeenCalledWith(chosen));
+	return unmount(component);
+});
+
+it('takes a key file back off when the reader picked the wrong one', async () => {
+	const onKeyFile = vi.fn();
+	const component = mount(Unlock, {
+		target: host,
+		props: {
+			database,
+			keyFile: { path: '/Users/someone/personal.key', name: 'personal' },
+			onChoose: vi.fn(),
+			onKeyFile,
+			onCreate: vi.fn(),
+			onUnlocked: vi.fn()
+		}
+	});
+	flushSync();
+
+	expect(reads()).toContain('personal');
+	host.querySelector<HTMLButtonElement>('[aria-label="Do not use a key file"]')?.click();
+
+	await vi.waitFor(() => expect(ipc.forgetKeyFile).toHaveBeenCalledTimes(1));
+	await vi.waitFor(() => expect(onKeyFile).toHaveBeenCalledWith(null));
+
+	return unmount(component);
+});
+
+/**
+ * A snapshot is a copy of the vault that is already chosen, so it opens with the
+ * same credentials and Rust keeps the key file for it. The screen has to say the
+ * same thing: one that cleared the key file while Rust was still using it would
+ * be a screen nobody could reason about.
+ */
+it('keeps the key file when the reader opens a snapshot of the same vault', async () => {
+	const keyFile = { path: '/Users/someone/personal.key', name: 'personal' };
+	ipc.unlock.mockRejectedValue({ code: 'damaged', message: 'the database body is damaged' });
+	ipc.snapshots.mockResolvedValue([
+		{ name: 'personal.kdbx.1.bak', index: 1, taken: '2026-08-27T18:40:00Z' }
+	]);
+	ipc.chooseSnapshot.mockResolvedValue({
+		path: '/Users/someone/personal.kdbx.1.bak',
+		name: 'personal.kdbx.1'
+	});
+	const onKeyFile = vi.fn();
+
+	const component = mount(Unlock, {
+		target: host,
+		props: {
+			database,
+			keyFile,
+			onChoose: vi.fn(),
+			onKeyFile,
+			onCreate: vi.fn(),
+			onUnlocked: vi.fn()
+		}
+	});
+	flushSync();
+
+	submit('correct horse battery staple');
+	await vi.waitFor(() => expect(reads()).toContain('personal.kdbx.1.bak'));
+	flushSync();
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('Open personal.kdbx.1.bak'))
+		?.click();
+	await vi.waitFor(() => expect(ipc.chooseSnapshot).toHaveBeenCalledTimes(1));
+
+	expect(onKeyFile, 'the screen threw away a key file Rust is still using').not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/** Any other file is a different vault, and its key file is not this one's. */
+it('forgets the key file when another database is chosen', async () => {
+	const onKeyFile = vi.fn();
+	ipc.chooseDatabase.mockResolvedValue({ path: '/Users/someone/other.kdbx', name: 'other' });
+
+	const component = mount(Unlock, {
+		target: host,
+		props: {
+			database,
+			keyFile: { path: '/Users/someone/personal.key', name: 'personal' },
+			onChoose: vi.fn(),
+			onKeyFile,
+			onCreate: vi.fn(),
+			onUnlocked: vi.fn()
+		}
+	});
+	flushSync();
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Open another database')
+		?.click();
+
+	await vi.waitFor(() => expect(onKeyFile).toHaveBeenCalledWith(null));
+
+	return unmount(component);
 });

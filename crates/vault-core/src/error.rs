@@ -182,7 +182,14 @@ pub enum VaultError {
     DatabaseGone,
 
     /// Another process has the database open.
-    #[error("the database is open in another process")]
+    ///
+    /// The message names who, because the reader has to decide whether that is
+    /// still true: a lock left behind by a Mac that lost power looks exactly
+    /// like one held by a Coffer running right now, and the only thing that
+    /// tells them apart is a person recognising the machine and the hour. A
+    /// `Holder` carries a time, an account, a machine and a process id, and
+    /// none of those is a secret out of the database.
+    #[error("{}", .0.describe())]
     Locked(Holder),
 
     /// Anything the filesystem said no to.

@@ -54,6 +54,43 @@ impl Holder {
         }
     }
 
+    /// Who holds this lock, in a sentence.
+    ///
+    /// Every field is optional in practice: a lock file is written by whoever
+    /// can write the directory beside the database, and a client that records
+    /// no account or no machine is a client that records none. A sentence with
+    /// the gaps left in it reads as a bug, so each shape has its own wording.
+    ///
+    /// The values are shown and never acted on, and they are clipped: a lock
+    /// file naming a megabyte of account is not something to put on a screen.
+    pub fn describe(&self) -> String {
+        /// Long enough for any real account or machine name.
+        const SHOWN: usize = 60;
+
+        fn short(text: &str) -> &str {
+            let text = text.trim();
+            match text.char_indices().nth(SHOWN) {
+                Some((at, _)) => text.get(..at).unwrap_or_default(),
+                None => text,
+            }
+        }
+
+        let (user, host, time) = (short(&self.user), short(&self.host), short(&self.time));
+
+        let who = match (user.is_empty(), host.is_empty()) {
+            (false, false) => format!("{user} has this vault open on {host}"),
+            (false, true) => format!("{user} has this vault open"),
+            (true, false) => format!("this vault is open on {host}"),
+            (true, true) => "another process has this vault open".to_owned(),
+        };
+
+        if time.is_empty() {
+            who
+        } else {
+            format!("{who}, since {time}")
+        }
+    }
+
     /// Whether this lock is the one a given `Lock` value wrote.
     fn is(&self, token: u64) -> bool {
         self.token == token
@@ -264,5 +301,62 @@ fn read(path: &Path) -> Result<Option<Holder>, io::Error> {
         Ok(text) => Ok(Some(Holder::parse(&text))),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn holder(user: &str, host: &str, time: &str) -> Holder {
+        Holder {
+            time: time.to_owned(),
+            user: user.to_owned(),
+            host: host.to_owned(),
+            pid: None,
+            token: 0,
+        }
+    }
+
+    /// A lock file is written by whoever can write the directory beside the
+    /// database, so every field in it is somebody else's text and any of them
+    /// may be missing. None of these may come out as a sentence with a hole in
+    /// it, and none of them may come out a kilometre long.
+    #[test]
+    fn a_lock_file_that_says_little_still_reads_as_a_sentence() {
+        assert_eq!(
+            holder("someone", "a-mac", "2026-08-30T10:00:00Z").describe(),
+            "someone has this vault open on a-mac, since 2026-08-30T10:00:00Z"
+        );
+        assert_eq!(
+            holder("someone", "", "").describe(),
+            "someone has this vault open"
+        );
+        assert_eq!(
+            holder("", "a-mac", "").describe(),
+            "this vault is open on a-mac"
+        );
+        assert_eq!(
+            holder("", "", "").describe(),
+            "another process has this vault open"
+        );
+        assert_eq!(
+            holder(" ", "\t", " ").describe(),
+            "another process has this vault open"
+        );
+    }
+
+    /// The fields are shown, so a lock file naming a kilometre of account is a
+    /// lock file that would fill the screen with it. Cut on a character and
+    /// never inside one.
+    #[test]
+    fn a_lock_file_that_says_far_too_much_is_cut_short() {
+        let long = holder(&"n".repeat(4096), &"h".repeat(4096), &"t".repeat(4096));
+        assert!(long.describe().len() < 250, "{}", long.describe().len());
+
+        let wide = holder(&"e\u{301}".repeat(500), "", "");
+        let said = wide.describe();
+        assert!(said.len() < 250, "{}", said.len());
+        assert!(said.is_char_boundary(said.len()));
     }
 }
