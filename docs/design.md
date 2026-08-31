@@ -83,8 +83,15 @@ default, where the halftone reads clearly.
 the bundler's defaults already put the application and the Applications alias
 where a reader expects them.
 
-## Two sizes that were off the scale
+## The list row
 
-`min-w-[9rem]` on the password row became `min-w-36`, the same length as a step
-the scale already has. The tag's remove cross was 12 pixels where the mockup's
-smallest icon is 14.
+The mockup draws a row as a `div` that lights up under the pointer, and says
+nothing about what a press on one does, because nothing in a still picture does
+anything. Coffer's row is a `button` with the grid inside it, so that the whole
+of what lights up is the whole of what opens the entry. The two copy buttons at
+the end are laid over the column the mockup leaves empty for them, because a
+button cannot hold a button.
+
+## One size that was off the scale
+
+The tag's remove cross was 12 pixels where the mockup's smallest icon is 14.

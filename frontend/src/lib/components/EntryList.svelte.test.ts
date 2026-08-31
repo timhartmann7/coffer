@@ -90,6 +90,50 @@ it('copies the field the button names, without the value passing through', () =>
 	return unmount(component);
 });
 
+/**
+ * The row lights up under the pointer and the row is what opens the entry.
+ *
+ * Only the name used to be the way in, so the top and the bottom of a lit row
+ * answered nothing at all: the list said one thing with its highlight and did
+ * another with the press, which a reader reads as the application being broken.
+ */
+it('makes the whole row the way in, not the name in it', () => {
+	const onOpen = vi.fn();
+	const only = row({ title: 'node-3', username: 'deploy', tags: ['prod'], hasPassword: true });
+	const component = draw([only], { onOpen });
+	flushSync();
+
+	const opener = host.querySelector('button');
+	if (!opener) throw new Error('the row has nothing to click');
+
+	for (const drawn of ['node-3', 'deploy', 'prod']) {
+		expect(opener.textContent, `${drawn} sits outside the row's own button`).toContain(drawn);
+	}
+
+	const lit = opener.parentElement;
+	expect(lit?.className, 'the row lights up somewhere other than where it opens').toContain(
+		'hover:bg-raised'
+	);
+
+	// The two copy buttons are the one thing outside it, because a button cannot
+	// hold a button. They are laid over the column left empty for them.
+	const copies = [...host.querySelectorAll('button')].filter((each) =>
+		each.getAttribute('aria-label')?.startsWith('Copy')
+	);
+	expect(copies).toHaveLength(2);
+	for (const copy of copies) {
+		expect(opener.contains(copy), 'a copy button is inside the button that opens the row').toBe(
+			false
+		);
+		expect(lit?.contains(copy), 'a copy button left the row it belongs to').toBe(true);
+	}
+
+	opener.click();
+	expect(onOpen).toHaveBeenCalledWith(only.id);
+
+	return unmount(component);
+});
+
 /** An entry with no title is still an entry, and the row still has to be
  * something a reader can hit. */
 it('opens an entry that has no title at all', () => {
