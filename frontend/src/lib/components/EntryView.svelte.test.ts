@@ -189,6 +189,88 @@ it('hides the value on a press, without writing it or opening it again', async (
 	return unmount(component);
 });
 
+/**
+ * Hide is the one press that keeps the focus, and it is not where a reader goes
+ * next: they press Copy, or click another entry, or reach for the search box.
+ * Every one of those blurs the live field, and the blur used to write the
+ * revealed value straight back - a full save, a second of key derivation, and
+ * one of the ten snapshots beside the vault rotated away, spent on the reader
+ * having looked at a password.
+ */
+it('does not write a revealed value back when the focus leaves the field', async () => {
+	const component = show({
+		fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+	});
+	flushSync();
+
+	button('Show').click();
+	await vi.waitFor(() => expect(value()).toBe(SECRET));
+	flushSync();
+
+	const node = host.querySelector('[data-value]') as HTMLInputElement;
+	node.focus();
+	node.dispatchEvent(new FocusEvent('blur'));
+	flushSync();
+
+	expect(ipc.setField, 'looking at a password rewrote the whole vault').not.toHaveBeenCalled();
+	expect(screen(), 'the value is still on the screen').not.toContain(SECRET);
+
+	return unmount(component);
+});
+
+/** The other half of the same rule: a value the reader typed is still written. */
+it('writes a password the reader typed over a revealed one', async () => {
+	const component = show({
+		fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+	});
+	flushSync();
+
+	button('Show').click();
+	await vi.waitFor(() => expect(value()).toBe(SECRET));
+	flushSync();
+
+	const node = host.querySelector('[data-value]') as HTMLInputElement;
+	node.focus();
+	node.value = 'a different one';
+	node.dispatchEvent(new Event('input', { bubbles: true }));
+	flushSync();
+	node.dispatchEvent(new FocusEvent('blur'));
+	flushSync();
+
+	await vi.waitFor(() =>
+		expect(ipc.setField).toHaveBeenCalledWith(
+			expect.any(String),
+			'Password',
+			'a different one',
+			false
+		)
+	);
+
+	return unmount(component);
+});
+
+/** Opening the field on an entry that has none and typing nothing is not an
+ * edit either, and it is the one case where the pane knows what it would be
+ * writing over. */
+it('does not write an empty password when the field was opened and left alone', async () => {
+	const component = show({
+		fields: [field({ name: 'Password', kind: 'password', value: null, empty: true })]
+	});
+	flushSync();
+
+	button('Set one').click();
+	await Promise.resolve();
+	flushSync();
+
+	const node = host.querySelector('[data-value]') as HTMLInputElement;
+	node.dispatchEvent(new FocusEvent('blur'));
+	flushSync();
+
+	expect(ipc.setField).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
 it('takes the value off the screen when the pane goes', async () => {
 	const component = show({
 		fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
