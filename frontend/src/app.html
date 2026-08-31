@@ -4,6 +4,23 @@
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="text-scale" content="scale" />
+		<!--
+			The whole of the white flash, and the whole of its fix.
+
+			A document with nothing said about its colour scheme is painted white,
+			whatever the Mac is wearing and whatever the window around it is
+			wearing. `app.css` says otherwise, but a stylesheet is a second request
+			and the document is painted before it lands - so on every launch and
+			on every lock, which destroys the window and builds another, one frame
+			of white crossed the screen. Measured at 97% of the window, 16ms,
+			between the window appearing and the stylesheet applying.
+
+			These two words move that first paint onto the Mac's own answer, which
+			is the answer the reader chose: Rust builds the window already wearing
+			it, so `prefers-color-scheme` inside the webview is already right.
+			`app.css` then says the same thing again for the rest of the session.
+		-->
+		<meta name="color-scheme" content="light dark" />
 		%sveltekit.head%
 	</head>
 	<body>

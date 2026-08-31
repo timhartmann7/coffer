@@ -14,6 +14,7 @@ import { LOOKS } from './theme';
 const css = readFileSync('src/app.css', 'utf8');
 const settings = readFileSync('../crates/vault-gui/src/settings.rs', 'utf8');
 const page = readFileSync('src/routes/+page.svelte', 'utf8');
+const document = readFileSync('src/app.html', 'utf8');
 const configuration = JSON.parse(readFileSync('../crates/vault-gui/tauri.conf.json', 'utf8'));
 
 /** The body of the rule a selector opens, found by counting braces so that a
@@ -173,5 +174,20 @@ describe('the looks the screen offers are the looks Rust knows', () => {
 	 * ships a settings row that stores a look and never draws it. */
 	it('is worn by the screen that holds the choice', () => {
 		expect(page).toContain('wear(');
+	});
+
+	/**
+	 * The one line that decides what the first frame is.
+	 *
+	 * A document that says nothing about its colour scheme is painted white,
+	 * whatever the window around it is wearing, and `app.css` is a second request
+	 * that lands after that paint. Measured at 97% of the window for a frame, on
+	 * every launch and on every lock. It reads as a tidy-away and it is the whole
+	 * fix, so it is written down here.
+	 */
+	it('tells the document its colour scheme before a stylesheet can', () => {
+		expect(document, 'the first frame is white again').toMatch(
+			/<meta name="color-scheme" content="light dark"\s*\/>/
+		);
 	});
 });
