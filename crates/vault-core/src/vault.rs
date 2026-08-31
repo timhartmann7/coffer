@@ -559,9 +559,16 @@ impl Vault {
             return Err(VaultError::NoSuchGroup);
         }
 
-        match self.bin_for(id)? {
-            Some(bin) => self.move_group(id, bin),
-            None => self.erase_group(id),
+        let bin = self.bin_for(id)?;
+
+        // A folder that holds the bin cannot be moved into it: a folder cannot
+        // contain itself, and moving it there would take the bin with it. This
+        // is about the folder being deleted and nothing else, which is why it
+        // lives here rather than in `bin_for`, whose other caller deletes an
+        // entry and never takes the bin anywhere.
+        match bin {
+            Some(bin) if !self.sections_of(id).contains(&bin) => self.move_group(id, bin),
+            _ => self.erase_group(id),
         }
     }
 
@@ -955,13 +962,17 @@ impl Vault {
         }
 
         if let Some(bin) = self.recycle_bin() {
-            // The bin itself, something already inside it, or something that
-            // holds it: a folder cannot be moved into a folder it contains, and
-            // deleting one that holds the bin takes the bin with it.
-            if bin == group
-                || self.sections_of(bin).contains(&group)
-                || self.sections_of(group).contains(&bin)
-            {
+            // The bin itself, or something already inside it: what is in the bin
+            // has nowhere further to go, and the next deletion is a removal.
+            //
+            // Whether the thing being deleted *holds* the bin is deliberately
+            // not asked here. It is only ever true of the group a deletion comes
+            // out of, and the top group is the one every entry Coffer makes
+            // lands in, so asking it here quietly erased entries at the top of
+            // the vault instead of binning them. `delete_group` asks it, because
+            // moving a folder into a bin it contains is the one case where it
+            // means anything.
+            if bin == group || self.sections_of(bin).contains(&group) {
                 return Ok(None);
             }
             return Ok(Some(bin));

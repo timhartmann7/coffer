@@ -257,6 +257,72 @@ fn a_deleted_entry_goes_to_the_recycle_bin_and_the_second_deletion_takes_it_out_
     assert!(vault.entry(id).is_none(), "the entry came back");
 }
 
+/// The top group is where every entry lands when no folder is chosen, and the
+/// bin sits in that same group. Asking whether the group a deletion comes out of
+/// holds the bin was therefore true of the commonest deletion there is, and the
+/// entry went straight out of the file instead of into the bin.
+#[test]
+fn an_entry_at_the_top_of_the_vault_goes_to_the_recycle_bin_like_any_other() {
+    let (_scratch, database) = support::scratch(RICH);
+    let mut vault = open(&database, SECRET);
+
+    let root = vault.tree().id;
+    let id = vault.create_entry(root).expect("the entry is made");
+    vault
+        .set_field(id, fields::TITLE, NewValue::Open("at the top".to_owned()))
+        .expect("the title is written");
+
+    vault.delete_entry(id).expect("the entry is deleted");
+
+    let bin = vault
+        .tree()
+        .sections
+        .iter()
+        .find(|section| section.is_recycle_bin)
+        .cloned()
+        .expect("the fixture has a recycle bin");
+    assert!(
+        bin.entries.iter().any(|entry| entry.id == id),
+        "an entry deleted from the top of the vault was erased instead of binned"
+    );
+
+    vault.save().expect("the database saves");
+    drop(vault);
+
+    let vault = open(&database, SECRET);
+    assert!(
+        vault.entry(id).is_some(),
+        "the entry was gone from the file that was written"
+    );
+}
+
+/// The same for a folder at the top: it is not the bin and does not hold it, so
+/// it is binned rather than erased.
+#[test]
+fn a_folder_at_the_top_of_the_vault_goes_to_the_recycle_bin_like_any_other() {
+    let (_scratch, database) = support::scratch(RICH);
+    let mut vault = open(&database, SECRET);
+
+    let root = vault.tree().id;
+    let id = vault
+        .create_group(root, "at the top")
+        .expect("the folder is made");
+
+    vault.delete_group(id).expect("the folder is deleted");
+
+    let bin = vault
+        .tree()
+        .sections
+        .iter()
+        .find(|section| section.is_recycle_bin)
+        .cloned()
+        .expect("the fixture has a recycle bin");
+    assert!(
+        bin.sections.iter().any(|section| section.id == id),
+        "a folder deleted from the top of the vault was erased instead of binned"
+    );
+}
+
 #[test]
 fn a_database_that_keeps_no_recycle_bin_deletes_outright() {
     let scratch = tempfile::tempdir().expect("a scratch directory");
