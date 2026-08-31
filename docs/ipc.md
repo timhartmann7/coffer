@@ -420,6 +420,26 @@ that empties itself, and a toast that promises what the application does not do
 is worse than an early timer. Sixty seconds, the spec's own default, with the
 change count checked before the clear and the contents never read.
 
+**A value on the screen can be selected, and a selection is not Coffer's
+clipboard.** The boundary above says a copy is Rust's: the value reaches the
+pasteboard marked concealed and transient, and Coffer takes it off again after a
+minute. A reader who selects a revealed value by hand and presses the system's
+own copy gets none of that - no concealed type, no auto-clear, and the clipboard
+history tools keep it.
+
+It is still what the window offers, because a note, an address and a field of
+somebody's own have no copy button of their own, and a value that can be read on
+the screen and not copied off it is a value the reader retypes. So `app.css`
+names exactly three things that may hold a selection - a text field, a text
+area, and the node a reveal writes into - and everything else in the window
+paints no selection at all. `Cmd+C` steps aside when there is one, which is the
+only reason the guard in `Vault.svelte` exists.
+
+What it is not is a way around the boundary: nothing crosses IPC that did not
+cross for the reveal, and a reader who can select a value can already read it.
+The README's list of what Coffer does not protect against is where this belongs
+when that list is next written.
+
 **The Tauri crate is `crates/vault-gui`, not `src-tauri`.** `SPEC.md` names
 `src-tauri/capabilities/` when it describes capabilities, which is the framework's
 default layout. Coffer has one workspace with two crates, as the same document
