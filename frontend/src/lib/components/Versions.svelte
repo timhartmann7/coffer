@@ -114,14 +114,14 @@
 
 	{#if open}
 		{#if versions.length === 0}
-			<p class="mt-3 text-fine leading-relaxed text-txt4">
+			<p class="mt-3 animate-rise text-fine leading-relaxed text-txt4">
 				Nothing yet. Every change to this entry keeps what was there before, so this fills up as the
 				entry is worked on.
 			</p>
 		{:else}
 			{#each listed as version (version.index)}
 				{@const here = showing?.index === version.index}
-				<div class="mt-2 rounded-sm border border-hairline bg-surface2">
+				<div class="mt-2 animate-rise rounded-sm border border-hairline bg-surface2">
 					<div class="flex items-center gap-3 px-3 py-2.5">
 						<Icon name="clip" class="h-3.5 w-3.5 shrink-0 text-txt4" />
 						<span class="min-w-0 flex-1 truncate font-mono text-fine text-txt2">
@@ -155,7 +155,7 @@
 
 					{#if here && showing}
 						{@const at = showing.index}
-						<div class="border-t border-hairline px-3 py-3">
+						<div class="animate-rise border-t border-hairline px-3 py-3">
 							{#each showing.entry.fields as field (field.name)}
 								<div class="mt-1.5 flex items-start gap-3 first:mt-0">
 									<span class="w-24 shrink-0 truncate text-fine text-txt3">{field.name}</span>
@@ -191,7 +191,7 @@
 				{#if readOnly}
 					<!-- Nothing to offer: this database is not written back. -->
 				{:else if confirming}
-					<div class="flex flex-wrap items-center gap-2">
+					<div class="flex animate-rise flex-wrap items-center gap-2">
 						<span class="text-fine text-txt2">
 							Drop all {versions.length} versions? What the entry holds now stays.
 						</span>

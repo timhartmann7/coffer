@@ -77,9 +77,24 @@
 	   keeps it and `reveal.svelte.ts` from parting company. */
 	--animate-drain-reveal: drain 30s linear forwards;
 
-	/* A notice arriving. Short, and the only thing on a screen that moves for
-	   its own sake, which is why it is the one thing reduced motion silences. */
-	--animate-notice: notice 180ms ease-out;
+	/* The three ways something arrives. Every screen in the window uses one of
+	   them and nothing defines a fourth, so a panel opening in the sidebar and a
+	   panel opening in an entry take exactly as long as each other.
+
+	   A rise is something that came from below or grew out of a press: a notice,
+	   a generator, a list of versions. A fade is something that was already the
+	   size it is and only had to appear: a pane, a dialog's veil, an empty
+	   state. A pop is a list that belongs to the control under it, so it grows
+	   out of that control's edge.
+
+	   None of them is longer than a fifth of a second. Past that a window stops
+	   reading as though it answered the press, and every one of these is an
+	   answer to one. They are also all silenced by reduced motion, which is the
+	   whole difference between them and the drain above: a drain is carrying a
+	   reading, and these are carrying nothing but where a thing came from. */
+	--animate-rise: rise 170ms ease-out;
+	--animate-fade: fade 130ms ease-out;
+	--animate-pop: pop 120ms ease-out;
 
 	@keyframes drain {
 		from {
@@ -90,10 +105,30 @@
 		}
 	}
 
-	@keyframes notice {
+	@keyframes rise {
 		from {
 			opacity: 0;
 			transform: translateY(8px);
+		}
+		to {
+			opacity: 1;
+			transform: none;
+		}
+	}
+
+	@keyframes fade {
+		from {
+			opacity: 0;
+		}
+		to {
+			opacity: 1;
+		}
+	}
+
+	@keyframes pop {
+		from {
+			opacity: 0;
+			transform: scale(0.96);
 		}
 		to {
 			opacity: 1;

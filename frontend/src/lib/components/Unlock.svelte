@@ -116,7 +116,7 @@
 </script>
 
 <div class="flex flex-1 items-center justify-center overflow-y-auto px-10 py-10">
-	<div class="w-full max-w-[320px]">
+	<div class="w-full max-w-[320px] animate-rise">
 		<Mark class="mx-auto h-11 w-11 text-txt" />
 		{#if why}
 			<h1 class="mt-6 text-center text-title font-medium tracking-tight text-txt">Locked</h1>
@@ -150,7 +150,7 @@
 					<span
 						class="flex items-center gap-2 rounded-sm border bg-surface2 px-3 py-3 {wrongPassword
 							? 'border-danger/60'
-							: 'border-hairline focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/15'}"
+							: 'border-hairline focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/15'} transition"
 					>
 						<Icon name="lock" class="h-4 w-4 shrink-0 text-txt3" />
 						<input

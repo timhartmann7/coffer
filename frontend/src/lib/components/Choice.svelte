@@ -87,7 +87,7 @@
 		<div
 			role="listbox"
 			aria-label={label}
-			class="absolute top-full right-0 z-10 mt-1 min-w-full overflow-hidden rounded-sm border border-hairline bg-raised"
+			class="absolute top-full right-0 z-10 mt-1 min-w-full origin-top animate-pop overflow-hidden rounded-sm border border-hairline bg-raised"
 		>
 			{#each choices as choice (choice)}
 				<button

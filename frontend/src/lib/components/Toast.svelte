@@ -14,7 +14,7 @@
 
 <div
 	data-notice
-	class="pointer-events-none absolute right-5 bottom-5 w-[292px] animate-notice overflow-hidden rounded-sm border border-hairline bg-raised"
+	class="pointer-events-none absolute right-5 bottom-5 w-[292px] animate-rise overflow-hidden rounded-sm border border-hairline bg-raised"
 >
 	<div class="flex items-center gap-3 px-4 py-3">
 		{#if kind === 'copied'}

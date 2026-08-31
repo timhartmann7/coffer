@@ -45,11 +45,24 @@ describe('the drain empties in exactly as long as the value is shown', () => {
 		expect('animate-drain-reveal').toContain(exemption?.[1] ?? 'nothing at all');
 	});
 
-	/** The notice is the other way round: it moves for its own sake, so reduced
-	 * motion is right to silence it. */
-	it('leaves the notice inside the blanket', () => {
-		expect(css).toContain('--animate-notice:');
+	/**
+	 * Everything else is the other way round. A panel arriving, a sheet opening
+	 * and a notice landing all move for their own sake, so reduced motion is
+	 * right to silence every one of them - and the way this window silences an
+	 * animation is by not sparing it, which means the exemption has to stay
+	 * narrow as animations are added.
+	 */
+	it('leaves every animation that is not a drain inside the blanket', () => {
 		const spared = css.match(/\*:not\(\[class\*='([^']+)'\]\)/)?.[1] ?? '';
-		expect('animate-notice'.includes(spared)).toBe(false);
+		const named = [...css.matchAll(/--animate-([\w-]+):/g)].map(([, name]) => name);
+
+		expect(named.length, 'app.css names no animations at all').toBeGreaterThan(1);
+
+		for (const name of named) {
+			expect(
+				`animate-${name}`.includes(spared) === name.startsWith('drain-'),
+				`animate-${name} is on the wrong side of the reduced-motion blanket`
+			).toBe(true);
+		}
 	});
 });

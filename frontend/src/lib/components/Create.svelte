@@ -110,7 +110,7 @@
 </script>
 
 <div class="flex flex-1 items-center justify-center overflow-y-auto px-10 py-10">
-	<form onsubmit={make} class="w-full max-w-[620px]">
+	<form onsubmit={make} class="w-full max-w-[620px] animate-rise">
 		<div class="grid gap-5">
 			<div>
 				<span class="mb-2 block font-mono text-label tracking-label text-txt3 uppercase">
@@ -143,7 +143,7 @@
 				<span
 					class="flex items-center gap-2 rounded-sm border bg-surface2 px-3 py-2.5 {mismatch
 						? 'border-danger/60'
-						: 'border-hairline focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/15'}"
+						: 'border-hairline focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/15'} transition"
 				>
 					<input
 						bind:this={first}
@@ -163,7 +163,7 @@
 				<span
 					class="flex items-center gap-2 rounded-sm border bg-surface2 px-3 py-2.5 {mismatch
 						? 'border-danger/60'
-						: 'border-hairline focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/15'}"
+						: 'border-hairline focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/15'} transition"
 				>
 					<input
 						bind:this={second}
@@ -178,7 +178,7 @@
 		</div>
 
 		{#if mismatch}
-			<p class="mt-3 text-small text-danger">Those two are not the same.</p>
+			<p class="mt-3 animate-rise text-small text-danger">Those two are not the same.</p>
 		{/if}
 
 		<div class="mt-6 rounded-sm border border-warn/35 bg-warnwash p-5">

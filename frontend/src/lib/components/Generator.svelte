@@ -77,7 +77,7 @@
 	});
 </script>
 
-<div class="overflow-hidden rounded-md border border-hairline bg-surface">
+<div class="animate-fade overflow-hidden rounded-md border border-hairline bg-surface">
 	<div class="flex h-11 shrink-0 items-center border-b border-hairline bg-surface2 px-4">
 		<span class="font-mono text-label tracking-label text-txt3 uppercase">Password generator</span>
 		<button

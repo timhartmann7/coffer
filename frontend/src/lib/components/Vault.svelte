@@ -436,7 +436,7 @@
 <svelte:window onkeydown={shortcut} />
 
 <div
-	class="relative grid flex-1 overflow-hidden {opened
+	class="relative grid flex-1 animate-fade overflow-hidden {opened
 		? 'grid-cols-[200px_minmax(230px,1fr)_384px]'
 		: 'grid-cols-[228px_1fr]'}"
 >
@@ -494,7 +494,7 @@
 						makeFolder();
 					}
 				}}
-				class="mx-2 mb-2 shrink-0 rounded-sm border border-accent bg-surface px-2 py-1.5 text-body text-txt ring-4 ring-accent/15 outline-none placeholder:text-txt4"
+				class="mx-2 mb-2 shrink-0 animate-rise rounded-sm border border-accent bg-surface px-2 py-1.5 text-body text-txt ring-4 ring-accent/15 outline-none placeholder:text-txt4"
 			/>
 		{/if}
 
@@ -513,12 +513,12 @@
 						rename(event.currentTarget.value);
 					}
 				}}
-				class="mx-2 mb-2 shrink-0 rounded-sm border border-accent bg-surface px-2 py-1.5 text-body text-txt ring-4 ring-accent/15 outline-none"
+				class="mx-2 mb-2 shrink-0 animate-rise rounded-sm border border-accent bg-surface px-2 py-1.5 text-body text-txt ring-4 ring-accent/15 outline-none"
 			/>
 		{/if}
 
 		{#if deleting && group !== null}
-			<div class="mx-2 mb-2 shrink-0 rounded-sm border border-hairline bg-surface p-3">
+			<div class="mx-2 mb-2 shrink-0 animate-rise rounded-sm border border-hairline bg-surface p-3">
 				<p class="text-fine leading-relaxed text-txt2">
 					Delete “{shown.name}” and everything in it?
 				</p>
@@ -608,7 +608,7 @@
 
 				{#if inBin && !readOnly && shownEntries(deleted).length > 0}
 					{#if emptying}
-						<div class="mt-2 rounded-sm border border-hairline bg-surface p-3">
+						<div class="mt-2 animate-rise rounded-sm border border-hairline bg-surface p-3">
 							<p class="text-fine leading-relaxed text-txt2">
 								Take all of it out of the file? This is the one deletion nothing comes back from.
 							</p>
@@ -646,7 +646,7 @@
 	<div class="flex flex-col overflow-hidden {opened ? 'border-r border-hairline' : ''}">
 		<div class="flex shrink-0 items-center gap-3 border-b border-hairline px-5 py-3">
 			<span
-				class="flex flex-1 items-center gap-2 rounded-sm border border-hairline bg-surface2 px-3 py-2 focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/15"
+				class="flex flex-1 items-center gap-2 rounded-sm border border-hairline bg-surface2 px-3 py-2 transition focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/15"
 			>
 				<Icon name="search" class="h-4 w-4 shrink-0 text-txt4" />
 				<input

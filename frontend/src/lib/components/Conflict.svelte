@@ -42,8 +42,8 @@
 	);
 </script>
 
-<div class="absolute inset-0 flex items-center justify-center bg-canvas/75 px-6">
-	<div class="w-full max-w-[520px] rounded-md border border-hairline bg-raised p-8">
+<div class="absolute inset-0 z-30 flex animate-fade items-center justify-center bg-canvas/75 px-6">
+	<div class="w-full max-w-[520px] animate-rise rounded-md border border-hairline bg-raised p-8">
 		<!-- One column, where the mockup draws the icon in a column of its own.
 		     Its buttons sit at the edge of the dialog rather than under the text
 		     beside the icon, which is a step nobody notices until the labels are

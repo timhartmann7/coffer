@@ -12,7 +12,7 @@
 	}: { icon: string; title: string; detail: string; action?: Snippet } = $props();
 </script>
 
-<div class="flex flex-1 flex-col items-center justify-center px-8 text-center">
+<div class="flex flex-1 animate-fade flex-col items-center justify-center px-8 text-center">
 	<Icon name={icon} class="h-7 w-7 text-txt4" />
 	<!-- A group name is a value out of somebody's database and can be a megabyte
 	     long, so the line it lands on is bounded like every other. -->
