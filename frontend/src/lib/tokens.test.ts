@@ -109,15 +109,27 @@ describe('the window is drawn in the tokens of design.html', () => {
 	it('says who may be selected in the spelling WebKit reads', () => {
 		const css = readFileSync('src/app.css', 'utf8');
 
-		for (const [, value] of css.matchAll(/(?<!-)\buser-select:\s*(\w+);/g)) {
-			expect(
-				css.includes(`-webkit-user-select: ${value};`),
-				`app.css asks for user-select: ${value} in a spelling WebKit ignores`
-			).toBe(true);
+		// Rule by rule, not file-wide: the prefixed spelling has to be in the same
+		// block as the plain one, or the next rule to ask for a selection is the
+		// one that goes unprefixed while the file still looks answered.
+		for (const [block] of css.matchAll(/\{[^{}]*\}/g)) {
+			for (const [, value] of block.matchAll(/(?<!-)\buser-select:\s*(\w+);/g)) {
+				expect(
+					block.includes(`-webkit-user-select: ${value};`),
+					`a rule asks for user-select: ${value} in a spelling WebKit ignores`
+				).toBe(true);
+			}
 		}
 
 		// Naming no colour is not naming none: a run with no rule of its own is
-		// painted in the system's highlight.
-		expect(css, 'the chrome paints a selection again').toContain('background: transparent;');
+		// painted in the system's highlight. Anchored to the selector, because
+		// `background: transparent` appears elsewhere in this file for its own
+		// reasons and a substring search is answered by that one.
+		expect(css, 'the chrome paints a selection again').toMatch(
+			/(?<![-\w])::selection\s*\{[^}]*background:\s*transparent/
+		);
+		expect(css, 'a revealed value is no longer painted where it is selected').toMatch(
+			/\[data-value\]::selection/
+		);
 	});
 });

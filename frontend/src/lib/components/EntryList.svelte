@@ -97,12 +97,20 @@
 				<span aria-hidden="true"></span>
 			</button>
 
-			<span class="absolute inset-y-0 right-5 flex w-[66px] items-center justify-end gap-1">
+			<!--
+				The strip itself lets a press through to the row under it, and so does
+				a copy button with nothing to copy. Otherwise the last column is
+				sixty-six pixels of lit row that answers nothing, which is the defect
+				this row was rebuilt for, turned on its side.
+			-->
+			<span
+				class="pointer-events-none absolute inset-y-0 right-5 flex w-[66px] items-center justify-end gap-1"
+			>
 				<button
 					type="button"
 					onclick={() => onCopy(row, 'UserName')}
 					disabled={row.username === ''}
-					class="rounded-sm p-1 text-txt4 transition-colors hover:bg-surface2 hover:text-txt disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-txt4"
+					class="pointer-events-auto rounded-sm p-1 text-txt4 transition-colors hover:bg-surface2 hover:text-txt disabled:pointer-events-none disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-txt4"
 					aria-label="Copy login"
 					title="Copy login · ⌘B"
 				>
@@ -112,7 +120,7 @@
 					type="button"
 					onclick={() => onCopy(row, 'Password')}
 					disabled={!row.hasPassword}
-					class="rounded-sm p-1 text-txt4 transition-colors hover:bg-surface2 hover:text-txt disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-txt4"
+					class="pointer-events-auto rounded-sm p-1 text-txt4 transition-colors hover:bg-surface2 hover:text-txt disabled:pointer-events-none disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-txt4"
 					aria-label="Copy password"
 					title="Copy password · ⌘C"
 				>

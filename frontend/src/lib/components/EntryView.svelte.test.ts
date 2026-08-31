@@ -732,6 +732,14 @@ it('keeps the password field the same box whether or not it is revealed', async 
 	expect(box?.className, 'the box is drawn differently once it holds a value').toBe(drawn);
 	expect(block?.children.length, 'revealing added a row under the field').toBe(rows);
 
+	// The height itself, which is what the reader sees move. There is no layout
+	// in this environment, so the floor that holds the two states to one line is
+	// asserted where it is written: an eight pixel mask and a forty pixel field
+	// are the same box only because the box is told what it is.
+	expect(drawn, 'the box no longer has a floor, so the two states differ again').toMatch(
+		/min-h-\[\d+px\]/
+	);
+
 	return unmount(component);
 });
 

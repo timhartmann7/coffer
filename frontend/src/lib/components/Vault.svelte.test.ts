@@ -634,10 +634,27 @@ it('keeps everything on the right in one group', () => {
  * Escape has always closed it and nothing else did, so an entry opened with the
  * mouse could only be put away with the keyboard. The empty part of either pane
  * to the left of it is what a reader reaches for, and it is only the empty part:
- * a press on a folder or on a row arrives at the same element on its way up, and
- * that one means what it says.
+ * a press on a row arrives at the same element on its way up, and that one means
+ * what it says.
+ *
+ * Both halves are asserted, and separately. A test that only pressed the empty
+ * part would pass with the guard deleted, and one that only pressed a row would
+ * pass with the whole handler deleted.
  */
-it('puts the open entry away when the empty part of a pane is pressed', async () => {
+async function opened(): Promise<HTMLElement[]> {
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('node-3'))
+		?.click();
+	await vi.waitFor(() => expect(ipc.entry).toHaveBeenCalledWith(kept.id));
+	flushSync();
+	expect(host.querySelector('h1 input'), 'the entry never opened').not.toBeNull();
+
+	const empty = [...host.querySelectorAll<HTMLElement>('[role="presentation"]')];
+	expect(empty, 'the folders and the list offer nowhere to press').toHaveLength(2);
+	return empty;
+}
+
+it('puts the open entry away when the empty part of the list is pressed', async () => {
 	ipc.entry.mockResolvedValue(
 		entry({
 			id: kept.id,
@@ -648,28 +665,42 @@ it('puts the open entry away when the empty part of a pane is pressed', async ()
 
 	const component = open();
 	flushSync();
+	const [, list] = await opened();
 
-	[...host.querySelectorAll('button')]
-		.find((each) => each.textContent?.includes('node-3'))
-		?.click();
-	await vi.waitFor(() => expect(ipc.entry).toHaveBeenCalledWith(kept.id));
+	// A press that landed on a row of the list is a press on that row. It reaches
+	// the same element on the way up, and the entry stays open.
+	const row = list.querySelector('button');
+	if (!row) throw new Error('the list drew no rows');
+	row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+	await tick();
 	flushSync();
-	expect(host.querySelector('h1 input'), 'the entry never opened').not.toBeNull();
+	expect(host.querySelector('h1 input'), 'a press on a row put the entry away').not.toBeNull();
 
-	const empty = [...host.querySelectorAll('[role="presentation"]')];
-	expect(empty, 'the folders and the list offer nowhere to press').toHaveLength(2);
-
-	for (const area of empty) {
-		const inside = area.querySelector('button');
-		if (!inside) throw new Error('a pane with nothing in it proves nothing');
-		inside.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-		await tick();
-		flushSync();
-	}
-
-	empty[1].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+	list.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 	flushSync();
 	expect(host.querySelector('h1 input'), 'the list kept the entry open').toBeNull();
+
+	unmount(component);
+});
+
+it('puts the open entry away when the empty part of the folders is pressed', async () => {
+	ipc.entry.mockResolvedValue(
+		entry({
+			id: kept.id,
+			group: root.id,
+			fields: [field({ name: 'Title', kind: 'title', value: 'node-3', empty: false })]
+		})
+	);
+
+	const component = open();
+	flushSync();
+	const [folders] = await opened();
+
+	// Not through a folder: selecting one closes the entry by another route
+	// entirely, and a test that went that way would prove nothing about this one.
+	folders.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+	flushSync();
+	expect(host.querySelector('h1 input'), 'the folders kept the entry open').toBeNull();
 
 	unmount(component);
 });
@@ -697,6 +728,48 @@ it('keeps the way out of the settings where the way in was', () => {
 	unmount(component);
 });
 
+/**
+ * A sheet that only covers the vault is a vault that can still be typed into.
+ *
+ * Every value in an entry is a live field that writes what is in it the moment
+ * focus leaves, so two presses of Tab out of the settings used to land in an
+ * entry nobody could see and the next press saved what had been typed there.
+ * `inert` is what takes the covered pane out of the tab order, out of hit
+ * testing and out of the accessibility tree at once.
+ */
+it('makes the vault under the settings unreachable, not merely hidden', async () => {
+	ipc.entry.mockResolvedValue(
+		entry({
+			id: kept.id,
+			group: root.id,
+			fields: [
+				field({ name: 'Title', kind: 'title', value: 'node-3', empty: false }),
+				field({ name: 'Notes', kind: 'notes', value: 'the reboot window', empty: false })
+			]
+		})
+	);
+
+	const component = open({ settings: sheet });
+	flushSync();
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('node-3'))
+		?.click();
+	await vi.waitFor(() => expect(ipc.entry).toHaveBeenCalledWith(kept.id));
+	flushSync();
+
+	const notes = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Notes"]');
+	expect(notes, 'the covered entry never drew its notes').not.toBeNull();
+
+	const shut = notes?.closest('[inert]');
+	expect(shut, 'the entry under the settings is only painted over').not.toBeNull();
+	expect(shut?.contains(host.querySelector('.ml-auto')), 'the status bar went inert too').toBe(
+		false
+	);
+
+	unmount(component);
+});
+
 /** Escape is the way back out of everything else here, and the list it would
  * otherwise act on is not on the screen. */
 it('lets Escape out of the settings, and leaves the list alone while they are open', () => {
@@ -713,6 +786,18 @@ it('lets Escape out of the settings, and leaves the list alone while they are op
 	window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 	flushSync();
 	expect(onSettings).toHaveBeenCalledTimes(1);
+
+	// A control inside the settings that answered its own Escape has answered it:
+	// the chip that opens a list of timeouts takes one to close the list, and the
+	// whole screen used to close behind it.
+	const answered = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true });
+	answered.preventDefault();
+	window.dispatchEvent(answered);
+	flushSync();
+	expect(
+		onSettings,
+		'an Escape a control had already taken closed the screen'
+	).toHaveBeenCalledTimes(1);
 
 	unmount(component);
 });

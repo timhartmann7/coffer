@@ -390,9 +390,11 @@
 	function shortcut(event: KeyboardEvent) {
 		// The settings screen is over the list, so nothing that acts on the list
 		// is what a key means while it is open. Escape is the way back out of it,
-		// which is the same way back out that Escape is everywhere else here.
+		// which is the same way back out that Escape is everywhere else here -
+		// unless a control inside them has already answered it. A chip whose list
+		// was open took its own Escape and the whole screen closed behind it.
 		if (settings) {
-			if (event.key === 'Escape') onSettings();
+			if (event.key === 'Escape' && !event.defaultPrevented) onSettings();
 			return;
 		}
 
@@ -435,332 +437,348 @@
 
 <svelte:window onkeydown={shortcut} />
 
-<div
-	class="relative grid flex-1 animate-fade overflow-hidden {opened
-		? 'grid-cols-[200px_minmax(230px,1fr)_384px]'
-		: 'grid-cols-[228px_1fr]'}"
->
-	<aside class="flex flex-col overflow-hidden border-r border-hairline bg-surface2">
-		<div class="flex shrink-0 items-center gap-1 px-4 py-3">
-			<span class="flex-1 font-mono text-label tracking-label text-txt3 uppercase">Folders</span>
-			{#if !readOnly}
-				{#if group !== null && !inBin}
+<div class="relative flex flex-1 animate-fade flex-col overflow-hidden">
+	<!--
+		Inert while the settings are over it, and not merely covered.
+
+		An opaque sheet hides a pane; it does not take it out of the tab order,
+		out of hit testing or out of the accessibility tree. Two presses of Tab
+		used to land in the covered entry, where every field is a live input that
+		commits what is in it the moment focus leaves - so keys aimed at the
+		settings rewrote a field of an entry nobody could see, and the next press
+		on the settings screen saved it to the file. `inert` is the one attribute
+		that answers all three at once.
+	-->
+	<div
+		class="grid flex-1 overflow-hidden {opened
+			? 'grid-cols-[200px_minmax(230px,1fr)_384px]'
+			: 'grid-cols-[228px_1fr]'}"
+		inert={settings !== undefined}
+	>
+		<aside class="flex flex-col overflow-hidden border-r border-hairline bg-surface2">
+			<div class="flex shrink-0 items-center gap-1 px-4 py-3">
+				<span class="flex-1 font-mono text-label tracking-label text-txt3 uppercase">Folders</span>
+				{#if !readOnly}
+					{#if group !== null && !inBin}
+						<button
+							type="button"
+							onmousedown={(event) => event.preventDefault()}
+							onclick={() => {
+								naming = false;
+								renaming = !renaming;
+							}}
+							class="text-txt4 transition-colors hover:text-txt2"
+							aria-label={renaming ? 'Leave the name as it is' : 'Rename this folder'}
+						>
+							<Icon name="check" class="h-4 w-4" />
+						</button>
+						<button
+							type="button"
+							onclick={() => (deleting = true)}
+							class="text-txt4 transition-colors hover:text-danger"
+							aria-label="Delete this folder"
+						>
+							<Icon name="trash" class="h-4 w-4" />
+						</button>
+					{/if}
 					<button
 						type="button"
 						onmousedown={(event) => event.preventDefault()}
-						onclick={() => {
-							naming = false;
-							renaming = !renaming;
-						}}
+						onclick={addFolder}
 						class="text-txt4 transition-colors hover:text-txt2"
-						aria-label={renaming ? 'Leave the name as it is' : 'Rename this folder'}
+						aria-label={naming ? 'Never mind the new folder' : 'New folder'}
 					>
-						<Icon name="check" class="h-4 w-4" />
-					</button>
-					<button
-						type="button"
-						onclick={() => (deleting = true)}
-						class="text-txt4 transition-colors hover:text-danger"
-						aria-label="Delete this folder"
-					>
-						<Icon name="trash" class="h-4 w-4" />
+						<Icon name="plus" class="h-4 w-4" />
 					</button>
 				{/if}
-				<button
-					type="button"
-					onmousedown={(event) => event.preventDefault()}
-					onclick={addFolder}
-					class="text-txt4 transition-colors hover:text-txt2"
-					aria-label={naming ? 'Never mind the new folder' : 'New folder'}
-				>
-					<Icon name="plus" class="h-4 w-4" />
-				</button>
-			{/if}
-		</div>
-
-		{#if naming}
-			<input
-				bind:this={named}
-				type="text"
-				autocomplete="off"
-				spellcheck="false"
-				aria-label="The name of the new folder"
-				placeholder="What is it called?"
-				onblur={makeFolder}
-				onkeydown={(event) => {
-					if (event.key === 'Escape') naming = false;
-					if (event.key === 'Enter') {
-						event.preventDefault();
-						makeFolder();
-					}
-				}}
-				class="mx-2 mb-2 shrink-0 animate-rise rounded-sm border border-accent bg-surface px-2 py-1.5 text-body text-txt ring-4 ring-accent/15 outline-none placeholder:text-txt4"
-			/>
-		{/if}
-
-		{#if renaming && group !== null}
-			<input
-				type="text"
-				autocomplete="off"
-				spellcheck="false"
-				aria-label="A new name for this folder"
-				value={shown.name}
-				onblur={(event) => rename(event.currentTarget.value)}
-				onkeydown={(event) => {
-					if (event.key === 'Escape') renaming = false;
-					if (event.key === 'Enter') {
-						event.preventDefault();
-						rename(event.currentTarget.value);
-					}
-				}}
-				class="mx-2 mb-2 shrink-0 animate-rise rounded-sm border border-accent bg-surface px-2 py-1.5 text-body text-txt ring-4 ring-accent/15 outline-none"
-			/>
-		{/if}
-
-		{#if deleting && group !== null}
-			<div class="mx-2 mb-2 shrink-0 animate-rise rounded-sm border border-hairline bg-surface p-3">
-				<p class="text-fine leading-relaxed text-txt2">
-					Delete “{shown.name}” and everything in it?
-				</p>
-				<div class="mt-3 flex gap-2">
-					<button
-						type="button"
-						onclick={() => (deleting = false)}
-						class="h-9 rounded-full px-3 text-small text-txt3 transition-colors hover:text-txt2"
-					>
-						Keep it
-					</button>
-					<button
-						type="button"
-						onclick={removeFolder}
-						class="h-9 rounded-full px-3 text-small text-danger transition-colors hover:bg-dangerwash"
-					>
-						Delete
-					</button>
-				</div>
 			</div>
-		{/if}
 
-		<!--
+			{#if naming}
+				<input
+					bind:this={named}
+					type="text"
+					autocomplete="off"
+					spellcheck="false"
+					aria-label="The name of the new folder"
+					placeholder="What is it called?"
+					onblur={makeFolder}
+					onkeydown={(event) => {
+						if (event.key === 'Escape') naming = false;
+						if (event.key === 'Enter') {
+							event.preventDefault();
+							makeFolder();
+						}
+					}}
+					class="mx-2 mb-2 shrink-0 animate-rise rounded-sm border border-accent bg-surface px-2 py-1.5 text-body text-txt ring-4 ring-accent/15 outline-none placeholder:text-txt4"
+				/>
+			{/if}
+
+			{#if renaming && group !== null}
+				<input
+					type="text"
+					autocomplete="off"
+					spellcheck="false"
+					aria-label="A new name for this folder"
+					value={shown.name}
+					onblur={(event) => rename(event.currentTarget.value)}
+					onkeydown={(event) => {
+						if (event.key === 'Escape') renaming = false;
+						if (event.key === 'Enter') {
+							event.preventDefault();
+							rename(event.currentTarget.value);
+						}
+					}}
+					class="mx-2 mb-2 shrink-0 animate-rise rounded-sm border border-accent bg-surface px-2 py-1.5 text-body text-txt ring-4 ring-accent/15 outline-none"
+				/>
+			{/if}
+
+			{#if deleting && group !== null}
+				<div
+					class="mx-2 mb-2 shrink-0 animate-rise rounded-sm border border-hairline bg-surface p-3"
+				>
+					<p class="text-fine leading-relaxed text-txt2">
+						Delete “{shown.name}” and everything in it?
+					</p>
+					<div class="mt-3 flex gap-2">
+						<button
+							type="button"
+							onclick={() => (deleting = false)}
+							class="h-9 rounded-full px-3 text-small text-txt3 transition-colors hover:text-txt2"
+						>
+							Keep it
+						</button>
+						<button
+							type="button"
+							onclick={removeFolder}
+							class="h-9 rounded-full px-3 text-small text-danger transition-colors hover:bg-dangerwash"
+						>
+							Delete
+						</button>
+					</div>
+				</div>
+			{/if}
+
+			<!--
 			The empty part under the folders puts the open entry away. A press that
 			landed on a folder is a press on that folder and arrives here on its way
 			up, which is what `currentTarget` tells the two of them apart by.
 		-->
-		<div
-			role="presentation"
-			onclick={(event) => event.target === event.currentTarget && (opened = null)}
-			class="flex-1 overflow-y-auto px-2 pb-2 text-body"
-		>
-			<button
-				type="button"
-				onclick={() => select(null)}
-				class="relative flex w-full items-center gap-2 rounded-sm px-2 py-[7px] transition-colors {group ===
-				null
-					? 'bg-raised text-txt'
-					: 'text-txt2 hover:bg-raised/60'}"
+			<div
+				role="presentation"
+				onclick={(event) => event.target === event.currentTarget && (opened = null)}
+				class="flex-1 overflow-y-auto px-2 pb-2 text-body"
 			>
-				{#if group === null}
-					<span
-						class="absolute top-1 left-0 h-[calc(100%-8px)] w-[2px] rounded-full bg-accent"
-						aria-hidden="true"
-					></span>
-				{/if}
-				<Icon
-					name="folder"
-					class="h-4 w-4 shrink-0 {group === null ? 'text-accent' : 'text-txt4'}"
-				/>
-				<span class="flex-1 text-left">All entries</span>
-				<span class="font-mono text-meta {group === null ? 'text-txt3' : 'text-txt4'}">
-					{live.length}
-				</span>
-			</button>
-
-			<Tree
-				{root}
-				selected={group}
-				{expanded}
-				onSelect={select}
-				onToggle={(id) => (expanded.has(id) ? expanded.delete(id) : expanded.add(id))}
-			/>
-		</div>
-
-		{#if bin}
-			{@const deleted = bin}
-			<div class="shrink-0 border-t border-hairline px-2 py-2">
 				<button
 					type="button"
-					onclick={() => select(deleted.id)}
-					class="relative flex w-full items-center gap-2 rounded-sm px-2 py-[7px] text-body transition-colors {group ===
-					deleted.id
+					onclick={() => select(null)}
+					class="relative flex w-full items-center gap-2 rounded-sm px-2 py-[7px] transition-colors {group ===
+					null
 						? 'bg-raised text-txt'
-						: 'text-txt3 hover:bg-raised/60 hover:text-txt2'}"
+						: 'text-txt2 hover:bg-raised/60'}"
 				>
-					{#if group === deleted.id}
+					{#if group === null}
 						<span
 							class="absolute top-1 left-0 h-[calc(100%-8px)] w-[2px] rounded-full bg-accent"
 							aria-hidden="true"
 						></span>
 					{/if}
-					<Icon name="trash" class="h-4 w-4 shrink-0" />
-					<span class="flex-1 text-left">{deleted.name}</span>
-					<span class="font-mono text-meta text-txt4">{shownEntries(deleted).length}</span>
+					<Icon
+						name="folder"
+						class="h-4 w-4 shrink-0 {group === null ? 'text-accent' : 'text-txt4'}"
+					/>
+					<span class="flex-1 text-left">All entries</span>
+					<span class="font-mono text-meta {group === null ? 'text-txt3' : 'text-txt4'}">
+						{live.length}
+					</span>
 				</button>
 
-				{#if inBin && !readOnly && shownEntries(deleted).length > 0}
-					{#if emptying}
-						<div class="mt-2 animate-rise rounded-sm border border-hairline bg-surface p-3">
-							<p class="text-fine leading-relaxed text-txt2">
-								Take all of it out of the file? This is the one deletion nothing comes back from.
-							</p>
-							<div class="mt-3 flex gap-2">
-								<button
-									type="button"
-									onclick={() => (emptying = false)}
-									class="h-9 rounded-full px-3 text-small text-txt3 transition-colors hover:text-txt2"
-								>
-									Keep it
-								</button>
-								<button
-									type="button"
-									onclick={empty}
-									class="h-9 rounded-full px-3 text-small text-danger transition-colors hover:bg-dangerwash"
-								>
-									Empty it
-								</button>
+				<Tree
+					{root}
+					selected={group}
+					{expanded}
+					onSelect={select}
+					onToggle={(id) => (expanded.has(id) ? expanded.delete(id) : expanded.add(id))}
+				/>
+			</div>
+
+			{#if bin}
+				{@const deleted = bin}
+				<div class="shrink-0 border-t border-hairline px-2 py-2">
+					<button
+						type="button"
+						onclick={() => select(deleted.id)}
+						class="relative flex w-full items-center gap-2 rounded-sm px-2 py-[7px] text-body transition-colors {group ===
+						deleted.id
+							? 'bg-raised text-txt'
+							: 'text-txt3 hover:bg-raised/60 hover:text-txt2'}"
+					>
+						{#if group === deleted.id}
+							<span
+								class="absolute top-1 left-0 h-[calc(100%-8px)] w-[2px] rounded-full bg-accent"
+								aria-hidden="true"
+							></span>
+						{/if}
+						<Icon name="trash" class="h-4 w-4 shrink-0" />
+						<span class="flex-1 text-left">{deleted.name}</span>
+						<span class="font-mono text-meta text-txt4">{shownEntries(deleted).length}</span>
+					</button>
+
+					{#if inBin && !readOnly && shownEntries(deleted).length > 0}
+						{#if emptying}
+							<div class="mt-2 animate-rise rounded-sm border border-hairline bg-surface p-3">
+								<p class="text-fine leading-relaxed text-txt2">
+									Take all of it out of the file? This is the one deletion nothing comes back from.
+								</p>
+								<div class="mt-3 flex gap-2">
+									<button
+										type="button"
+										onclick={() => (emptying = false)}
+										class="h-9 rounded-full px-3 text-small text-txt3 transition-colors hover:text-txt2"
+									>
+										Keep it
+									</button>
+									<button
+										type="button"
+										onclick={empty}
+										class="h-9 rounded-full px-3 text-small text-danger transition-colors hover:bg-dangerwash"
+									>
+										Empty it
+									</button>
+								</div>
 							</div>
-						</div>
-					{:else}
-						<button
-							type="button"
-							onclick={() => (emptying = true)}
-							class="mt-1 w-full rounded-sm px-2 py-1.5 text-left text-fine text-txt4 transition-colors hover:text-txt3"
-						>
-							Empty the bin
-						</button>
+						{:else}
+							<button
+								type="button"
+								onclick={() => (emptying = true)}
+								class="mt-1 w-full rounded-sm px-2 py-1.5 text-left text-fine text-txt4 transition-colors hover:text-txt3"
+							>
+								Empty the bin
+							</button>
+						{/if}
 					{/if}
+				</div>
+			{/if}
+		</aside>
+
+		<div class="flex flex-col overflow-hidden {opened ? 'border-r border-hairline' : ''}">
+			<div class="flex shrink-0 items-center gap-3 border-b border-hairline px-5 py-3">
+				<span
+					class="flex flex-1 items-center gap-2 rounded-sm border border-hairline bg-surface2 px-3 py-2 transition focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/15"
+				>
+					<Icon name="search" class="h-4 w-4 shrink-0 text-txt4" />
+					<input
+						bind:this={field}
+						bind:value={query}
+						type="text"
+						autocomplete="off"
+						spellcheck="false"
+						placeholder="Title, login, address, tag"
+						aria-label="Filter the list"
+						class="min-w-0 flex-1 bg-transparent text-body text-txt outline-none placeholder:text-txt4"
+					/>
+					<kbd
+						class="shrink-0 rounded-xs border border-hairline px-1.5 py-0.5 font-mono text-label text-txt4"
+					>
+						⌘F
+					</kbd>
+				</span>
+				{#if !readOnly && !inBin}
+					<button
+						type="button"
+						onclick={addEntry}
+						class="flex h-9 shrink-0 items-center gap-2 rounded-full border border-hairline px-4 text-small text-txt2 transition-colors hover:border-txt4 hover:text-txt active:bg-raised"
+					>
+						<Icon name="plus" class="h-4 w-4" /> Entry
+					</button>
 				{/if}
 			</div>
-		{/if}
-	</aside>
 
-	<div class="flex flex-col overflow-hidden {opened ? 'border-r border-hairline' : ''}">
-		<div class="flex shrink-0 items-center gap-3 border-b border-hairline px-5 py-3">
-			<span
-				class="flex flex-1 items-center gap-2 rounded-sm border border-hairline bg-surface2 px-3 py-2 transition focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/15"
-			>
-				<Icon name="search" class="h-4 w-4 shrink-0 text-txt4" />
-				<input
-					bind:this={field}
-					bind:value={query}
-					type="text"
-					autocomplete="off"
-					spellcheck="false"
-					placeholder="Title, login, address, tag"
-					aria-label="Filter the list"
-					class="min-w-0 flex-1 bg-transparent text-body text-txt outline-none placeholder:text-txt4"
+			{#if found.length === 0 && query !== ''}
+				<Empty
+					icon="search"
+					title="Nothing matches “{query}”"
+					detail="Coffer searches titles, logins, addresses and tags. Notes and custom fields are not searched: they never leave the vault."
+				>
+					{#snippet action()}
+						<button
+							type="button"
+							onclick={() => (query = '')}
+							class="h-9 rounded-full border border-hairline px-5 text-small text-txt transition-colors hover:border-txt3"
+						>
+							Clear the search
+						</button>
+					{/snippet}
+				</Empty>
+			{:else if found.length === 0 && group === null}
+				<Empty
+					icon="folder"
+					title="This vault has nothing in it yet"
+					detail="Entries added in Coffer, or in any other app that opens this file, show up here."
+				>
+					{#snippet action()}
+						{#if !readOnly}
+							<button
+								type="button"
+								onclick={addEntry}
+								class="h-9 rounded-full border border-hairline px-5 text-small text-txt transition-colors hover:border-txt3"
+							>
+								Add an entry
+							</button>
+						{/if}
+					{/snippet}
+				</Empty>
+			{:else if found.length === 0 && inBin}
+				<Empty
+					icon="trash"
+					title="The recycle bin is empty"
+					detail="Deleted entries stay here until the bin is emptied by hand."
 				/>
-				<kbd
-					class="shrink-0 rounded-xs border border-hairline px-1.5 py-0.5 font-mono text-label text-txt4"
+			{:else if found.length === 0}
+				<Empty
+					icon="folder"
+					title="There is nothing in “{shown.name}” yet"
+					detail="Entries live in folders. This one has none of its own."
 				>
-					⌘F
-				</kbd>
-			</span>
-			{#if !readOnly && !inBin}
-				<button
-					type="button"
-					onclick={addEntry}
-					class="flex h-9 shrink-0 items-center gap-2 rounded-full border border-hairline px-4 text-small text-txt2 transition-colors hover:border-txt4 hover:text-txt active:bg-raised"
-				>
-					<Icon name="plus" class="h-4 w-4" /> Entry
-				</button>
+					{#snippet action()}
+						{#if !readOnly}
+							<button
+								type="button"
+								onclick={addEntry}
+								class="h-9 rounded-full border border-hairline px-5 text-small text-txt transition-colors hover:border-txt3"
+							>
+								Add an entry
+							</button>
+						{/if}
+					{/snippet}
+				</Empty>
+			{:else if opened}
+				<EntryListCompact
+					rows={found}
+					open={opened.id}
+					onOpen={open}
+					onDismiss={() => (opened = null)}
+				/>
+			{:else}
+				<EntryList rows={found} {now} onOpen={open} onCopy={copyFrom} />
 			{/if}
 		</div>
 
-		{#if found.length === 0 && query !== ''}
-			<Empty
-				icon="search"
-				title="Nothing matches “{query}”"
-				detail="Coffer searches titles, logins, addresses and tags. Notes and custom fields are not searched: they never leave the vault."
-			>
-				{#snippet action()}
-					<button
-						type="button"
-						onclick={() => (query = '')}
-						class="h-9 rounded-full border border-hairline px-5 text-small text-txt transition-colors hover:border-txt3"
-					>
-						Clear the search
-					</button>
-				{/snippet}
-			</Empty>
-		{:else if found.length === 0 && group === null}
-			<Empty
-				icon="folder"
-				title="This vault has nothing in it yet"
-				detail="Entries added in Coffer, or in any other app that opens this file, show up here."
-			>
-				{#snippet action()}
-					{#if !readOnly}
-						<button
-							type="button"
-							onclick={addEntry}
-							class="h-9 rounded-full border border-hairline px-5 text-small text-txt transition-colors hover:border-txt3"
-						>
-							Add an entry
-						</button>
-					{/if}
-				{/snippet}
-			</Empty>
-		{:else if found.length === 0 && inBin}
-			<Empty
-				icon="trash"
-				title="The recycle bin is empty"
-				detail="Deleted entries stay here until the bin is emptied by hand."
+		{#if opened}
+			<EntryView
+				entry={opened}
+				{path}
+				{versions}
+				{now}
+				{readOnly}
+				onCopy={copy}
+				onChanged={changed}
+				onVersions={versionsChanged}
+				onClose={() => (opened = null)}
+				onDelete={removeEntry}
+				onFailure={failed}
 			/>
-		{:else if found.length === 0}
-			<Empty
-				icon="folder"
-				title="There is nothing in “{shown.name}” yet"
-				detail="Entries live in folders. This one has none of its own."
-			>
-				{#snippet action()}
-					{#if !readOnly}
-						<button
-							type="button"
-							onclick={addEntry}
-							class="h-9 rounded-full border border-hairline px-5 text-small text-txt transition-colors hover:border-txt3"
-						>
-							Add an entry
-						</button>
-					{/if}
-				{/snippet}
-			</Empty>
-		{:else if opened}
-			<EntryListCompact
-				rows={found}
-				open={opened.id}
-				onOpen={open}
-				onDismiss={() => (opened = null)}
-			/>
-		{:else}
-			<EntryList rows={found} {now} onOpen={open} onCopy={copyFrom} />
 		{/if}
 	</div>
-
-	{#if opened}
-		<EntryView
-			entry={opened}
-			{path}
-			{versions}
-			{now}
-			{readOnly}
-			onCopy={copy}
-			onChanged={changed}
-			onVersions={versionsChanged}
-			onClose={() => (opened = null)}
-			onDelete={removeEntry}
-			onFailure={failed}
-		/>
-	{/if}
 
 	{#if settings}
 		<!-- Over the panes and not over the status bar, which is where the button

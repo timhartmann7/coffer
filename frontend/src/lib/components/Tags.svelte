@@ -78,7 +78,7 @@
 			aria-label="A new tag"
 			onblur={add}
 			onkeydown={keys}
-			class="w-24 animate-pop rounded-full border border-accent bg-surface2 px-2.5 py-1 font-mono text-label tracking-label text-txt uppercase ring-4 ring-accent/15 outline-none"
+			class="w-24 animate-rise rounded-full border border-accent bg-surface2 px-2.5 py-1 font-mono text-label tracking-label text-txt uppercase ring-4 ring-accent/15 outline-none"
 		/>
 	{:else if !readOnly}
 		<button

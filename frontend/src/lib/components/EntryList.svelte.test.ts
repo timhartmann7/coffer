@@ -152,6 +152,35 @@ it('opens an entry that has no title at all', () => {
 	return unmount(component);
 });
 
+/**
+ * The last column of the row is sixty-six pixels wide and holds two buttons
+ * twenty-four pixels across. What is left of it, and the whole of it when both
+ * buttons are disabled, has to answer the press the lit row promises - which is
+ * the defect this row was rebuilt for, turned on its side.
+ */
+it('lets the strip the copy buttons sit in pass a press to the row', () => {
+	const component = draw([row({ username: '', hasPassword: false })], {});
+	flushSync();
+
+	const strip = host.querySelector('.absolute');
+	expect(strip?.className, 'the strip swallows presses meant for the row').toContain(
+		'pointer-events-none'
+	);
+
+	const copies = [...host.querySelectorAll('button')].filter((each) =>
+		each.getAttribute('aria-label')?.startsWith('Copy')
+	);
+	expect(copies).toHaveLength(2);
+	for (const copy of copies) {
+		expect(copy.disabled, 'this entry has something to copy after all').toBe(true);
+		expect(copy.className, 'a button with nothing to copy still swallows the press').toContain(
+			'disabled:pointer-events-none'
+		);
+	}
+
+	return unmount(component);
+});
+
 it('draws a row whose tags repeat', () => {
 	const component = draw([row({ tags: ['prod', 'prod', '', ''] })], {});
 	flushSync();

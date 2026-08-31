@@ -17,17 +17,7 @@
 	 * opened. So the line inside is a fixed one, the box is at least as tall as
 	 * that line, and the two states are the same size by construction.
 	 */
-	let {
-		children,
-		invalid = false,
-		class: extra = ''
-	}: {
-		children: Snippet;
-		/** A value the vault would refuse. The mockup draws this state, and it is
-		 * the one place a field is not the accent's. */
-		invalid?: boolean;
-		class?: string;
-	} = $props();
+	let { children }: { children: Snippet } = $props();
 </script>
 
 <!--
@@ -35,11 +25,15 @@
 	inside the box drawn for it and the countdown can be drawn as the box's own
 	bottom edge. The focus ring is a shadow on this element rather than something
 	inside it, so clipping never reaches it.
+
+	The mockup draws a third state for a field, the one with a border the colour
+	of danger. Nothing in an entry can be refused a value - the engine takes any
+	string a field can hold - so the two screens that do refuse one, the unlock
+	and the creation, draw it themselves, and a prop for a state nobody here
+	reaches would be a branch nothing evaluates.
 -->
 <span
-	class="relative flex min-h-[42px] min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-sm border bg-surface2 px-3 py-2.5 leading-snug transition {invalid
-		? 'border-danger/60'
-		: 'border-hairline focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/15'} {extra}"
+	class="relative flex min-h-[42px] min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-sm border border-hairline bg-surface2 px-3 py-2.5 leading-snug transition focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/15"
 >
 	{@render children()}
 </span>

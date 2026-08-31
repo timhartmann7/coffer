@@ -61,10 +61,11 @@ that preference is about.
 The mockup draws this screen read only: a login is a run of text, a password is a
 mask, an address is an underlined line. Coffer's is edited where it stands, and a
 value that can be written into is a field. So every value in the pane is drawn in
-**the mockup's own field** — the one under "Поля": `surface2` behind a hairline,
-`rounded-sm`, `px-3 py-2.5`, and the accent ring the moment something in it takes
-focus. The entry's title is the exception, because a hairline around a nineteen
-pixel name is a box around the name of the screen.
+**the mockup's own field**, drawn in its component sheet next to the buttons and
+the list rows: `surface2` behind a hairline, `rounded-sm`, `px-3 py-2.5`, and the
+accent ring the moment something in it takes focus. The entry's title is the
+exception, because a hairline around a nineteen pixel name is a box around the
+name of the screen.
 
 That box is also the fix for the thing this pane was worst at. A masked password
 is eight pixels tall and the field that reveals it is forty, so opening an eye
@@ -98,6 +99,12 @@ window moved that button to the opposite corner in the moment it was pressed. So
 the settings are drawn over the two panes and not over the status bar, and the
 button that opened them stays where the hand left it and closes them.
 
+**What is under them is inert, not merely covered.** An opaque sheet hides a
+pane; it does not take it out of the tab order, out of hit testing or out of the
+accessibility tree. Every value in an entry is a live field that commits what is
+in it when focus leaves, so a covered pane is an entry that can be rewritten by
+keys aimed at something else.
+
 ## Motion
 
 The mockup is a still picture and names no duration. The window has three, and
@@ -107,7 +114,8 @@ nothing defines a fourth:
   notice, a generator, a list of versions, a name being typed;
 - **a fade**, 130ms, for something already the size it is that only had to
   appear: a pane, a dialog's veil, an empty state;
-- **a pop**, 120ms, for a list that belongs to the control under it.
+- **a pop**, 120ms, for a list that belongs to the control under it, growing out
+  of that control's edge. The dropdown on the settings screen is the only one.
 
 None is longer than a fifth of a second, and every one is silenced by reduced
 motion — which is the whole difference between them and the two drains above.

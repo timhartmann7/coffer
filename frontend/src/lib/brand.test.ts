@@ -76,3 +76,57 @@ describe('the only brand in the window is Coffer', () => {
 		}
 	});
 });
+
+/**
+ * The repository is written in one language.
+ *
+ * `CLAUDE.md` puts it under what gets a change rejected, and nothing else looks:
+ * the workflows run fmt, clippy, shear, deny, knip and this suite, and none of
+ * them reads a codepoint. A stray line of another alphabet in a comment or a doc
+ * therefore ships in silence, which is how one reached `docs/design.md`.
+ */
+describe('the repository is written in English', () => {
+	// Written as codepoints, because a range written as itself is a file that
+	// fails its own rule.
+	const CYRILLIC = /[\u0400-\u04ff]/;
+
+	/** Directories that are not the repository: what a package manager fetched
+	 * and what a compiler wrote. */
+	const NOT_OURS = ['node_modules', 'target', '.git', 'build', '.svelte-kit'];
+
+	/**
+	 * The mockup, which is a Russian-language design document and the input this
+	 * window is built from rather than anything a reader of the application ever
+	 * sees. Translating it would change the source of truth for every screen, so
+	 * it is named here instead of being quietly skipped.
+	 */
+	const MOCKUP = 'design.html';
+
+	function everything(directory: string): string[] {
+		const found: string[] = [];
+		for (const entry of readdirSync(directory)) {
+			if (NOT_OURS.includes(entry)) continue;
+			const path = join(directory, entry);
+			if (statSync(path).isDirectory()) found.push(...everything(path));
+			else if (entry !== MOCKUP) found.push(path);
+		}
+		return found;
+	}
+
+	it('has no Cyrillic in any file it holds', () => {
+		const files = everything('..');
+		expect(files.length).toBeGreaterThan(50);
+
+		for (const path of files) {
+			const bytes = readFileSync(path);
+			const text = bytes.toString('utf8');
+			// A golden database and a key file are bytes, and bytes read as text
+			// are whatever the cipher left behind - which is as likely to look
+			// like one alphabet as another. What tells them from a file somebody
+			// wrote is that they do not decode: a zero, or a run this decoder had
+			// to replace.
+			if (bytes.includes(0) || text.includes('\uFFFD')) continue;
+			expect(CYRILLIC.test(text), `${path} is not written in English`).toBe(false);
+		}
+	});
+});

@@ -243,14 +243,21 @@ unsafe impl Send for SendWindow {}
 /// moving the row against each other inside one pass, and spinning here until
 /// they agreed would be a hang where the complaint was a flicker.
 fn lay_out(window: &NSWindow) {
+    one_pass_at_a_time(|| settle_row(window));
+}
+
+/// The protocol of the above, with nothing of AppKit in it: a pass runs alone,
+/// an ask that arrives while one is running is answered once, and a second ask
+/// inside that answer is where it stops.
+fn one_pass_at_a_time(mut pass: impl FnMut()) {
     if CORRECTING.replace(true) {
         AGAIN.set(true);
         return;
     }
 
-    settle_row(window);
+    pass();
     if AGAIN.replace(false) {
-        settle_row(window);
+        pass();
     }
 
     AGAIN.set(false);
@@ -462,5 +469,46 @@ mod tests {
         SPACING.set(0.0);
         assert_eq!(even_gap(0.0, 0.0), None, "a row of nothing was believed");
         assert_eq!(even_gap(-20.0, -20.0), None, "a backwards row was believed");
+    }
+
+    /// Moving a button is itself a frame change, so a pass is always reached
+    /// from inside another one. Dropping those was what left the last button of
+    /// the row wherever AppKit had just put it, with nothing left to notice.
+    #[test]
+    fn an_ask_that_arrives_mid_pass_is_answered_once_the_pass_is_over() {
+        CORRECTING.set(false);
+        AGAIN.set(false);
+
+        let mut passes = 0;
+        one_pass_at_a_time(|| {
+            passes += 1;
+            // What moving a button does: it asks for a pass from inside one.
+            // Answering it there would be two passes fighting over one row.
+            if passes == 1 {
+                one_pass_at_a_time(|| unreachable!("a pass ran inside another one"));
+            }
+        });
+
+        assert_eq!(passes, 2, "the ask that arrived mid-pass was dropped");
+    }
+
+    /// And it stops there. A pass that asks for another every time is AppKit and
+    /// Coffer moving the row against each other, and spinning until they agree
+    /// is a hang where the complaint was a flicker.
+    #[test]
+    fn a_row_that_never_settles_is_left_rather_than_spun_on() {
+        CORRECTING.set(false);
+        AGAIN.set(false);
+
+        let mut passes = 0;
+        one_pass_at_a_time(|| {
+            passes += 1;
+            assert!(passes < 10, "the second pass asked for a third, and got it");
+            one_pass_at_a_time(|| unreachable!("a pass ran inside another one"));
+        });
+
+        assert_eq!(passes, 2, "a row that never settles was not left alone");
+        assert!(!CORRECTING.get(), "the guard was left standing");
+        assert!(!AGAIN.get(), "an ask was left for the next pass to answer");
     }
 }
