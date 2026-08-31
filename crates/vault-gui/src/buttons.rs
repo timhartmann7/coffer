@@ -89,6 +89,10 @@ thread_local! {
     /// was evenly spaced rather than measured again on every pass. See
     /// [`spacing`].
     static SPACING: Cell<f64> = const { Cell::new(0.0) };
+
+    /// How far up the view holding them the row sits, remembered from a window
+    /// that was not being dragged. See [`height_above_the_bottom`].
+    static BOTTOM: Cell<Option<f64>> = const { Cell::new(None) };
 }
 
 /// The observers one window holds, taken off the notification centre when it is
@@ -292,26 +296,45 @@ fn settle_row(window: &NSWindow) {
         return;
     };
 
-    // Measured down from the top of the window rather than up from the bottom
-    // of the view the buttons are in. That view's height is AppKit's to change,
-    // and it changes: on a zoom, on a live resize, on a toolbar arriving. A
-    // position taken from it therefore lands somewhere new after each of those,
-    // while Coffer's title bar has not moved at all, because it hangs from the
-    // top of the window. So the top of the window is what the row is placed
-    // against, and the row stopped moving when the window was zoomed.
-    let bottom = below_the_top(window.frame().size.height, close.frame().size.height);
+    let Some(bottom) = height_above_the_bottom(&inside, &close) else {
+        return;
+    };
 
     for (index, each) in [close, miniaturise, zoom].into_iter().enumerate() {
-        // `None` is the window's own coordinate system, whose origin is the
-        // bottom left corner of its frame. Converting rather than assuming is
-        // what keeps this right when AppKit gives the view holding the buttons
-        // an origin or a height of its own.
-        let wanted = inside.convertPoint_fromView(
+        settle(
+            &each,
             NSPoint::new(FROM_LEFT + index as f64 * spacing, bottom),
-            None,
         );
-        settle(&each, wanted);
     }
+}
+
+/// How far up the view holding them the row sits.
+///
+/// Measured down from the top of the window and converted into the coordinates
+/// of the view the buttons are in, because those are the coordinates a frame
+/// origin is set in and the two are not the same space.
+///
+/// Remembered, for the same reason the gap between two buttons is. That is two
+/// readings a moment apart - the window's height, and where the view sits
+/// inside it - and during a drag the window has already grown while the view
+/// has not caught up, so they disagree by however far the pointer moved that
+/// frame. The row rode up the window while it was being dragged and dropped
+/// back when the pointer stopped. Where the row goes is a constant of the
+/// window's chrome, so it is read when nothing is moving and kept.
+fn height_above_the_bottom(inside: &NSView, close: &NSButton) -> Option<f64> {
+    if !inside.inLiveResize() {
+        let above = below_the_top(
+            inside.window()?.frame().size.height,
+            close.frame().size.height,
+        );
+        BOTTOM.set(Some(
+            inside
+                .convertPoint_fromView(NSPoint::new(0.0, above), None)
+                .y,
+        ));
+    }
+
+    BOTTOM.get()
 }
 
 /// The gap AppKit leaves between two of the buttons.
@@ -342,8 +365,8 @@ fn even_gap(left: f64, right: f64) -> Option<f64> {
     (kept > 0.0).then_some(kept)
 }
 
-/// Where the bottom edge of a button goes, in the window's own coordinates,
-/// so that the button is centred in the title bar the window draws itself.
+/// Where the bottom edge of a button goes, in the window's own coordinates, so
+/// that the button is centred in the title bar the window draws itself.
 fn below_the_top(window_height: f64, button_height: f64) -> f64 {
     let above = ((TITLE_BAR - button_height) / 2.0).max(0.0);
     window_height - above - button_height
@@ -393,9 +416,7 @@ mod tests {
     }
 
     /// The row is anchored to the top of the window, which is where the title
-    /// bar that has to hold it is anchored. Reading it off the view the buttons
-    /// live in is what used to move them on a zoom: that view's height is
-    /// AppKit's, and a taller window put the row somewhere else.
+    /// bar that has to hold it is anchored, and it is centred in that bar.
     #[test]
     fn the_row_sits_the_same_distance_below_the_top_whatever_the_window_is_doing() {
         let button = 14.0;
@@ -417,6 +438,27 @@ mod tests {
         assert!(
             (centre - TITLE_BAR / 2.0).abs() < SAME_PLACE,
             "the row is not centred in the title bar: {centre} of {TITLE_BAR}"
+        );
+    }
+
+    /// Where the row goes is read from two things a moment apart - the window's
+    /// height, and where the view holding the buttons sits inside it - and
+    /// mid-drag the first has moved and the second has not. So it is read when
+    /// nothing is moving and kept, and a drag uses what was kept.
+    #[test]
+    fn a_drag_uses_the_place_the_row_settled_in_rather_than_reading_it_again() {
+        BOTTOM.set(None);
+        assert_eq!(
+            BOTTOM.get(),
+            None,
+            "a row that has never settled has no place"
+        );
+
+        BOTTOM.set(Some(3.0));
+        assert_eq!(
+            BOTTOM.get(),
+            Some(3.0),
+            "the place the row settled in was not kept"
         );
     }
 
