@@ -1,4 +1,6 @@
 <script lang="ts">
+	import Field from './Field.svelte';
+
 	/**
 	 * A value the reader changes where it stands.
 	 *
@@ -18,6 +20,7 @@
 		mono = false,
 		classes = 'text-body text-txt',
 		readonly = false,
+		bare = false,
 		onCommit
 	}: {
 		value: string;
@@ -32,6 +35,10 @@
 		/** A database Coffer will not write back is one nothing here may offer to
 		 * change. */
 		readonly?: boolean;
+		/** Drawn without {@link Field}'s box, for a value that reads as a heading
+		 * rather than as a field. The entry's title is the only one: a hairline
+		 * around a nineteen-pixel name is a box around the name of the screen. */
+		bare?: boolean;
 		/** Answers whether the value was taken. A value that was refused is put
 		 * back, so that the screen never shows something the vault does not have.
 		 */
@@ -61,41 +68,55 @@
 	}
 </script>
 
-{#if readonly}
-	<!-- Nothing to write into, so the value is drawn as one. An empty one says
-	     what is missing, in the colour of something that is not there. -->
+{#snippet control()}
+	{#if readonly}
+		<!-- Nothing to write into, so the value is drawn as one. An empty one says
+		     what is missing, in the colour of something that is not there. -->
+		<span
+			class="min-w-0 flex-1 break-words whitespace-pre-wrap {value === ''
+				? 'text-body text-txt4'
+				: classes} {mono ? 'font-mono' : ''}"
+		>
+			{value === '' ? placeholder : value}
+		</span>
+	{:else if multiline}
+		<textarea
+			bind:this={node}
+			{value}
+			{placeholder}
+			aria-label={label}
+			rows="4"
+			spellcheck="false"
+			onblur={commit}
+			onkeydown={keys}
+			class="min-w-0 flex-1 resize-none bg-transparent text-small leading-relaxed text-txt2 outline-none placeholder:text-txt4 focus:text-txt"
+		></textarea>
+	{:else}
+		<input
+			bind:this={node}
+			{value}
+			{placeholder}
+			aria-label={label}
+			type="text"
+			autocomplete="off"
+			spellcheck="false"
+			onblur={commit}
+			onkeydown={keys}
+			class="min-w-0 flex-1 truncate bg-transparent outline-none placeholder:text-txt4 {classes} {mono
+				? 'font-mono'
+				: ''}"
+		/>
+	{/if}
+{/snippet}
+
+{#if bare}
 	<span
-		class="min-w-0 flex-1 px-2 py-1 break-words whitespace-pre-wrap {value === ''
-			? 'text-body text-txt4'
-			: classes} {mono ? 'font-mono' : ''}"
+		class="flex min-w-0 flex-1 items-center rounded-sm border border-transparent px-2 py-1 transition focus-within:border-accent focus-within:bg-surface2 focus-within:ring-4 focus-within:ring-accent/15 hover:border-hairline"
 	>
-		{value === '' ? placeholder : value}
+		{@render control()}
 	</span>
-{:else if multiline}
-	<textarea
-		bind:this={node}
-		{value}
-		{placeholder}
-		aria-label={label}
-		rows="4"
-		spellcheck="false"
-		onblur={commit}
-		onkeydown={keys}
-		class="mt-3 block w-full resize-none rounded-sm border border-transparent bg-transparent px-2 py-1.5 text-small leading-relaxed text-txt2 transition-colors outline-none placeholder:text-txt4 hover:border-hairline focus:border-accent focus:bg-surface2 focus:text-txt focus:ring-4 focus:ring-accent/15"
-	></textarea>
 {:else}
-	<input
-		bind:this={node}
-		{value}
-		{placeholder}
-		aria-label={label}
-		type="text"
-		autocomplete="off"
-		spellcheck="false"
-		onblur={commit}
-		onkeydown={keys}
-		class="min-w-0 flex-1 truncate rounded-sm border border-transparent bg-transparent px-2 py-1 transition-colors outline-none placeholder:text-txt4 hover:border-hairline focus:border-accent focus:bg-surface2 focus:ring-4 focus:ring-accent/15 {classes} {mono
-			? 'font-mono'
-			: ''}"
-	/>
+	<Field>
+		{@render control()}
+	</Field>
 {/if}

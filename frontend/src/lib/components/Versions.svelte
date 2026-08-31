@@ -167,6 +167,7 @@
 											field={field.name}
 											label="{field.name} as it was"
 											read={(of, name) => revealVersion(of, at, name)}
+											bare
 											{onFailure}
 										/>
 									{:else}

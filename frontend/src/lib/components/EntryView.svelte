@@ -37,6 +37,7 @@
 		onCopy,
 		onChanged,
 		onVersions,
+		onClose,
 		onDelete,
 		onFailure
 	}: {
@@ -52,6 +53,9 @@
 		onCopy: (entry: string, field: string) => void;
 		onChanged: (entry: Entry) => Promise<void>;
 		onVersions: (versions: Version[]) => void;
+		/** Puts the pane away. Escape does the same, and so does a press on the
+		 * empty part of either pane to the left of this one. */
+		onClose: () => void;
 		onDelete: () => void;
 		onFailure: (thrown: unknown) => void;
 	} = $props();
@@ -180,9 +184,12 @@
 	}
 </script>
 
-<section class="flex flex-col overflow-hidden bg-surface">
+<section class="flex animate-fade flex-col overflow-hidden bg-surface">
 	<header class="shrink-0 border-b border-hairline px-6 py-5">
-		<div class="flex items-start gap-3">
+		<!-- The way out first and the way to lose the entry last, with a gap
+		     between them: the mockup's rule is that a destructive action stands
+		     at the end of a row so that missing it costs a movement. -->
+		<div class="flex items-start gap-4">
 			<div class="min-w-0 flex-1">
 				<div class="font-mono text-label tracking-label text-txt4 uppercase">
 					{path.map((group) => group.name).join(' · ')}
@@ -199,11 +206,20 @@
 							placeholder="Untitled"
 							classes="text-title font-medium tracking-tight text-txt"
 							readonly={readOnly}
+							bare
 							onCommit={(value) => write(nameOf(title, 'Title'), value, title?.protected ?? false)}
 						/>
 					</h1>
 				{/if}
 			</div>
+			<button
+				type="button"
+				onclick={onClose}
+				class="text-txt4 transition-colors hover:text-txt2"
+				aria-label="Close this entry"
+			>
+				<Icon name="x" class="h-4 w-4" />
+			</button>
 			{#if !readOnly}
 				<button
 					type="button"
@@ -220,14 +236,12 @@
 	<div class="flex-1 overflow-y-auto px-6 py-5">
 		<div class="block">
 			<span class="font-mono text-label tracking-label text-txt3 uppercase">Login</span>
-			<span class="mt-1.5 -ml-2 flex items-center gap-2">
+			<span class="mt-1.5 flex items-center gap-2">
 				{#if username && username.value === null && !username.empty}
 					<!-- A database may protect any field, the login included. It comes
 					     back the same way a protected custom field does: one reveal at
 					     a time. -->
-					<span class="ml-2 flex min-w-0 flex-1 items-center gap-2">
-						<ProtectedValue entry={entry.id} field={username.name} {onFailure} />
-					</span>
+					<ProtectedValue entry={entry.id} field={username.name} {onFailure} />
 				{:else}
 					<Editable
 						value={username?.value ?? ''}
@@ -270,7 +284,7 @@
 					<ProtectedValue entry={entry.id} field={url.name} {onFailure} />
 				</span>
 			{:else}
-				<span class="mt-1.5 -ml-2 flex items-center gap-2">
+				<span class="mt-1.5 flex items-center gap-2">
 					<Editable
 						value={url?.value ?? ''}
 						label="Address"
@@ -308,7 +322,7 @@
 					<ProtectedValue entry={entry.id} field={notes.name} {onFailure} />
 				</div>
 			{:else}
-				<div class="-ml-2">
+				<div class="mt-3 flex items-start">
 					<Editable
 						value={notes?.value ?? ''}
 						label="Notes"
@@ -342,28 +356,18 @@
 					<span class="w-24 shrink-0 truncate text-small text-txt2">{field.name}</span>
 					{#if field.value === null && !field.empty}
 						<ProtectedValue entry={entry.id} field={field.name} {onFailure} />
-					{:else if field.value === null}
-						<span class="-ml-2 min-w-0 flex-1">
-							<Editable
-								value=""
-								label={field.name}
-								placeholder="Empty"
-								mono
-								readonly={readOnly}
-								onCommit={(value) => write(field.name, value, true)}
-							/>
-						</span>
 					{:else}
-						<span class="-ml-2 min-w-0 flex-1">
-							<Editable
-								value={field.value}
-								label={field.name}
-								placeholder="Empty"
-								mono
-								readonly={readOnly}
-								onCommit={(value) => write(field.name, value, field.protected)}
-							/>
-						</span>
+						<!-- A protected field that is empty comes back with no value to
+						     reveal, and it goes back protected: the file said so. -->
+						<Editable
+							value={field.value ?? ''}
+							label={field.name}
+							placeholder="Empty"
+							mono
+							readonly={readOnly}
+							onCommit={(value) =>
+								write(field.name, value, field.value === null || field.protected)}
+						/>
 					{/if}
 					{#if !readOnly}
 						<button
@@ -394,7 +398,7 @@
 							makeField();
 						}
 					}}
-					class="mt-3 w-full rounded-sm border border-accent bg-surface2 px-3 py-2 text-small text-txt ring-4 ring-accent/15 outline-none placeholder:text-txt4"
+					class="mt-3 w-full animate-rise rounded-sm border border-accent bg-surface2 px-3 py-2 text-small text-txt ring-4 ring-accent/15 outline-none placeholder:text-txt4"
 				/>
 			{/if}
 		</div>
@@ -450,7 +454,7 @@
 		</div>
 
 		{#if pinned}
-			<div class="mt-3 rounded-sm border border-hairline bg-surface2 p-3">
+			<div class="mt-3 animate-rise rounded-sm border border-hairline bg-surface2 p-3">
 				<p class="text-fine leading-relaxed text-txt2">
 					{pinned.message} of this entry. The file can go once they have.
 				</p>

@@ -59,6 +59,7 @@ function show(entryOver: Parameters<typeof entry>[0]) {
 			onCopy: vi.fn(),
 			onChanged: vi.fn(),
 			onVersions: vi.fn(),
+			onClose: vi.fn(),
 			onDelete: vi.fn(),
 			onFailure: vi.fn()
 		}
@@ -380,6 +381,7 @@ it('shows a file under the name the database holds and exports it under a safe o
 			onCopy: vi.fn(),
 			onChanged,
 			onVersions: vi.fn(),
+			onClose: vi.fn(),
 			onDelete: vi.fn(),
 			onFailure: vi.fn()
 		}
@@ -453,6 +455,7 @@ it('offers to clear the versions that are holding a file back', async () => {
 			onCopy: vi.fn(),
 			onChanged,
 			onVersions,
+			onClose: vi.fn(),
 			onDelete: vi.fn(),
 			onFailure
 		}
@@ -499,6 +502,7 @@ it('refuses a new field named after one the entry already has', async () => {
 			onCopy: vi.fn(),
 			onChanged: vi.fn(),
 			onVersions: vi.fn(),
+			onClose: vi.fn(),
 			onDelete: vi.fn(),
 			onFailure
 		}
@@ -546,6 +550,7 @@ it('says nothing about the entry that was open once another one is', async () =>
 		onCopy: vi.fn(),
 		onChanged: vi.fn(),
 		onVersions: vi.fn(),
+		onClose: vi.fn(),
 		onDelete: vi.fn(),
 		onFailure: vi.fn()
 	});
@@ -585,6 +590,7 @@ it('offers no change on a database it cannot write', () => {
 			onCopy: vi.fn(),
 			onChanged: vi.fn(),
 			onVersions: vi.fn(),
+			onClose: vi.fn(),
 			onDelete: vi.fn(),
 			onFailure: vi.fn()
 		}
@@ -694,21 +700,114 @@ it('closes the field it opened when the plus is pressed again', () => {
 });
 
 /**
- * The pane is 384px wide and the password row carries three buttons. They keep
- * their size, so without somewhere to wrap the value is left with sixty pixels
- * and reads one word to a line.
+ * The whole of what was wrong with this row. Opening an eye swapped an eight
+ * pixel mask for a field four times that, put a countdown on a row of its own
+ * underneath, and let three buttons that had been sharing the value's line go
+ * back to a line of their own - so the entry walked down the screen on every
+ * press and back up again half a minute later, unasked.
+ *
+ * Stated as structure because there is no layout in this environment: one box
+ * holds both states, the buttons are not in it, and revealing adds nothing
+ * beside it.
  */
-it('gives the password row somewhere to wrap rather than squeezing the value', () => {
+it('keeps the password field the same box whether or not it is revealed', async () => {
 	const component = show({
-		fields: [field({ name: 'Password', kind: 'password', value: null, empty: true })]
+		fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
 	});
 	flushSync();
 
-	const value = host.querySelector('[data-value]')?.parentElement;
-	const row = value?.parentElement;
-	expect(row?.className, 'the row has nowhere to wrap').toContain('flex-wrap');
-	expect(value?.className, 'the value does not take the room that is left').toContain('flex-1');
-	expect(value?.className, 'the value has no floor to stop shrinking at').toMatch(/min-w-\d/);
+	const box = host.querySelector('[data-value]')?.parentElement;
+	const drawn = box?.className;
+	const block = box?.parentElement?.parentElement;
+	const rows = block?.children.length;
+
+	expect(box?.querySelector('use[href="#redact"]'), 'the mask is somewhere else').not.toBeNull();
+	expect(box?.contains(button('Copy')), 'the buttons share the value line').toBe(false);
+
+	button('Show').click();
+	await vi.waitFor(() => expect(ipc.reveal).toHaveBeenCalled());
+	flushSync();
+
+	expect(host.querySelector('[data-value]')?.parentElement, 'the value moved box').toBe(box);
+	expect(box?.className, 'the box is drawn differently once it holds a value').toBe(drawn);
+	expect(block?.children.length, 'revealing added a row under the field').toBe(rows);
+
+	return unmount(component);
+});
+
+/**
+ * A way out of the pane that is not the way to lose the entry.
+ *
+ * Escape closed it and nothing else did, so the pane had exactly one visible
+ * button and that button was the trash. The close goes beside it and not after
+ * it: the mockup's rule is that the destructive action stands at the end of a
+ * row, so that missing it costs a movement rather than an entry.
+ */
+it('offers a way out of the entry, and it is not the way to delete one', () => {
+	const onClose = vi.fn();
+	const onDelete = vi.fn();
+	const component = mount(EntryView, {
+		target: host,
+		props: {
+			entry: entry({ fields: [field({ name: 'Title', kind: 'title', value: 'node-3' })] }),
+			path: [group({ name: 'Work' })],
+			versions: [],
+			now: new Date('2026-08-29T14:30:00Z'),
+			readOnly: false,
+			onCopy: vi.fn(),
+			onChanged: vi.fn(),
+			onVersions: vi.fn(),
+			onClose,
+			onDelete,
+			onFailure: vi.fn()
+		}
+	});
+	flushSync();
+
+	const header = host.querySelector('header');
+	const buttons = [...(header?.querySelectorAll('button') ?? [])].map((each) =>
+		each.getAttribute('aria-label')
+	);
+	expect(buttons, 'the close is not the one before the delete').toEqual([
+		'Close this entry',
+		'Delete this entry'
+	]);
+
+	header?.querySelector<HTMLButtonElement>('button[aria-label="Close this entry"]')?.click();
+	flushSync();
+
+	expect(onClose).toHaveBeenCalledTimes(1);
+	expect(onDelete, 'closing the entry deleted it').not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/** A database Coffer will not write back has nothing to delete with, and the
+ * way out has to survive that: it is the pane's only button there. */
+it('still offers the way out when there is nothing else in the header', () => {
+	const onClose = vi.fn();
+	const component = mount(EntryView, {
+		target: host,
+		props: {
+			entry: entry({ fields: [field({ name: 'Title', kind: 'title', value: 'node-3' })] }),
+			path: [group({ name: 'Work' })],
+			versions: [],
+			now: new Date('2026-08-29T14:30:00Z'),
+			readOnly: true,
+			onCopy: vi.fn(),
+			onChanged: vi.fn(),
+			onVersions: vi.fn(),
+			onClose,
+			onDelete: vi.fn(),
+			onFailure: vi.fn()
+		}
+	});
+	flushSync();
+
+	const out = host.querySelector<HTMLButtonElement>('button[aria-label="Close this entry"]');
+	expect(out, 'a read only entry cannot be put away').not.toBeNull();
+	out?.click();
+	expect(onClose).toHaveBeenCalledTimes(1);
 
 	return unmount(component);
 });

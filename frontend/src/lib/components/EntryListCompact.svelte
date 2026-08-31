@@ -7,8 +7,16 @@
 	let {
 		rows,
 		open,
-		onOpen
-	}: { rows: EntryRow[]; open: string | null; onOpen: (id: string) => void } = $props();
+		onOpen,
+		onDismiss
+	}: {
+		rows: EntryRow[];
+		open: string | null;
+		onOpen: (id: string) => void;
+		/** What the empty part of the list under the rows does: it puts the open
+		 * entry away, the way pressing Escape does. */
+		onDismiss: () => void;
+	} = $props();
 
 	/**
 	 * The second line of a row. A value the database protects is not here to
@@ -24,7 +32,16 @@
 	}
 </script>
 
-<div class="flex-1 overflow-y-auto">
+<!--
+	Only a press that landed on the empty part below the rows, which is what
+	`currentTarget` says: every row is a button inside this, and a press on one of
+	those is a press on a row and arrives here on its way up.
+-->
+<div
+	role="presentation"
+	onclick={(event) => event.target === event.currentTarget && onDismiss()}
+	class="flex-1 overflow-y-auto"
+>
 	{#each rows as row (row.id)}
 		{@const here = row.id === open}
 		<button
