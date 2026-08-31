@@ -150,6 +150,45 @@ it('keeps a revealed password in one node and nowhere else', async () => {
 	return unmount(component);
 });
 
+/**
+ * Hide hides, once, and writes nothing.
+ *
+ * The reveal focuses the field so the value can be edited where it stands, and
+ * a press on Hide therefore blurs it. The blur committed - which saved the file
+ * and derived the key again, a second of a window that answers nothing - and it
+ * left the field closed, so the press it had raced opened the value again with
+ * a fresh half minute. The button said Hide and did the opposite, slowly.
+ */
+it('hides the value on a press, without writing it or opening it again', async () => {
+	const component = show({
+		fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+	});
+	flushSync();
+
+	button('Show').click();
+	await vi.waitFor(() => expect(value()).toBe(SECRET));
+	flushSync();
+
+	// What the reveal does, and what makes the press below a blur as well.
+	const node = host.querySelector('[data-value]') as HTMLInputElement;
+	node.focus();
+	expect(document.activeElement, 'the reveal did not focus the field').toBe(node);
+
+	const hide = button('Hide');
+	const press = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+	hide.dispatchEvent(press);
+	expect(press.defaultPrevented, 'the press moves the focus off the live field').toBe(true);
+	hide.click();
+	flushSync();
+
+	expect(screen(), 'the value is still on the screen').not.toContain(SECRET);
+	expect(ipc.setField, 'hiding a value wrote it back').not.toHaveBeenCalled();
+	expect(ipc.reveal, 'hiding a value asked for it again').toHaveBeenCalledTimes(1);
+	expect(host.textContent, 'the countdown is still running').not.toContain('Hides in');
+
+	return unmount(component);
+});
+
 it('takes the value off the screen when the pane goes', async () => {
 	const component = show({
 		fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]

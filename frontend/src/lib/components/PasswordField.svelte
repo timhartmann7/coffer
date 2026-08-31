@@ -68,9 +68,24 @@
 		};
 	});
 
+	/**
+	 * Shows the value, and puts it away again.
+	 *
+	 * The press that reaches this while a value is on the screen is kept from
+	 * moving the focus (see the markup), so this runs with the field still live.
+	 * Without that the blur got there first: it committed, which saved the file
+	 * and derived the key again for a second, and it left `live` false - so the
+	 * press this function is answering opened the value again with a fresh half
+	 * minute. The button said Hide and did the opposite, slowly.
+	 *
+	 * Which means the two meanings of closing are decided here rather than by
+	 * the order two events happened to arrive in: a value the reader was writing
+	 * is written, and a value they were only reading is put away.
+	 */
 	async function toggle() {
 		if (live) {
-			close();
+			if (writing) commit();
+			else close();
 			return;
 		}
 		if (!node) return;
@@ -201,8 +216,12 @@
 	     the value put them on a second line in a pane this narrow anyway, and
 	     which line they landed on then depended on how long the value was. -->
 	<div class="mt-2 flex flex-wrap items-center gap-2">
+		<!-- While something is on the screen this press does not move the focus,
+		     so it reaches `toggle` before the field's own blur does. The other way
+		     round, Hide saved the vault and then opened the value again. -->
 		<button
 			type="button"
+			onmousedown={(event) => live && event.preventDefault()}
 			onclick={toggle}
 			class="flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 text-fine text-txt2 transition hover:border-txt3 hover:text-txt active:bg-raised"
 		>
