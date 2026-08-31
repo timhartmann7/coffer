@@ -399,8 +399,12 @@
 
 		// A revealed value, a login and a note are all selectable on purpose. If
 		// the reader has selected something, the copy they pressed is theirs and
-		// not the entry's - and a selection inside a field is not something
-		// `getSelection` reports at all, so the field itself is the answer there.
+		// not the entry's.
+		//
+		// A selection inside a field is reported collapsed - WebKit never exposes
+		// a position inside a control's own shadow tree - so this predicate is
+		// about a selection in the page, and the field itself is what answers for
+		// one inside a field.
 		if (typing(event.target)) return;
 		if (wanted === 'password' && document.getSelection()?.isCollapsed === false) return;
 

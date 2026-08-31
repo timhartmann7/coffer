@@ -98,4 +98,26 @@ describe('the window is drawn in the tokens of design.html', () => {
 			expect(/\.style\.[a-zA-Z]/.test(text), `${path} sets a style from script`).toBe(false);
 		}
 	});
+
+	/**
+	 * WebKit has never shipped `user-select` unprefixed, so the plain spelling
+	 * is a no-op in the engine this window runs in and the prefixed one is the
+	 * rule. The bundler adds it on the way to a release build and not on the way
+	 * to a development one, which made the window a selectable page in exactly
+	 * the build somebody works in all day.
+	 */
+	it('says who may be selected in the spelling WebKit reads', () => {
+		const css = readFileSync('src/app.css', 'utf8');
+
+		for (const [, value] of css.matchAll(/(?<!-)\buser-select:\s*(\w+);/g)) {
+			expect(
+				css.includes(`-webkit-user-select: ${value};`),
+				`app.css asks for user-select: ${value} in a spelling WebKit ignores`
+			).toBe(true);
+		}
+
+		// Naming no colour is not naming none: a run with no rule of its own is
+		// painted in the system's highlight.
+		expect(css, 'the chrome paints a selection again').toContain('background: transparent;');
+	});
 });

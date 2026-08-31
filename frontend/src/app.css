@@ -192,19 +192,33 @@
 		-webkit-font-smoothing: antialiased;
 		overflow: hidden;
 		/* Nothing in the window is a document, so nothing in it is selectable by
-		   dragging. What can be selected says so for itself. */
+		   dragging. What can be selected says so for itself.
+
+		   The prefixed spelling is the one that does the work, and it is written
+		   by hand rather than left to a prefixer. WebKit has never shipped this
+		   property unprefixed - the patch that would have landed in 2022 and was
+		   reverted - so the plain declaration below is a no-op in the engine this
+		   window runs in. A release build happens to behave, because the bundler
+		   prefixes on the way out; a development build does not, and the whole
+		   window was a selectable page there. Two spellings and no build step in
+		   between is the difference between a rule that holds everywhere and one
+		   that holds where nobody is looking. */
+		-webkit-user-select: none;
 		user-select: none;
 		cursor: default;
 	}
 
-	/* The window is not a document. A drag that started on a value and swept
-	   across the screen used to take every label and every button with it,
-	   because WebKit extends a selection out of the one element that allows it
-	   and paints everything it crossed. So the only thing that can be selected
-	   is a field somebody typed into: a control contains its own selection, and
-	   a value that is not one has a Copy button instead. */
+	/* What may be selected: a field somebody types into, and a secret that has
+	   been put on the screen to be read. Everything else is chrome with a Copy
+	   button beside it.
+
+	   Both of these contain their own selection, so a drag that starts in one
+	   and sweeps across the window stops at its edge instead of taking every
+	   label and button it crossed. */
 	input,
-	textarea {
+	textarea,
+	[data-value] {
+		-webkit-user-select: text;
 		user-select: text;
 	}
 
@@ -244,7 +258,23 @@
 		background: var(--color-txt);
 	}
 
+	/* Only what may be selected is ever painted as selected.
+
+	   The rule above is what stops a selection reaching the chrome, and this is
+	   what stops one being drawn there. They are not the same guarantee: WebKit
+	   is documented to allow a selection to *extend* across an element it will
+	   not let one start in, and its own source says so - the check that refuses
+	   is about dragging, not about selecting. Naming no colour here is not the
+	   same as naming none: a run with no rule of its own is painted in the
+	   system's highlight, which is a second accent on a screen that has one. */
 	::selection {
+		background: transparent;
+		color: inherit;
+	}
+
+	input::selection,
+	textarea::selection,
+	[data-value]::selection {
 		background: var(--color-selection);
 		color: var(--color-txt);
 	}
