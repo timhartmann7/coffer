@@ -189,6 +189,88 @@ it('hides the value on a press, without writing it or opening it again', async (
 	return unmount(component);
 });
 
+/**
+ * Hide is the one press that keeps the focus, and it is not where a reader goes
+ * next: they press Copy, or click another entry, or reach for the search box.
+ * Every one of those blurs the live field, and the blur used to write the
+ * revealed value straight back - a full save, a second of key derivation, and
+ * one of the ten snapshots beside the vault rotated away, spent on the reader
+ * having looked at a password.
+ */
+it('does not write a revealed value back when the focus leaves the field', async () => {
+	const component = show({
+		fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+	});
+	flushSync();
+
+	button('Show').click();
+	await vi.waitFor(() => expect(value()).toBe(SECRET));
+	flushSync();
+
+	const node = host.querySelector('[data-value]') as HTMLInputElement;
+	node.focus();
+	node.dispatchEvent(new FocusEvent('blur'));
+	flushSync();
+
+	expect(ipc.setField, 'looking at a password rewrote the whole vault').not.toHaveBeenCalled();
+	expect(screen(), 'the value is still on the screen').not.toContain(SECRET);
+
+	return unmount(component);
+});
+
+/** The other half of the same rule: a value the reader typed is still written. */
+it('writes a password the reader typed over a revealed one', async () => {
+	const component = show({
+		fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+	});
+	flushSync();
+
+	button('Show').click();
+	await vi.waitFor(() => expect(value()).toBe(SECRET));
+	flushSync();
+
+	const node = host.querySelector('[data-value]') as HTMLInputElement;
+	node.focus();
+	node.value = 'a different one';
+	node.dispatchEvent(new Event('input', { bubbles: true }));
+	flushSync();
+	node.dispatchEvent(new FocusEvent('blur'));
+	flushSync();
+
+	await vi.waitFor(() =>
+		expect(ipc.setField).toHaveBeenCalledWith(
+			expect.any(String),
+			'Password',
+			'a different one',
+			false
+		)
+	);
+
+	return unmount(component);
+});
+
+/** Opening the field on an entry that has none and typing nothing is not an
+ * edit either, and it is the one case where the pane knows what it would be
+ * writing over. */
+it('does not write an empty password when the field was opened and left alone', async () => {
+	const component = show({
+		fields: [field({ name: 'Password', kind: 'password', value: null, empty: true })]
+	});
+	flushSync();
+
+	button('Set one').click();
+	await Promise.resolve();
+	flushSync();
+
+	const node = host.querySelector('[data-value]') as HTMLInputElement;
+	node.dispatchEvent(new FocusEvent('blur'));
+	flushSync();
+
+	expect(ipc.setField).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
 it('takes the value off the screen when the pane goes', async () => {
 	const component = show({
 		fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
@@ -594,10 +676,15 @@ it('offers to clear the versions that are holding a file back', async () => {
 	expect(onChanged).not.toHaveBeenCalled();
 
 	// One call, not two: the versions go only if the file then goes.
-	button('Clear the versions and remove it').click();
+	button('Clear those versions and remove it').click();
 	await vi.waitFor(() => expect(ipc.removeAttachmentAndVersions).toHaveBeenCalledTimes(1));
 	await vi.waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
-	expect(onVersions).toHaveBeenCalledWith([]);
+
+	// The list is not emptied from here. Only the versions that were holding the
+	// file go, and which ones those were is the engine's answer: saying so from
+	// the pane drew an entry as having no history when it still had most of it,
+	// and wrote the whole vault a second time to say it.
+	expect(onVersions).not.toHaveBeenCalled();
 
 	return unmount(component);
 });
@@ -939,6 +1026,46 @@ it('still offers the way out when there is nothing else in the header', () => {
 	expect(out, 'a read only entry cannot be put away').not.toBeNull();
 	out?.click();
 	expect(onClose).toHaveBeenCalledTimes(1);
+
+	return unmount(component);
+});
+
+/**
+ * A file under a name the entry already has replaces the one there, and the one
+ * there can be held in place by previous versions like any other. The two
+ * cannot be one step: the bytes the reader chose are gone by the time the
+ * refusal comes back, so a bare error message left them with nothing to do.
+ */
+it('says what to do when a file cannot be replaced yet', async () => {
+	const onFailure = vi.fn();
+	ipc.addAttachment.mockRejectedValue({
+		code: 'attachmentInHistory',
+		message: 'earlier versions of an entry still hold that file in place'
+	});
+
+	const component = mount(EntryView, {
+		target: host,
+		props: {
+			entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
+			path: [group({ name: 'Work' })],
+			versions: [],
+			now: new Date('2026-08-29T14:30:00Z'),
+			readOnly: false,
+			onCopy: vi.fn(),
+			onChanged: vi.fn(),
+			onVersions: vi.fn(),
+			onClose: vi.fn(),
+			onDelete: vi.fn(),
+			onFailure
+		}
+	});
+	flushSync();
+
+	host.querySelector<HTMLButtonElement>('[aria-label="Add a file"]')?.click();
+	await vi.waitFor(() => expect(host.textContent).toContain('Take that one off first'));
+
+	// A refusal the reader can act on is not an error message.
+	expect(onFailure).not.toHaveBeenCalled();
 
 	return unmount(component);
 });

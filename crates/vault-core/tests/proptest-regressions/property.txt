@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc ba99f8ca286781fcb437619900f8fb5f0f79de3fa629f2829b998272deddce93 # shrinks to shape = [GroupShape { name: "a", entries: [EntryShape { fields: [], tags: ["a"], attachments: [] }], sections: [] }]
+cc 684e0adcb8bed77ff078a40548f63c421c95640cdd445b699c0e97b94aa3ab35 # shrinks to acts = [DeleteEntry(4), DeleteEntry(3)]

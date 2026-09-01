@@ -446,6 +446,75 @@ it('keeps this version and writes over the file when asked to', async () => {
 	return unmount(component);
 });
 
+/**
+ * A file that is not there any more: renamed in Finder, moved, deleted, or on a
+ * disk that was unplugged. Every save from here on fails, so a screen that only
+ * raised a notice left the reader editing into a window with a whole session's
+ * work in memory and nothing in the application able to write it anywhere.
+ */
+it('asks what to do when the vault file is gone, rather than only reporting it', async () => {
+	ipc.save.mockRejectedValue({ code: 'gone', message: 'the database file is gone' });
+	ipc.rival.mockResolvedValue({ modified: null, entries: null });
+	ipc.saveOver.mockResolvedValue(undefined);
+	ipc.createEntry.mockResolvedValue({ tree: root, entry: kept.id });
+	ipc.entry.mockResolvedValue(entry({ id: kept.id, group: root.id }));
+
+	const component = open();
+	flushSync();
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Entry')
+		?.click();
+	await vi.waitFor(() => expect(host.textContent).toContain('not there any more'));
+	flushSync();
+
+	// Nothing to reload from a file that is gone, so that way out is not offered.
+	const named = [...host.querySelectorAll('button')].map((each) => each.textContent?.trim());
+	expect(named).toContain('Put it back');
+	expect(named).toContain('Keep it elsewhere');
+	expect(named).not.toContain('Take the file on disk');
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Put it back')
+		?.click();
+	await vi.waitFor(() => expect(ipc.saveOver).toHaveBeenCalledTimes(1));
+	flushSync();
+
+	expect(host.textContent).not.toContain('not there any more');
+
+	return unmount(component);
+});
+
+/** The other way out keeps the work somewhere else, and must not then try to
+ * read back a file that is not there. */
+it('keeps the work elsewhere when the vault file is gone', async () => {
+	ipc.save.mockRejectedValue({ code: 'gone', message: 'the database file is gone' });
+	ipc.rival.mockResolvedValue({ modified: null, entries: null });
+	ipc.saveCopy.mockResolvedValue({ path: '/Users/someone/rescued.kdbx', name: 'rescued' });
+	ipc.createEntry.mockResolvedValue({ tree: root, entry: kept.id });
+	ipc.entry.mockResolvedValue(entry({ id: kept.id, group: root.id }));
+
+	const component = open();
+	flushSync();
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Entry')
+		?.click();
+	await vi.waitFor(() => expect(host.textContent).toContain('not there any more'));
+	flushSync();
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Keep it elsewhere')
+		?.click();
+	await vi.waitFor(() => expect(ipc.saveCopy).toHaveBeenCalledTimes(1));
+	flushSync();
+
+	expect(ipc.reload, 'it read back a file that is not there').not.toHaveBeenCalled();
+	expect(host.textContent).toContain('Kept as rescued');
+
+	return unmount(component);
+});
+
 /** A vault Coffer will not write back offers nothing that would only be
  * refused. */
 it('offers no change at all on a database it cannot write', () => {
@@ -833,4 +902,52 @@ it('lets Escape out of the settings, and leaves the list alone while they are op
 	).toHaveBeenCalledTimes(1);
 
 	unmount(component);
+});
+
+/**
+ * A file that a previous version of some other entry names has to keep the
+ * number it has, so now and then an entry in the bin cannot be erased yet.
+ *
+ * Emptying is best-effort in Rust: whatever can go has gone by the time the
+ * refusal comes back. The screen therefore has to read the tree again and say
+ * what to do next, rather than report a failure and leave a bin drawn fuller
+ * than it is with no way forward.
+ */
+it('says what to do when part of the bin cannot be emptied yet', async () => {
+	const emptied = group({
+		name: 'Root',
+		entries: [kept],
+		sections: [group({ name: 'Recycle Bin', isRecycleBin: true, entries: [] })]
+	});
+	ipc.emptyRecycleBin.mockRejectedValue({
+		code: 'attachmentInHistory',
+		message: 'earlier versions of an entry still hold that file in place'
+	});
+	ipc.tree.mockResolvedValue(emptied);
+
+	const onTree = vi.fn();
+	const component = open({ onTree });
+	flushSync();
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('Recycle Bin'))
+		?.click();
+	flushSync();
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Empty the bin')
+		?.click();
+	flushSync();
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Empty it')
+		?.click();
+
+	await vi.waitFor(() => expect(host.textContent).toContain('Some of it stayed'));
+	// What did go is off the screen: the tree is read again rather than left
+	// drawing a bin that is fuller than the file's.
+	expect(onTree).toHaveBeenCalledWith(emptied);
+	// And it reaches the file. Emptying is all-or-nothing per entry, so the ones
+	// that went are out of the vault in memory and nowhere else until this runs.
+	await vi.waitFor(() => expect(ipc.save).toHaveBeenCalled());
+
+	return unmount(component);
 });

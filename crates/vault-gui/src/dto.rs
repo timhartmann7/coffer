@@ -92,6 +92,10 @@ impl Database {
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub database: Option<Database>,
+    /// The key file the next unlock will use, when the reader has chosen one.
+    /// Reported rather than remembered by the window, because a lock destroys
+    /// the window and the vault it is about is still the same one.
+    pub key_file: Option<Database>,
     pub unlocked: bool,
     /// How many entries the vault holds, the recycle bin's included.
     pub entries: usize,

@@ -257,6 +257,72 @@ fn a_deleted_entry_goes_to_the_recycle_bin_and_the_second_deletion_takes_it_out_
     assert!(vault.entry(id).is_none(), "the entry came back");
 }
 
+/// The top group is where every entry lands when no folder is chosen, and the
+/// bin sits in that same group. Asking whether the group a deletion comes out of
+/// holds the bin was therefore true of the commonest deletion there is, and the
+/// entry went straight out of the file instead of into the bin.
+#[test]
+fn an_entry_at_the_top_of_the_vault_goes_to_the_recycle_bin_like_any_other() {
+    let (_scratch, database) = support::scratch(RICH);
+    let mut vault = open(&database, SECRET);
+
+    let root = vault.tree().id;
+    let id = vault.create_entry(root).expect("the entry is made");
+    vault
+        .set_field(id, fields::TITLE, NewValue::Open("at the top".to_owned()))
+        .expect("the title is written");
+
+    vault.delete_entry(id).expect("the entry is deleted");
+
+    let bin = vault
+        .tree()
+        .sections
+        .iter()
+        .find(|section| section.is_recycle_bin)
+        .cloned()
+        .expect("the fixture has a recycle bin");
+    assert!(
+        bin.entries.iter().any(|entry| entry.id == id),
+        "an entry deleted from the top of the vault was erased instead of binned"
+    );
+
+    vault.save().expect("the database saves");
+    drop(vault);
+
+    let vault = open(&database, SECRET);
+    assert!(
+        vault.entry(id).is_some(),
+        "the entry was gone from the file that was written"
+    );
+}
+
+/// The same for a folder at the top: it is not the bin and does not hold it, so
+/// it is binned rather than erased.
+#[test]
+fn a_folder_at_the_top_of_the_vault_goes_to_the_recycle_bin_like_any_other() {
+    let (_scratch, database) = support::scratch(RICH);
+    let mut vault = open(&database, SECRET);
+
+    let root = vault.tree().id;
+    let id = vault
+        .create_group(root, "at the top")
+        .expect("the folder is made");
+
+    vault.delete_group(id).expect("the folder is deleted");
+
+    let bin = vault
+        .tree()
+        .sections
+        .iter()
+        .find(|section| section.is_recycle_bin)
+        .cloned()
+        .expect("the fixture has a recycle bin");
+    assert!(
+        bin.sections.iter().any(|section| section.id == id),
+        "a folder deleted from the top of the vault was erased instead of binned"
+    );
+}
+
 #[test]
 fn a_database_that_keeps_no_recycle_bin_deletes_outright() {
     let scratch = tempfile::tempdir().expect("a scratch directory");
@@ -539,6 +605,263 @@ fn removing_one_of_two_names_for_the_same_file_leaves_the_other_holding_it() {
     );
 }
 
+/// A previous version names a file by the number it had, and nothing can rewrite
+/// what a version points at. So a removal that renumbers such a file leaves the
+/// version pointing at somebody else's bytes - silently, because the entry as it
+/// is now still looks right.
+///
+/// The sizes are all different so that a swap is visible: a version reports the
+/// length of whatever sits at the number it holds.
+#[test]
+fn a_removal_never_renumbers_a_file_a_version_points_at() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let path = built(scratch.path(), "pinned-order.kdbx", |_| {});
+
+    let sizes = [8usize, 64, 512];
+    let ids: Vec<EntryId> = {
+        let mut vault = open(&path, BUILT_PASSWORD);
+        let root = root_of(&vault);
+        let mut ids = Vec::new();
+        for (round, size) in sizes.iter().enumerate() {
+            let id = vault.create_entry(root).expect("the entry is made");
+            vault
+                .add_attachment(
+                    id,
+                    &format!("file-{round}.bin"),
+                    Zeroizing::new(vec![round as u8; *size]),
+                )
+                .expect("the file is added");
+            ids.push(id);
+        }
+        vault.save().expect("the database saves");
+        ids
+    };
+
+    let middle = *ids.get(1).expect("three entries were made");
+    let mut vault = open(&path, BUILT_PASSWORD);
+
+    // One edit on the middle entry: its version now names the file sitting in
+    // the middle of the pool.
+    vault
+        .set_field(middle, fields::NOTES, NewValue::Open("edited".to_owned()))
+        .expect("the note is written");
+    let held = vault
+        .version(middle, 0)
+        .expect("the edit wrote a version")
+        .attachments;
+    assert_eq!(
+        held.first().map(|file| (file.name.as_str(), file.size)),
+        Some(("file-1.bin", 64)),
+        "the version does not name the file the entry had"
+    );
+
+    // Taking the first file off closes the pool up behind it, and the file the
+    // version names must not be what closes it.
+    let first = *ids.first().expect("three entries were made");
+    vault
+        .remove_attachment(first, "file-0.bin")
+        .expect("the first file goes: nothing is holding it");
+    vault.save().expect("the database saves");
+    drop(vault);
+
+    let vault = open(&path, BUILT_PASSWORD);
+    let held = vault
+        .version(middle, 0)
+        .expect("the version is still there")
+        .attachments;
+    assert_eq!(
+        held.first().map(|file| (file.name.as_str(), file.size)),
+        Some(("file-1.bin", 64)),
+        "the version came back naming somebody else's bytes"
+    );
+    assert_eq!(
+        vault
+            .attachment(middle, "file-1.bin")
+            .expect("the file is there")
+            .expose(),
+        vec![1u8; 64].as_slice()
+    );
+    assert_eq!(
+        vault
+            .attachment(*ids.get(2).expect("three entries"), "file-2.bin")
+            .expect("the file is there")
+            .expose(),
+        vec![2u8; 512].as_slice()
+    );
+}
+
+/// Twenty documents, each on its own entry, every one of them edited once
+/// afterwards - which is what a vault that has been used looks like.
+///
+/// Closing the whole pool up towards the front on every removal meant that one
+/// entry anywhere having one version was enough to make every file in the vault
+/// permanently unremovable, and the recycle bin permanently un-emptyable with
+/// it. The files that cannot be renumbered keep the numbers they have instead,
+/// and only the ones that can move fill what that leaves free.
+#[test]
+fn documents_can_still_be_taken_out_of_a_vault_that_has_been_used() {
+    const COUNT: usize = 20;
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let path = built(scratch.path(), "documents.kdbx", |_| {});
+
+    let ids: Vec<EntryId> = {
+        let mut vault = open(&path, BUILT_PASSWORD);
+        let root = root_of(&vault);
+        let mut ids = Vec::new();
+        for round in 0..COUNT {
+            let id = vault.create_entry(root).expect("the entry is made");
+            vault
+                .set_field(id, fields::TITLE, NewValue::Open(format!("doc {round}")))
+                .expect("the title is written");
+            vault
+                .add_attachment(
+                    id,
+                    &format!("report-{round}.pdf"),
+                    Zeroizing::new(vec![round as u8; 512]),
+                )
+                .expect("the file is added");
+            ids.push(id);
+        }
+        vault.save().expect("the database saves");
+
+        // One ordinary edit on every entry, so that every file in the pool is
+        // named by some entry's previous version.
+        for (round, id) in ids.iter().enumerate() {
+            vault
+                .set_field(
+                    *id,
+                    fields::USERNAME,
+                    NewValue::Open(format!("user-{round}")),
+                )
+                .expect("the login is written");
+        }
+        vault.save().expect("the database saves");
+        ids
+    };
+
+    // The file in the middle. Its own entry's version holds it, so the plain
+    // removal is refused - and the offer that goes with the refusal has to work,
+    // whichever entries turn out to be in the way.
+    let middle = 9;
+    let mut vault = open(&path, BUILT_PASSWORD);
+    assert!(
+        matches!(
+            vault.remove_attachment(ids[middle], "report-9.pdf"),
+            Err(VaultError::AttachmentInHistory)
+        ),
+        "the entry's own version is supposed to hold its file"
+    );
+    vault
+        .remove_attachment_and_versions(ids[middle], "report-9.pdf")
+        .expect("clearing the versions in the way is what lets the file go");
+    vault.save().expect("the database saves");
+    drop(vault);
+
+    // Every other document is still on its own entry and still byte for byte
+    // what it was. This is the whole point: a removal must not hand somebody
+    // else's bytes to an entry.
+    let vault = open(&path, BUILT_PASSWORD);
+    for (round, id) in ids.iter().enumerate() {
+        let name = format!("report-{round}.pdf");
+        if round == middle {
+            assert!(
+                vault.attachment(*id, &name).is_err(),
+                "the file the reader removed is still there"
+            );
+            continue;
+        }
+        assert_eq!(
+            vault
+                .attachment(*id, &name)
+                .unwrap_or_else(|error| panic!("{name} is gone: {error}"))
+                .expose(),
+            vec![round as u8; 512].as_slice(),
+            "{name} came back holding somebody else's bytes"
+        );
+    }
+}
+
+/// The one shape the pool cannot be talked out of, and the way back from it.
+///
+/// A file a previous version names has to keep the number it has, and the pool
+/// has to stay an unbroken run from zero. So when the file holding the *last*
+/// number is one of those, the pool cannot get shorter and nothing can be
+/// erased. The format offers no way out of that: the library gives no means to
+/// rewrite what a version points at.
+///
+/// What must be true is that it is a wait rather than a wall. Taking the file
+/// off the entry clears the versions in the way - including the ones on other
+/// entries, which is what the pane offers - and the bin empties afterwards.
+#[test]
+fn the_recycle_bin_empties_once_the_versions_holding_a_file_have_gone() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let path = built(scratch.path(), "binning.kdbx", |_| {});
+
+    let ids: Vec<EntryId> = {
+        let mut vault = open(&path, BUILT_PASSWORD);
+        let root = root_of(&vault);
+        let mut ids = Vec::new();
+        for round in 0..3u8 {
+            let id = vault.create_entry(root).expect("the entry is made");
+            vault
+                .add_attachment(
+                    id,
+                    &format!("file-{round}.bin"),
+                    Zeroizing::new(vec![round; 64]),
+                )
+                .expect("the file is added");
+            vault
+                .set_field(id, fields::NOTES, NewValue::Open(format!("note {round}")))
+                .expect("the note is written");
+            ids.push(id);
+        }
+        vault.save().expect("the database saves");
+        ids
+    };
+
+    let first = *ids.first().expect("three entries were made");
+    let mut vault = open(&path, BUILT_PASSWORD);
+
+    // Into the bin, which never touches the pool.
+    vault.delete_entry(first).expect("it goes to the bin");
+
+    // Out of the file, which does. The last file in the pool is held by the
+    // last entry's version, so the pool cannot get shorter yet.
+    assert!(
+        matches!(
+            vault.empty_recycle_bin(),
+            Err(VaultError::AttachmentInHistory)
+        ),
+        "the pool got shorter with a version still naming its last file"
+    );
+    assert!(
+        vault.entry(first).is_some(),
+        "a refusal erased the entry anyway"
+    );
+
+    // The offer the pane makes for exactly this, on the entry that is in the
+    // bin. It clears the versions in the way wherever they are.
+    vault
+        .remove_attachment_and_versions(first, "file-0.bin")
+        .expect("clearing the versions in the way lets the file go");
+    vault.empty_recycle_bin().expect("and now the bin empties");
+    vault.save().expect("the database saves");
+    drop(vault);
+
+    let vault = open(&path, BUILT_PASSWORD);
+    assert!(vault.entry(first).is_none(), "the entry came back");
+    for (round, id) in ids.iter().enumerate().skip(1) {
+        assert_eq!(
+            vault
+                .attachment(*id, &format!("file-{round}.bin"))
+                .expect("the file is there")
+                .expose(),
+            vec![round as u8; 64].as_slice(),
+            "a file moved onto the wrong entry when the bin was emptied"
+        );
+    }
+}
+
 #[test]
 fn a_file_an_earlier_version_still_holds_is_not_taken_away_from_it() {
     let scratch = tempfile::tempdir().expect("a scratch directory");
@@ -566,7 +889,7 @@ fn a_file_an_earlier_version_still_holds_is_not_taken_away_from_it() {
     assert!(
         matches!(
             vault.remove_attachment(id, "key.pem"),
-            Err(VaultError::AttachmentInHistory { versions: 1 })
+            Err(VaultError::AttachmentInHistory)
         ),
         "a file an earlier version holds was removed anyway"
     );
@@ -1966,11 +2289,17 @@ fn dropping_the_versions_to_free_a_file_puts_them_back_when_the_file_still_canno
         "the versions went for a removal that never happened"
     );
 
-    // And when the file can go, they go with it.
+    // And when the file can go, it goes - while every version stays, because
+    // not one of them names it: the file was added after all six. Clearing a
+    // history that is not in the way is not part of removing a file.
     vault
         .remove_attachment_and_versions(id, "one.bin")
         .expect("the file goes once nothing holds it");
-    assert!(vault.versions(id).is_empty());
+    assert_eq!(
+        vault.versions(id).len(),
+        before,
+        "history that was holding nothing was cleared anyway"
+    );
     assert!(
         vault
             .entry(id)
@@ -1978,4 +2307,66 @@ fn dropping_the_versions_to_free_a_file_puts_them_back_when_the_file_still_canno
             .attachments
             .is_empty()
     );
+}
+
+/// The offer the pane makes costs the versions that are holding the file and no
+/// others. Clearing an entry's whole history to move one file takes months of
+/// somebody's work for a change they asked nothing of the sort for.
+#[test]
+fn only_the_versions_that_hold_a_file_go_with_it() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let path = built(scratch.path(), "selective.kdbx", |_| {});
+
+    let mut vault = open(&path, BUILT_PASSWORD);
+    let root = root_of(&vault);
+    let id = vault.create_entry(root).expect("the entry is made");
+
+    // Two edits before the file, so their versions name nothing.
+    for round in 0..2 {
+        vault
+            .set_field(id, fields::NOTES, NewValue::Open(format!("before {round}")))
+            .expect("the note is written");
+    }
+    let before = vault.versions(id).len();
+    assert_eq!(before, 2, "two edits are two versions");
+
+    vault
+        .add_attachment(id, "held.bin", Zeroizing::new(b"held".to_vec()))
+        .expect("the file is added");
+
+    // And one after it, whose version does name the file.
+    vault
+        .set_field(id, fields::NOTES, NewValue::Open("after".to_owned()))
+        .expect("the note is written");
+    assert_eq!(vault.versions(id).len(), 3);
+
+    assert!(
+        matches!(
+            vault.remove_attachment(id, "held.bin"),
+            Err(VaultError::AttachmentInHistory)
+        ),
+        "the version written after the file was added is supposed to hold it"
+    );
+
+    vault
+        .remove_attachment_and_versions(id, "held.bin")
+        .expect("the file goes with the version holding it");
+
+    assert_eq!(
+        vault.versions(id).len(),
+        before,
+        "the versions that were holding nothing went too"
+    );
+    assert!(
+        vault
+            .entry(id)
+            .expect("the entry is there")
+            .attachments
+            .is_empty()
+    );
+
+    vault.save().expect("the database saves");
+    drop(vault);
+    let vault = open(&path, BUILT_PASSWORD);
+    assert_eq!(vault.versions(id).len(), before, "the file disagrees");
 }

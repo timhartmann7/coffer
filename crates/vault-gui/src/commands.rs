@@ -10,6 +10,7 @@
 //! file dialog there deadlocks, because the panel needs the run loop that the
 //! call is blocking.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use tauri::ipc::{InvokeBody, Request};
@@ -20,7 +21,7 @@ use zeroize::Zeroizing;
 
 use vault_core::generate::{Alphabet, Recipe};
 use vault_core::kdf;
-use vault_core::{NewValue, Vault};
+use vault_core::{LockPolicy, NewValue, Vault};
 
 use crate::autolock::timer::Timer;
 use crate::autolock::{Event, Reason};
@@ -45,6 +46,7 @@ pub fn status(app: AppHandle, session: Held<'_>) -> Status {
 
     Status {
         database: session.database().as_deref().map(Database::of),
+        key_file: session.key_file().as_deref().map(Database::of),
         unlocked: session.is_unlocked(),
         entries,
         dirty,
@@ -73,11 +75,7 @@ pub async fn choose_database(
         .set_title("Open a vault")
         .add_filter(KDBX, &["kdbx"]);
 
-    if let Some(directory) = session
-        .database()
-        .as_deref()
-        .and_then(std::path::Path::parent)
-    {
+    if let Some(directory) = session.database().as_deref().and_then(Path::parent) {
         picker = picker.set_directory(directory);
     }
 
@@ -115,13 +113,42 @@ pub async fn unlock(
     app: AppHandle,
     session: Held<'_>,
 ) -> Result<(), Failure> {
+    opening(request, app, session, LockPolicy::Respect).await
+}
+
+/// Opens the chosen database even though somebody's lock file sits beside it.
+///
+/// A separate command rather than an argument, because the password is the
+/// whole body of the message and there is nowhere to put an argument beside it.
+///
+/// The lock is advisory and the file it names may well be a Mac that lost power
+/// with the vault open: the process id in it belongs to a machine that has
+/// rebooted since, or to a host whose name has changed, and neither can be
+/// proved stale from here. So the reader is shown who holds it and decides. The
+/// only alternative was a vault nothing in the application could ever open
+/// again.
+#[tauri::command]
+pub async fn unlock_over(
+    request: Request<'_>,
+    app: AppHandle,
+    session: Held<'_>,
+) -> Result<(), Failure> {
+    opening(request, app, session, LockPolicy::TakeOver).await
+}
+
+async fn opening(
+    request: Request<'_>,
+    app: AppHandle,
+    session: Held<'_>,
+    policy: LockPolicy,
+) -> Result<(), Failure> {
     let password = password_of(request.body())?;
     let session = Arc::clone(&session);
 
     // Key derivation is a second of work by design. It happens on a thread that
     // is allowed to block, so the window goes on drawing while it runs.
     tauri::async_runtime::spawn_blocking(move || {
-        let opened = session.unlock(password);
+        let opened = session.unlock(password, policy);
         // The stack this thread derived the key on. The heap is the
         // allocator's; the arrays a derivation leaves behind are not.
         vault_core::scrub::stack();
@@ -132,6 +159,47 @@ pub async fn unlock(
 
     opened(&app);
     Ok(())
+}
+
+/// Asks for the key file some databases need alongside the password.
+///
+/// Coffer never makes a vault that wants one; this is how a database from
+/// KeePassXC or KeePass, whose owner chose one there, can be opened here at all.
+/// The path is kept beside the database for the same reason the database's own
+/// path is: the password arrives as the whole body of its message and carries
+/// nothing beside it.
+#[tauri::command]
+pub async fn choose_key_file(
+    app: AppHandle,
+    session: Held<'_>,
+) -> Result<Option<Database>, Failure> {
+    let mut panel = app
+        .dialog()
+        .file()
+        .set_title("Choose the key file this vault needs");
+    if let Some(directory) = session.database().as_deref().and_then(Path::parent) {
+        panel = panel.set_directory(directory);
+    }
+
+    let Some(chosen) = panel.blocking_pick_file() else {
+        return Ok(None);
+    };
+    let path = chosen
+        .into_path()
+        .map_err(|_| Failure::refused("that file has no path Coffer can read"))?;
+
+    // Read once here so that a file Coffer cannot read is refused while there is
+    // a screen to say so, rather than a second later as a wrong password.
+    std::fs::File::open(&path).map_err(Failure::io)?;
+
+    session.use_key_file(Some(path.clone()));
+    Ok(Some(Database::of(&path)))
+}
+
+/// Takes the key file back off, for a reader who picked the wrong one.
+#[tauri::command]
+pub fn forget_key_file(session: Held<'_>) {
+    session.use_key_file(None);
 }
 
 /// Says that a vault is now open, which is what starts the clock that locks it.
@@ -201,11 +269,7 @@ pub async fn choose_new_database(
         .set_title("Where should the new vault go?")
         .add_filter(KDBX, &["kdbx"])
         .set_file_name("vault.kdbx");
-    if let Some(directory) = session
-        .database()
-        .as_deref()
-        .and_then(std::path::Path::parent)
-    {
+    if let Some(directory) = session.database().as_deref().and_then(Path::parent) {
         panel = panel.set_directory(directory);
     }
 
@@ -442,7 +506,7 @@ pub fn choose_snapshot(index: u32, session: Held<'_>) -> Result<Database, Failur
         return Err(Failure::gone());
     }
 
-    session.choose(path.clone());
+    session.choose_snapshot(path.clone());
     Ok(Database::of(&path))
 }
 
@@ -865,30 +929,82 @@ mod tests {
     /// Read out of this file's own source, the way `contract.test.ts` reads it
     /// from the other side. Nothing else connects the two, and a third way in
     /// would be silent.
+    /// Every function in this file, cut at each `fn` that begins a line.
+    ///
+    /// Coarse on purpose. A helper the commands share is a function of its own
+    /// here, which is what the check below needs: two commands now open a vault
+    /// through one door, and the door is where the clock has to be started.
+    fn functions(source: &str) -> Vec<String> {
+        let mut found: Vec<String> = Vec::new();
+
+        for line in source.lines() {
+            let head = line.trim_start();
+            let starts = ["fn ", "pub fn ", "async fn ", "pub async fn "]
+                .iter()
+                .any(|shape| head.starts_with(shape));
+
+            if starts || found.is_empty() {
+                found.push(String::new());
+            }
+            if let Some(body) = found.last_mut() {
+                body.push_str(line);
+                body.push('\n');
+            }
+        }
+
+        found
+    }
+
     #[test]
-    fn every_command_that_opens_a_vault_starts_the_clock() {
+    fn every_way_a_vault_comes_to_be_open_starts_the_clock() {
         // Everything above the test module: this test's own source names the
         // two calls it is looking for, and would count itself.
         let source = include_str!("commands.rs")
             .split("#[cfg(test)]")
             .next()
             .unwrap_or_default();
-        let mut checked = 0;
 
-        for body in source.split("#[tauri::command]").skip(1) {
-            let body = body.split("\n#[tauri::command").next().unwrap_or(body);
-            if !body.contains("session.unlock(") && !body.contains("session.create(") {
-                continue;
-            }
-            checked += 1;
+        let opens: Vec<String> = functions(source)
+            .into_iter()
+            .filter(|body| body.contains("session.unlock(") || body.contains("session.create("))
+            .collect();
+
+        assert_eq!(
+            opens.len(),
+            2,
+            "there are two ways a vault comes to be open: an unlock and a creation"
+        );
+        for body in opens {
             assert!(
                 body.contains("opened(&app)"),
-                "a command opens a vault without starting the clock that locks it:\n{}",
+                "a vault is opened without starting the clock that locks it:\n{}",
                 body.lines().take(3).collect::<Vec<_>>().join("\n")
             );
         }
+    }
 
-        assert_eq!(checked, 2, "there are two ways a vault comes to be open");
+    /// A lock file is taken over only where a reader can have been shown who
+    /// holds it. Anything else deciding that on their behalf would make the lock
+    /// worth nothing.
+    #[test]
+    fn only_the_command_a_reader_presses_takes_a_lock_over() {
+        let source = include_str!("commands.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or_default();
+
+        let taking: Vec<String> = functions(source)
+            .into_iter()
+            .filter(|body| body.contains("LockPolicy::TakeOver"))
+            .collect();
+
+        assert_eq!(taking.len(), 1, "more than one way into a locked database");
+        assert!(
+            taking
+                .first()
+                .is_some_and(|body| body.contains("fn unlock_over")),
+            "something other than the reader's own press takes a lock over"
+        );
     }
 
     #[test]

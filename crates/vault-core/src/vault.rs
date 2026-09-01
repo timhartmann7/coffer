@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use keepass::Database;
 use keepass::config::{DatabaseVersion, InnerCipherConfig};
-use keepass::db::{EntryId, GroupId, GroupRef, Times, Value};
+use keepass::db::{EntryId, GroupId, GroupRef, History, Times, Value};
 use zeroize::Zeroizing;
 
 use crate::attachment;
@@ -559,9 +559,16 @@ impl Vault {
             return Err(VaultError::NoSuchGroup);
         }
 
-        match self.bin_for(id)? {
-            Some(bin) => self.move_group(id, bin),
-            None => self.erase_group(id),
+        let bin = self.bin_for(id)?;
+
+        // A folder that holds the bin cannot be moved into it: a folder cannot
+        // contain itself, and moving it there would take the bin with it. This
+        // is about the folder being deleted and nothing else, which is why it
+        // lives here rather than in `bin_for`, whose other caller deletes an
+        // entry and never takes the bin anywhere.
+        match bin {
+            Some(bin) if !self.sections_of(id).contains(&bin) => self.move_group(id, bin),
+            _ => self.erase_group(id),
         }
     }
 
@@ -578,13 +585,29 @@ impl Vault {
         let sections: Vec<GroupId> = self.children_of(bin);
         let entries: Vec<EntryId> = self.entries_of(bin);
 
+        // Everything that can go, goes, and the first thing that could not is
+        // what the reader is told about. Each erasure is all or nothing on its
+        // own, so what is left behind is whole entries rather than pieces.
+        //
+        // Stopping at the first refusal used to leave the bin half emptied with
+        // nothing saying which half, and one entry anywhere in the vault holding
+        // a file in place was enough to make the bin refuse for good.
+        let mut refused: Option<VaultError> = None;
         for section in sections {
-            self.erase_group(section)?;
+            if let Err(error) = self.erase_group(section) {
+                refused.get_or_insert(error);
+            }
         }
         for entry in entries {
-            self.erase_entry(entry)?;
+            if let Err(error) = self.erase_entry(entry) {
+                refused.get_or_insert(error);
+            }
         }
-        Ok(())
+
+        match refused {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// Makes an entry in a folder.
@@ -768,16 +791,24 @@ impl Vault {
         name: &str,
     ) -> Result<(), VaultError> {
         self.writable()?;
+        if self.database.entry(id).is_none() {
+            return Err(VaultError::NoSuchEntry);
+        }
 
-        let kept = self
-            .database
-            .entry(id)
-            .ok_or(VaultError::NoSuchEntry)?
-            .history
-            .clone();
-        history::clear(&mut self.database, id)?;
+        // Every entry whose versions stand in the way, not only this one. A file
+        // is held in place by the numbers around it as much as by its own, so
+        // clearing this entry's history and no other answered a reader who asked
+        // to be rid of a file with the same refusal and one less history than
+        // they started with.
+        //
+        // Round by round, because a refusal names the first thing in the way and
+        // there can be another behind it. Each round clears an entry no round
+        // before it cleared, so there are at most as many rounds as there are
+        // entries.
+        let mut kept: Vec<(EntryId, Option<History>)> = Vec::new();
+        let outcome = self.clear_the_way(id, name, &mut kept);
 
-        match attachment::detach(&mut self.database, id, name) {
+        match outcome {
             Ok(()) => {
                 if let Some(mut entry) = self.database.entry_mut(id) {
                     entry.times.last_modification = Some(Times::now());
@@ -786,10 +817,64 @@ impl Vault {
                 Ok(())
             }
             Err(refused) => {
-                if let Some(mut entry) = self.database.entry_mut(id) {
-                    entry.history = kept;
+                // Whatever went wrong and however far it got, every history goes
+                // back exactly as it was: a removal that was refused must cost
+                // nothing at all.
+                for (entry, history) in kept {
+                    if let Some(mut found) = self.database.entry_mut(entry) {
+                        found.history = history;
+                    }
                 }
                 Err(refused)
+            }
+        }
+    }
+
+    /// Drops the previous versions standing between a file and going, then takes
+    /// the file off.
+    ///
+    /// Only the versions that are actually holding something: the entry's whole
+    /// history is not cleared, and neither is anybody else's. A file is held in
+    /// place by the numbers around it as much as by its own, so the versions in
+    /// the way can belong to an entry the reader is not looking at, and taking
+    /// months of their history to move one file is not a trade anybody would
+    /// make knowingly.
+    ///
+    /// Round by round, because a refusal names the first thing in the way and
+    /// there can be another behind it. Every round drops at least one version,
+    /// so it ends.
+    ///
+    /// Each entry's history is written down in `kept` before the first version
+    /// is taken out of it, so that the caller can put back whatever this got
+    /// through before it failed.
+    fn clear_the_way(
+        &mut self,
+        id: EntryId,
+        name: &str,
+        kept: &mut Vec<(EntryId, Option<History>)>,
+    ) -> Result<(), VaultError> {
+        loop {
+            let mut holding = attachment::blocking(&self.database, id, name);
+            if holding.is_empty() {
+                return attachment::detach(&mut self.database, id, name);
+            }
+
+            for (entry, _) in &holding {
+                if kept.iter().any(|(seen, _)| seen == entry) {
+                    continue;
+                }
+                let history = self
+                    .database
+                    .entry(*entry)
+                    .and_then(|found| found.history.clone());
+                kept.push((*entry, history));
+            }
+
+            // Highest position first, so that dropping one does not move the
+            // next one out from under its own index.
+            holding.sort_by_key(|(entry, index)| (entry.to_string(), std::cmp::Reverse(*index)));
+            for (entry, index) in holding {
+                history::forget(&mut self.database, entry, index)?;
             }
         }
     }
@@ -955,13 +1040,17 @@ impl Vault {
         }
 
         if let Some(bin) = self.recycle_bin() {
-            // The bin itself, something already inside it, or something that
-            // holds it: a folder cannot be moved into a folder it contains, and
-            // deleting one that holds the bin takes the bin with it.
-            if bin == group
-                || self.sections_of(bin).contains(&group)
-                || self.sections_of(group).contains(&bin)
-            {
+            // The bin itself, or something already inside it: what is in the bin
+            // has nowhere further to go, and the next deletion is a removal.
+            //
+            // Whether the thing being deleted *holds* the bin is deliberately
+            // not asked here. It is only ever true of the group a deletion comes
+            // out of, and the top group is the one every entry Coffer makes
+            // lands in, so asking it here quietly erased entries at the top of
+            // the vault instead of binning them. `delete_group` asks it, because
+            // moving a folder into a bin it contains is the one case where it
+            // means anything.
+            if bin == group || self.sections_of(bin).contains(&group) {
                 return Ok(None);
             }
             return Ok(Some(bin));

@@ -79,6 +79,9 @@
 	 * and nobody else's.
 	 */
 	let pinned = $state<{ name: string; message: string } | null>(null);
+	/** Why a file could not be put on the entry, when it is worth saying more
+	 * than the sentence the engine gives. */
+	let blocked = $state<string | null>(null);
 
 	// Another entry is another set of answers. A banner about a file on the
 	// entry that was open would otherwise still be on the screen under the next
@@ -90,6 +93,7 @@
 		// reads what it writes runs again the moment anything sets it.
 		return () => {
 			pinned = null;
+			blocked = null;
 			naming = false;
 		};
 	});
@@ -109,9 +113,33 @@
 		return change(() => setField(entry.id, field, value, protect));
 	}
 
+	/**
+	 * Puts a file on the entry, or says what stands in the way.
+	 *
+	 * A file under a name the entry already has replaces the one there, and the
+	 * one there can be held in place by previous versions the way any other file
+	 * can. That cannot be offered as one step: the bytes the reader chose are
+	 * already gone by the time the refusal comes back, so what they are told is
+	 * which of the two things to do first.
+	 */
+	async function attach() {
+		try {
+			await onChanged(await addAttachment(entry.id));
+		} catch (thrown) {
+			const failure = asFailure(thrown);
+			if (failure.code === 'attachmentInHistory') {
+				blocked =
+					'A file of that name is already here, and earlier versions are holding it. Take that one off first - the offer beside it clears the versions in the way - then add the new one.';
+			} else {
+				onFailure(thrown);
+			}
+		}
+	}
+
 	/** Takes a file off, or says why it cannot go yet. */
 	async function detach(name: string) {
 		pinned = null;
+		blocked = null;
 		try {
 			await onChanged(await removeAttachment(entry.id, name));
 		} catch (thrown) {
@@ -124,14 +152,21 @@
 		}
 	}
 
-	/** What the reader asked for, once they have said the versions may go. */
+	/**
+	 * What the reader asked for, once they have said the versions may go.
+	 *
+	 * The version list is not emptied here. Only the versions that were holding
+	 * the file go, and which ones those were is the engine's answer rather than
+	 * this pane's - `onChanged` reads the list back with the rest of the entry.
+	 * Saying `[]` here drew an entry as having no history when it still had
+	 * most of it, and wrote the whole vault a second time to say so.
+	 */
 	async function detachWithVersions() {
 		const name = pinned?.name;
 		pinned = null;
 		if (name === undefined) return;
 		try {
 			await onChanged(await removeAttachmentAndVersions(entry.id, name));
-			onVersions([]);
 		} catch (thrown) {
 			onFailure(thrown);
 		}
@@ -418,7 +453,7 @@
 				{#if !readOnly}
 					<button
 						type="button"
-						onclick={() => void change(() => addAttachment(entry.id))}
+						onclick={() => void attach()}
 						class="text-txt4 transition-colors hover:text-txt2"
 						aria-label="Add a file"
 					>
@@ -462,10 +497,26 @@
 			{/each}
 		</div>
 
+		{#if blocked}
+			<div class="mt-3 animate-rise rounded-sm border border-hairline bg-surface2 p-3">
+				<p class="text-fine leading-relaxed text-txt2">{blocked}</p>
+				<div class="mt-3 flex flex-wrap gap-2">
+					<button
+						type="button"
+						onclick={() => (blocked = null)}
+						class="h-9 rounded-full px-4 text-small text-txt3 transition-colors hover:text-txt2"
+					>
+						Right you are
+					</button>
+				</div>
+			</div>
+		{/if}
+
 		{#if pinned}
 			<div class="mt-3 animate-rise rounded-sm border border-hairline bg-surface2 p-3">
 				<p class="text-fine leading-relaxed text-txt2">
-					{pinned.message} of this entry. The file can go once they have.
+					{pinned.message}. Removing it drops those versions - the ones here, and any on another
+					entry that are holding it in place. The rest of the history stays.
 				</p>
 				<div class="mt-3 flex flex-wrap gap-2">
 					<button
@@ -480,7 +531,7 @@
 						onclick={detachWithVersions}
 						class="h-9 rounded-full px-4 text-small text-danger transition-colors hover:bg-dangerwash"
 					>
-						Clear the versions and remove it
+						Clear those versions and remove it
 					</button>
 				</div>
 			</div>

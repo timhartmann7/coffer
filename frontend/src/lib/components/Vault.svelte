@@ -75,6 +75,10 @@
 	let deleting = $state(false);
 	let saving = $state(false);
 	let conflict = $state<Rival | null>(null);
+	/** Whether the dialog is about a file somebody rewrote or one that is not
+	 * there any more. The two ask different questions and offer different ways
+	 * out: nothing can be reloaded from a file that is gone. */
+	let missing = $state(false);
 	let changedAt = $state<Date | null>(null);
 	let notice = $state<{ message: string; kind: 'copied' | 'failed' } | null>(null);
 	/** The toast's own clock, counting the seconds the clipboard still holds a
@@ -140,14 +144,22 @@
 	 *
 	 * There is no save button, so this is what one means: the change is already
 	 * in the window, and this is the moment it reaches the file. A file somebody
-	 * else wrote in the meantime stops here and asks.
+	 * else wrote in the meantime stops here and asks, and so does one that is not
+	 * there any more.
+	 *
+	 * Both have to ask rather than report. A save that only raised a notice left
+	 * the reader editing into a window whose every write failed - a renamed file,
+	 * an unmounted disk - with a whole session's work in memory and nothing in
+	 * the application able to put it anywhere.
 	 */
 	async function persist() {
 		saving = true;
 		try {
 			await save();
 		} catch (thrown) {
-			if (asFailure(thrown).code === 'externalChange') {
+			const refused = asFailure(thrown);
+			if (refused.code === 'externalChange' || refused.code === 'gone') {
+				missing = refused.code === 'gone';
 				conflict = await rival().catch(() => ({ modified: null, entries: null }));
 			} else {
 				failed(thrown);
@@ -273,6 +285,19 @@
 		}
 	}
 
+	/**
+	 * Empties the bin, and says what to do about anything that would not go.
+	 *
+	 * A file that a previous version of some other entry names has to keep the
+	 * number it has, and the pool of files has to stay an unbroken run from
+	 * zero, so now and then an entry cannot be erased until those versions go.
+	 * The message has to name the way out, because nothing on this screen shows
+	 * which entry is in the way: open the one still in the bin and take its file
+	 * off, which clears the versions holding it wherever they are.
+	 *
+	 * Whatever could go has gone by the time this is read, so pressing it again
+	 * after that is a shorter list every time and never a longer one.
+	 */
 	async function empty() {
 		emptying = false;
 		try {
@@ -280,7 +305,19 @@
 			opened = null;
 			await reshaped(tree);
 		} catch (thrown) {
-			failed(thrown);
+			if (asFailure(thrown).code === 'attachmentInHistory') {
+				// The refusal is about what stayed, not about what went: emptying
+				// the bin is all-or-nothing per entry and the ones that could go
+				// are already out of the vault in memory. So this is read back and
+				// written like any other change - a screen that only reported the
+				// refusal drew a bin that was emptier than the file, and lost the
+				// erasures at the next lock.
+				opened = null;
+				await reshaped(await loadTree().catch(() => root));
+				warn('Some of it stayed: open what is left in the bin and remove its file first.');
+			} else {
+				failed(thrown);
+			}
 		}
 	}
 
@@ -293,6 +330,7 @@
 			versions = [];
 			changedAt = null;
 			conflict = null;
+			missing = false;
 		} catch (thrown) {
 			failed(thrown);
 		} finally {
@@ -309,7 +347,12 @@
 			notice = { message: `Kept as ${beside.name}`, kind: 'copied' };
 			copies += 1;
 			fade(6000);
-			await takeTheirs();
+			// Only where there is a file to take instead. When the vault itself
+			// is gone there is nothing to read back, and the window goes on
+			// holding the version the copy was made from - which is still the
+			// only one, and can still be written back where it belongs.
+			if (!missing) await takeTheirs();
+			missing = false;
 		} catch (thrown) {
 			failed(thrown);
 		} finally {
@@ -322,6 +365,7 @@
 			saving = true;
 			await saveOver();
 			conflict = null;
+			missing = false;
 		} catch (thrown) {
 			failed(thrown);
 		} finally {
@@ -356,10 +400,21 @@
 		fade(5000);
 	}
 
-	function failed(thrown: unknown) {
+	/**
+	 * Puts a sentence on the screen and takes it away again.
+	 *
+	 * The clock of whatever notice was there is stopped first: without that, a
+	 * timer left over from the last one takes this one away early, and the class
+	 * that was fading it out arrives already on it.
+	 */
+	function warn(message: string) {
 		clear();
-		notice = { message: asFailure(thrown).message, kind: 'failed' };
+		notice = { message, kind: 'failed' };
 		fade(6000);
+	}
+
+	function failed(thrown: unknown) {
+		warn(asFailure(thrown).message);
 	}
 
 	/**
@@ -830,6 +885,7 @@
 	{#if conflict}
 		<Conflict
 			rival={conflict}
+			{missing}
 			entries={entriesOf(root).length}
 			{changedAt}
 			{now}

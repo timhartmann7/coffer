@@ -11,9 +11,13 @@
 	 *
 	 * The value is never in this component. Showing it writes it into the input
 	 * that displays it and nowhere else, the timer wipes that input again, and
-	 * what is in the input when the focus leaves is what gets written back.
-	 * Writing the same value again costs nothing: the engine drops a version
-	 * that changed nothing and puts the modification time back.
+	 * what is in the input when the focus leaves is written back only if the
+	 * reader put it there. Showing a value is not an edit, and it must not be
+	 * written back: a save is a second of key derivation, a rewrite of the whole
+	 * file and one of the ten snapshots beside it, so a reader who pressed
+	 * "Show" and then pressed "Copy" would have spent a recovery point on
+	 * looking at something. The engine drops a version that changed nothing, but
+	 * that is about the entry's history and not about the file.
 	 *
 	 * Nothing here changes size when an eye opens. The mask and the field that
 	 * replaces it share one box, the three buttons have a line of their own
@@ -84,8 +88,7 @@
 	 */
 	async function toggle() {
 		if (live) {
-			if (writing) commit();
-			else close();
+			settle();
 			return;
 		}
 		if (!node) return;
@@ -134,16 +137,34 @@
 	}
 
 	/**
+	 * What closing the field means, which depends on whose value is in it.
+	 *
+	 * A value the reader wrote is written back; a value Coffer put on the screen
+	 * is put away. The two are told apart by `writing`, which only the first
+	 * keystroke and the empty-field case set - never a reveal.
+	 */
+	function settle() {
+		if (writing) commit();
+		else close();
+	}
+
+	/**
 	 * Writes what is in the field.
 	 *
-	 * Only while the value is still on the screen: the timer empties the input
-	 * on its own, and a blur after that would write an empty password over a
-	 * real one.
+	 * Only what the reader wrote: `writing` rather than `live`. A revealed value
+	 * is Coffer's own and writing it back would rewrite the whole file to store
+	 * what is already in it. And only while the value is still on the screen:
+	 * the timer empties the input on its own, and a blur after that would write
+	 * an empty password over a real one.
 	 */
 	function commit() {
-		if (!node || !live || readOnly) return;
+		if (!node || !writing || readOnly) return;
 		const written = node.value;
 		close();
+		// Opening the field on an entry that has no password and typing nothing
+		// is not an edit either. This is the one case where the component knows
+		// the value it would be writing over, so it is the one it can refuse.
+		if (empty && written === '') return;
 		onCommit(field, written, protect);
 	}
 
@@ -151,7 +172,7 @@
 		if (event.key === 'Escape') close();
 		if (event.key === 'Enter') {
 			event.preventDefault();
-			commit();
+			settle();
 		}
 	}
 
@@ -189,7 +210,7 @@
 				hidden={!live}
 				readonly={readOnly}
 				oninput={written}
-				onblur={commit}
+				onblur={settle}
 				onkeydown={keys}
 				class="min-w-0 flex-1 bg-transparent font-mono text-body text-txt outline-none"
 			/>

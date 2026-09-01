@@ -1,5 +1,14 @@
 <script lang="ts">
-	import { asFailure, chooseDatabase, chooseSnapshot, snapshots, unlock } from '$lib/ipc';
+	import {
+		asFailure,
+		chooseDatabase,
+		chooseKeyFile,
+		chooseSnapshot,
+		forgetKeyFile,
+		snapshots,
+		unlock,
+		unlockTakingOver
+	} from '$lib/ipc';
 	import { fully } from '$lib/format';
 	import type { Database, Failure, Snapshot } from '$lib/model';
 	import Icon from './Icon.svelte';
@@ -7,12 +16,20 @@
 
 	let {
 		database,
+		keyFile = null,
 		reason = null,
 		onChoose,
+		onKeyFile,
 		onCreate,
 		onUnlocked
 	}: {
 		database: Database | null;
+		/**
+		 * The key file this vault needs beside the password, when one has been
+		 * chosen. Rust's answer rather than this window's: a lock destroys the
+		 * window and the vault it is about is still the same one.
+		 */
+		keyFile?: Database | null;
 		/**
 		 * Why the vault that was open is not open any more. Rust's word, not the
 		 * window's: the window that knew was destroyed, which is what locking
@@ -20,6 +37,7 @@
 		 */
 		reason?: string | null;
 		onChoose: (database: Database) => void;
+		onKeyFile: (chosen: Database | null) => void;
 		/** Offered on the first run, where there is nothing to open yet. */
 		onCreate: () => void;
 		onUnlocked: () => Promise<void>;
@@ -55,6 +73,20 @@
 		failure !== null && (failure.code === 'damaged' || failure.code === 'notADatabase')
 	);
 
+	/** Somebody's lock file sits beside the vault. Coffer respects it, and the
+	 * only thing that can tell a live one from one a power cut left behind is a
+	 * person reading the machine and the hour out of the message. */
+	const held = $derived(failure?.code === 'heldByAnother');
+
+	/**
+	 * Whether the next attempt takes that lock over.
+	 *
+	 * Set by a press, never by Coffer, and it costs the reader the password
+	 * again: the first one is already derived and gone, and keeping it here to
+	 * retry with would be the one thing this screen exists not to do.
+	 */
+	let takingOver = $state(false);
+
 	async function submit(event: SubmitEvent) {
 		event.preventDefault();
 		if (busy || !database || !field) return;
@@ -65,12 +97,14 @@
 		const bytes = new TextEncoder().encode(field.value);
 		field.value = '';
 
+		const over = takingOver;
 		busy = true;
 		failure = null;
 		snapshot = null;
 
 		try {
-			await unlock(bytes);
+			await (over ? unlockTakingOver(bytes) : unlock(bytes));
+			takingOver = false;
 			await onUnlocked();
 		} catch (thrown) {
 			failure = asFailure(thrown);
@@ -81,6 +115,29 @@
 		} finally {
 			busy = false;
 		}
+	}
+
+	/** Asks for the key file, and says so upwards so that the screen and Rust
+	 * hold one answer between them. */
+	async function pickKeyFile() {
+		if (busy) return;
+		try {
+			const picked = await chooseKeyFile();
+			if (picked) {
+				onKeyFile(picked);
+				failure = null;
+				field?.focus();
+			}
+		} catch (thrown) {
+			failure = asFailure(thrown);
+		}
+	}
+
+	async function dropKeyFile() {
+		if (busy) return;
+		await forgetKeyFile().catch(() => {});
+		onKeyFile(null);
+		field?.focus();
 	}
 
 	async function choose() {
@@ -97,16 +154,30 @@
 
 	async function openSnapshot(index: number) {
 		try {
-			chose(await chooseSnapshot(index));
+			chose(await chooseSnapshot(index), true);
 		} catch (thrown) {
 			failure = asFailure(thrown);
 		}
 	}
 
-	function chose(picked: Database) {
+	/**
+	 * Points the screen at another file.
+	 *
+	 * `sameVault` is true for a snapshot, which is a copy of the vault that was
+	 * already chosen and opens with the same credentials. Rust keeps the key file
+	 * for one of those and forgets it for anything else, and this has to say the
+	 * same thing: a screen that showed no key file while Rust was still using one
+	 * would be a screen nobody could reason about.
+	 *
+	 * A lock somebody said to take over is this file's lock and nothing else's,
+	 * so that goes either way.
+	 */
+	function chose(picked: Database, sameVault = false) {
 		onChoose(picked);
 		failure = null;
 		snapshot = null;
+		takingOver = false;
+		if (!sameVault) onKeyFile(null);
 		field?.focus();
 	}
 
@@ -167,6 +238,38 @@
 					<p class="mt-3 text-small text-danger">{failure.message}</p>
 				{/if}
 
+				<!-- Coffer never makes a vault that wants a key file, so this is
+				     folded away until it is asked for. A vault whose owner chose
+				     one in another client has no other way in. -->
+				{#if keyFile}
+					<div
+						class="mt-3 flex items-center gap-2 rounded-sm border border-hairline bg-surface2 px-3 py-2"
+					>
+						<Icon name="key" class="h-4 w-4 shrink-0 text-txt4" />
+						<span class="min-w-0 flex-1 truncate font-mono text-meta text-txt2">
+							{keyFile.name}
+						</span>
+						<button
+							type="button"
+							onclick={dropKeyFile}
+							disabled={busy}
+							aria-label="Do not use a key file"
+							class="shrink-0 text-txt4 transition-colors hover:text-txt2 disabled:cursor-not-allowed"
+						>
+							<Icon name="x" class="h-4 w-4" />
+						</button>
+					</div>
+				{:else}
+					<button
+						type="button"
+						onclick={pickKeyFile}
+						disabled={busy}
+						class="mt-3 text-fine text-txt3 transition-colors hover:text-txt2 disabled:cursor-not-allowed"
+					>
+						This vault also needs a key file
+					</button>
+				{/if}
+
 				<button
 					type="submit"
 					disabled={busy}
@@ -174,7 +277,13 @@
 						? 'cursor-not-allowed bg-surface2 text-txt4'
 						: 'bg-accent text-canvas hover:bg-accenthi active:bg-accenthi'}"
 				>
-					{busy ? 'Unlocking…' : 'Unlock'}
+					{#if busy}
+						Unlocking…
+					{:else if takingOver}
+						Open anyway
+					{:else}
+						Unlock
+					{/if}
 				</button>
 			</form>
 
@@ -201,6 +310,34 @@
 						>
 							Open {only.name}
 						</button>
+					{/if}
+
+					<!-- The lock file says who and when, and the reader is the only
+					     one who can tell a Coffer running right now from a Mac that
+					     lost power with the vault open. Without this the second is a
+					     vault nothing here could ever open again. -->
+					{#if held}
+						{#if takingOver}
+							<p class="mx-auto mt-3 max-w-[38ch] text-small leading-relaxed text-txt2">
+								Type the password again and Coffer will open the vault and take the lock. If the
+								other Coffer is really running, whichever saves last wins.
+							</p>
+						{:else}
+							<p class="mx-auto mt-3 max-w-[38ch] text-small leading-relaxed text-txt2">
+								If that Mac lost power or Coffer was force-quit, the lock is left over and nothing
+								is holding the vault.
+							</p>
+							<button
+								type="button"
+								onclick={() => {
+									takingOver = true;
+									field?.focus();
+								}}
+								class="mt-5 h-9 rounded-full border border-hairline px-5 text-small text-txt transition-colors hover:border-txt3 active:bg-surface2"
+							>
+								Open it anyway
+							</button>
+						{/if}
 					{/if}
 				</div>
 			{/if}
