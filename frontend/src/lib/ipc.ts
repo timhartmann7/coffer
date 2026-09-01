@@ -235,7 +235,8 @@ export function setTags(entry: string, tags: string[]): Promise<Entry> {
 
 /** Opens the system's file picker and puts what it chose on the entry. The
  * bytes are read in Rust and never come near here. */
-export function addAttachment(entry: string): Promise<Entry> {
+/** Nothing comes back when the reader closed the panel without choosing a file. */
+export function addAttachment(entry: string): Promise<Entry | null> {
 	return invoke('add_attachment', { entry });
 }
 

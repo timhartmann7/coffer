@@ -1031,6 +1031,43 @@ it('still offers the way out when there is nothing else in the header', () => {
 });
 
 /**
+ * Closing the panel without choosing is not a change, and saying it is costs
+ * the reader a key derivation, the re-encryption of every file in the vault,
+ * and the oldest of the ten snapshots that lead back to yesterday.
+ */
+it('does not report a change when the file panel was closed without one', async () => {
+	const onChanged = vi.fn();
+	const onFailure = vi.fn();
+	ipc.addAttachment.mockResolvedValue(null);
+
+	const component = mount(EntryView, {
+		target: host,
+		props: {
+			entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
+			path: [group({ name: 'Work' })],
+			versions: [],
+			now: new Date('2026-08-29T14:30:00Z'),
+			readOnly: false,
+			onCopy: vi.fn(),
+			onChanged,
+			onVersions: vi.fn(),
+			onClose: vi.fn(),
+			onDelete: vi.fn(),
+			onFailure
+		}
+	});
+	flushSync();
+
+	host.querySelector<HTMLButtonElement>('[aria-label="Add a file"]')?.click();
+	await vi.waitFor(() => expect(ipc.addAttachment).toHaveBeenCalled());
+
+	expect(onChanged).not.toHaveBeenCalled();
+	expect(onFailure).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/**
  * A file under a name the entry already has replaces the one there, and the one
  * there can be held in place by previous versions like any other. The two
  * cannot be one step: the bytes the reader chose are gone by the time the

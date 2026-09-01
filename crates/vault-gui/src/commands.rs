@@ -623,12 +623,20 @@ pub fn set_tags(entry: String, tags: Vec<String>, session: Held<'_>) -> Result<E
 /// The file is chosen and read in Rust. Nothing about it crosses the boundary
 /// on the way in: the webview asks for a picker and is told what the entry
 /// holds afterwards.
+///
+/// Nothing comes back when the reader closed the panel without choosing, the
+/// way it does from every other panel here. An entry handed back unchanged
+/// reads to the window as a change, and what the window does with a change is
+/// write the vault: a press of Escape cost a key derivation, the re-encryption
+/// of every file in the database, and one of the ten snapshots - the oldest,
+/// pushed off the end of the only chain that leads back to a version of the
+/// vault from an hour ago.
 #[tauri::command]
 pub async fn add_attachment(
     app: AppHandle,
     entry: String,
     session: Held<'_>,
-) -> Result<Entry, Failure> {
+) -> Result<Option<Entry>, Failure> {
     let id = dto::entry_id(&entry)?;
 
     let Some(chosen) = app
@@ -637,7 +645,7 @@ pub async fn add_attachment(
         .set_title("Add a file to this entry")
         .blocking_pick_file()
     else {
-        return entry_of(&session, &entry);
+        return Ok(None);
     };
     let path = chosen
         .into_path()
@@ -660,7 +668,7 @@ pub async fn add_attachment(
     let data = Zeroizing::new(std::fs::read(&path).map_err(Failure::io)?);
 
     session.with_mut(|vault| vault.add_attachment(id, &name, data))??;
-    entry_of(&session, &entry)
+    entry_of(&session, &entry).map(Some)
 }
 
 /// Writes one of an entry's files out to wherever the reader says.

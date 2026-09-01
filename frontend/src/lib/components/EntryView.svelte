@@ -124,7 +124,8 @@
 	 */
 	async function attach() {
 		try {
-			await onChanged(await addAttachment(entry.id));
+			const held = await addAttachment(entry.id);
+			if (held) await onChanged(held);
 		} catch (thrown) {
 			const failure = asFailure(thrown);
 			if (failure.code === 'attachmentInHistory') {
