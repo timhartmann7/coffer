@@ -2,8 +2,8 @@ cask "coffer" do
   arch arm: "aarch64", intel: "x64"
 
   version "0.1.0"
-  sha256 arm:   "0000000000000000000000000000000000000000000000000000000000000000",
-         intel: "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 arm:   "f1db374792928a0e40bb64ecc27a45f64ee7c0445b6ab9a5620afa4fbfbc498d",
+         intel: "5be746978aefdaff27d8b177e7033b0dfde50aef1d9c00af1d8a521a2434f184"
 
   url "https://github.com/timhartmann7/coffer/releases/download/v#{version}/Coffer_#{version}_#{arch}.dmg"
   name "Coffer"
