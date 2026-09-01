@@ -95,7 +95,10 @@ list for the release itself; the vault's own list is in the spec.
   `/Applications`.
 - The disk image downloaded in a browser: confirm macOS refuses it, then confirm
   the `xattr` line in the README gets past it and the System Settings route is
-  still where the README says.
+  still where the README says. The second route is the one that needs watching.
+  It exists only while `codesign --verify --deep --strict` passes on the bundle:
+  a signature macOS rejects is reported as a damaged application, and a damaged
+  application has no **Open Anyway** at all.
 - `brew tap timhartmann7/coffer https://github.com/timhartmann7/coffer` and
   `brew install --cask coffer`, then open Coffer. It has to launch on the first
   try: Homebrew stamps its downloads with `com.apple.quarantine` and the cask's
@@ -107,4 +110,5 @@ list for the release itself; the vault's own list is in the spec.
 - `brew style Casks/coffer.rb`, which is clean once the workflow has put the two
   real hashes in, and `brew audit --cask --online timhartmann7/coffer/coffer`
   through the tap the check above installed. `brew audit` no longer takes a path.
-  Expect the signing finding, because the build is unsigned, and nothing else.
+  Expect the signing finding, because the bundle is signed ad-hoc rather than
+  with a Developer ID, and nothing else.
