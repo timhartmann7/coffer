@@ -2370,3 +2370,63 @@ fn only_the_versions_that_hold_a_file_go_with_it() {
     let vault = open(&path, BUILT_PASSWORD);
     assert_eq!(vault.versions(id).len(), before, "the file disagrees");
 }
+
+/// The other side of no longer charging a version for the bytes of a file.
+///
+/// Versions the size limit used to prune away now survive, and a surviving
+/// version holds the file it names. So a plain removal is refused where it used
+/// to go through silently - which is hard rule 1 working, not a regression, and
+/// the offer that goes with the refusal is what the reader presses instead.
+#[test]
+fn a_file_the_versions_kept_by_the_new_arithmetic_still_hold_is_not_taken_away_from_them() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let path = built(scratch.path(), "held.kdbx", |db| {
+        db.root_mut()
+            .add_entry()
+            .edit(|entry| entry.set_unprotected(fields::TITLE, "Client VPN"));
+    });
+
+    let id = {
+        let mut vault = open(&path, BUILT_PASSWORD);
+        let id = vault.tree().entries[0].id;
+        vault
+            .add_attachment(
+                id,
+                "client.p12",
+                Zeroizing::new(vec![0x5a; 5 * 1024 * 1024]),
+            )
+            .expect("the file attaches");
+        for round in 0..4 {
+            vault
+                .set_field(id, fields::NOTES, NewValue::Open(format!("round {round}")))
+                .expect("the note is written");
+            vault.save().expect("the database saves");
+        }
+        assert_eq!(vault.versions(id).len(), 4);
+        id
+    };
+
+    let mut vault = open(&path, BUILT_PASSWORD);
+    assert!(
+        matches!(
+            vault.remove_attachment(id, "client.p12"),
+            Err(VaultError::AttachmentInHistory)
+        ),
+        "a file four surviving versions name was taken off without them"
+    );
+
+    vault
+        .remove_attachment_and_versions(id, "client.p12")
+        .expect("dropping the versions that hold it takes it off");
+    vault.save().expect("the database saves");
+    drop(vault);
+
+    let vault = open(&path, BUILT_PASSWORD);
+    assert!(
+        matches!(
+            vault.attachment(id, "client.p12"),
+            Err(VaultError::NoSuchAttachment)
+        ),
+        "the file is still on the entry after the versions holding it went"
+    );
+}

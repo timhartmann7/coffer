@@ -689,3 +689,55 @@ fn a_hundred_saves_of_an_entry_that_carries_a_file_leave_it_bounded() {
         "a hundred saves grew the file from {settled} to {grown}"
     );
 }
+
+/// The one shape where the size limit is the only bound there is: a database
+/// that states no item limit at all. Before the bytes of a file stopped being
+/// charged to every version that named one, an entry carrying a five-megabyte
+/// file kept nothing here whatever the reader did.
+#[test]
+fn an_entry_with_a_file_and_no_item_limit_is_bounded_by_size_and_not_emptied() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = built(scratch.path(), "unlimited.kdbx", |db| {
+        // Negative is how KeePass writes "no limit", so size is all that bounds
+        // this database.
+        db.meta.history_max_items = Some(-1);
+        db.meta.history_max_size = None;
+        db.root_mut()
+            .add_entry()
+            .edit(|entry| entry.set_unprotected(fields::TITLE, "subject"));
+    });
+
+    let mut vault = open(&database, BUILT_PASSWORD);
+    let id = vault.tree().entries[0].id;
+    vault
+        .add_attachment(
+            id,
+            "client.p12",
+            zeroize::Zeroizing::new(vec![0x5a; 5 * 1024 * 1024]),
+        )
+        .expect("the file attaches");
+
+    // Sixty kilobytes a version, just inside what a field may hold, so that a
+    // hundred and fifty of them are half again the six-megabyte fallback and the
+    // limit has something to bite on.
+    let rounds = 150;
+    for round in 0..rounds {
+        vault
+            .set_field(
+                id,
+                fields::NOTES,
+                NewValue::Open(format!("{round}{}", "x".repeat(60 * 1024))),
+            )
+            .expect("the note is set");
+    }
+    vault.save().expect("the database saves");
+    drop(vault);
+
+    let vault = open(&database, BUILT_PASSWORD);
+    let kept = vault.versions(id).len();
+    assert!(kept > 0, "an entry carrying a file kept no history at all");
+    assert!(
+        kept < rounds,
+        "the size limit bounded nothing: {kept} versions of sixty kilobytes survived 6 MB"
+    );
+}
