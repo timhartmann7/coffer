@@ -1106,3 +1106,206 @@ it('says what to do when a file cannot be replaced yet', async () => {
 
 	return unmount(component);
 });
+
+/** The row for a field of the reader's own that the database protects. */
+function own(label: string): HTMLInputElement {
+	const found = host.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
+	if (!found) throw new Error(`no field labelled ${label}`);
+	return found;
+}
+
+function icon(label: string): HTMLButtonElement {
+	const found = host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+	if (!found) throw new Error(`no control labelled ${label}`);
+	return found;
+}
+
+const TOKEN = 'sk-live-9f3a2b';
+
+/**
+ * A protected field of the reader's own used to be a mask and an eye and
+ * nothing else: no way to change the value, and no way to copy it but to reveal
+ * it and press Cmd+C - an ordinary pasteboard write with none of the markers
+ * Coffer's own copy carries, which is how a secret lands in Maccy.
+ */
+it('copies a protected own field through rust rather than off the screen', async () => {
+	const onCopy = vi.fn();
+	const component = mount(EntryView, {
+		target: host,
+		props: {
+			entry: entry({
+				fields: [
+					field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false })
+				]
+			}),
+			path: [group({ name: 'Work' })],
+			versions: [],
+			now: new Date('2026-08-29T14:30:00Z'),
+			readOnly: false,
+			onCopy,
+			onChanged: vi.fn(),
+			onVersions: vi.fn(),
+			onClose: vi.fn(),
+			onDelete: vi.fn(),
+			onFailure: vi.fn()
+		}
+	});
+	flushSync();
+
+	icon('Copy API token').click();
+	expect(onCopy).toHaveBeenCalledTimes(1);
+	// By name, so the value is fetched, written to the pasteboard and forgotten
+	// inside Rust. Nothing of it crosses the boundary.
+	expect(onCopy.mock.calls[0][1]).toBe('API token');
+	expect(screen()).not.toContain(TOKEN);
+
+	return unmount(component);
+});
+
+/**
+ * Showing a value is not an edit. Writing one back costs a key derivation, a
+ * rewrite of the whole file and one of the ten snapshots beside it, so a reader
+ * who looked at a token must not have spent a recovery point on it.
+ */
+it('writes a protected own field back only when the reader typed in it', async () => {
+	ipc.reveal.mockResolvedValue(TOKEN);
+	const onChanged = vi.fn();
+	const component = mount(EntryView, {
+		target: host,
+		props: {
+			entry: entry({
+				fields: [
+					field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false })
+				]
+			}),
+			path: [group({ name: 'Work' })],
+			versions: [],
+			now: new Date('2026-08-29T14:30:00Z'),
+			readOnly: false,
+			onCopy: vi.fn(),
+			onChanged,
+			onVersions: vi.fn(),
+			onClose: vi.fn(),
+			onDelete: vi.fn(),
+			onFailure: vi.fn()
+		}
+	});
+	flushSync();
+
+	icon('Show API token').click();
+	await vi.waitFor(() => expect(own('API token').value).toBe(TOKEN));
+	flushSync();
+
+	// On the screen, and only there.
+	expect(attributes().join(' ')).not.toContain(TOKEN);
+	expect(host.innerHTML).not.toContain(TOKEN);
+
+	// Looked at and put away: nothing is written.
+	own('API token').dispatchEvent(new FocusEvent('blur'));
+	await vi.waitFor(() => expect(own('API token').value).toBe(''));
+	expect(ipc.setField).not.toHaveBeenCalled();
+
+	// Typed in: written, with the protection it arrived with.
+	icon('Show API token').click();
+	await vi.waitFor(() => expect(own('API token').value).toBe(TOKEN));
+	own('API token').value = 'sk-live-rotated';
+	own('API token').dispatchEvent(new Event('input', { bubbles: true }));
+	flushSync();
+	own('API token').dispatchEvent(new FocusEvent('blur'));
+	flushSync();
+
+	await vi.waitFor(() => expect(ipc.setField).toHaveBeenCalledTimes(1));
+	expect(ipc.setField).toHaveBeenCalledWith(
+		expect.any(String),
+		'API token',
+		'sk-live-rotated',
+		true
+	);
+
+	return unmount(component);
+});
+
+/**
+ * Escape closes the field, and the blur that follows the input going hidden
+ * must not then write an empty value over a real one. The two events arrive in
+ * that order, and only `Secret` knows the field is no longer the reader's.
+ */
+it('writes nothing when the reader escapes out of a protected own field', async () => {
+	ipc.reveal.mockResolvedValue(TOKEN);
+	const component = mount(EntryView, {
+		target: host,
+		props: {
+			entry: entry({
+				fields: [
+					field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false })
+				]
+			}),
+			path: [group({ name: 'Work' })],
+			versions: [],
+			now: new Date('2026-08-29T14:30:00Z'),
+			readOnly: false,
+			onCopy: vi.fn(),
+			onChanged: vi.fn(),
+			onVersions: vi.fn(),
+			onClose: vi.fn(),
+			onDelete: vi.fn(),
+			onFailure: vi.fn()
+		}
+	});
+	flushSync();
+
+	icon('Show API token').click();
+	await vi.waitFor(() => expect(own('API token').value).toBe(TOKEN));
+	own('API token').value = 'half a to';
+	own('API token').dispatchEvent(new Event('input', { bubbles: true }));
+	flushSync();
+	own('API token').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+	flushSync();
+	own('API token').dispatchEvent(new FocusEvent('blur'));
+	flushSync();
+
+	expect(ipc.setField).not.toHaveBeenCalled();
+	expect(screen()).not.toContain('half a to');
+
+	return unmount(component);
+});
+
+/** A database Coffer cannot write back still shows and copies. It just does not
+ * offer to change anything. */
+it('offers a look and a copy of a protected own field it cannot write', async () => {
+	ipc.reveal.mockResolvedValue(TOKEN);
+	const component = mount(EntryView, {
+		target: host,
+		props: {
+			entry: entry({
+				fields: [
+					field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false })
+				]
+			}),
+			path: [group({ name: 'Work' })],
+			versions: [],
+			now: new Date('2026-08-29T14:30:00Z'),
+			readOnly: true,
+			onCopy: vi.fn(),
+			onChanged: vi.fn(),
+			onVersions: vi.fn(),
+			onClose: vi.fn(),
+			onDelete: vi.fn(),
+			onFailure: vi.fn()
+		}
+	});
+	flushSync();
+
+	expect(own('API token').readOnly).toBe(true);
+	icon('Show API token').click();
+	await vi.waitFor(() => expect(own('API token').value).toBe(TOKEN));
+
+	own('API token').value = 'typed anyway';
+	own('API token').dispatchEvent(new Event('input', { bubbles: true }));
+	flushSync();
+	own('API token').dispatchEvent(new FocusEvent('blur'));
+	flushSync();
+	expect(ipc.setField).not.toHaveBeenCalled();
+
+	return unmount(component);
+});

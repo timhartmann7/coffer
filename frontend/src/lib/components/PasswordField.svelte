@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { tick } from 'svelte';
-	import { Revealed } from '$lib/reveal.svelte';
+	import { Secret } from '$lib/secret.svelte';
 	import Field from './Field.svelte';
 	import Generator from './Generator.svelte';
 	import Icon from './Icon.svelte';
@@ -50,24 +50,16 @@
 		onFailure: (thrown: unknown) => void;
 	} = $props();
 
-	const revealed = new Revealed();
+	const secret = new Secret();
 	let node = $state<HTMLInputElement>();
 	let generating = $state(false);
-	/** Set on an entry that has no password: there is nothing to reveal, and the
-	 * field is opened empty for one to be written into. */
-	let writing = $state(false);
-
-	/** Whether the field is live, whether that is because a value was revealed
-	 * into it or because one is being written. */
-	const live = $derived(revealed.showing || writing);
 
 	// A different entry is a different secret. Whatever is on the screen goes
 	// before the next one arrives.
 	$effect(() => {
 		void entry;
 		return () => {
-			revealed.hide();
-			writing = false;
+			secret.close(node);
 			generating = false;
 		};
 	});
@@ -87,7 +79,7 @@
 	 * is written, and a value they were only reading is put away.
 	 */
 	async function toggle() {
-		if (live) {
+		if (secret.live) {
 			settle();
 			return;
 		}
@@ -97,15 +89,14 @@
 		// would be asking for a field the file may not even carry.
 		if (empty) {
 			if (readOnly) return;
-			writing = true;
-			node.value = '';
+			secret.open(node);
 			await tick();
 			node?.focus();
 			return;
 		}
 
 		try {
-			await revealed.show(node, entry, field);
+			await secret.show(node, entry, field);
 			// The field is hidden until the value is on the screen, so it can
 			// only be focused after the screen has caught up with that.
 			await tick();
@@ -115,52 +106,16 @@
 		}
 	}
 
-	/** Takes whatever is in the field off the screen. */
-	function close() {
-		revealed.hide();
-		if (writing && node) node.value = '';
-		writing = false;
-	}
-
-	/**
-	 * The first keystroke turns a value being read into a value being written.
-	 *
-	 * The half minute is how long a password Coffer put on the screen stays
-	 * there. What the reader is typing is not that, and a timer that wiped the
-	 * field mid-word would take away their new password and leave them looking
-	 * at nothing.
-	 */
-	function written() {
-		if (!revealed.showing) return;
-		revealed.release();
-		writing = true;
-	}
-
 	/**
 	 * What closing the field means, which depends on whose value is in it.
 	 *
 	 * A value the reader wrote is written back; a value Coffer put on the screen
-	 * is put away. The two are told apart by `writing`, which only the first
-	 * keystroke and the empty-field case set - never a reveal.
+	 * is put away. `Secret` is what tells the two apart, and it answers `null`
+	 * for the second.
 	 */
 	function settle() {
-		if (writing) commit();
-		else close();
-	}
-
-	/**
-	 * Writes what is in the field.
-	 *
-	 * Only what the reader wrote: `writing` rather than `live`. A revealed value
-	 * is Coffer's own and writing it back would rewrite the whole file to store
-	 * what is already in it. And only while the value is still on the screen:
-	 * the timer empties the input on its own, and a blur after that would write
-	 * an empty password over a real one.
-	 */
-	function commit() {
-		if (!node || !writing || readOnly) return;
-		const written = node.value;
-		close();
+		const written = secret.settle(node);
+		if (written === null || readOnly) return;
 		// Opening the field on an entry that has no password and typing nothing
 		// is not an edit either. This is the one case where the component knows
 		// the value it would be writing over, so it is the one it can refuse.
@@ -169,7 +124,7 @@
 	}
 
 	function keys(event: KeyboardEvent) {
-		if (event.key === 'Escape') close();
+		if (event.key === 'Escape') secret.close(node);
 		if (event.key === 'Enter') {
 			event.preventDefault();
 			settle();
@@ -177,7 +132,7 @@
 	}
 
 	function insert(made: string) {
-		close();
+		secret.close(node);
 		onCommit(field, made, protect);
 	}
 </script>
@@ -190,7 +145,7 @@
 			<!-- A value can be anything a file can hold: a megabyte of text, or
 			     eight combining accents with no letter under them. It is clipped to
 			     its own box so that whatever it is stays inside the field. -->
-			{#if !live}
+			{#if !secret.live}
 				{#if empty}
 					<span class="min-w-0 flex-1 truncate text-body text-txt4">
 						No password on this entry
@@ -207,21 +162,21 @@
 				autocomplete="off"
 				spellcheck="false"
 				aria-label="Password"
-				hidden={!live}
+				hidden={!secret.live}
 				readonly={readOnly}
-				oninput={written}
+				oninput={() => secret.written()}
 				onblur={settle}
 				onkeydown={keys}
 				class="min-w-0 flex-1 bg-transparent font-mono text-body text-txt outline-none"
 			/>
 
-			{#if revealed.showing}
+			{#if secret.showing}
 				<!-- Four characters, because the value beside them is what the pane is
 				     for and this is three hundred and eighty-four pixels wide. The
 				     sentence the mockup writes out is still here for anything that
 				     reads the screen aloud, where there is no such shortage. -->
 				<span class="shrink-0 animate-fade font-mono text-label text-accent">
-					<span class="sr-only">Hides in </span>0:{String(revealed.left).padStart(2, '0')}
+					<span class="sr-only">Hides in </span>0:{String(secret.left).padStart(2, '0')}
 				</span>
 				<!-- The bar the mockup gives a countdown, drawn as the field's own
 				     bottom edge. Anywhere else it is a row that arrives under the
@@ -242,12 +197,12 @@
 		     round, Hide saved the vault and then opened the value again. -->
 		<button
 			type="button"
-			onmousedown={(event) => live && event.preventDefault()}
+			onmousedown={(event) => secret.live && event.preventDefault()}
 			onclick={toggle}
 			class="flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 text-fine text-txt2 transition hover:border-txt3 hover:text-txt active:bg-raised"
 		>
-			<Icon name={live ? 'eye-off' : 'eye'} class="h-3.5 w-3.5" />
-			<span>{live ? 'Hide' : empty && !readOnly ? 'Set one' : 'Show'}</span>
+			<Icon name={secret.live ? 'eye-off' : 'eye'} class="h-3.5 w-3.5" />
+			<span>{secret.live ? 'Hide' : empty && !readOnly ? 'Set one' : 'Show'}</span>
 		</button>
 		<button
 			type="button"

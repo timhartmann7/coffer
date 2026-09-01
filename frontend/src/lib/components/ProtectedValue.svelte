@@ -5,8 +5,14 @@
 	import Mask from './Mask.svelte';
 
 	/**
-	 * A value the database protects: a mask, and an eye to see it for half a
-	 * minute.
+	 * A value the database protects, where looking at it is all there is: a
+	 * mask, and an eye to see it for half a minute.
+	 *
+	 * The reading half of a pair. A value that can also be copied and changed is
+	 * `SecretField.svelte`; this is for the two places where it cannot be. A
+	 * previous version is a reading and the format gives no way to write into
+	 * one, and a note a foreign client protected is a textarea rather than the
+	 * single line the other rows share.
 	 *
 	 * One of these per value on the screen. Each holds the node its own value
 	 * goes into, which is what keeps the value of the field that was asked for
