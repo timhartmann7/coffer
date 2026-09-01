@@ -237,8 +237,8 @@ pub(crate) fn prune_all(database: &mut Database, limits: Limits) {
 
 fn prune(database: &mut Database, id: EntryId, limits: Limits) {
     // Each version is weighed while the database is still borrowed, because the
-    // bytes of an attachment live in the database rather than in the version
-    // that refers to them.
+    // names a version puts on files are reachable only through a reference into
+    // the database the version belongs to.
     let mut versions: Vec<(Entry, u64)> = {
         let Some(entry) = database.entry(id) else {
             return;
@@ -308,11 +308,21 @@ fn prune(database: &mut Database, id: EntryId, limits: Limits) {
     entry.history = Some(rebuild(kept));
 }
 
-/// What one version costs, counted the way KeePassXC counts it: the length of
-/// the field values plus the size of the attachments the version refers to.
-/// Attachments are stored once and shared between versions, so this overstates
-/// the bytes on disk; it decides how many versions are kept, not whether the
-/// file is valid.
+/// What one version costs, counted as what dropping it would give back: its
+/// field names and values, and the names it puts on files.
+///
+/// Not the bytes of those files, which KeePassXC does count. They are held once
+/// in the database's pool, every version that names one names the same bytes,
+/// and the writer puts the whole pool in the file whether anything refers to it
+/// or not - so dropping a version returns none of them, and charging a version
+/// for bytes it cannot give back is a limit that cannot be met. An entry
+/// carrying a file larger than `HistoryMaxSize` weighed more than the limit in
+/// every version it had, so every version went, and no new one could ever be
+/// kept: attaching a scan to an entry silently threw away the record of every
+/// password it had ever held.
+///
+/// `SPEC.md` grants this. The arithmetic decides how many versions are kept and
+/// not whether the file is valid, and it does not have to be KeePassXC's.
 fn weigh(version: &keepass::db::EntryRef<'_>) -> u64 {
     let fields: usize = version
         .fields
@@ -320,12 +330,12 @@ fn weigh(version: &keepass::db::EntryRef<'_>) -> u64 {
         .map(|(name, value)| name.len() + value.get().len())
         .sum();
 
-    let attachments: usize = version
-        .attachments()
-        .map(|attachment| attachment.data.get().len())
+    let names: usize = version
+        .attachments_named()
+        .map(|(name, _)| name.len())
         .sum();
 
-    (fields + attachments) as u64
+    (fields + names) as u64
 }
 
 /// Puts a list of versions back, oldest first.

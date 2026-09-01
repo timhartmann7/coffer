@@ -515,3 +515,177 @@ fn a_change_to_nothing_but_the_expiry_date_is_still_a_change() {
         "the state the restore replaced was not kept"
     );
 }
+
+/// The whole reason history is in this application. `SPEC.md` puts it as "I
+/// overwrote a password, saved, and noticed a week later", and attaching a scan
+/// or a certificate to the entry used to be the end of that promise: the bytes
+/// of the file were charged to every version that named it, one file past the
+/// six-megabyte fallback weighed more than the limit on its own, and so every
+/// version went and no new one could ever be kept.
+#[test]
+fn a_file_on_an_entry_does_not_take_the_versions_of_that_entry_with_it() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = built(scratch.path(), "documents.kdbx", |db| {
+        db.meta.history_max_items = Some(100);
+        // Left unstated on purpose: it is the six-megabyte fallback that a file
+        // of a few megabytes used to break, not a limit anybody chose.
+        db.meta.history_max_size = None;
+        db.root_mut()
+            .add_entry()
+            .edit(|entry| entry.set_unprotected(fields::TITLE, "Client VPN"));
+    });
+
+    let mut vault = open(&database, BUILT_PASSWORD);
+    let id = vault.tree().entries[0].id;
+
+    for round in 0..10 {
+        vault
+            .set_field(
+                id,
+                fields::PASSWORD,
+                NewValue::Protected(zeroize::Zeroizing::new(format!("secret {round}"))),
+            )
+            .expect("the password is set");
+        vault.save().expect("the database saves");
+    }
+    assert_eq!(vault.versions(id).len(), 10);
+
+    vault
+        .add_attachment(
+            id,
+            "client.p12",
+            zeroize::Zeroizing::new(vec![0x5a; 5 * 1024 * 1024]),
+        )
+        .expect("the file attaches");
+    vault.save().expect("the database saves");
+    assert_eq!(
+        vault.versions(id).len(),
+        10,
+        "attaching a file threw the entry's history away"
+    );
+
+    for round in 10..14 {
+        vault
+            .set_field(
+                id,
+                fields::PASSWORD,
+                NewValue::Protected(zeroize::Zeroizing::new(format!("secret {round}"))),
+            )
+            .expect("the password is set");
+        vault.save().expect("the database saves");
+    }
+
+    // A second file, larger on its own than the fallback limit. This is the
+    // case that used to leave the entry with no history at all, for good.
+    vault
+        .add_attachment(
+            id,
+            "scan.tiff",
+            zeroize::Zeroizing::new(vec![0x17; 7 * 1024 * 1024]),
+        )
+        .expect("the file attaches");
+    vault.save().expect("the database saves");
+    drop(vault);
+
+    let vault = open(&database, BUILT_PASSWORD);
+    assert_eq!(
+        vault.versions(id).len(),
+        14,
+        "a file larger than the limit left the entry with no history"
+    );
+}
+
+/// The size limit still has to bite. A version's fields are what dropping it
+/// gives back, and a run of large ones is still pruned by size with a file
+/// sitting on the entry the whole time.
+#[test]
+fn the_size_limit_still_prunes_an_entry_that_carries_a_file() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = built(scratch.path(), "heavy-with-a-file.kdbx", |db| {
+        db.meta.history_max_items = Some(100);
+        db.meta.history_max_size = Some(4 * 1100);
+        db.root_mut()
+            .add_entry()
+            .edit(|entry| entry.set_unprotected(fields::TITLE, "subject"));
+    });
+
+    let mut vault = open(&database, BUILT_PASSWORD);
+    let id = vault.tree().entries[0].id;
+    vault
+        .add_attachment(
+            id,
+            "report.pdf",
+            zeroize::Zeroizing::new(vec![0x2b; 3 * 1024 * 1024]),
+        )
+        .expect("the file attaches");
+
+    for round in 0..20 {
+        vault
+            .set_field(
+                id,
+                fields::NOTES,
+                NewValue::Open(format!("{round}{}", "x".repeat(1024))),
+            )
+            .expect("the note is set");
+        vault.save().expect("the database saves");
+    }
+    drop(vault);
+
+    let vault = open(&database, BUILT_PASSWORD);
+    let kept = vault.versions(id).len();
+    assert!(
+        (1..=5).contains(&kept),
+        "the size limit kept {kept} versions of a kilobyte each under a limit of four"
+    );
+}
+
+/// The bound the size limit used to provide by accident. A hundred saves of an
+/// entry carrying a file leave a file the count limit holds down, and not one
+/// that grew by a version every time.
+#[test]
+fn a_hundred_saves_of_an_entry_that_carries_a_file_leave_it_bounded() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = built(scratch.path(), "bounded.kdbx", |db| {
+        db.root_mut()
+            .add_entry()
+            .edit(|entry| entry.set_unprotected(fields::TITLE, "subject"));
+    });
+
+    let mut vault = open(&database, BUILT_PASSWORD);
+    let id = vault.tree().entries[0].id;
+    vault
+        .add_attachment(
+            id,
+            "attached.bin",
+            zeroize::Zeroizing::new(vec![0x3c; 3 * 1024]),
+        )
+        .expect("the file attaches");
+    vault.save().expect("the database saves");
+
+    let settled = std::fs::metadata(&database)
+        .expect("the file is there")
+        .len();
+
+    for round in 0..100 {
+        vault
+            .set_field(id, fields::NOTES, NewValue::Open(format!("round {round}")))
+            .expect("the note is set");
+        vault.save().expect("the database saves");
+    }
+    drop(vault);
+
+    let vault = open(&database, BUILT_PASSWORD);
+    assert_eq!(
+        vault.versions(id).len(),
+        10,
+        "the count limit is what bounds an entry whose files are no longer charged"
+    );
+
+    let grown = std::fs::metadata(&database)
+        .expect("the file is there")
+        .len();
+    assert!(
+        grown < settled + 64 * 1024,
+        "a hundred saves grew the file from {settled} to {grown}"
+    );
+}
