@@ -191,14 +191,14 @@ impl Vault {
     /// Symbolic links are followed to the file they name, so that a database
     /// reached through a link is saved where the link points rather than being
     /// replaced by it.
-    pub fn open(path: &Path, key: MasterKey, policy: LockPolicy) -> Result<Vault, VaultError> {
+    pub fn open(path: &Path, mut key: MasterKey, policy: LockPolicy) -> Result<Vault, VaultError> {
         let path = path.canonicalize().map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => VaultError::DatabaseGone,
             _ => VaultError::Io(error),
         })?;
 
         let stamp = Stamp::of(&path)?;
-        let (database, content) = read(&path, &key)?;
+        let (database, content) = unlock(&path, &mut key)?;
         let source = classify(&database, &path);
 
         let lock = match policy {
@@ -1316,6 +1316,47 @@ fn encrypt(
     database.save(&mut counted, key.to_database_key()?)?;
     counted.flush()?;
     Ok(counted.written)
+}
+
+/// Reads the database, trying the one other way its credentials could be put
+/// together before giving up.
+///
+/// A vault whose owner chose a key file and no password at all is opened by the
+/// file alone. Nothing in the header says so, and folding an empty password in
+/// anyway fails inside the cipher, which is where a corrupt file fails too - so
+/// the reader was told their vault was damaged and offered a snapshot, for a
+/// file with nothing wrong with it.
+///
+/// The refusal that is reported is the first one. The second attempt is a guess
+/// about one uncommon shape, and a guess that did not come off should not be
+/// what the reader is told about their file.
+fn unlock(path: &Path, key: &mut MasterKey) -> Result<(Held, Content), VaultError> {
+    let refused = match read(path, key) {
+        Ok(opened) => return Ok(opened),
+        Err(error) => error,
+    };
+
+    if !could_be_the_key(&refused) || !key.stand_alone() {
+        return Err(refused);
+    }
+
+    read(path, key).map_err(|_| refused)
+}
+
+/// Whether a refusal could be the credentials rather than the file.
+///
+/// A key that does not open a KDBX 4 database fails inside the cipher, and the
+/// cipher cannot tell a key it was never given from bytes somebody corrupted.
+/// So every report of damage is also a possible wrong key. A file that is not
+/// there, or is not a database at all, is neither.
+fn could_be_the_key(error: &VaultError) -> bool {
+    matches!(
+        error,
+        VaultError::WrongCredentials
+            | VaultError::DamagedHeader
+            | VaultError::DamagedPayload
+            | VaultError::DamagedContent
+    )
 }
 
 fn read(path: &Path, key: &MasterKey) -> Result<(Held, Content), VaultError> {

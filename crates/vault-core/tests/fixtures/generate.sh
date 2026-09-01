@@ -104,6 +104,17 @@ import sources/whitespace.xml whitespace-kdbx41.kdbx 4.1 "$PASSWORD"
 ( umask 077 && head -c 128 /dev/urandom > keyfile.key )
 import sources/minimal.xml keyfile-kdbx41.kdbx 4.1 "$KEYFILE_PASSWORD" --set-key-file keyfile.key
 
+# A database that needs the key file and nothing else. KeePassXC offers this on
+# its credentials page, and the composite key is then built from the file alone.
+# It cannot go through import() above, which always sets a password: the whole
+# point of this fixture is the file that has none.
+rm -f keyfile-only-kdbx41.kdbx
+( umask 077 && head -c 128 /dev/urandom > keyfile-only.key )
+"$KP" import -q --set-key-file keyfile-only.key \
+    sources/minimal.xml keyfile-only-kdbx41.kdbx >/dev/null
+chmod 0600 keyfile-only-kdbx41.kdbx
+echo "  keyfile-only-kdbx41.kdbx  KDBX $(version_of keyfile-only-kdbx41.kdbx)"
+
 # An empty database straight out of keepassxc-cli, with nothing but a root
 # group. It is the only fixture the CLI creates on its own, so it is also the
 # only one carrying the CLI's default KDF.
