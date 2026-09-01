@@ -26,10 +26,25 @@
 		settings: Settings;
 		database: Database | null;
 		onSettings: (settings: Settings) => void;
-		onChoose: () => void;
+		/**
+		 * Asks for another vault. It rejects while one is open, and the refusal
+		 * says what to do about it, so it is shown rather than swallowed: a
+		 * button that answers a press with nothing at all is a button the reader
+		 * presses again.
+		 */
+		onChoose: () => Promise<void>;
 	} = $props();
 
 	let failure = $state<string | null>(null);
+
+	async function pick() {
+		failure = null;
+		try {
+			await onChoose();
+		} catch (thrown) {
+			failure = asFailure(thrown).message;
+		}
+	}
 
 	async function change(wanted: Settings) {
 		failure = null;
@@ -113,7 +128,7 @@
 			</div>
 			<button
 				type="button"
-				onclick={onChoose}
+				onclick={pick}
 				class="h-9 shrink-0 rounded-full border border-hairline px-4 text-small text-txt2 transition-colors hover:border-txt4 hover:text-txt active:bg-raised"
 			>
 				Open another

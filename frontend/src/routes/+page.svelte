@@ -87,10 +87,17 @@
 		showing = showing === 'settings' ? 'vault' : 'settings';
 	}
 
-	/** The settings screen offers another vault, which is the unlock screen's
-	 * picker under another name. */
+	/**
+	 * The settings screen offers another vault, which is the unlock screen's
+	 * picker under another name.
+	 *
+	 * The refusal is left to reach the screen. Rust will not point the session
+	 * at another file while one is open - the tree of the first would still be
+	 * in memory - and it says so in a sentence that names the way through. A
+	 * caught refusal made the offer a button that did nothing whatever.
+	 */
 	async function choose() {
-		const picked = await chooseDatabase().catch(() => null);
+		const picked = await chooseDatabase();
 		if (picked) {
 			database = picked;
 			// Rust forgot the key file when the session was pointed elsewhere,
