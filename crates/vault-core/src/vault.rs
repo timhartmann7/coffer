@@ -103,7 +103,12 @@ pub struct Vault {
     /// Whether this vault holds a change the file on disk does not.
     changed: bool,
     /// Held for as long as the vault is open; removed when it is dropped.
-    _lock: Lock,
+    ///
+    /// Absent where the place beside the database would not take the file.
+    /// Nothing can be written there, so there is nothing for a lock to guard,
+    /// and a vault that refused to open over a note it could not leave would be
+    /// refusing to read a file that reads perfectly well.
+    _lock: Option<Lock>,
 }
 
 impl std::fmt::Debug for Vault {
@@ -181,6 +186,11 @@ enum Source {
     /// It can still be written somewhere else, which is what the offer to keep
     /// a copy is for.
     Snapshot,
+    /// Kept somewhere that will not take a write: a read-only disk image, a
+    /// Time Machine snapshot, a stick macOS mounted read-only, a share the
+    /// reader may only read. It opens, because reading needs no write, and
+    /// every change is refused because none of them could reach the file.
+    ReadOnlyPlace,
     /// Anything Coffer can write back as KDBX 4.1.
     Writable,
 }
@@ -199,15 +209,16 @@ impl Vault {
 
         let stamp = Stamp::of(&path)?;
         let (database, content) = unlock(&path, &mut key)?;
-        let source = classify(&database, &path);
 
         let lock = match policy {
-            LockPolicy::TakeOver => Lock::take(&path)?,
+            LockPolicy::TakeOver => Some(Lock::take(&path)?),
             LockPolicy::Respect => match Lock::acquire(&path)? {
-                Outcome::Taken(lock) => lock,
+                Outcome::Taken(lock) => Some(lock),
                 Outcome::Held(holder) => return Err(VaultError::Locked(holder)),
+                Outcome::Unwritable => None,
             },
         };
+        let source = classify(&database, &path, lock.as_ref());
 
         Ok(Vault {
             database,
@@ -927,7 +938,11 @@ impl Vault {
         match self.source {
             Source::Kdb => return Err(VaultError::ReadOnlyKdb),
             Source::Kdbx3WithAttachments => return Err(VaultError::ReadOnlyKdbx3Attachments),
-            Source::Snapshot | Source::Writable => {}
+            // A snapshot and a read-only place are both about where the
+            // database is, and a copy is written somewhere else. That is the
+            // whole point of the offer: it is how the reader gets their work
+            // off a medium that will not take it.
+            Source::Snapshot | Source::ReadOnlyPlace | Source::Writable => {}
         }
         if path.canonicalize().is_ok_and(|target| target == self.path) {
             return Err(VaultError::CopyOntoItself);
@@ -979,7 +994,7 @@ impl Vault {
         let stamp = Stamp::of(&self.path)?;
         let (database, content) = read(&self.path, &self.key)?;
 
-        self.source = classify(&database, &self.path);
+        self.source = classify(&database, &self.path, self._lock.as_ref());
         self.database = database;
         self.stamp = stamp;
         self.content = content;
@@ -994,6 +1009,7 @@ impl Vault {
             Source::Kdb => Err(VaultError::ReadOnlyKdb),
             Source::Kdbx3WithAttachments => Err(VaultError::ReadOnlyKdbx3Attachments),
             Source::Snapshot => Err(VaultError::ReadOnlySnapshot),
+            Source::ReadOnlyPlace => Err(VaultError::ReadOnlyPlace),
             Source::Writable => Ok(()),
         }
     }
@@ -1204,6 +1220,11 @@ fn fill(path: &Path, key: MasterKey, recipe: &Recipe<'_>) -> Result<Vault, Vault
     let lock = match Lock::acquire(&path)? {
         Outcome::Taken(lock) => lock,
         Outcome::Held(holder) => return Err(VaultError::Locked(holder)),
+        // A vault is made where the reader can keep it. Somewhere that will not
+        // take the lock file will not take the database either, and the write
+        // below would be the one to say so - after a calibrated second of key
+        // derivation, and in an errno.
+        Outcome::Unwritable => return Err(VaultError::ReadOnlyPlace),
     };
 
     let mut written = 0;
@@ -1219,7 +1240,7 @@ fn fill(path: &Path, key: MasterKey, recipe: &Recipe<'_>) -> Result<Vault, Vault
     let content = std::fs::read(&path)
         .map(|bytes| watch::digest(&bytes))
         .unwrap_or_default();
-    let source = classify(&database, &path);
+    let source = classify(&database, &path, Some(&lock));
 
     Ok(Vault {
         database,
@@ -1229,7 +1250,7 @@ fn fill(path: &Path, key: MasterKey, recipe: &Recipe<'_>) -> Result<Vault, Vault
         stamp,
         content,
         changed: false,
-        _lock: lock,
+        _lock: Some(lock),
     })
 }
 
@@ -1406,11 +1427,20 @@ fn parse_without_dying(bytes: &[u8], key: keepass::DatabaseKey) -> Result<Databa
         .map_err(VaultError::from)
 }
 
-fn classify(database: &Database, path: &Path) -> Source {
+/// What the database is, for the purpose of deciding whether it may be written
+/// back.
+///
+/// The format comes first and the place second, on purpose. A KDBX 3 database
+/// carrying attachments is refused a read of those attachments as well as a
+/// save, and that refusal has to survive the file being on a read-only medium:
+/// the medium is why a save cannot go anywhere, the format is why the bytes
+/// cannot be trusted, and only the second of those is about the data.
+fn classify(database: &Database, path: &Path, lock: Option<&Lock>) -> Source {
     match database.config.version {
         DatabaseVersion::KDB(_) | DatabaseVersion::KDB2(_) => Source::Kdb,
         DatabaseVersion::KDB3(_) if database.num_attachments() > 0 => Source::Kdbx3WithAttachments,
         _ if snapshot::slot_of(path).is_some() => Source::Snapshot,
+        _ if lock.is_none() => Source::ReadOnlyPlace,
         _ => Source::Writable,
     }
 }

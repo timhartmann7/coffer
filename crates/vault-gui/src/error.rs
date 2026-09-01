@@ -119,7 +119,8 @@ impl From<VaultError> for Failure {
             VaultError::ExternalChange => Code::ExternalChange,
             VaultError::ReadOnlyKdb
             | VaultError::ReadOnlyKdbx3Attachments
-            | VaultError::ReadOnlySnapshot => Code::ReadOnly,
+            | VaultError::ReadOnlySnapshot
+            | VaultError::ReadOnlyPlace => Code::ReadOnly,
             VaultError::DatabaseGone => Code::Gone,
             VaultError::TooLarge => Code::TooLarge,
             VaultError::NoSuchEntry
@@ -192,6 +193,7 @@ mod tests {
             (VaultError::ReadOnlyKdb, "readOnly"),
             (VaultError::ReadOnlyKdbx3Attachments, "readOnly"),
             (VaultError::ReadOnlySnapshot, "readOnly"),
+            (VaultError::ReadOnlyPlace, "readOnly"),
             (VaultError::ExternalChange, "externalChange"),
             (VaultError::NoSuchGroup, "noSuchEntry"),
             (VaultError::NoSuchVersion, "noSuchEntry"),

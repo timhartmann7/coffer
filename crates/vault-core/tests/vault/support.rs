@@ -244,6 +244,31 @@ pub fn permissions_apply() -> bool {
     unsafe { libc::geteuid() != 0 }
 }
 
+/// A directory that will not take a new file, thawed when this is dropped.
+///
+/// Thawed on the way out rather than by the test, because a test that asserts
+/// while the directory is frozen and fails leaves a `TempDir` whose own `Drop`
+/// cannot remove it: the failure is then followed by a directory left behind in
+/// the system's temporary space, and the assertion nobody sees is the one that
+/// mattered.
+pub struct Frozen(PathBuf);
+
+impl Frozen {
+    pub fn over(directory: &Path) -> Frozen {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o500))
+            .expect("the directory is frozen");
+        Frozen(directory.to_path_buf())
+    }
+}
+
+impl Drop for Frozen {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+    }
+}
+
 /// Where `keepassxc-cli` lives, or `None` when the suite is running without it.
 ///
 /// It is on `PATH` on Ubuntu, where CI installs it from apt, and inside the

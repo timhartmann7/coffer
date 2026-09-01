@@ -10,7 +10,7 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::storage::{process, sibling};
+use crate::storage::{process, refuses_writes, sibling};
 
 const LOCK_SUFFIX: &str = ".lock";
 
@@ -151,6 +151,10 @@ pub enum Outcome {
     /// Somebody else has the database open and their lock was left alone. The
     /// caller decides whether to open anyway.
     Held(Holder),
+    /// The place beside the database will not take a file, so there is no lock
+    /// to write and nothing for one to guard: nobody can write the database
+    /// through this path either. The caller opens it to be read.
+    Unwritable,
 }
 
 /// A held lock file. Removed when this value is dropped.
@@ -177,9 +181,13 @@ impl Lock {
     pub fn acquire(database: &Path) -> Result<Outcome, io::Error> {
         let path = path_for(database)?;
 
-        match create(&path)? {
-            Some(lock) => Ok(Outcome::Taken(lock)),
-            None => {
+        match create(&path) {
+            Ok(Some(lock)) => Ok(Outcome::Taken(lock)),
+            // Reading a database needs no write, so a place that will not take
+            // the note beside it is not a reason to refuse the database.
+            Err(error) if refuses_writes(&error) => Ok(Outcome::Unwritable),
+            Err(error) => Err(error),
+            Ok(None) => {
                 let Some(existing) = read(&path)? else {
                     // It went between the failed create and the read. One more
                     // attempt, and no more: a caller stuck in a loop here is
@@ -296,10 +304,18 @@ fn path_for(database: &Path) -> Result<PathBuf, io::Error> {
     sibling(database, LOCK_SUFFIX)
 }
 
+/// Reads a lock file, or says there is none.
+///
+/// A file that is there and will not be read counts as a lock held by somebody
+/// unknown. That happens on a share where the far end owns the file, and the
+/// answer has to be the cautious one: a lock nobody can read is still a lock,
+/// and the reader is shown the same offer to open anyway that any other holder
+/// gets.
 fn read(path: &Path) -> Result<Option<Holder>, io::Error> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(Some(Holder::parse(&text))),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) if refuses_writes(&error) => Ok(Some(placeholder())),
         Err(error) => Err(error),
     }
 }

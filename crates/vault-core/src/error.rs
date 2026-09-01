@@ -116,6 +116,13 @@ pub enum VaultError {
     /// What is open is one of Coffer's own snapshots. It opens like any other
     /// database and is not written back: the next save of the database it was
     /// taken from would rotate it away.
+    /// The folder the database sits in will not take a file: a read-only disk
+    /// image, a Time Machine snapshot, a stick macOS mounted read-only, a share
+    /// the reader may only read. Coffer opens the database anyway, because
+    /// reading one needs no write, and answers every change with this.
+    #[error("this folder is read only, so nothing can be written to it")]
+    ReadOnlyPlace,
+
     #[error("a snapshot is opened to read, not to write")]
     ReadOnlySnapshot,
 

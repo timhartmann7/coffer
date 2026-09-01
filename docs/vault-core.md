@@ -199,6 +199,17 @@ disabled". Coffer still writes `<database>.lock` in the INI shape KeePass 2.x
 uses, so a KeePass 2.x client recognises it, but in practice it guards Coffer
 against Coffer. It is advisory in every case.
 
+**A vault kept where nothing can be written opens with no lock file at all.**
+`SPEC.md` says "read someone else's lock and warn, write our own, remove it on
+close", and the middle of those cannot happen on a read-only disk image, inside
+a Time Machine snapshot, on a stick macOS mounted read-only or on a share the
+reader may only read. Reading a database needs no write, so a vault Coffer
+refused to open over a note it could not leave was refusing a file that reads
+perfectly well. It opens, `is_read_only()` is true, every change answers
+`ReadOnlyPlace`, and `save_copy` to somewhere writable is the way off the
+medium. A lock somebody is holding still wins: the medium is only consulted
+where the file could not be created at all.
+
 **KeePassXC writes KDBX 4.0 and downgrades files Coffer wrote.** `dump_kdbx4`
 refuses any version but 4.1, so Coffer always writes 4.1; KeePassXC 2.7.12
 writes the lowest version the content needs, which is usually 4.0. A file

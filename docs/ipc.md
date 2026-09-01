@@ -425,6 +425,13 @@ change is refused with `readOnly` and `save_copy` is the way out: it writes what
 is in the window to a file of the reader's choosing, which then opens like any
 other database.
 
+**A vault kept in a place that will not take a file opens read only.** A vault
+on a read-only disk image, inside a Time Machine snapshot, on a stick macOS
+mounted read-only or on a share the reader may only read cannot have a lock file
+written beside it, and used not to open at all. It opens, `read_only` is true in
+`status`, every change answers `readOnly`, and `save_copy` writes what is in the
+window somewhere the reader can write.
+
 ## Where this departs from SPEC.md
 
 **A copied password is kept off Universal Clipboard.** `SPEC.md` says macOS
