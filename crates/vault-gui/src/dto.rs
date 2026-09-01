@@ -65,15 +65,31 @@ pub fn group_id(text: &str) -> Result<model::GroupId, crate::error::Failure> {
 impl Snapshot {
     pub fn of(taken: &vault_core::storage::snapshot::Taken) -> Snapshot {
         Snapshot {
-            name: taken
-                .path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+            name: file_name(&taken.path),
             index: taken.index,
             taken: taken.taken.and_then(moment),
         }
     }
+}
+
+impl Rescued {
+    pub fn of(kept: &vault_core::storage::unsaved::Kept) -> Rescued {
+        Rescued {
+            name: file_name(&kept.path),
+            written: kept.written.and_then(moment),
+        }
+    }
+}
+
+/// The name a file goes by on the screen.
+///
+/// The file name and not the stem: an offer to open something has to say what
+/// the reader would see in the Finder, and the stem of `vault.kdbx.unsaved.kdbx`
+/// reads as a vault called `vault.kdbx.unsaved`.
+fn file_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 impl Database {
@@ -99,11 +115,17 @@ pub struct Status {
     pub unlocked: bool,
     /// How many entries the vault holds, the recycle bin's included.
     pub entries: usize,
-    /// Whether there is a change in the window that the file does not have.
-    pub dirty: bool,
-    /// Whether this database can be written back at all. A snapshot and a
-    /// format Coffer will not write are both read only.
+    /// Whether this database can be written back at all. A snapshot, a format
+    /// Coffer will not write and a place that refuses a write are all read only.
     pub read_only: bool,
+    /// The unsaved copy sitting beside the database Coffer will open next, when
+    /// a lock had to write one. Read off the disk rather than remembered, so a
+    /// copy left by a run that has since quit is still offered.
+    pub rescue: Option<Rescued>,
+    /// Whether the last lock in this run found work the file had not got and
+    /// could not put it anywhere at all. There is no file to point at, which is
+    /// why this is a flag and not a path.
+    pub lost: bool,
     /// Why the vault that was open is not open any more, when it is worth
     /// saying. A lock the reader asked for has nothing to explain.
     pub locked_by: Option<&'static str>,
@@ -215,6 +237,15 @@ pub struct Rival {
     /// How many entries it holds, or nothing when it will not open with the
     /// password this vault was opened with.
     pub entries: Option<usize>,
+}
+
+/// The unsaved copy a lock left beside the vault.
+#[derive(Serialize)]
+pub struct Rescued {
+    /// The file name, which is what the offer to open it says.
+    pub name: String,
+    /// When it was written, as the filesystem has it.
+    pub written: Option<String>,
 }
 
 /// A snapshot Coffer took before one of its own saves.

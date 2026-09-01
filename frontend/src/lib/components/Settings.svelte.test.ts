@@ -314,3 +314,27 @@ it('sends the whole of what was chosen when the look changes', async () => {
 
 	unmount(component);
 });
+
+/**
+ * Rust will not point the session at another file while a vault is open, and
+ * the refusal names the way through. A screen that caught it left the reader
+ * pressing a button that did nothing at all.
+ */
+it('says why another vault cannot be opened from here yet', async () => {
+	const onChoose = vi
+		.fn()
+		.mockRejectedValue({ code: 'refused', message: 'lock the vault before opening another' });
+	const component = show({ onChoose });
+	flushSync();
+
+	const found = [...host.querySelectorAll('button')].find(
+		(candidate) => candidate.textContent?.trim() === 'Open another'
+	);
+	found?.click();
+
+	await vi.waitFor(() =>
+		expect(host.textContent).toContain('lock the vault before opening another')
+	);
+
+	unmount(component);
+});

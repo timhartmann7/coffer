@@ -1672,14 +1672,16 @@ fn reading_the_file_again_throws_away_what_was_not_saved() {
     let mut vault = open(&database, SECRET);
     let id = only_entry(&vault, "basic");
 
-    assert!(!vault.is_dirty());
+    // `rescue` is what asks the question now, and on a vault with nothing to
+    // write it writes nothing. That the change in between was really there is
+    // what the comparison at the end of this test says.
+    assert_eq!(vault.rescue(), vault_core::Rescue::Nothing);
     vault
         .set_field(id, fields::NOTES, NewValue::Open("unsaved".to_owned()))
         .expect("the note is written");
-    assert!(vault.is_dirty());
 
     vault.reload().expect("the file reads again");
-    assert!(!vault.is_dirty());
+    assert_eq!(vault.rescue(), vault_core::Rescue::Nothing);
     assert_ne!(
         vault
             .entry(id)
@@ -2249,6 +2251,17 @@ fn a_database_that_would_be_too_large_to_open_again_is_not_written() {
         before,
         "the database was written even though it could not be opened again"
     );
+
+    // The one shape of trouble a lock cannot write its way out of: the ceiling
+    // is on the copy as much as on the database, so there is nowhere for the
+    // work to go and the answer has to say so rather than leave half a file.
+    assert_eq!(vault.rescue(), vault_core::Rescue::Lost);
+    assert!(
+        !vault_core::storage::unsaved::beside(&path)
+            .expect("a sibling path")
+            .exists(),
+        "a copy too large to write was left half written"
+    );
     drop(vault);
 
     // And it still opens, because nothing was written.
@@ -2369,4 +2382,64 @@ fn only_the_versions_that_hold_a_file_go_with_it() {
     drop(vault);
     let vault = open(&path, BUILT_PASSWORD);
     assert_eq!(vault.versions(id).len(), before, "the file disagrees");
+}
+
+/// The other side of no longer charging a version for the bytes of a file.
+///
+/// Versions the size limit used to prune away now survive, and a surviving
+/// version holds the file it names. So a plain removal is refused where it used
+/// to go through silently - which is hard rule 1 working, not a regression, and
+/// the offer that goes with the refusal is what the reader presses instead.
+#[test]
+fn a_file_the_versions_kept_by_the_new_arithmetic_still_hold_is_not_taken_away_from_them() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let path = built(scratch.path(), "held.kdbx", |db| {
+        db.root_mut()
+            .add_entry()
+            .edit(|entry| entry.set_unprotected(fields::TITLE, "Client VPN"));
+    });
+
+    let id = {
+        let mut vault = open(&path, BUILT_PASSWORD);
+        let id = vault.tree().entries[0].id;
+        vault
+            .add_attachment(
+                id,
+                "client.p12",
+                Zeroizing::new(vec![0x5a; 5 * 1024 * 1024]),
+            )
+            .expect("the file attaches");
+        for round in 0..4 {
+            vault
+                .set_field(id, fields::NOTES, NewValue::Open(format!("round {round}")))
+                .expect("the note is written");
+            vault.save().expect("the database saves");
+        }
+        assert_eq!(vault.versions(id).len(), 4);
+        id
+    };
+
+    let mut vault = open(&path, BUILT_PASSWORD);
+    assert!(
+        matches!(
+            vault.remove_attachment(id, "client.p12"),
+            Err(VaultError::AttachmentInHistory)
+        ),
+        "a file four surviving versions name was taken off without them"
+    );
+
+    vault
+        .remove_attachment_and_versions(id, "client.p12")
+        .expect("dropping the versions that hold it takes it off");
+    vault.save().expect("the database saves");
+    drop(vault);
+
+    let vault = open(&path, BUILT_PASSWORD);
+    assert!(
+        matches!(
+            vault.attachment(id, "client.p12"),
+            Err(VaultError::NoSuchAttachment)
+        ),
+        "the file is still on the entry after the versions holding it went"
+    );
 }

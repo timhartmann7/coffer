@@ -106,6 +106,8 @@ pub fn run() {
             commands::open_url,
             commands::snapshots,
             commands::choose_snapshot,
+            commands::choose_rescue,
+            commands::discard_rescue,
             commands::create_entry,
             commands::delete_entry,
             commands::create_group,

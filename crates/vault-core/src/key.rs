@@ -18,6 +18,14 @@ use crate::error::VaultError;
 pub struct MasterKey {
     password: Zeroizing<Vec<u8>>,
     key_file: Option<Zeroizing<Vec<u8>>>,
+    /// Whether the password is left out of the composite key entirely.
+    ///
+    /// A vault whose owner chose a key file and no password at all is opened by
+    /// the file alone, and one whose owner chose a key file and an empty
+    /// password is opened by both. Nothing in a KDBX header says which of the
+    /// two a file is, so the only way to tell them apart is to try one and then
+    /// the other.
+    alone: bool,
 }
 
 impl fmt::Debug for MasterKey {
@@ -25,6 +33,7 @@ impl fmt::Debug for MasterKey {
         f.debug_struct("MasterKey")
             .field("password", &"[redacted]")
             .field("key_file", &self.key_file.as_ref().map(|_| "[redacted]"))
+            .field("alone", &self.alone)
             .finish()
     }
 }
@@ -36,6 +45,7 @@ impl MasterKey {
         MasterKey {
             password,
             key_file: None,
+            alone: false,
         }
     }
 
@@ -55,15 +65,34 @@ impl MasterKey {
         Ok(self)
     }
 
+    /// Leaves the password out of the composite key, and says whether that was
+    /// a thing this key could still do.
+    ///
+    /// Only ever the second attempt at one file. A key file with a password
+    /// somebody typed has one composition and no alternative, and so has a
+    /// password with no key file, so both answer `false` and the refusal they
+    /// were given stands.
+    pub(crate) fn stand_alone(&mut self) -> bool {
+        if self.alone || self.key_file.is_none() || !self.password.is_empty() {
+            return false;
+        }
+        self.alone = true;
+        true
+    }
+
     /// Builds the crate's key type.
     ///
     /// The password has to become a `&str` here because that is the only way in.
     /// It is borrowed rather than copied, and the `DatabaseKey` that owns the
     /// copy it makes zeroizes it on drop.
     pub(crate) fn to_database_key(&self) -> Result<DatabaseKey, VaultError> {
-        let password =
-            std::str::from_utf8(&self.password).map_err(|_| VaultError::PasswordNotUtf8)?;
-        let key = DatabaseKey::new().with_password(password);
+        let key = if self.alone {
+            DatabaseKey::new()
+        } else {
+            let password =
+                std::str::from_utf8(&self.password).map_err(|_| VaultError::PasswordNotUtf8)?;
+            DatabaseKey::new().with_password(password)
+        };
 
         match &self.key_file {
             None => Ok(key),

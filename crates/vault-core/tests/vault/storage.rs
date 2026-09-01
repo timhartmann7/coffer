@@ -10,7 +10,7 @@ use vault_core::storage::lock::{Lock, Outcome};
 use vault_core::storage::watch::{Change, Stamp};
 use vault_core::storage::{snapshot, watch};
 
-use crate::support::{self, BUILT_PASSWORD, built, open, permissions_apply};
+use crate::support::{self, BUILT_PASSWORD, SECRET, built, open, permissions_apply};
 
 /// Set in the child process the kill test spawns; holds the path to write.
 const CHILD_ABORT: &str = "COFFER_CHILD_ABORT_PATH";
@@ -187,6 +187,7 @@ fn a_lock_held_by_a_living_process_is_reported_and_left_alone() {
             assert!(described.contains(&holder.host), "{described}");
         }
         Outcome::Taken(_) => panic!("the lock was taken twice"),
+        Outcome::Unwritable => panic!("a writable scratch directory refused the lock"),
     }
 
     let error = vault_core::Vault::open(
@@ -231,6 +232,7 @@ fn a_lock_left_by_a_process_that_no_longer_exists_is_replaced() {
     match Lock::acquire(&database).expect("the stale lock is cleared") {
         Outcome::Taken(_) => {}
         Outcome::Held(holder) => panic!("a dead process still holds the lock: {holder:?}"),
+        Outcome::Unwritable => panic!("a writable scratch directory refused the lock"),
     }
 }
 
@@ -269,6 +271,7 @@ fn a_lock_from_another_machine_is_believed_whatever_its_process_id_says() {
     match Lock::acquire(&database).expect("the lock reads") {
         Outcome::Held(holder) => assert_eq!(holder.host, "another-machine"),
         Outcome::Taken(_) => panic!("a lock from another machine was cleared"),
+        Outcome::Unwritable => panic!("a writable scratch directory refused the lock"),
     }
 }
 
@@ -519,4 +522,139 @@ fn something_that_is_not_a_file_is_not_a_snapshot() {
         .expect("the directory is made");
 
     assert_eq!(snapshot::taken(&database).expect("the chain reads"), vec![]);
+}
+
+/// Reading a database needs no write, and a vault kept somewhere that will not
+/// take one used to be a vault nobody could open: a read-only disk image, a
+/// Time Machine snapshot, a stick macOS mounted read-only, a share the reader
+/// may only read. The advisory note beside the file is not worth the file.
+#[test]
+fn a_vault_where_no_lock_file_can_be_written_opens_to_be_read() {
+    if !permissions_apply() {
+        return;
+    }
+
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = built(scratch.path(), "elsewhere.kdbx", |db| {
+        db.root_mut()
+            .add_entry()
+            .edit(|entry| entry.set_unprotected(keepass::db::fields::TITLE, "kept"));
+    });
+
+    let _frozen = support::Frozen::over(scratch.path());
+
+    let mut vault = open(&database, BUILT_PASSWORD);
+    assert_eq!(
+        vault.tree().entries.len(),
+        1,
+        "the entries are not readable"
+    );
+    assert!(vault.is_read_only());
+    assert!(
+        matches!(vault.save(), Err(vault_core::VaultError::ReadOnlyPlace)),
+        "a save aimed at a place that refuses writes said something else"
+    );
+    assert!(
+        !std::path::Path::new(&format!("{}.lock", database.display())).exists(),
+        "a lock file was written where nothing can be"
+    );
+}
+
+/// The way off the medium. A copy goes somewhere the reader can write, and it
+/// is the whole reason opening a read-only vault is worth anything.
+#[test]
+fn a_vault_that_cannot_be_locked_still_writes_a_copy_somewhere_it_can() {
+    if !permissions_apply() {
+        return;
+    }
+
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let elsewhere = tempfile::tempdir().expect("a second scratch directory");
+    let database = built(scratch.path(), "readonly.kdbx", |db| {
+        db.root_mut()
+            .add_entry()
+            .edit(|entry| entry.set_unprotected(keepass::db::fields::TITLE, "kept"));
+    });
+
+    let _frozen = support::Frozen::over(scratch.path());
+
+    let mut vault = open(&database, BUILT_PASSWORD);
+    let copy = elsewhere.path().join("rescued.kdbx");
+    vault.save_copy(&copy).expect("the copy is written");
+    drop(vault);
+
+    let again = open(&copy, BUILT_PASSWORD);
+    assert_eq!(again.tree().entries.len(), 1);
+    assert!(
+        !again.is_read_only(),
+        "the copy inherited the medium the original was on"
+    );
+}
+
+/// A lock somebody is holding still wins over the medium. The order of the two
+/// answers inside `acquire` is what decides this, and getting it the other way
+/// round would let a second Coffer read a vault the first has open and report
+/// nothing about it.
+#[test]
+fn a_lock_somebody_is_holding_is_believed_where_nothing_can_be_written() {
+    if !permissions_apply() {
+        return;
+    }
+
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = built(scratch.path(), "contested.kdbx", |_| {});
+    let held = open(&database, BUILT_PASSWORD);
+
+    let _frozen = support::Frozen::over(scratch.path());
+
+    let error = vault_core::Vault::open(
+        &database,
+        support::password(BUILT_PASSWORD),
+        vault_core::LockPolicy::Respect,
+    )
+    .expect_err("a held lock is still a held lock");
+    assert!(matches!(error, vault_core::VaultError::Locked(_)));
+
+    drop(held);
+}
+
+/// The format outranks the place. A KDBX 3 database carrying attachments is
+/// refused a read of those attachments whatever it is kept on, because the
+/// reason is what the format can hold and not where the file sits.
+#[test]
+fn a_format_that_cannot_be_read_back_is_still_that_wherever_it_is_kept() {
+    if !permissions_apply() {
+        return;
+    }
+
+    let (scratch, database) = support::scratch("rich-kdbx31.kdbx");
+    let _frozen = support::Frozen::over(scratch.path());
+
+    let mut vault = open(&database, SECRET);
+    assert!(vault.is_read_only());
+    assert!(
+        matches!(
+            vault.save(),
+            Err(vault_core::VaultError::ReadOnlyKdbx3Attachments)
+        ),
+        "the medium answered for a format that cannot be written back"
+    );
+}
+
+/// Reading the file again does not thaw it. `reload` settles what the database
+/// is all over again, and a vault that came back writable would offer a save
+/// that could never reach the file.
+#[test]
+fn a_vault_kept_where_nothing_can_be_written_stays_that_way_when_it_is_read_again() {
+    if !permissions_apply() {
+        return;
+    }
+
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = built(scratch.path(), "reloaded.kdbx", |_| {});
+    let _frozen = support::Frozen::over(scratch.path());
+
+    let mut vault = open(&database, BUILT_PASSWORD);
+    vault.reload().expect("the file reads again");
+    assert!(vault.is_read_only(), "a reload thawed the medium");
 }

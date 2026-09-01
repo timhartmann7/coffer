@@ -17,6 +17,7 @@
 	import Mask from './Mask.svelte';
 	import PasswordField from './PasswordField.svelte';
 	import ProtectedValue from './ProtectedValue.svelte';
+	import SecretField from './SecretField.svelte';
 	import Tags from './Tags.svelte';
 	import Versions from './Versions.svelte';
 
@@ -124,7 +125,8 @@
 	 */
 	async function attach() {
 		try {
-			await onChanged(await addAttachment(entry.id));
+			const held = await addAttachment(entry.id);
+			if (held) await onChanged(held);
 		} catch (thrown) {
 			const failure = asFailure(thrown);
 			if (failure.code === 'attachmentInHistory') {
@@ -281,10 +283,18 @@
 			<span class="font-mono text-label tracking-label text-txt3 uppercase">Login</span>
 			<span class="mt-1.5 flex items-center gap-2">
 				{#if username && username.value === null && !username.empty}
-					<!-- A database may protect any field, the login included. It comes
-					     back the same way a protected custom field does: one reveal at
-					     a time. -->
-					<ProtectedValue entry={entry.id} field={username.name} {onFailure} />
+					<!-- A database may protect any field, the login included. Coffer
+					     does not protect one, so this is a file from another client -
+					     and a login is a standard field with no way to delete it, so
+					     a row that only revealed left it impossible to change at all. -->
+					<SecretField
+						entry={entry.id}
+						field={username.name}
+						{readOnly}
+						onCopy={() => onCopy(entry.id, username.name)}
+						onCommit={(value) => write(username.name, value, true)}
+						{onFailure}
+					/>
 				{:else}
 					<Editable
 						value={username?.value ?? ''}
@@ -296,7 +306,9 @@
 							write(nameOf(username, 'UserName'), value, username?.protected ?? false)}
 					/>
 				{/if}
-				{#if username && !username.empty}
+				<!-- Not for a protected login: the row above draws its own, beside
+				     the eye that reveals it. -->
+				{#if username && !username.empty && username.value !== null}
 					<button
 						type="button"
 						onclick={() => onCopy(entry.id, username.name)}
@@ -323,8 +335,20 @@
 		<div class="mt-5">
 			<span class="font-mono text-label tracking-label text-txt3 uppercase">Address</span>
 			{#if url && url.value === null && !url.empty}
+				<!-- Coffer never protects an address, but a database from another
+				     client may, and a protected one carries the same defect any
+				     other protected field of the reader's does. There is no opener
+				     beside it because `openable` is settled from the value, which
+				     never leaves Rust for a protected field. -->
 				<span class="mt-1.5 flex items-center gap-2">
-					<ProtectedValue entry={entry.id} field={url.name} {onFailure} />
+					<SecretField
+						entry={entry.id}
+						field={url.name}
+						{readOnly}
+						onCopy={() => onCopy(entry.id, url.name)}
+						onCommit={(value) => write(url.name, value, true)}
+						{onFailure}
+					/>
 				</span>
 			{:else}
 				<span class="mt-1.5 flex items-center gap-2">
@@ -361,6 +385,11 @@
 		<div class="mt-6 border-t border-line pt-5">
 			<div class="font-mono text-label tracking-label text-txt3 uppercase">Notes</div>
 			{#if notes && notes.value === null && !notes.empty}
+				<!-- The one protected value still only readable. Notes is the field
+				     that is a textarea rather than a line, so it is not the row the
+				     others share, and Coffer never protects one: this is a note a
+				     foreign client protected, and it is revealed and copied rather
+				     than written into. -->
 				<div class="mt-3 flex items-center gap-3">
 					<ProtectedValue entry={entry.id} field={notes.name} {onFailure} />
 				</div>
@@ -398,7 +427,14 @@
 				<div class="mt-3 flex items-center gap-3">
 					<span class="w-24 shrink-0 truncate text-small text-txt2">{field.name}</span>
 					{#if field.value === null && !field.empty}
-						<ProtectedValue entry={entry.id} field={field.name} {onFailure} />
+						<SecretField
+							entry={entry.id}
+							field={field.name}
+							{readOnly}
+							onCopy={() => onCopy(entry.id, field.name)}
+							onCommit={(value) => write(field.name, value, field.protected)}
+							{onFailure}
+						/>
 					{:else}
 						<!-- A protected field that is empty comes back with no value to
 						     reveal, and it goes back protected: what the file says about

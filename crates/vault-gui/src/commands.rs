@@ -4,11 +4,18 @@
 //! `vault-core` understands, asks the session, and turns the answer into a DTO.
 //! No decision about the database is made in this file.
 //!
-//! Two of them are `async` on purpose. A plain `#[tauri::command]` runs inline
-//! on the thread that handles IPC, which on macOS is the thread that draws the
-//! window: key derivation there would freeze the window for a second, and a
-//! file dialog there deadlocks, because the panel needs the run loop that the
-//! call is blocking.
+//! Nearly all of them are `async` on purpose. A plain `#[tauri::command]` runs
+//! inline on the thread that handles IPC, which on macOS is the thread that
+//! draws the window: key derivation there would freeze the window for a second,
+//! and a file dialog there deadlocks, because the panel needs the run loop that
+//! the call is blocking.
+//!
+//! The four that are not are the four that never reach the session: the two
+//! that read and write what the reader chose, the one that makes a password out
+//! of the machine's randomness, and the one the window sends on every keypress
+//! to say somebody is there. That last one is why they stay: it is the most
+//! frequent message in the application, it cannot wait on anything, and a hop
+//! onto another thread for it would be latency bought with nothing.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -16,7 +23,7 @@ use std::sync::Arc;
 use tauri::ipc::{InvokeBody, Request};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
-use vault_core::storage::snapshot;
+use vault_core::storage::{snapshot, unsaved};
 use zeroize::Zeroizing;
 
 use vault_core::generate::{Alphabet, Recipe};
@@ -32,24 +39,41 @@ use crate::{clipboard, lock, opener, recent, settings, window};
 
 /// The session is behind an `Arc` so that a command can take it onto a blocking
 /// thread, which is where key derivation belongs.
+///
+/// Every command that reaches the session is declared `async`, including the
+/// ones that only read. A plain `#[tauri::command]` runs on the thread AppKit
+/// draws on, and reaching the session means waiting for whoever holds it: a
+/// save holds it for a whole key derivation and then the encryption of the
+/// file, which on a vault carrying documents is seconds. A read waiting there
+/// is not a slow read. It is the window not answering the mouse.
 type Held<'a> = State<'a, Arc<Session>>;
 
 /// What the file panels call a vault. One string, because three panels offer the
 /// same filter and a second wording would be a second name for one thing.
 const KDBX: &str = "KDBX database";
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn status(app: AppHandle, session: Held<'_>) -> Status {
-    let (entries, dirty, read_only) = session
-        .with(|vault| (vault.count(), vault.is_dirty(), vault.is_read_only()))
-        .unwrap_or((0, false, false));
+    let (entries, read_only) = session
+        .with(|vault| (vault.count(), vault.is_read_only()))
+        .unwrap_or((0, false));
+    let database = session.database();
 
     Status {
-        database: session.database().as_deref().map(Database::of),
+        // Asked of the filesystem rather than remembered, so that a copy left
+        // by a run that has since quit is still offered. A copy that cannot be
+        // read is one Coffer does not offer, and the rest of the answer still
+        // has to come back.
+        rescue: database
+            .as_deref()
+            .and_then(|path| unsaved::found(path).ok().flatten())
+            .as_ref()
+            .map(dto::Rescued::of),
+        lost: session.lost(),
+        database: database.as_deref().map(Database::of),
         key_file: session.key_file().as_deref().map(Database::of),
         unlocked: session.is_unlocked(),
         entries,
-        dirty,
         read_only,
         locked_by: session.locked_by().and_then(Reason::explained),
         locks_in: app
@@ -80,7 +104,7 @@ pub async fn choose_database(
     }
 
     if session.is_unlocked() {
-        return Err(Failure::refused("lock the vault before opening another"));
+        return Err(Failure::lock_first());
     }
 
     let Some(chosen) = picker.blocking_pick_file() else {
@@ -197,7 +221,7 @@ pub async fn choose_key_file(
 }
 
 /// Takes the key file back off, for a reader who picked the wrong one.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn forget_key_file(session: Held<'_>) {
     session.use_key_file(None);
 }
@@ -237,7 +261,7 @@ fn password_of(body: &InvokeBody) -> Result<Zeroizing<Vec<u8>>, Failure> {
 ///
 /// Nothing is written here. The folder is made at the moment the reader commits,
 /// which is where a refusal can still be reported.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn default_new_database(app: AppHandle, session: Held<'_>) -> Result<dto::Database, Failure> {
     let home = app
         .path()
@@ -334,7 +358,7 @@ pub async fn create_database(
 
 /// Wipes the decrypted database out of memory and takes the window down with
 /// it, which is what every other way of locking does too.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn lock(app: AppHandle) {
     match app.try_state::<Arc<Timer>>() {
         Some(timer) => timer.post(Event::Locking(Reason::ByHand)),
@@ -365,14 +389,14 @@ pub fn tree(session: Held<'_>) -> Result<Group, Failure> {
     Ok(Group::of(&session.tree()?))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn entry(id: String, session: Held<'_>) -> Result<Entry, Failure> {
     Ok(Entry::of(&session.entry(dto::entry_id(&id)?)?))
 }
 
 /// Hands one field's value to the screen. This is the only command that returns
 /// a secret, and it returns one field of one entry, once.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn reveal(entry: String, field: String, session: Held<'_>) -> Result<Revealed, Failure> {
     let secret = session.reveal(dto::entry_id(&entry)?, &field)?;
     Ok(Revealed::new(text(&secret)?))
@@ -380,7 +404,7 @@ pub fn reveal(entry: String, field: String, session: Held<'_>) -> Result<Reveale
 
 /// Copies one field's value to the clipboard. Nothing comes back but the number
 /// of seconds until Coffer takes it off again.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn copy(
     entry: String,
     field: String,
@@ -423,7 +447,7 @@ pub fn settings(app: AppHandle) -> dto::Settings {
 /// that need pushing somewhere have to be pushed before the write is reported,
 /// or three of the five would apply and two would not, and the two that did not
 /// would arrive anyway at the next lock.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_settings(settings: dto::Settings, app: AppHandle) -> Result<dto::Settings, Failure> {
     let held = app
         .try_state::<Arc<settings::Preferences>>()
@@ -463,7 +487,7 @@ fn text(secret: &vault_core::SecretValue) -> Result<&str, Failure> {
 /// The address is read out of the database here rather than sent by the screen,
 /// so that the only thing the webview can ask Coffer to open is an entry it can
 /// already see.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_url(entry: String, session: Held<'_>) -> Result<(), Failure> {
     let entry = session.entry(dto::entry_id(&entry)?)?;
 
@@ -482,7 +506,7 @@ pub fn open_url(entry: String, session: Held<'_>) -> Result<(), Failure> {
 
 /// The snapshots beside the chosen database, most recent first. The unlock
 /// screen offers them when the database itself will not open.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn snapshots(session: Held<'_>) -> Result<Vec<Snapshot>, Failure> {
     let database = session.database().ok_or_else(Failure::no_vault)?;
     let taken = snapshot::taken(&database).map_err(Failure::io)?;
@@ -493,10 +517,10 @@ pub fn snapshots(session: Held<'_>) -> Result<Vec<Snapshot>, Failure> {
 ///
 /// The index is all the webview sends; the path is built here from the database
 /// the user chose, so no message from the screen can name a file.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn choose_snapshot(index: u32, session: Held<'_>) -> Result<Database, Failure> {
     if session.is_unlocked() {
-        return Err(Failure::refused("lock the vault before opening another"));
+        return Err(Failure::lock_first());
     }
 
     let database = session.database().ok_or_else(Failure::no_vault)?;
@@ -506,8 +530,45 @@ pub fn choose_snapshot(index: u32, session: Held<'_>) -> Result<Database, Failur
         return Err(Failure::gone());
     }
 
-    session.choose_snapshot(path.clone());
+    session.choose_sibling(path.clone());
     Ok(Database::of(&path))
+}
+
+/// Points the session at the unsaved copy a lock left beside the database.
+///
+/// Nothing is sent: the path is built here from the database the reader chose,
+/// so no message from the window can name a file. The same shape as
+/// `choose_snapshot`, for the same reason.
+#[tauri::command(async)]
+pub fn choose_rescue(session: Held<'_>) -> Result<Database, Failure> {
+    if session.is_unlocked() {
+        return Err(Failure::lock_first());
+    }
+
+    let database = session.database().ok_or_else(Failure::no_vault)?;
+    let path = unsaved::beside(&database).map_err(Failure::io)?;
+
+    if !path.is_file() {
+        return Err(Failure::gone());
+    }
+
+    session.choose_sibling(path.clone());
+    Ok(Database::of(&path))
+}
+
+/// Takes that copy off the disk.
+///
+/// Only ever from a press. The copy holds the one version of work the vault has
+/// not got, so nothing in Coffer removes it on its own initiative: the reader is
+/// shown what it is and decides when they are done with it.
+#[tauri::command(async)]
+pub fn discard_rescue(session: Held<'_>) -> Result<(), Failure> {
+    if session.is_unlocked() {
+        return Err(Failure::lock_first());
+    }
+
+    let database = session.database().ok_or_else(Failure::no_vault)?;
+    unsaved::discard(&database).map_err(Failure::io)
 }
 
 /// The whole tree, as it is now. Every command that changes the shape of the
@@ -609,12 +670,20 @@ pub fn set_tags(entry: String, tags: Vec<String>, session: Held<'_>) -> Result<E
 /// The file is chosen and read in Rust. Nothing about it crosses the boundary
 /// on the way in: the webview asks for a picker and is told what the entry
 /// holds afterwards.
+///
+/// Nothing comes back when the reader closed the panel without choosing, the
+/// way it does from every other panel here. An entry handed back unchanged
+/// reads to the window as a change, and what the window does with a change is
+/// write the vault: a press of Escape cost a key derivation, the re-encryption
+/// of every file in the database, and one of the ten snapshots - the oldest,
+/// pushed off the end of the only chain that leads back to a version of the
+/// vault from an hour ago.
 #[tauri::command]
 pub async fn add_attachment(
     app: AppHandle,
     entry: String,
     session: Held<'_>,
-) -> Result<Entry, Failure> {
+) -> Result<Option<Entry>, Failure> {
     let id = dto::entry_id(&entry)?;
 
     let Some(chosen) = app
@@ -623,7 +692,7 @@ pub async fn add_attachment(
         .set_title("Add a file to this entry")
         .blocking_pick_file()
     else {
-        return entry_of(&session, &entry);
+        return Ok(None);
     };
     let path = chosen
         .into_path()
@@ -646,7 +715,7 @@ pub async fn add_attachment(
     let data = Zeroizing::new(std::fs::read(&path).map_err(Failure::io)?);
 
     session.with_mut(|vault| vault.add_attachment(id, &name, data))??;
-    entry_of(&session, &entry)
+    entry_of(&session, &entry).map(Some)
 }
 
 /// Writes one of an entry's files out to wherever the reader says.
@@ -734,7 +803,7 @@ pub fn version(entry: String, index: usize, session: Held<'_>) -> Result<Entry, 
 
 /// Hands one field's value out of a previous version, on the same terms as
 /// [`reveal`]: one field, once, and only when the screen asked for it.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn reveal_version(
     entry: String,
     index: usize,
@@ -979,6 +1048,89 @@ mod tests {
                 body.contains("opened(&app)"),
                 "a vault is opened without starting the clock that locks it:\n{}",
                 body.lines().take(3).collect::<Vec<_>>().join("\n")
+            );
+        }
+    }
+
+    /// Every command answered inline, whole: from its attribute down to the
+    /// closing brace in the first column, which in formatted source ends the
+    /// item and nothing else.
+    ///
+    /// The body as well as the signature, because a command can reach the
+    /// session without ever naming it. Two spellings take a command off this
+    /// thread and only one of them is the attribute: an `async fn` is spawned
+    /// whether or not the attribute says so, so the signature is read too.
+    fn drawn_on_the_window_thread(source: &str) -> Vec<String> {
+        let mut found: Vec<String> = Vec::new();
+        let mut taking: Option<String> = None;
+
+        for line in source.lines() {
+            if line.trim() == "#[tauri::command]" {
+                taking = Some(String::new());
+                continue;
+            }
+            let Some(item) = taking.as_mut() else {
+                continue;
+            };
+            item.push_str(line);
+            item.push('\n');
+            if line == "}" {
+                found.extend(taking.take().filter(|item| !item.contains("async fn")));
+            }
+        }
+
+        found
+    }
+
+    /// A command without `(async)` is answered inline on the thread AppKit
+    /// draws on. Waiting for the session there is not a slow answer, it is a
+    /// window that stops taking the mouse - and a save holds the session for a
+    /// key derivation and the encryption of the whole file, which on a vault
+    /// carrying documents is seconds rather than the instant a read is.
+    ///
+    /// Read out of this file's own source, because there is no way to ask a
+    /// running command which thread it is on, and a new command added the
+    /// obvious way would be the one that freezes.
+    #[test]
+    fn nothing_that_waits_for_the_session_runs_where_the_window_is_drawn() {
+        let source = include_str!("commands.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or_default();
+
+        for item in drawn_on_the_window_thread(source) {
+            let named = item.lines().take(4).collect::<Vec<_>>().join("\n");
+            assert!(
+                !item.contains("Held<"),
+                "this command reaches the session from the drawing thread:\n{named}"
+            );
+            // Posting one of these is reaching the lock. `Deadline::on`
+            // answers both with `Decision::Lock` - the first always, the second
+            // whenever the new timeout is already spent - and `Shared::post`
+            // fires on the thread that posted. A lock writes the vault out
+            // before wiping it, so that thread pays a key derivation.
+            //
+            // `Event::Stirred` is not one of them and is deliberately left
+            // here: it can only ever move the deadline, it is the most frequent
+            // message in the application, and a hop onto another thread for it
+            // would be latency bought with nothing.
+            for firing in ["Event::Locking", "Event::TimeoutChanged"] {
+                assert!(
+                    !item.contains(firing),
+                    "this command posts {firing} from the drawing thread:\n{named}"
+                );
+            }
+        }
+
+        // The two that reach it without naming it. Locking wipes the tree,
+        // which takes the same mutex a save is holding - and writes the vault
+        // out first, so it costs a key derivation as well. Posting to the timer
+        // is reaching the lock: the deadline answers a shortened timeout that
+        // has already gone by locking, on the thread that posted it.
+        for reaching in ["pub fn lock(", "pub fn set_settings("] {
+            assert!(
+                source.contains(&format!("#[tauri::command(async)]\n{reaching}")),
+                "{reaching} reaches the lock and must not be answered inline"
             );
         }
     }

@@ -37,4 +37,4 @@ mod wipe;
 pub use crate::error::VaultError;
 pub use crate::key::MasterKey;
 pub use crate::secret::SecretValue;
-pub use crate::vault::{LockPolicy, MAX_ATTACHMENT_BYTES, NewValue, Recipe, Rival, Vault};
+pub use crate::vault::{LockPolicy, MAX_ATTACHMENT_BYTES, NewValue, Recipe, Rescue, Rival, Vault};

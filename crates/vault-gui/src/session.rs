@@ -11,7 +11,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use vault_core::kdf::Work;
 use vault_core::model::{Entry, EntryId, Project};
-use vault_core::{LockPolicy, MasterKey, Recipe, SecretValue, Vault};
+use vault_core::{LockPolicy, MasterKey, Recipe, Rescue, SecretValue, Vault};
 use zeroize::Zeroizing;
 
 use crate::autolock::Reason;
@@ -28,6 +28,10 @@ struct Held {
     /// Why the vault that was open is not open any more, when it is worth
     /// saying. Cleared by the next unlock.
     locked_by: Option<Reason>,
+    /// Whether the last lock found work the file had not got and could not put
+    /// it anywhere at all. There is no file to point the reader at, which is why
+    /// this is a flag and not a path. Cleared with `locked_by`.
+    lost: bool,
     /// The key file the next unlock will use alongside the password, when the
     /// database asks for one.
     ///
@@ -65,6 +69,7 @@ impl Session {
             held: Mutex::new(Held {
                 database,
                 locked_by: None,
+                lost: false,
                 key_file: None,
                 making: None,
                 measured: None,
@@ -106,6 +111,9 @@ impl Session {
         // different file would turn a right password into a wrong one, with
         // nothing on the screen to explain it.
         held.key_file = None;
+        // A flag about the vault that was open says nothing about the one being
+        // chosen, for the same reason the key file does not carry over.
+        held.lost = false;
         held.generation += 1;
     }
 
@@ -123,15 +131,16 @@ impl Session {
         self.held().key_file = path;
     }
 
-    /// Points the session at one of this database's own snapshots.
+    /// Points the session at one of this database's own files: a snapshot, or
+    /// the unsaved copy a lock left beside it.
     ///
-    /// [`Session::choose`] with the key file put back. A snapshot is a copy of
-    /// the same vault and opens with the same credentials, so forgetting the key
-    /// file - which is right for any other file - would leave a snapshot of a
+    /// [`Session::choose`] with the key file put back. Both are copies of the
+    /// same vault and open with the same credentials, so forgetting the key
+    /// file - which is right for any other file - would leave one taken from a
     /// database that wants one impossible to open.
-    pub fn choose_snapshot(&self, snapshot: PathBuf) {
+    pub fn choose_sibling(&self, sibling: PathBuf) {
         let key_file = self.key_file();
-        self.choose(snapshot);
+        self.choose(sibling);
         self.use_key_file(key_file);
     }
 
@@ -185,6 +194,7 @@ impl Session {
         held.database = Some(vault.path().to_path_buf());
         held.vault = Some(vault);
         held.locked_by = None;
+        held.lost = false;
         Ok(())
     }
 
@@ -199,12 +209,23 @@ impl Session {
     /// is told `true`.
     pub fn lock(&self, reason: Reason) -> bool {
         let mut held = self.held();
-        let had = held.vault.take().is_some();
-        if had {
-            held.locked_by = Some(reason);
-        }
+        // Written out before it is taken. Taking it is what destroys the only
+        // copy of anything that never reached the file, and a vault is dirty
+        // exactly when saving is the thing that failed - so a wipe on its own
+        // is a session's work ended by a timer nobody was watching.
+        let rescue = held.vault.as_mut().map(Vault::rescue);
+        held.vault = None;
         held.generation += 1;
-        had
+
+        let Some(rescue) = rescue else { return false };
+        held.locked_by = Some(reason);
+        held.lost = rescue == Rescue::Lost;
+        true
+    }
+
+    /// Whether the last lock in this run had to give something up.
+    pub fn lost(&self) -> bool {
+        self.held().lost
     }
 
     /// Why the window is asking for a password again, when there is something
@@ -449,6 +470,111 @@ mod tests {
                 .expect("the lock file reads")
                 .is_none()
         );
+    }
+
+    /// The defect the rescue exists for. A save the file refuses leaves the
+    /// change in memory, and the tree is what locking wipes: without a write on
+    /// the way out, a timer nobody watched is what ends a session's work.
+    #[test]
+    fn locking_a_vault_that_cannot_save_writes_it_beside_the_database_first() {
+        let (_scratch, database) = scratch(RICH);
+        let session = Session::new(Some(database.clone()));
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the database opens");
+
+        let id = entry_titled(&session, "basic").id;
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    id,
+                    fields::NOTES,
+                    vault_core::NewValue::Open("never saved".to_owned()),
+                )
+            })
+            .expect("the session is open")
+            .expect("the note is written");
+
+        // Somebody else writes the file, so the save on the way out is refused
+        // and the copy beside it is the only way the change survives.
+        {
+            let mut theirs = vault_core::Vault::open(
+                &database,
+                vault_core::MasterKey::from_password(password(SECRET)),
+                LockPolicy::TakeOver,
+            )
+            .expect("the other client opens it");
+            theirs
+                .set_field(
+                    id,
+                    fields::URL,
+                    vault_core::NewValue::Open("https://theirs.example".to_owned()),
+                )
+                .expect("their change is applied");
+            theirs.save().expect("their save goes through");
+        }
+
+        assert!(session.lock(Reason::Idle));
+        assert!(!session.lost(), "the work was written and nothing was lost");
+
+        let kept = vault_core::storage::unsaved::beside(&database).expect("a sibling path");
+        let rescued = vault_core::Vault::open(
+            &kept,
+            vault_core::MasterKey::from_password(password(SECRET)),
+            LockPolicy::Respect,
+        )
+        .expect("the copy opens with the same password");
+        assert_eq!(
+            rescued
+                .entry(id)
+                .expect("the entry is there")
+                .field(fields::NOTES)
+                .and_then(|held| held.value.open()),
+            Some("never saved")
+        );
+    }
+
+    /// Two triggers arriving together still write once, because the write
+    /// happens under the same lock that takes the vault away.
+    #[test]
+    fn two_locks_arriving_together_write_the_vault_once() {
+        let (_scratch, session) = unlocked(RICH);
+        let id = entry_titled(&session, "basic").id;
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    id,
+                    fields::NOTES,
+                    vault_core::NewValue::Open("once".to_owned()),
+                )
+            })
+            .expect("the session is open")
+            .expect("the note is written");
+
+        assert!(session.lock(Reason::Idle));
+        assert!(
+            !session.lock(Reason::Sleeping),
+            "a second lock found a vault"
+        );
+        assert!(!session.lost());
+    }
+
+    /// Whatever the last lock could not write says nothing about the next vault
+    /// the reader opens, so it goes when one is opened or another is chosen.
+    #[test]
+    fn an_unlock_forgets_what_the_last_lock_could_not_write() {
+        let (_scratch, database) = scratch(RICH);
+        let session = Session::new(Some(database.clone()));
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the database opens");
+        session.lock(Reason::Idle);
+        assert!(!session.lost(), "an untouched vault lost something");
+
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the database opens again");
+        assert!(!session.lost());
     }
 
     /// Unlocking twice without locking in between must not trip over Coffer's
@@ -875,7 +1001,7 @@ mod tests {
 
         let mut snapshot = database.into_os_string();
         snapshot.push(".1.bak");
-        session.choose_snapshot(PathBuf::from(snapshot));
+        session.choose_sibling(PathBuf::from(snapshot));
 
         assert_eq!(session.key_file(), Some(fixture("keyfile.key")));
     }

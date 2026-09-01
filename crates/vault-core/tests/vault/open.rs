@@ -427,6 +427,83 @@ fn the_wrong_password_is_one_message_with_no_detail() {
     assert_eq!(error.to_string(), "wrong password or key file");
 }
 
+/// The credentials a database opened only by its key file wants.
+fn key_file_alone() -> vault_core::MasterKey {
+    password("")
+        .with_key_file(&fixture("keyfile-only.key"))
+        .expect("the key file reads")
+}
+
+#[test]
+fn a_database_that_wants_a_key_file_and_no_password_opens() {
+    let (_scratch, database) = support::scratch("keyfile-only-kdbx41.kdbx");
+    let vault = vault_core::Vault::open(&database, key_file_alone(), LockPolicy::Respect)
+        .expect("the key file alone opens it");
+
+    assert_eq!(all_entries(&vault).len(), 1);
+}
+
+/// The composition that opened the file has to be the one that writes it back.
+/// A save that folded the empty password back in would put a database on disk
+/// that neither Coffer nor KeePassXC could open again, with the reader's own
+/// key file in their hand - every entry gone, and nothing on the screen to say
+/// so until the next unlock.
+#[test]
+fn a_database_opened_by_its_key_file_alone_is_written_back_the_same_way() {
+    let (_scratch, database) = support::scratch("keyfile-only-kdbx41.kdbx");
+    let mut vault = vault_core::Vault::open(&database, key_file_alone(), LockPolicy::Respect)
+        .expect("the key file alone opens it");
+
+    let id = all_entries(&vault).first().expect("an entry").id;
+    vault
+        .set_field(
+            id,
+            fields::USERNAME,
+            vault_core::NewValue::Open("written back".to_owned()),
+        )
+        .expect("the field is set");
+    vault.save().expect("the vault saves");
+    drop(vault);
+
+    let again = vault_core::Vault::open(&database, key_file_alone(), LockPolicy::Respect)
+        .expect("the file Coffer wrote opens with the same key file");
+    let entry = again.entry(id).expect("the entry survives");
+    assert_eq!(
+        entry
+            .field(fields::USERNAME)
+            .and_then(|held| held.value.open()),
+        Some("written back")
+    );
+}
+
+/// The second attempt is a guess, and a guess must not become a way in. A key
+/// file that is not this database's is refused as firmly with the fallback in
+/// place as it was without one.
+#[test]
+fn the_wrong_key_file_is_still_refused_when_no_password_is_typed() {
+    let (_scratch, database) = support::scratch("keyfile-only-kdbx41.kdbx");
+    let wrong = password("")
+        .with_key_file(&fixture("keyfile.key"))
+        .expect("the key file reads");
+
+    vault_core::Vault::open(&database, wrong, LockPolicy::Respect)
+        .expect_err("another database's key file opens nothing");
+}
+
+/// The fallback only ever applies where there is a second composition to try.
+/// A database that wants a password as well as its key file is not opened by
+/// the file on its own.
+#[test]
+fn a_database_that_wants_both_is_not_opened_by_its_key_file_alone() {
+    let (_scratch, database) = support::scratch("keyfile-kdbx41.kdbx");
+    let half = password("")
+        .with_key_file(&fixture("keyfile.key"))
+        .expect("the key file reads");
+
+    vault_core::Vault::open(&database, half, LockPolicy::Respect)
+        .expect_err("the key file alone is not enough");
+}
+
 #[test]
 fn a_key_file_database_needs_its_key_file() {
     let (_scratch, database) = support::scratch("keyfile-kdbx41.kdbx");

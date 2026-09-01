@@ -105,7 +105,11 @@ an hour after the refusal, so the command is the reliable one.
   the limits the file carries.
 - The vault locks itself after five minutes idle, on sleep and on screen lock.
   Locking destroys the window and wipes the decrypted tree; it does not hide
-  anything.
+  anything. It writes first: if the vault is holding a change the file has not
+  got and the file will not take it — another client wrote it, the disk went, the
+  folder turned read only — the whole thing goes to `vault.kdbx.unsaved.kdbx`
+  beside the database, under the same password. The unlock screen offers it, and
+  it stays there until you remove it.
 - A copied password is written as a concealed, transient item, which keeps it
   out of clipboard history tools, and cleared after a minute.
 

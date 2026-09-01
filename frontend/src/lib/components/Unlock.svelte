@@ -3,14 +3,16 @@
 		asFailure,
 		chooseDatabase,
 		chooseKeyFile,
+		chooseRescue,
 		chooseSnapshot,
+		discardRescue,
 		forgetKeyFile,
 		snapshots,
 		unlock,
 		unlockTakingOver
 	} from '$lib/ipc';
 	import { fully } from '$lib/format';
-	import type { Database, Failure, Snapshot } from '$lib/model';
+	import type { Database, Failure, Rescued, Snapshot } from '$lib/model';
 	import Icon from './Icon.svelte';
 	import Mark from './Mark.svelte';
 
@@ -18,6 +20,8 @@
 		database,
 		keyFile = null,
 		reason = null,
+		rescue = null,
+		lost = false,
 		onChoose,
 		onKeyFile,
 		onCreate,
@@ -36,6 +40,15 @@
 		 * means here.
 		 */
 		reason?: string | null;
+		/**
+		 * The copy a lock left beside this vault, when it could not save what
+		 * was in the window. Rust's answer rather than this window's, for the
+		 * same reason `reason` is: the window that knew was destroyed, and a
+		 * copy an earlier run left is still worth offering.
+		 */
+		rescue?: Rescued | null;
+		/** Whether the last lock had work to write and nowhere to put it. */
+		lost?: boolean;
 		onChoose: (database: Database) => void;
 		onKeyFile: (chosen: Database | null) => void;
 		/** Offered on the first run, where there is nothing to open yet. */
@@ -87,6 +100,11 @@
 	 */
 	let takingOver = $state(false);
 
+	/** Whether the reader has just taken the copy away. Rust is asked for the
+	 * status once per window, so the offer has to be taken off the screen here
+	 * rather than by reading it again. */
+	let dropped = $state(false);
+
 	async function submit(event: SubmitEvent) {
 		event.preventDefault();
 		if (busy || !database || !field) return;
@@ -114,6 +132,33 @@
 			field.focus();
 		} finally {
 			busy = false;
+		}
+	}
+
+	/**
+	 * Opens the copy a lock left, which is a vault of its own at another path.
+	 *
+	 * `sameVault` because it is the same database under the same credentials: a
+	 * copy taken from a vault that wants a key file needs the same one, and
+	 * forgetting it would leave it impossible to open.
+	 */
+	async function openRescue() {
+		if (busy) return;
+		try {
+			chose(await chooseRescue(), true);
+		} catch (thrown) {
+			failure = asFailure(thrown);
+		}
+	}
+
+	/** Takes the copy away, once the reader says they are done with it. */
+	async function dropRescue() {
+		if (busy) return;
+		try {
+			await discardRescue();
+			dropped = true;
+		} catch (thrown) {
+			failure = asFailure(thrown);
 		}
 	}
 
@@ -196,6 +241,50 @@
 			</p>
 		{:else}
 			<div class="mt-5 text-center text-lead font-bold tracking-wordmark">COFFER</div>
+		{/if}
+
+		<!-- Standing news about a file beside the vault, so it sits above the
+		     password rather than inside the panel that reports a failure to open
+		     this one. It is as true on a first launch as it is straight after
+		     the lock that wrote it. -->
+		{#if lost}
+			<p class="mx-auto mt-6 max-w-[38ch] text-center text-small leading-relaxed text-danger">
+				There were changes the vault had not taken, and Coffer could not write them anywhere.
+			</p>
+		{/if}
+
+		{#if rescue && !dropped}
+			<div class="mt-6 rounded-sm border border-hairline bg-surface2 px-4 py-4">
+				<div class="flex items-center gap-2">
+					<Icon name="warn" class="h-4 w-4 shrink-0 text-warn" />
+					<span class="text-body text-txt">Work that never reached the vault</span>
+				</div>
+				<p class="mt-2 text-fine leading-relaxed text-txt2">
+					A lock could not save it, so Coffer put it in
+					<span class="font-mono text-txt">{rescue.name}</span>
+					{#if rescue.written}{fully(rescue.written, new Date())}{/if}. It opens with the same
+					password. It is a file of its own: copy what you need back into your vault, then remove
+					it.
+				</p>
+				<div class="mt-4 flex gap-2">
+					<button
+						type="button"
+						onclick={openRescue}
+						disabled={busy}
+						class="h-9 rounded-full border border-hairline px-4 text-small text-txt transition-colors hover:border-txt3 active:bg-surface2 disabled:cursor-not-allowed"
+					>
+						Open it
+					</button>
+					<button
+						type="button"
+						onclick={dropRescue}
+						disabled={busy}
+						class="h-9 rounded-full px-4 text-small text-txt3 transition-colors hover:text-txt disabled:cursor-not-allowed"
+					>
+						Remove it
+					</button>
+				</div>
+			</div>
 		{/if}
 
 		{#if database}

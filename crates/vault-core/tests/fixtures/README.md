@@ -16,6 +16,7 @@ the resulting `.kdbx` files.
 | `minimal-kdbx41.kdbx` | KDBX 4.1 | `coffer-test` | one group, one entry |
 | `whitespace-kdbx41.kdbx` | KDBX 4.1 | `coffer-test` | values made only of whitespace |
 | `keyfile-kdbx41.kdbx` | KDBX 4.1 | `coffer-keyfile` + `keyfile.key` | a database that needs a key file |
+| `keyfile-only-kdbx41.kdbx` | KDBX 4.1 | `keyfile-only.key`, no password | a database opened by its key file alone |
 | `empty-kdbx31.kdbx` | KDBX 3.1 | `coffer-test` | `keepassxc-cli db-create` output, untouched |
 
 `rich.xml` covers: nested groups five deep, group notes, `IsExpanded`,

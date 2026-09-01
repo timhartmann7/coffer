@@ -19,7 +19,7 @@ use crate::preflight;
 use crate::secret::SecretValue;
 use crate::storage::lock::{Lock, Outcome};
 use crate::storage::watch::{Change, Content, Stamp};
-use crate::storage::{atomic, snapshot, watch};
+use crate::storage::{atomic, snapshot, unsaved, watch};
 use crate::text;
 use crate::wipe;
 
@@ -103,7 +103,12 @@ pub struct Vault {
     /// Whether this vault holds a change the file on disk does not.
     changed: bool,
     /// Held for as long as the vault is open; removed when it is dropped.
-    _lock: Lock,
+    ///
+    /// Absent where the place beside the database would not take the file.
+    /// Nothing can be written there, so there is nothing for a lock to guard,
+    /// and a vault that refused to open over a note it could not leave would be
+    /// refusing to read a file that reads perfectly well.
+    _lock: Option<Lock>,
 }
 
 impl std::fmt::Debug for Vault {
@@ -156,6 +161,21 @@ pub struct Rival {
     pub entries: Option<usize>,
 }
 
+/// What a lock did with changes the file has not got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rescue {
+    /// The vault held nothing the file did not already have.
+    Nothing,
+    /// The ordinary save went through, and the work is where the reader
+    /// believes it is.
+    Saved,
+    /// The save was refused, and everything that was in the window is in the
+    /// file beside the database instead.
+    Kept,
+    /// Neither could be written. The vault is wiped anyway.
+    Lost,
+}
+
 /// Whether a write may go over a file somebody else has changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Guard {
@@ -181,6 +201,11 @@ enum Source {
     /// It can still be written somewhere else, which is what the offer to keep
     /// a copy is for.
     Snapshot,
+    /// Kept somewhere that will not take a write: a read-only disk image, a
+    /// Time Machine snapshot, a stick macOS mounted read-only, a share the
+    /// reader may only read. It opens, because reading needs no write, and
+    /// every change is refused because none of them could reach the file.
+    ReadOnlyPlace,
     /// Anything Coffer can write back as KDBX 4.1.
     Writable,
 }
@@ -191,23 +216,24 @@ impl Vault {
     /// Symbolic links are followed to the file they name, so that a database
     /// reached through a link is saved where the link points rather than being
     /// replaced by it.
-    pub fn open(path: &Path, key: MasterKey, policy: LockPolicy) -> Result<Vault, VaultError> {
+    pub fn open(path: &Path, mut key: MasterKey, policy: LockPolicy) -> Result<Vault, VaultError> {
         let path = path.canonicalize().map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => VaultError::DatabaseGone,
             _ => VaultError::Io(error),
         })?;
 
         let stamp = Stamp::of(&path)?;
-        let (database, content) = read(&path, &key)?;
-        let source = classify(&database, &path);
+        let (database, content) = unlock(&path, &mut key)?;
 
         let lock = match policy {
-            LockPolicy::TakeOver => Lock::take(&path)?,
+            LockPolicy::TakeOver => Some(Lock::take(&path)?),
             LockPolicy::Respect => match Lock::acquire(&path)? {
-                Outcome::Taken(lock) => lock,
+                Outcome::Taken(lock) => Some(lock),
                 Outcome::Held(holder) => return Err(VaultError::Locked(holder)),
+                Outcome::Unwritable => None,
             },
         };
+        let source = classify(&database, &path, lock.as_ref());
 
         Ok(Vault {
             database,
@@ -240,7 +266,7 @@ impl Vault {
 
         // A name of the shape Coffer gives its own snapshots would open like
         // any other database and refuse every save for good.
-        if snapshot::slot_of(path).is_some() {
+        if snapshot::slot_of(path).is_some() || unsaved::reserved(path) {
             return Err(VaultError::ReservedName);
         }
         // The parent has to be there: a staged write puts its temporary file
@@ -478,11 +504,6 @@ impl Vault {
     /// Everything a write settles in the database before any bytes leave it.
     fn prepare(&mut self) -> Result<(), VaultError> {
         settle(&mut self.database)
-    }
-
-    /// Whether this vault holds a change the file on disk does not.
-    pub fn is_dirty(&self) -> bool {
-        self.changed
     }
 
     /// How many entries the vault holds. Previous versions are not entries and
@@ -927,7 +948,11 @@ impl Vault {
         match self.source {
             Source::Kdb => return Err(VaultError::ReadOnlyKdb),
             Source::Kdbx3WithAttachments => return Err(VaultError::ReadOnlyKdbx3Attachments),
-            Source::Snapshot | Source::Writable => {}
+            // A snapshot and a read-only place are both about where the
+            // database is, and a copy is written somewhere else. That is the
+            // whole point of the offer: it is how the reader gets their work
+            // off a medium that will not take it.
+            Source::Snapshot | Source::ReadOnlyPlace | Source::Writable => {}
         }
         if path.canonicalize().is_ok_and(|target| target == self.path) {
             return Err(VaultError::CopyOntoItself);
@@ -943,6 +968,41 @@ impl Vault {
             }
             Ok(())
         })
+    }
+
+    /// Writes out whatever the file has not got, on the way to being wiped.
+    ///
+    /// Called by locking and by nothing else. Locking destroys the decrypted
+    /// tree, and a vault is dirty exactly when saving is the thing that failed,
+    /// so without this an idle timer or a closed lid is a whole session's work
+    /// gone with no message anywhere.
+    ///
+    /// The ordinary save is tried first, because a save that goes through
+    /// leaves the work in the file the reader thinks it is in, and because it is
+    /// the cheap order: an external change and a file that has gone are both
+    /// decided before any key is derived. What it will not take goes beside the
+    /// database, under the same credentials, through the same staged write.
+    ///
+    /// Nothing here can stop the lock. A rescue that fails answers [`Rescue::Lost`]
+    /// and the caller wipes the tree regardless: a vault left unlocked because
+    /// it had unsaved work would be the whole of the locking gone.
+    pub fn rescue(&mut self) -> Rescue {
+        if !self.changed {
+            return Rescue::Nothing;
+        }
+
+        if self.save().is_ok() {
+            return Rescue::Saved;
+        }
+
+        let Ok(beside) = unsaved::beside(&self.path) else {
+            return Rescue::Lost;
+        };
+
+        match self.save_copy(&beside) {
+            Ok(()) => Rescue::Kept,
+            Err(_) => Rescue::Lost,
+        }
     }
 
     /// What the file on disk holds now.
@@ -979,7 +1039,7 @@ impl Vault {
         let stamp = Stamp::of(&self.path)?;
         let (database, content) = read(&self.path, &self.key)?;
 
-        self.source = classify(&database, &self.path);
+        self.source = classify(&database, &self.path, self._lock.as_ref());
         self.database = database;
         self.stamp = stamp;
         self.content = content;
@@ -994,6 +1054,7 @@ impl Vault {
             Source::Kdb => Err(VaultError::ReadOnlyKdb),
             Source::Kdbx3WithAttachments => Err(VaultError::ReadOnlyKdbx3Attachments),
             Source::Snapshot => Err(VaultError::ReadOnlySnapshot),
+            Source::ReadOnlyPlace => Err(VaultError::ReadOnlyPlace),
             Source::Writable => Ok(()),
         }
     }
@@ -1204,6 +1265,11 @@ fn fill(path: &Path, key: MasterKey, recipe: &Recipe<'_>) -> Result<Vault, Vault
     let lock = match Lock::acquire(&path)? {
         Outcome::Taken(lock) => lock,
         Outcome::Held(holder) => return Err(VaultError::Locked(holder)),
+        // A vault is made where the reader can keep it. Somewhere that will not
+        // take the lock file will not take the database either, and the write
+        // below would be the one to say so - after a calibrated second of key
+        // derivation, and in an errno.
+        Outcome::Unwritable => return Err(VaultError::ReadOnlyPlace),
     };
 
     let mut written = 0;
@@ -1219,7 +1285,7 @@ fn fill(path: &Path, key: MasterKey, recipe: &Recipe<'_>) -> Result<Vault, Vault
     let content = std::fs::read(&path)
         .map(|bytes| watch::digest(&bytes))
         .unwrap_or_default();
-    let source = classify(&database, &path);
+    let source = classify(&database, &path, Some(&lock));
 
     Ok(Vault {
         database,
@@ -1229,7 +1295,7 @@ fn fill(path: &Path, key: MasterKey, recipe: &Recipe<'_>) -> Result<Vault, Vault
         stamp,
         content,
         changed: false,
-        _lock: lock,
+        _lock: Some(lock),
     })
 }
 
@@ -1318,6 +1384,47 @@ fn encrypt(
     Ok(counted.written)
 }
 
+/// Reads the database, trying the one other way its credentials could be put
+/// together before giving up.
+///
+/// A vault whose owner chose a key file and no password at all is opened by the
+/// file alone. Nothing in the header says so, and folding an empty password in
+/// anyway fails inside the cipher, which is where a corrupt file fails too - so
+/// the reader was told their vault was damaged and offered a snapshot, for a
+/// file with nothing wrong with it.
+///
+/// The refusal that is reported is the first one. The second attempt is a guess
+/// about one uncommon shape, and a guess that did not come off should not be
+/// what the reader is told about their file.
+fn unlock(path: &Path, key: &mut MasterKey) -> Result<(Held, Content), VaultError> {
+    let refused = match read(path, key) {
+        Ok(opened) => return Ok(opened),
+        Err(error) => error,
+    };
+
+    if !could_be_the_key(&refused) || !key.stand_alone() {
+        return Err(refused);
+    }
+
+    read(path, key).map_err(|_| refused)
+}
+
+/// Whether a refusal could be the credentials rather than the file.
+///
+/// A key that does not open a KDBX 4 database fails inside the cipher, and the
+/// cipher cannot tell a key it was never given from bytes somebody corrupted.
+/// So every report of damage is also a possible wrong key. A file that is not
+/// there, or is not a database at all, is neither.
+fn could_be_the_key(error: &VaultError) -> bool {
+    matches!(
+        error,
+        VaultError::WrongCredentials
+            | VaultError::DamagedHeader
+            | VaultError::DamagedPayload
+            | VaultError::DamagedContent
+    )
+}
+
 fn read(path: &Path, key: &MasterKey) -> Result<(Held, Content), VaultError> {
     use std::io::Read;
 
@@ -1365,11 +1472,20 @@ fn parse_without_dying(bytes: &[u8], key: keepass::DatabaseKey) -> Result<Databa
         .map_err(VaultError::from)
 }
 
-fn classify(database: &Database, path: &Path) -> Source {
+/// What the database is, for the purpose of deciding whether it may be written
+/// back.
+///
+/// The format comes first and the place second, on purpose. A KDBX 3 database
+/// carrying attachments is refused a read of those attachments as well as a
+/// save, and that refusal has to survive the file being on a read-only medium:
+/// the medium is why a save cannot go anywhere, the format is why the bytes
+/// cannot be trusted, and only the second of those is about the data.
+fn classify(database: &Database, path: &Path, lock: Option<&Lock>) -> Source {
     match database.config.version {
         DatabaseVersion::KDB(_) | DatabaseVersion::KDB2(_) => Source::Kdb,
         DatabaseVersion::KDB3(_) if database.num_attachments() > 0 => Source::Kdbx3WithAttachments,
         _ if snapshot::slot_of(path).is_some() => Source::Snapshot,
+        _ if lock.is_none() => Source::ReadOnlyPlace,
         _ => Source::Writable,
     }
 }

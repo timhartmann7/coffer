@@ -13,7 +13,7 @@
 	} from '$lib/ipc';
 	import { Presence } from '$lib/presence';
 	import { wear } from '$lib/theme';
-	import type { Database, Group, Settings as Chosen } from '$lib/model';
+	import type { Database, Group, Rescued, Settings as Chosen } from '$lib/model';
 
 	let database = $state<Database | null>(null);
 	/** The key file the next unlock will use, when Rust is holding one. */
@@ -24,6 +24,12 @@
 	let chosen = $state<Chosen | null>(null);
 	let showing = $state<'vault' | 'settings' | 'create'>('vault');
 	let reason = $state<string | null>(null);
+	/** The copy a lock left beside the vault, when there is one. Rust's answer
+	 * rather than this window's: a lock destroys the window that would have
+	 * known, and a copy an earlier run left is still worth offering. */
+	let rescue = $state<Rescued | null>(null);
+	/** Whether the last lock had work to write and nowhere at all to put it. */
+	let lost = $state(false);
 
 	/** The throttle on telling Rust that somebody is at the machine. */
 	const presence = new Presence();
@@ -42,6 +48,8 @@
 				database = opening.database;
 				keyFile = opening.keyFile;
 				reason = opening.lockedBy;
+				rescue = opening.rescue;
+				lost = opening.lost;
 				chosen = await loadSettings();
 				if (opening.unlocked) await opened();
 			} finally {
@@ -67,6 +75,8 @@
 		database = now.database;
 		readOnly = now.readOnly;
 		reason = null;
+		rescue = now.rescue;
+		lost = now.lost;
 	}
 
 	/**
@@ -87,17 +97,38 @@
 		showing = showing === 'settings' ? 'vault' : 'settings';
 	}
 
-	/** The settings screen offers another vault, which is the unlock screen's
-	 * picker under another name. */
+	/**
+	 * The settings screen offers another vault, which is the unlock screen's
+	 * picker under another name.
+	 *
+	 * The refusal is left to reach the screen. Rust will not point the session
+	 * at another file while one is open - the tree of the first would still be
+	 * in memory - and it says so in a sentence that names the way through. A
+	 * caught refusal made the offer a button that did nothing whatever.
+	 */
 	async function choose() {
-		const picked = await chooseDatabase().catch(() => null);
+		const picked = await chooseDatabase();
 		if (picked) {
 			database = picked;
 			// Rust forgot the key file when the session was pointed elsewhere,
 			// and the screen has to say the same thing.
 			keyFile = null;
 			showing = 'vault';
+			await chosen_elsewhere();
 		}
+	}
+
+	/**
+	 * Reads back what is true of the file that was just chosen.
+	 *
+	 * The copy a lock left is a fact about a database and not about this run, so
+	 * pointing the session at another file makes what is on the screen about the
+	 * wrong one. Only Rust knows whether the new one has a copy beside it.
+	 */
+	async function chosen_elsewhere() {
+		const now = await status().catch(() => null);
+		rescue = now?.rescue ?? null;
+		lost = now?.lost ?? false;
 	}
 </script>
 
@@ -167,7 +198,12 @@
 			{database}
 			{keyFile}
 			{reason}
-			onChoose={(picked) => (database = picked)}
+			{rescue}
+			{lost}
+			onChoose={(picked) => {
+				database = picked;
+				void chosen_elsewhere();
+			}}
 			onKeyFile={(chosen) => (keyFile = chosen)}
 			onCreate={() => (showing = 'create')}
 			onUnlocked={opened}
