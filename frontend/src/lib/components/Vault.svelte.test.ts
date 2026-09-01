@@ -951,3 +951,51 @@ it('says what to do when part of the bin cannot be emptied yet', async () => {
 
 	return unmount(component);
 });
+
+/**
+ * A save refused for anything but a conflict raises a notice that fades after
+ * six seconds. A reader who missed it went on editing into a window whose every
+ * write was failing, and the idle timer was what ended the session.
+ */
+it('keeps saying not saved after a write that only raised a notice', async () => {
+	ipc.entry.mockResolvedValue(
+		entry({
+			id: kept.id,
+			group: root.id,
+			fields: [field({ name: 'Title', kind: 'title', value: 'node-3', empty: false })]
+		})
+	);
+	ipc.setField.mockResolvedValue(entry({ id: kept.id, group: root.id }));
+	ipc.save.mockRejectedValue({
+		code: 'other',
+		message: 'No space left on device'
+	});
+
+	const component = open();
+	flushSync();
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('node-3'))
+		?.click();
+	await vi.waitFor(() => expect(ipc.entry).toHaveBeenCalled());
+	flushSync();
+
+	const title = host.querySelector('h1 input') as HTMLInputElement;
+	title.value = 'node-4';
+	title.dispatchEvent(new Event('blur'));
+
+	await vi.waitFor(() => expect(host.textContent).toContain('Not saved'));
+
+	// It is not the toast, which is what the defect was: the notice goes and
+	// this does not.
+	vi.useFakeTimers();
+	try {
+		await vi.advanceTimersByTimeAsync(30_000);
+		flushSync();
+		expect(host.textContent).toContain('Not saved');
+	} finally {
+		vi.useRealTimers();
+	}
+
+	return unmount(component);
+});

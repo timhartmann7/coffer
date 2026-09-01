@@ -78,6 +78,13 @@ impl Failure {
         }
     }
 
+    /// Two databases at once is not something Coffer does, so every offer to
+    /// open another file is refused while a vault is open. One sentence, three
+    /// places that make the offer.
+    pub fn lock_first() -> Failure {
+        Failure::refused("lock the vault before opening another")
+    }
+
     /// An unlock finished after the session had been pointed somewhere else.
     /// Nothing is open, which is what the code says; the message says why.
     pub fn stale() -> Failure {

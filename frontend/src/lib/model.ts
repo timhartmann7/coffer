@@ -23,15 +23,27 @@ export interface Status {
 	unlocked: boolean;
 	/** How many entries the vault holds, the recycle bin's included. */
 	entries: number;
-	/** Whether there is a change in the window the file does not have. */
-	dirty: boolean;
 	/** Whether this database can be written back at all. */
 	readOnly: boolean;
+	/** The unsaved copy sitting beside the database Coffer will open next, when
+	 * a lock had to write one. Read off the disk rather than remembered, so a
+	 * copy left by a run that has since quit is still offered. */
+	rescue: Rescued | null;
+	/** Whether the last lock in this run found work the file had not got and
+	 * could not put it anywhere at all. There is no file to point at, which is
+	 * why this is a flag and not a path. */
+	lost: boolean;
 	/** Why the vault that was open is not open any more, when it is worth
 	 * saying. A lock the reader asked for has nothing to explain. */
 	lockedBy: 'idle' | 'sleeping' | 'screenLocked' | 'sessionSwitched' | null;
 	/** Seconds until the open vault locks itself. */
 	locksIn: number | null;
+}
+
+/** The unsaved copy a lock left beside the vault. */
+export interface Rescued {
+	name: string;
+	written: string | null;
 }
 
 /** A snapshot Coffer took before one of its own saves. */

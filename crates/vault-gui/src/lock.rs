@@ -8,6 +8,14 @@
 //! The order below is the whole of what this module is. The tree goes first and
 //! synchronously, because destroying a window is a message to the event loop
 //! and a Mac going to sleep will not wait for it.
+//!
+//! The tree is also written out first, inside [`Session::lock`]. A vault is
+//! dirty exactly when saving is the thing that failed - somebody else wrote the
+//! file, the volume went, the folder turned read only - so a wipe on its own is
+//! a session's work ended by a timer nobody was watching. What the file will not
+//! take goes into a copy beside it. What cannot be written anywhere is wiped all
+//! the same: a vault left unlocked because it had unsaved work would be the
+//! whole of the locking gone.
 
 use std::sync::Arc;
 

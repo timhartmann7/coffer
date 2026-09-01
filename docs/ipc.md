@@ -36,7 +36,7 @@ is still a password; `empty` says whether there is one to ask for.
 
 | Command | Takes | Answers |
 |---|---|---|
-| `status` | | the chosen database, whether it is open, how many entries, whether there is an unsaved change, whether it can be written |
+| `status` | | the chosen database, whether it is open, how many entries, whether it can be written, why it locked, and the unsaved copy sitting beside it |
 | `choose_database` | | the database the user picked, or nothing if they closed the dialog |
 | `unlock` | the master password, as the raw body | nothing |
 | `lock` | | nothing |
@@ -47,6 +47,8 @@ is still a password; `empty` says whether there is one to ask for.
 | `open_url` | `entry` | nothing |
 | `snapshots` | | the `.bak` files beside the chosen database, newest first |
 | `choose_snapshot` | `index` | the snapshot now chosen |
+| `choose_rescue` | | the unsaved copy now chosen |
+| `discard_rescue` | | |
 
 Everything slice 3 added:
 
@@ -424,6 +426,14 @@ change in a file the next save of the database beside it rotates away, so every
 change is refused with `readOnly` and `save_copy` is the way out: it writes what
 is in the window to a file of the reader's choosing, which then opens like any
 other database.
+
+**A lock writes the vault out before it wipes it.** A vault is dirty exactly
+when saving is what failed, so locking on its own would be a session's work
+ended by a timer. The ordinary save is tried first; what it will not take goes to
+`<database>.unsaved.kdbx` beside the vault, under the same credentials. The lock
+happens either way, and `status` reports the copy as `rescue` and a rescue that
+could not be written anywhere as `lost`. The copy stays until the reader removes
+it through `discard_rescue`; Coffer never removes it on its own.
 
 **A vault kept in a place that will not take a file opens read only.** A vault
 on a read-only disk image, inside a Time Machine snapshot, on a stick macOS

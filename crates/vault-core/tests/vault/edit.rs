@@ -1672,14 +1672,16 @@ fn reading_the_file_again_throws_away_what_was_not_saved() {
     let mut vault = open(&database, SECRET);
     let id = only_entry(&vault, "basic");
 
-    assert!(!vault.is_dirty());
+    // `rescue` is what asks the question now, and on a vault with nothing to
+    // write it writes nothing. That the change in between was really there is
+    // what the comparison at the end of this test says.
+    assert_eq!(vault.rescue(), vault_core::Rescue::Nothing);
     vault
         .set_field(id, fields::NOTES, NewValue::Open("unsaved".to_owned()))
         .expect("the note is written");
-    assert!(vault.is_dirty());
 
     vault.reload().expect("the file reads again");
-    assert!(!vault.is_dirty());
+    assert_eq!(vault.rescue(), vault_core::Rescue::Nothing);
     assert_ne!(
         vault
             .entry(id)
@@ -2248,6 +2250,17 @@ fn a_database_that_would_be_too_large_to_open_again_is_not_written() {
         std::fs::metadata(&path).expect("the file is there").len(),
         before,
         "the database was written even though it could not be opened again"
+    );
+
+    // The one shape of trouble a lock cannot write its way out of: the ceiling
+    // is on the copy as much as on the database, so there is nowhere for the
+    // work to go and the answer has to say so rather than leave half a file.
+    assert_eq!(vault.rescue(), vault_core::Rescue::Lost);
+    assert!(
+        !vault_core::storage::unsaved::beside(&path)
+            .expect("a sibling path")
+            .exists(),
+        "a copy too large to write was left half written"
     );
     drop(vault);
 

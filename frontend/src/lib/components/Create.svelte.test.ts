@@ -215,7 +215,7 @@ it('empties both fields and wipes the bytes, whatever happens', async () => {
 it('says what Rust refused, and leaves the screen where it was', async () => {
 	ipc.createDatabase.mockRejectedValue({
 		code: 'refused',
-		message: "that name belongs to Coffer's own snapshots"
+		message: 'that name belongs to a file Coffer keeps beside a vault'
 	});
 	const onMade = vi.fn();
 	const component = await ready({ onMade });
@@ -225,7 +225,7 @@ it('says what Rust refused, and leaves the screen where it was', async () => {
 	second.value = 'a password';
 	submit();
 
-	await vi.waitFor(() => expect(host.textContent).toContain("Coffer's own snapshots"));
+	await vi.waitFor(() => expect(host.textContent).toContain('beside a vault'));
 	expect(onMade).not.toHaveBeenCalled();
 	expect(host.textContent).toContain(HOME.path);
 

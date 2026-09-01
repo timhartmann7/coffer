@@ -3,6 +3,7 @@
 pub mod atomic;
 pub mod lock;
 pub mod snapshot;
+pub mod unsaved;
 pub mod watch;
 
 mod process;

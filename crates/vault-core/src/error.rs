@@ -169,9 +169,10 @@ pub enum VaultError {
     #[error("there is already a file with that name")]
     DatabaseExists,
 
-    /// The new vault would be named the way Coffer names its own snapshots,
-    /// which is a database every save is refused for.
-    #[error("that name belongs to Coffer's own snapshots")]
+    /// The new vault would take a name Coffer gives a file of its own beside a
+    /// database: a snapshot, which every save is refused for, or the copy a
+    /// lock leaves when it could not save, which the next such lock overwrites.
+    #[error("that name belongs to a file Coffer keeps beside a vault")]
     ReservedName,
 
     /// The master password bytes are not UTF-8, and KeePass hashes passwords as

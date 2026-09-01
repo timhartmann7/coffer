@@ -19,7 +19,7 @@ use crate::preflight;
 use crate::secret::SecretValue;
 use crate::storage::lock::{Lock, Outcome};
 use crate::storage::watch::{Change, Content, Stamp};
-use crate::storage::{atomic, snapshot, watch};
+use crate::storage::{atomic, snapshot, unsaved, watch};
 use crate::text;
 use crate::wipe;
 
@@ -161,6 +161,21 @@ pub struct Rival {
     pub entries: Option<usize>,
 }
 
+/// What a lock did with changes the file has not got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rescue {
+    /// The vault held nothing the file did not already have.
+    Nothing,
+    /// The ordinary save went through, and the work is where the reader
+    /// believes it is.
+    Saved,
+    /// The save was refused, and everything that was in the window is in the
+    /// file beside the database instead.
+    Kept,
+    /// Neither could be written. The vault is wiped anyway.
+    Lost,
+}
+
 /// Whether a write may go over a file somebody else has changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Guard {
@@ -251,7 +266,7 @@ impl Vault {
 
         // A name of the shape Coffer gives its own snapshots would open like
         // any other database and refuse every save for good.
-        if snapshot::slot_of(path).is_some() {
+        if snapshot::slot_of(path).is_some() || unsaved::reserved(path) {
             return Err(VaultError::ReservedName);
         }
         // The parent has to be there: a staged write puts its temporary file
@@ -489,11 +504,6 @@ impl Vault {
     /// Everything a write settles in the database before any bytes leave it.
     fn prepare(&mut self) -> Result<(), VaultError> {
         settle(&mut self.database)
-    }
-
-    /// Whether this vault holds a change the file on disk does not.
-    pub fn is_dirty(&self) -> bool {
-        self.changed
     }
 
     /// How many entries the vault holds. Previous versions are not entries and
@@ -958,6 +968,41 @@ impl Vault {
             }
             Ok(())
         })
+    }
+
+    /// Writes out whatever the file has not got, on the way to being wiped.
+    ///
+    /// Called by locking and by nothing else. Locking destroys the decrypted
+    /// tree, and a vault is dirty exactly when saving is the thing that failed,
+    /// so without this an idle timer or a closed lid is a whole session's work
+    /// gone with no message anywhere.
+    ///
+    /// The ordinary save is tried first, because a save that goes through
+    /// leaves the work in the file the reader thinks it is in, and because it is
+    /// the cheap order: an external change and a file that has gone are both
+    /// decided before any key is derived. What it will not take goes beside the
+    /// database, under the same credentials, through the same staged write.
+    ///
+    /// Nothing here can stop the lock. A rescue that fails answers [`Rescue::Lost`]
+    /// and the caller wipes the tree regardless: a vault left unlocked because
+    /// it had unsaved work would be the whole of the locking gone.
+    pub fn rescue(&mut self) -> Rescue {
+        if !self.changed {
+            return Rescue::Nothing;
+        }
+
+        if self.save().is_ok() {
+            return Rescue::Saved;
+        }
+
+        let Ok(beside) = unsaved::beside(&self.path) else {
+            return Rescue::Lost;
+        };
+
+        match self.save_copy(&beside) {
+            Ok(()) => Rescue::Kept,
+            Err(_) => Rescue::Lost,
+        }
     }
 
     /// What the file on disk holds now.

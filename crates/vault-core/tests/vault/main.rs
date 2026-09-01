@@ -14,6 +14,7 @@ mod normalise;
 mod open;
 mod portable;
 mod property;
+mod rescue;
 mod round_trip;
 mod save;
 mod scan;

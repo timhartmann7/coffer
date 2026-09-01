@@ -23,7 +23,7 @@ use std::sync::Arc;
 use tauri::ipc::{InvokeBody, Request};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
-use vault_core::storage::snapshot;
+use vault_core::storage::{snapshot, unsaved};
 use zeroize::Zeroizing;
 
 use vault_core::generate::{Alphabet, Recipe};
@@ -54,16 +54,26 @@ const KDBX: &str = "KDBX database";
 
 #[tauri::command(async)]
 pub fn status(app: AppHandle, session: Held<'_>) -> Status {
-    let (entries, dirty, read_only) = session
-        .with(|vault| (vault.count(), vault.is_dirty(), vault.is_read_only()))
-        .unwrap_or((0, false, false));
+    let (entries, read_only) = session
+        .with(|vault| (vault.count(), vault.is_read_only()))
+        .unwrap_or((0, false));
+    let database = session.database();
 
     Status {
-        database: session.database().as_deref().map(Database::of),
+        // Asked of the filesystem rather than remembered, so that a copy left
+        // by a run that has since quit is still offered. A copy that cannot be
+        // read is one Coffer does not offer, and the rest of the answer still
+        // has to come back.
+        rescue: database
+            .as_deref()
+            .and_then(|path| unsaved::found(path).ok().flatten())
+            .as_ref()
+            .map(dto::Rescued::of),
+        lost: session.lost(),
+        database: database.as_deref().map(Database::of),
         key_file: session.key_file().as_deref().map(Database::of),
         unlocked: session.is_unlocked(),
         entries,
-        dirty,
         read_only,
         locked_by: session.locked_by().and_then(Reason::explained),
         locks_in: app
@@ -94,7 +104,7 @@ pub async fn choose_database(
     }
 
     if session.is_unlocked() {
-        return Err(Failure::refused("lock the vault before opening another"));
+        return Err(Failure::lock_first());
     }
 
     let Some(chosen) = picker.blocking_pick_file() else {
@@ -437,7 +447,7 @@ pub fn settings(app: AppHandle) -> dto::Settings {
 /// that need pushing somewhere have to be pushed before the write is reported,
 /// or three of the five would apply and two would not, and the two that did not
 /// would arrive anyway at the next lock.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_settings(settings: dto::Settings, app: AppHandle) -> Result<dto::Settings, Failure> {
     let held = app
         .try_state::<Arc<settings::Preferences>>()
@@ -510,7 +520,7 @@ pub fn snapshots(session: Held<'_>) -> Result<Vec<Snapshot>, Failure> {
 #[tauri::command(async)]
 pub fn choose_snapshot(index: u32, session: Held<'_>) -> Result<Database, Failure> {
     if session.is_unlocked() {
-        return Err(Failure::refused("lock the vault before opening another"));
+        return Err(Failure::lock_first());
     }
 
     let database = session.database().ok_or_else(Failure::no_vault)?;
@@ -520,8 +530,45 @@ pub fn choose_snapshot(index: u32, session: Held<'_>) -> Result<Database, Failur
         return Err(Failure::gone());
     }
 
-    session.choose_snapshot(path.clone());
+    session.choose_sibling(path.clone());
     Ok(Database::of(&path))
+}
+
+/// Points the session at the unsaved copy a lock left beside the database.
+///
+/// Nothing is sent: the path is built here from the database the reader chose,
+/// so no message from the window can name a file. The same shape as
+/// `choose_snapshot`, for the same reason.
+#[tauri::command(async)]
+pub fn choose_rescue(session: Held<'_>) -> Result<Database, Failure> {
+    if session.is_unlocked() {
+        return Err(Failure::lock_first());
+    }
+
+    let database = session.database().ok_or_else(Failure::no_vault)?;
+    let path = unsaved::beside(&database).map_err(Failure::io)?;
+
+    if !path.is_file() {
+        return Err(Failure::gone());
+    }
+
+    session.choose_sibling(path.clone());
+    Ok(Database::of(&path))
+}
+
+/// Takes that copy off the disk.
+///
+/// Only ever from a press. The copy holds the one version of work the vault has
+/// not got, so nothing in Coffer removes it on its own initiative: the reader is
+/// shown what it is and decides when they are done with it.
+#[tauri::command(async)]
+pub fn discard_rescue(session: Held<'_>) -> Result<(), Failure> {
+    if session.is_unlocked() {
+        return Err(Failure::lock_first());
+    }
+
+    let database = session.database().ok_or_else(Failure::no_vault)?;
+    unsaved::discard(&database).map_err(Failure::io)
 }
 
 /// The whole tree, as it is now. Every command that changes the shape of the
@@ -1005,13 +1052,14 @@ mod tests {
         }
     }
 
-    /// Every command answered inline, from its attribute down to the brace that
-    /// opens it. Nothing but attributes sits between the two, so the first brace
-    /// is the end of the signature.
+    /// Every command answered inline, whole: from its attribute down to the
+    /// closing brace in the first column, which in formatted source ends the
+    /// item and nothing else.
     ///
-    /// Two spellings take a command off this thread and only one of them is the
-    /// attribute: an `async fn` is spawned whether or not the attribute says so,
-    /// which is why the signature is read as well.
+    /// The body as well as the signature, because a command can reach the
+    /// session without ever naming it. Two spellings take a command off this
+    /// thread and only one of them is the attribute: an `async fn` is spawned
+    /// whether or not the attribute says so, so the signature is read too.
     fn drawn_on_the_window_thread(source: &str) -> Vec<String> {
         let mut found: Vec<String> = Vec::new();
         let mut taking: Option<String> = None;
@@ -1021,13 +1069,13 @@ mod tests {
                 taking = Some(String::new());
                 continue;
             }
-            let Some(head) = taking.as_mut() else {
+            let Some(item) = taking.as_mut() else {
                 continue;
             };
-            head.push_str(line);
-            head.push('\n');
-            if line.contains('{') {
-                found.extend(taking.take().filter(|head| !head.contains("async fn")));
+            item.push_str(line);
+            item.push('\n');
+            if line == "}" {
+                found.extend(taking.take().filter(|item| !item.contains("async fn")));
             }
         }
 
@@ -1050,19 +1098,41 @@ mod tests {
             .next()
             .unwrap_or_default();
 
-        for head in drawn_on_the_window_thread(source) {
+        for item in drawn_on_the_window_thread(source) {
+            let named = item.lines().take(4).collect::<Vec<_>>().join("\n");
             assert!(
-                !head.contains("Held<"),
-                "this command reaches the session from the drawing thread:\n{head}"
+                !item.contains("Held<"),
+                "this command reaches the session from the drawing thread:\n{named}"
             );
+            // Posting one of these is reaching the lock. `Deadline::on`
+            // answers both with `Decision::Lock` - the first always, the second
+            // whenever the new timeout is already spent - and `Shared::post`
+            // fires on the thread that posted. A lock writes the vault out
+            // before wiping it, so that thread pays a key derivation.
+            //
+            // `Event::Stirred` is not one of them and is deliberately left
+            // here: it can only ever move the deadline, it is the most frequent
+            // message in the application, and a hop onto another thread for it
+            // would be latency bought with nothing.
+            for firing in ["Event::Locking", "Event::TimeoutChanged"] {
+                assert!(
+                    !item.contains(firing),
+                    "this command posts {firing} from the drawing thread:\n{named}"
+                );
+            }
         }
 
-        // The one that reaches it without naming it. Locking wipes the tree,
-        // which means taking the same mutex a save is holding.
-        assert!(
-            source.contains("#[tauri::command(async)]\npub fn lock("),
-            "the lock command reaches the session and must not be answered inline"
-        );
+        // The two that reach it without naming it. Locking wipes the tree,
+        // which takes the same mutex a save is holding - and writes the vault
+        // out first, so it costs a key derivation as well. Posting to the timer
+        // is reaching the lock: the deadline answers a shortened timeout that
+        // has already gone by locking, on the thread that posted it.
+        for reaching in ["pub fn lock(", "pub fn set_settings("] {
+            assert!(
+                source.contains(&format!("#[tauri::command(async)]\n{reaching}")),
+                "{reaching} reaches the lock and must not be answered inline"
+            );
+        }
     }
 
     /// A lock file is taken over only where a reader can have been shown who

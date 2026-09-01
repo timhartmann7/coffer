@@ -8,6 +8,8 @@ const ipc = vi.hoisted(() => ({
 	snapshots: vi.fn(),
 	chooseDatabase: vi.fn(),
 	chooseSnapshot: vi.fn(),
+	chooseRescue: vi.fn(),
+	discardRescue: vi.fn(),
 	chooseKeyFile: vi.fn(),
 	forgetKeyFile: vi.fn(),
 	asFailure: (thrown: unknown) => thrown as { code: string; message: string }
@@ -412,4 +414,90 @@ it('forgets the key file when another database is chosen', async () => {
 	await vi.waitFor(() => expect(onKeyFile).toHaveBeenCalledWith(null));
 
 	return unmount(component);
+});
+
+/**
+ * The one screen alive after a lock, and the only place a copy the lock had to
+ * write can be reported at all: the window that knew was destroyed with the
+ * vault.
+ */
+it('offers the file a lock left behind, and never names it itself', async () => {
+	ipc.chooseRescue.mockResolvedValue({
+		path: '/Users/someone/personal.kdbx.unsaved.kdbx',
+		name: 'personal.kdbx.unsaved'
+	});
+	const onChoose = vi.fn();
+	mount(Unlock, {
+		target: host,
+		props: {
+			database,
+			rescue: { name: 'personal.kdbx.unsaved.kdbx', written: '2026-09-01T11:00:00Z' },
+			onChoose,
+			onKeyFile: vi.fn(),
+			onCreate: vi.fn(),
+			onUnlocked: vi.fn()
+		}
+	});
+	flushSync();
+
+	expect(host.textContent).toContain('Work that never reached the vault');
+	expect(host.textContent).toContain('personal.kdbx.unsaved.kdbx');
+
+	const found = [...host.querySelectorAll('button')].find(
+		(candidate) => candidate.textContent?.trim() === 'Open it'
+	);
+	found?.click();
+	await vi.waitFor(() => expect(onChoose).toHaveBeenCalled());
+
+	// The window sends nothing: the path is Rust's, built from the database the
+	// reader chose, so no message from here can name a file.
+	expect(ipc.chooseRescue).toHaveBeenCalledWith();
+});
+
+/** The copy holds the only version of that work, so Coffer never removes it on
+ * its own. The reader's own press does, and the offer goes with it. */
+it('takes the file away only when the reader says so', async () => {
+	ipc.discardRescue.mockResolvedValue(undefined);
+	const component = mount(Unlock, {
+		target: host,
+		props: {
+			database,
+			rescue: { name: 'personal.kdbx.unsaved.kdbx', written: null },
+			onChoose: vi.fn(),
+			onKeyFile: vi.fn(),
+			onCreate: vi.fn(),
+			onUnlocked: vi.fn()
+		}
+	});
+	flushSync();
+	expect(ipc.discardRescue).not.toHaveBeenCalled();
+
+	const found = [...host.querySelectorAll('button')].find(
+		(candidate) => candidate.textContent?.trim() === 'Remove it'
+	);
+	found?.click();
+	await vi.waitFor(() => expect(host.textContent).not.toContain('Work that never reached'));
+
+	unmount(component);
+});
+
+/** The one case with no file to point at. It still has to be said: the reader
+ * is about to unlock and find work missing. */
+it('says so when a lock could not write the changes anywhere', () => {
+	const component = mount(Unlock, {
+		target: host,
+		props: {
+			database,
+			lost: true,
+			onChoose: vi.fn(),
+			onKeyFile: vi.fn(),
+			onCreate: vi.fn(),
+			onUnlocked: vi.fn()
+		}
+	});
+	flushSync();
+
+	expect(host.textContent).toContain('could not write them anywhere');
+
+	unmount(component);
 });

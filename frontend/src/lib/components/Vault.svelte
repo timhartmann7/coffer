@@ -74,6 +74,15 @@
 	let emptying = $state(false);
 	let deleting = $state(false);
 	let saving = $state(false);
+	/**
+	 * Whether the vault is holding a change the file has not got.
+	 *
+	 * A save refused with anything but a conflict raises a notice that fades
+	 * after six seconds, and a reader who missed it goes on editing into a
+	 * window whose every write is failing. This is the standing version of that
+	 * notice, and the status bar is where it sits.
+	 */
+	let unsaved = $state(false);
 	let conflict = $state<Rival | null>(null);
 	/** Whether the dialog is about a file somebody rewrote or one that is not
 	 * there any more. The two ask different questions and offer different ways
@@ -156,7 +165,9 @@
 		saving = true;
 		try {
 			await save();
+			unsaved = false;
 		} catch (thrown) {
+			unsaved = true;
 			const refused = asFailure(thrown);
 			if (refused.code === 'externalChange' || refused.code === 'gone') {
 				missing = refused.code === 'gone';
@@ -331,6 +342,9 @@
 			changedAt = null;
 			conflict = null;
 			missing = false;
+			// Reading the file again is throwing the change away, which is a
+			// thing the reader chose. There is nothing left unsaved either way.
+			unsaved = false;
 		} catch (thrown) {
 			failed(thrown);
 		} finally {
@@ -366,6 +380,7 @@
 			await saveOver();
 			conflict = null;
 			missing = false;
+			unsaved = false;
 		} catch (thrown) {
 			failed(thrown);
 		} finally {
@@ -917,6 +932,11 @@
 	<span class="ml-auto flex shrink-0 items-center gap-4">
 		{#if saving}
 			<span class="text-txt3">Saving…</span>
+		{:else if unsaved}
+			<!-- A state design.html does not draw, built from its own tokens: the
+			     mockup has no vault whose writes are failing, and a reader with
+			     one has to be told for as long as it is true. -->
+			<span class="text-warn">Not saved</span>
 		{:else if readOnly}
 			<span class="text-txt3">Read only</span>
 		{/if}

@@ -44,11 +44,11 @@ const SECRET: &str = "a password nobody has to remember";
 #[test]
 fn a_vault_that_was_just_made_opens_again() {
     let (_scratch, path) = scratch();
-    let made = make(&path, SECRET, "Work").expect("the vault is made");
+    let mut made = make(&path, SECRET, "Work").expect("the vault is made");
     assert_eq!(made.count(), 0);
     assert_eq!(made.tree().name, "Work");
     assert!(!made.is_read_only());
-    assert!(!made.is_dirty());
+    assert_eq!(made.rescue(), vault_core::Rescue::Nothing);
     drop(made);
 
     let reopened = open(&path, SECRET);

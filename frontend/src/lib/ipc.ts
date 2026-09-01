@@ -184,6 +184,19 @@ export function chooseSnapshot(index: number): Promise<Database> {
 	return invoke('choose_snapshot', { index });
 }
 
+/** Points the session at the unsaved copy a lock left beside the vault. It takes
+ * nothing: the path is built in Rust from the database the reader chose, so
+ * nothing this window sends can name a file. */
+export function chooseRescue(): Promise<Database> {
+	return invoke('choose_rescue');
+}
+
+/** Takes that copy off the disk, at the reader's word. Coffer never removes it
+ * on its own: it holds the one version of work the vault has not got. */
+export function discardRescue(): Promise<void> {
+	return invoke('discard_rescue');
+}
+
 /** Makes an entry in a folder and answers with the tree it changed. */
 export function createEntry(group: string): Promise<Made> {
 	return invoke('create_entry', { group });
