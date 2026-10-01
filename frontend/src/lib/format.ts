@@ -125,6 +125,28 @@ export function called(entry: Entry): string {
 	return title ? quoted(title) : 'this entry';
 }
 
+/** What the pane calls the five fields every entry has, by their names in the
+ * file. */
+const STANDARD: Record<string, string> = {
+	Title: 'title',
+	UserName: 'login',
+	Password: 'password',
+	URL: 'address',
+	Notes: 'notes'
+};
+
+/**
+ * What a notice says was copied: "Password copied.", "“PIN” copied.", "Part of
+ * the password copied." A login copied a second before a password used to be
+ * announced in the same words, and the reader pasted their email address into
+ * a password box.
+ */
+export function copied(field: string, part: boolean): string {
+	const word = Object.hasOwn(STANDARD, field) ? STANDARD[field] : undefined;
+	if (part) return `Part of ${word ? `the ${word}` : quoted(field)} copied.`;
+	return `${word ? `${word.charAt(0).toUpperCase()}${word.slice(1)}` : quoted(field)} copied.`;
+}
+
 /** An attachment's size, in the unit that keeps it to three or four digits. */
 export function size(bytes: number): string {
 	if (bytes < 1024) return `${bytes} B`;

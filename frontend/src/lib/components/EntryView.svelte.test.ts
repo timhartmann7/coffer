@@ -1,8 +1,8 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { attachment, entry, field, group } from '$lib/fixtures';
+import { attachment, drawing, entry, field, generated, group } from '$lib/fixtures';
 import { typing } from '$lib/keys';
-import type { Attached, Clash } from '$lib/model';
+import type { Attached, Clash, Entry, Generated, Purpose, Recipe } from '$lib/model';
 import { reactive } from '$lib/props.svelte';
 import EntryView from './EntryView.svelte';
 
@@ -12,6 +12,8 @@ const ipc = vi.hoisted(() => ({
 	setField: vi.fn(),
 	draft: vi.fn(),
 	removeField: vi.fn(),
+	setProtection: vi.fn(),
+	renameField: vi.fn(),
 	setTags: vi.fn(),
 	addAttachment: vi.fn(),
 	keepBothAttachments: vi.fn(),
@@ -19,6 +21,7 @@ const ipc = vi.hoisted(() => ({
 	withdrawAttachment: vi.fn(),
 	exportAttachment: vi.fn(),
 	removeAttachment: vi.fn(),
+	generator: vi.fn(),
 	generatePassword: vi.fn(),
 	versions: vi.fn(),
 	version: vi.fn(),
@@ -48,6 +51,7 @@ beforeEach(() => {
 	ipc.openUrl.mockResolvedValue(undefined);
 	ipc.withdrawAttachment.mockResolvedValue(undefined);
 	ipc.draft.mockResolvedValue(undefined);
+	ipc.generator.mockResolvedValue(drawing());
 });
 
 afterEach(() => {
@@ -510,7 +514,7 @@ it('says so when a new password half typed goes with its entry', () => {
  * was chosen over it.
  */
 it('puts a made password straight in and leaves no field open behind it', async () => {
-	ipc.generatePassword.mockResolvedValue('Made-Password-123');
+	ipc.generatePassword.mockResolvedValue(generated('Made-Password-123'));
 	ipc.setField.mockResolvedValue(entry());
 	const { component, onFailure } = pane({
 		fields: [
@@ -2654,8 +2658,23 @@ it("keeps a field's trash at the far end of its row, out of sight until it is wa
 			expect(trash.className, `${name}: ${rule}`).toContain(rule);
 		}
 	}
-	// On the protected row, the button before the trash is the copy.
-	expect(icon('Remove the field API token').previousElementSibling).toBe(icon('Copy API token'));
+	// Before the trash, on every row, the copy. The lock that hides the value
+	// or shows it is in the name's column, before the name: in the value's row
+	// it took the width a revealed value is read in.
+	for (const name of ['API token', 'Port']) {
+		const trash = icon(`Remove the field ${name}`);
+		expect(trash.previousElementSibling, `${name}: the copy is not beside the trash`).toBe(
+			icon(`Copy ${name}`)
+		);
+		const lock = icon(`Keep ${name} hidden`);
+		expect(trash.parentElement?.contains(lock), `${name}: the lock is in the value's row`).toBe(
+			false
+		);
+		const column = lock.parentElement;
+		expect(column?.firstElementChild, `${name}: the lock is not first in its column`).toBe(lock);
+		expect(lock.nextElementSibling).toBe(icon(`Rename ${name}`));
+		expect(column?.className).toContain('w-24');
+	}
 
 	return unmount(component);
 });
@@ -3462,14 +3481,18 @@ it("puts a field's Change in the column its value is in", () => {
 	});
 
 	const change = icon('Change API token');
-	const column = change.parentElement;
+	const column = change.closest('.col-start-2');
 	const row = column?.parentElement;
 	const [name, value] = [...(row?.children ?? [])];
 	expect(name?.textContent?.trim()).toBe('API token');
 	expect(value?.contains(icon('Copy API token')), 'the value is not the second column').toBe(true);
 	expect(row?.className).toContain('grid-cols-');
 	expect(column?.className).toContain('col-start-2');
-	for (const offset of [change.className, column?.className ?? '']) {
+	for (const offset of [
+		change.className,
+		change.parentElement?.className ?? '',
+		column?.className ?? ''
+	]) {
 		expect(offset, 'the Change is pushed into place by a margin').not.toMatch(/\bml-/);
 	}
 
@@ -3507,6 +3530,1600 @@ it('makes no field and adds no tag on the Return that ends a composition', async
 
 	expect(returned(tag).defaultPrevented).toBe(true);
 	expect(ipc.setTags).toHaveBeenCalledWith(expect.any(String), ['travel']);
+
+	return unmount(component);
+});
+
+/** The field the name of a new field is typed in. */
+function named(): HTMLInputElement {
+	const found = host.querySelector<HTMLInputElement>(
+		'input[aria-label="The name of the new field"]'
+	);
+	if (!found) throw new Error('no name is being asked for');
+	return found;
+}
+
+/** The field a new name for one of the reader's own fields is typed in. */
+function renaming(name: string): HTMLInputElement {
+	const found = host.querySelector<HTMLInputElement>(`input[aria-label="New name for ${name}"]`);
+	if (!found) throw new Error(`no new name is being asked for ${name}`);
+	return found;
+}
+
+/** The reader's own fields by name, in the order the pane draws them. */
+function drawnOrder(): string[] {
+	return [...host.querySelectorAll<HTMLButtonElement>('button[aria-label^="Rename "]')].map(
+		(each) => each.title
+	);
+}
+
+/**
+ * The pane with a window behind it that does what the vault screen does with
+ * a change: the entry Rust answered with is drawn at once, and the save after
+ * it takes a moment longer.
+ */
+function landing(over: Parameters<typeof entry>[0]) {
+	const opened = deleting(over);
+	opened.props.onChanged.mockImplementation(async (changed: Entry) => {
+		opened.props.entry = changed;
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	return opened;
+}
+
+/** A field of the reader's own the database keeps hidden, with a value in it. */
+const hiddenField = (name: string) =>
+	field({ name, kind: 'custom', protected: true, value: null, empty: false });
+
+/**
+ * A field somebody adds to a password entry is far more often a secret than
+ * not, so a new one is hidden unless the reader says otherwise while naming
+ * it. The pill that says so is pressed without leaving the name, so pressing
+ * it never makes a field with half a name; and the choice is for that one
+ * field, so the next starts hidden again, on this entry or the next one.
+ */
+it('names a new field hidden unless the reader turns Hidden off, for that field alone', async () => {
+	ipc.setField.mockReset();
+	ipc.setField.mockResolvedValue(entry());
+	const { component, props } = deleting({ fields: [PASSWORD] });
+
+	icon('Add a field').click();
+	flushSync();
+	await Promise.resolve();
+	const name = named();
+	expect(document.activeElement).toBe(name);
+	const pill = button('Hidden');
+	expect(pill.getAttribute('aria-pressed'), 'a new field starts in the open').toBe('true');
+	expect(pill.nextElementSibling).toBe(button('Multi-line'));
+
+	const press = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+	pill.dispatchEvent(press);
+	expect(press.defaultPrevented, 'the pill takes the focus off the name').toBe(true);
+	// Tabbing from the name onto the pill is not leaving the two of them.
+	pill.focus();
+	flushSync();
+	pill.click();
+	flushSync();
+	expect(pill.getAttribute('aria-pressed')).toBe('false');
+	expect(ipc.setField, 'the pill finished the name').not.toHaveBeenCalled();
+	expect(named()).toBe(name);
+
+	name.focus();
+	name.value = 'Card expiry';
+	returned(name);
+	flushSync();
+	expect(ipc.setField).toHaveBeenLastCalledWith(
+		props.entry.id,
+		'Card expiry',
+		'',
+		false,
+		expect.any(Number)
+	);
+
+	icon('Add a field').click();
+	flushSync();
+	expect(button('Hidden').getAttribute('aria-pressed'), 'the last choice outlived its field').toBe(
+		'true'
+	);
+	named().value = 'CVC';
+	returned(named());
+	flushSync();
+	expect(ipc.setField).toHaveBeenLastCalledWith(
+		props.entry.id,
+		'CVC',
+		'',
+		true,
+		expect.any(Number)
+	);
+
+	// Turned off, and another entry shown before the name was finished.
+	icon('Add a field').click();
+	flushSync();
+	button('Hidden').click();
+	flushSync();
+	props.entry = entry({ fields: [PASSWORD] });
+	flushSync();
+	expect(host.querySelector('[aria-label="The name of the new field"]')).toBeNull();
+	icon('Add a field').click();
+	flushSync();
+	expect(button('Hidden').getAttribute('aria-pressed'), 'a choice crossed to another entry').toBe(
+		'true'
+	);
+	named().value = 'PIN';
+	returned(named());
+	flushSync();
+	expect(ipc.setField).toHaveBeenLastCalledWith(
+		props.entry.id,
+		'PIN',
+		'',
+		true,
+		expect.any(Number)
+	);
+	expect(ipc.setField).toHaveBeenCalledTimes(3);
+
+	return unmount(component);
+});
+
+/**
+ * Leaving the pill for somewhere else is leaving the name, and the field is
+ * made the way the pill says at that moment - not the way it said when the
+ * row opened.
+ */
+it('makes the field the way the pill says when the reader leaves the pill for elsewhere', async () => {
+	ipc.setField.mockReset();
+	ipc.setField.mockResolvedValue(entry());
+	const { component, props } = deleting({ fields: [PASSWORD] });
+
+	icon('Add a field').click();
+	flushSync();
+	await Promise.resolve();
+	named().value = 'Card expiry';
+	const pill = button('Hidden');
+	pill.focus();
+	pill.click();
+	flushSync();
+	expect(ipc.setField).not.toHaveBeenCalled();
+
+	icon('Add a file').focus();
+	flushSync();
+	expect(ipc.setField).toHaveBeenCalledTimes(1);
+	expect(ipc.setField).toHaveBeenCalledWith(
+		props.entry.id,
+		'Card expiry',
+		'',
+		false,
+		expect.any(Number)
+	);
+	expect(host.querySelector('[aria-label="The name of the new field"]')).toBeNull();
+
+	return unmount(component);
+});
+
+/**
+ * A row put away without a name - Escape, or the plus pressed again - made no
+ * field, so the choice made in it was about nothing. The next field is named
+ * from the start again: hidden, on one line. Carried over, it made the next
+ * field, typically a PIN, in the open with nobody having said so.
+ */
+it('starts the next new field hidden after a row was put away with Hidden off', () => {
+	ipc.setField.mockReset();
+	ipc.setField.mockResolvedValue(entry());
+
+	for (const way of ['Escape', 'the plus'] as const) {
+		const { component, props } = deleting({ fields: [PASSWORD] });
+		icon('Add a field').click();
+		flushSync();
+		button('Hidden').click();
+		button('Multi-line').click();
+		flushSync();
+		named().value = 'Card expiry';
+		if (way === 'Escape') {
+			named().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+		} else {
+			icon('Never mind the new field').click();
+		}
+		flushSync();
+		expect(host.querySelector('[aria-label="The name of the new field"]'), way).toBeNull();
+		expect(ipc.setField, `${way} made a field`).not.toHaveBeenCalled();
+
+		icon('Add a field').click();
+		flushSync();
+		expect
+			.soft(button('Hidden').getAttribute('aria-pressed'), `${way}: Hidden was left off`)
+			.toBe('true');
+		expect
+			.soft(button('Multi-line').getAttribute('aria-pressed'), `${way}: Multi-line was left on`)
+			.toBe('false');
+		named().value = 'PIN';
+		returned(named());
+		flushSync();
+		expect
+			.soft(ipc.setField, `${way}: the next field was made in the open`)
+			.toHaveBeenCalledWith(props.entry.id, 'PIN', '', true, expect.any(Number));
+		expect(props.onFailure).not.toHaveBeenCalled();
+
+		unmount(component);
+		ipc.setField.mockClear();
+	}
+});
+
+/**
+ * The row goes other ways than Escape and the plus without making anything: a
+ * name finished empty, by Return or by leaving it; a name the entry already
+ * has, which is refused; the pane moving to another entry. Each is as much
+ * the end of what was chosen in it. Multi-line left on is worth as much as
+ * Hidden left off: the next field named is written in lines nobody asked for,
+ * and its Change takes Return as a new line rather than as Save.
+ */
+it('starts the next new field hidden and on one line however the last row went without a field', () => {
+	ipc.setField.mockReset();
+	ipc.setField.mockResolvedValue(entry());
+
+	for (const way of [
+		'Return on nothing',
+		'leaving nothing',
+		'a name the entry has',
+		'another entry'
+	] as const) {
+		const { component, props } = deleting({ fields: [PASSWORD] });
+		icon('Add a field').click();
+		flushSync();
+		button('Hidden').click();
+		button('Multi-line').click();
+		flushSync();
+		if (way === 'Return on nothing') {
+			named().value = '   ';
+			returned(named());
+		} else if (way === 'leaving nothing') {
+			named().value = '';
+			leave(named(), icon('Add a file'));
+		} else if (way === 'a name the entry has') {
+			named().value = 'Password';
+			returned(named());
+		} else {
+			props.entry = entry({ fields: [PASSWORD] });
+		}
+		flushSync();
+		expect(host.querySelector('[aria-label="The name of the new field"]'), way).toBeNull();
+		expect(ipc.setField, `${way} made a field`).not.toHaveBeenCalled();
+		if (way === 'a name the entry has') {
+			expect(props.onFailure).toHaveBeenCalledWith(expect.objectContaining({ code: 'refused' }));
+		} else {
+			expect(props.onFailure).not.toHaveBeenCalled();
+		}
+
+		icon('Add a field').click();
+		flushSync();
+		expect
+			.soft(button('Hidden').getAttribute('aria-pressed'), `${way}: Hidden was left off`)
+			.toBe('true');
+		expect
+			.soft(button('Multi-line').getAttribute('aria-pressed'), `${way}: Multi-line was left on`)
+			.toBe('false');
+		named().value = 'PIN';
+		returned(named());
+		flushSync();
+		expect
+			.soft(ipc.setField, `${way}: the next field was made in the open`)
+			.toHaveBeenCalledWith(props.entry.id, 'PIN', '', true, expect.any(Number));
+
+		props.entry = { ...props.entry, fields: [PASSWORD, hiddenField('PIN')] };
+		flushSync();
+		icon('Change PIN').click();
+		flushSync();
+		expect
+			.soft(changer('New value of PIN').getAttribute('rows'), `${way}: the next field is in lines`)
+			.toBe('1');
+
+		changer('New value of PIN').dispatchEvent(
+			new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+		);
+		unmount(component);
+		ipc.setField.mockClear();
+	}
+});
+
+/**
+ * A field named with Return is one the reader is about to give a value, so
+ * the value takes the focus when the field arrives. Once: the value drawn
+ * again later - hidden, then shown - does not take it back from wherever the
+ * reader has put it since.
+ */
+it('puts the reader in the value of a field named with Return, and only once', async () => {
+	ipc.setField.mockReset();
+	const { component, props } = landing({ fields: [PASSWORD] });
+	const made: Entry = {
+		...props.entry,
+		fields: [
+			PASSWORD,
+			field({ name: 'Door code', kind: 'custom', protected: true, value: null, empty: true })
+		]
+	};
+	ipc.setField.mockResolvedValue(made);
+
+	icon('Add a field').click();
+	flushSync();
+	await Promise.resolve();
+	named().value = 'Door code';
+	returned(named());
+
+	await vi.waitFor(() =>
+		expect(document.activeElement).toBe(host.querySelector('textarea[aria-label="Door code"]'))
+	);
+	expect(ipc.setField).toHaveBeenCalledWith(made.id, 'Door code', '', true, expect.any(Number));
+	await vi.waitFor(() => expect(props.onChanged).toHaveBeenCalledTimes(1));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+
+	const tags = button('+ tag');
+	tags.focus();
+	props.entry = { ...made, fields: [PASSWORD, hiddenField('Door code')] };
+	flushSync();
+	props.entry = {
+		...made,
+		fields: [PASSWORD, field({ name: 'Door code', kind: 'custom', value: '4711', empty: false })]
+	};
+	flushSync();
+	expect(host.querySelector('textarea[aria-label="Door code"]')).not.toBeNull();
+	expect(document.activeElement, 'the value took the focus a second time').toBe(tags);
+	expect(props.onFailure).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/** A name finished by clicking somewhere else leaves the focus where the
+ * reader clicked, when the field arrives as much as before. */
+it('leaves the focus where the reader clicked when a new name is finished elsewhere', async () => {
+	ipc.setField.mockReset();
+	const { component, props } = landing({ fields: [PASSWORD] });
+	ipc.setField.mockResolvedValue({
+		...props.entry,
+		fields: [
+			PASSWORD,
+			field({ name: 'Door code', kind: 'custom', protected: true, value: null, empty: true })
+		]
+	});
+
+	icon('Add a field').click();
+	flushSync();
+	await Promise.resolve();
+	named().value = 'Door code';
+	const elsewhere = icon('Add a file');
+	elsewhere.focus();
+	flushSync();
+
+	await vi.waitFor(() => expect(props.onChanged).toHaveBeenCalledTimes(1));
+	flushSync();
+	expect(ipc.setField).toHaveBeenCalledWith(
+		props.entry.id,
+		'Door code',
+		'',
+		true,
+		expect.any(Number)
+	);
+	expect(host.querySelector('textarea[aria-label="Door code"]')).not.toBeNull();
+	expect(document.activeElement, 'the new field took the focus from the click').toBe(elsewhere);
+
+	return unmount(component);
+});
+
+/**
+ * Rust can be slow to answer - a save of the last change still running - and
+ * the reader does not wait for it. Named with Return and then gone on to type
+ * the login, they keep typing the login when the new field arrives: taking
+ * the focus there would write half a login and put the rest of it into the
+ * new field.
+ */
+it('leaves the focus in a field the reader went on to type in before the new one arrived', async () => {
+	const writing = Promise.withResolvers<Entry>();
+	const { component, props } = landing({
+		fields: [PASSWORD, field({ name: 'UserName', kind: 'username', value: 'alice', empty: false })]
+	});
+	const made: Entry = {
+		...props.entry,
+		fields: [
+			...props.entry.fields,
+			field({ name: 'Door code', kind: 'custom', protected: true, value: null, empty: true })
+		]
+	};
+	// Any write after the new field's is answered with the same entry, so a
+	// login written behind the reader's back stays on the screen to be seen.
+	ipc.setField.mockReset();
+	ipc.setField.mockReturnValueOnce(writing.promise).mockResolvedValue(made);
+
+	icon('Add a field').click();
+	flushSync();
+	await Promise.resolve();
+	named().value = 'Door code';
+	returned(named());
+	flushSync();
+
+	const login = host.querySelector('[aria-label="Login"]') as HTMLInputElement;
+	login.focus();
+	enter(login, 'ali');
+	writing.resolve(made);
+	await vi.waitFor(() =>
+		expect(host.querySelector('textarea[aria-label="Door code"]')).not.toBeNull()
+	);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	flushSync();
+
+	try {
+		expect.soft(document.activeElement, 'the new field took the focus from the login').toBe(login);
+		expect
+			.soft(ipc.setField, 'half a login was written')
+			.not.toHaveBeenCalledWith(props.entry.id, 'UserName', 'ali', false, expect.any(Number));
+		expect.soft(ipc.setField).toHaveBeenCalledTimes(1);
+	} finally {
+		// What was typed is put back, so nothing is left to be told to Rust
+		// once this test is over.
+		login.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+		await unmount(component);
+	}
+});
+
+/**
+ * Notes a database protects are prose like any others, and their Change is
+ * written in lines whatever they hold now: Return starts the next line and
+ * only Cmd+Return saves. They go back protected. The first note on an entry
+ * of such a database is typed where it stands, and goes back protected too.
+ */
+it('changes protected notes in lines, and writes them back protected', async () => {
+	ipc.setField.mockReset();
+	ipc.setField.mockResolvedValue(entry());
+	const { component, entry: shown } = pane({
+		fields: [field({ name: 'Notes', kind: 'notes', value: null, empty: false, protected: true })]
+	});
+
+	expect(host.querySelector('textarea[aria-label="Notes"]')).toBeNull();
+	expect(host.querySelector('[aria-label="Copy notes"]'), 'a copy of the open kind').toBeNull();
+	icon('Change Notes').click();
+	flushSync();
+	const typed = changer('New value of Notes');
+	expect(typed.getAttribute('rows')).toBe('4');
+	expect(typed.getAttribute('wrap')).toBe('soft');
+	enter(typed, 'gate code 4711');
+	expect(returned(typed).defaultPrevented, 'Return saved a note of one line').toBe(false);
+	enter(typed, 'gate code 4711\nalarm 0000');
+	expect(ipc.setField).not.toHaveBeenCalled();
+
+	returned(typed, { metaKey: true });
+	await vi.waitFor(() =>
+		expect(ipc.setField).toHaveBeenCalledWith(
+			shown.id,
+			'Notes',
+			'gate code 4711\nalarm 0000',
+			true,
+			expect.any(Number)
+		)
+	);
+	expect(ipc.setField).toHaveBeenCalledTimes(1);
+	unmount(component);
+
+	const first = pane({
+		fields: [field({ name: 'Notes', kind: 'notes', value: null, empty: true, protected: true })]
+	});
+	expect(host.querySelector('[aria-label="Change Notes"]')).toBeNull();
+	const notes = host.querySelector('textarea[aria-label="Notes"]') as HTMLTextAreaElement;
+	enter(notes, 'the first note');
+	notes.dispatchEvent(new Event('blur'));
+	expect(ipc.setField).toHaveBeenLastCalledWith(
+		first.entry.id,
+		'Notes',
+		'the first note',
+		true,
+		expect.any(Number)
+	);
+
+	return unmount(first.component);
+});
+
+/** A database Coffer will not write back still reads and copies protected
+ * notes, and offers no Change for them. */
+it('offers no Change for protected notes in a database it cannot write', () => {
+	const {
+		component,
+		onCopy,
+		entry: shown
+	} = pane(
+		{
+			fields: [field({ name: 'Notes', kind: 'notes', value: null, empty: false, protected: true })]
+		},
+		true
+	);
+
+	expect(host.querySelector('[aria-label="Change Notes"]')).toBeNull();
+	icon('Copy Notes').click();
+	expect(onCopy).toHaveBeenCalledWith(shown.id, 'Notes', null);
+
+	return unmount(component);
+});
+
+const ALARM = 'alarm code 4711';
+const PORT = '2202';
+
+/**
+ * Selecting a value by hand and pressing Cmd+C is the system's copy: an
+ * ordinary pasteboard write that no clipboard manager is told to skip and
+ * nothing clears. The notes, the address and every field of the reader's own
+ * have a copy of their own, through Rust, by name - including an address
+ * Coffer will not open, which is still somebody's to paste.
+ */
+it("copies the notes, the address and a field of the reader's own by name through Rust", () => {
+	const {
+		component,
+		entry: shown,
+		onCopy
+	} = pane({
+		fields: [
+			field({
+				name: 'URL',
+				kind: 'url',
+				value: 'javascript:alert(1)',
+				empty: false,
+				openable: false
+			}),
+			field({ name: 'Notes', kind: 'notes', value: ALARM, empty: false }),
+			field({ name: 'Port', kind: 'custom', value: PORT, empty: false })
+		]
+	});
+
+	expect(host.querySelector('[aria-label="Open this address"]')).toBeNull();
+	icon('Copy address').click();
+	expect(onCopy).toHaveBeenLastCalledWith(shown.id, 'URL');
+	icon('Copy notes').click();
+	expect(onCopy).toHaveBeenLastCalledWith(shown.id, 'Notes');
+	icon('Copy Port').click();
+	expect(onCopy).toHaveBeenLastCalledWith(shown.id, 'Port', null);
+	expect(onCopy).toHaveBeenCalledTimes(3);
+
+	// The values themselves never travel with the press.
+	const sent = JSON.stringify(onCopy.mock.calls);
+	for (const each of ['javascript:', ALARM, PORT]) expect(sent).not.toContain(each);
+
+	return unmount(component);
+});
+
+/** Nothing to copy is nothing offered: an empty address, empty notes, an empty
+ * field of the reader's own, and an entry that arrived without the first two. */
+it("offers no copy of an address, notes or a field of the reader's own that is empty", () => {
+	for (const fields of [
+		[
+			field({ name: 'URL', kind: 'url', value: '', empty: true }),
+			field({ name: 'Notes', kind: 'notes', value: '', empty: true }),
+			field({ name: 'Port', kind: 'custom', value: '', empty: true })
+		],
+		[field({ name: 'Port', kind: 'custom', value: '', empty: true })]
+	]) {
+		const { component } = pane({ fields });
+		for (const label of ['Copy address', 'Copy notes', 'Copy Port']) {
+			expect(host.querySelector(`[aria-label="${label}"]`), label).toBeNull();
+		}
+		unmount(component);
+	}
+});
+
+/**
+ * The address's copy stands after the button that opens it, the last thing in
+ * the row the way the login's is. One the database protects is copied from
+ * its own row and gets no second copy of the open kind; one in a database
+ * Coffer cannot write is still read, and so still copied.
+ */
+it('puts the address copy after its opener, and leaves a protected address to its own', () => {
+	const open = pane({
+		fields: [
+			field({
+				name: 'URL',
+				kind: 'url',
+				value: 'https://bank.example',
+				empty: false,
+				openable: true
+			})
+		]
+	});
+	expect(icon('Open this address').nextElementSibling).toBe(icon('Copy address'));
+	unmount(open.component);
+
+	const kept = pane({ fields: [field({ name: 'URL', kind: 'url', value: null, empty: false })] });
+	expect(host.querySelector('[aria-label="Copy address"]')).toBeNull();
+	icon('Copy URL').click();
+	expect(kept.onCopy).toHaveBeenCalledWith(kept.entry.id, 'URL', null);
+	unmount(kept.component);
+
+	const read = pane(
+		{
+			fields: [
+				field({ name: 'URL', kind: 'url', value: 'https://bank.example', empty: false }),
+				field({ name: 'Notes', kind: 'notes', value: ALARM, empty: false }),
+				field({ name: 'Port', kind: 'custom', value: PORT, empty: false })
+			]
+		},
+		true
+	);
+	for (const label of ['Copy address', 'Copy notes', 'Copy Port']) {
+		expect(host.querySelector(`[aria-label="${label}"]`), label).not.toBeNull();
+	}
+
+	return unmount(read.component);
+});
+
+/**
+ * A database may protect the title. The heading then draws the mask, and the
+ * title is read, copied and changed in a row of its own above the login, the
+ * way any protected value is: never in the heading, where shown it would be
+ * the name of the window.
+ */
+it('reads, copies and changes a protected title in its own row, never in the heading', async () => {
+	const NAME = 'Numbered account';
+	ipc.reveal.mockResolvedValue(NAME);
+	ipc.setField.mockReset();
+	ipc.setField.mockResolvedValue(entry());
+	const {
+		component,
+		entry: shown,
+		onCopy
+	} = pane({
+		fields: [
+			field({ name: 'Title', kind: 'title', value: null, empty: false, protected: true }),
+			field({ name: 'UserName', kind: 'username', value: 'alice', empty: false })
+		]
+	});
+
+	const header = host.querySelector('header');
+	expect(header?.querySelector('use[href="#redact"]'), 'the heading is not masked').not.toBeNull();
+	expect(header?.querySelector('input, textarea'), 'the heading can be typed into').toBeNull();
+	const labels = [...host.querySelectorAll('span')];
+	const titleRow = labels.find((each) => each.textContent?.trim() === 'Title');
+	const loginRow = labels.find((each) => each.textContent?.trim() === 'Login');
+	if (!titleRow || !loginRow) throw new Error('there is no row for the title or the login');
+	expect(
+		titleRow.compareDocumentPosition(loginRow) & Node.DOCUMENT_POSITION_FOLLOWING,
+		'the title row is not above the login'
+	).toBeTruthy();
+
+	icon('Show title').click();
+	await vi.waitFor(() => expect(screen()).toContain(NAME));
+	expect(ipc.reveal).toHaveBeenCalledWith(shown.id, 'Title');
+	expect(header?.textContent, 'the shown title reached the heading').not.toContain(NAME);
+	expect(attributes().join(' ')).not.toContain(NAME);
+
+	icon('Copy title').click();
+	expect(onCopy).toHaveBeenCalledWith(shown.id, 'Title', null);
+
+	icon('Change Title').click();
+	flushSync();
+	const typed = changer('New value of Title');
+	expect(typed.getAttribute('rows'), 'a title is changed in lines').toBe('1');
+	enter(typed, 'Savings');
+	expect(returned(typed).defaultPrevented).toBe(true);
+	await vi.waitFor(() =>
+		expect(ipc.setField).toHaveBeenCalledWith(
+			shown.id,
+			'Title',
+			'Savings',
+			true,
+			expect.any(Number)
+		)
+	);
+	expect(ipc.setField).toHaveBeenCalledTimes(1);
+
+	return unmount(component);
+});
+
+/** A database Coffer cannot write, or an entry in the bin, still reads and
+ * copies a protected title and offers no way to change it. */
+it('offers no Change for a protected title it cannot write', () => {
+	const binned = { since: null, within: null, from: null };
+	for (const [over, readOnly] of [
+		[{}, true],
+		[{ binned, deletion: 'forever' as const }, false]
+	] as const) {
+		const { component } = pane(
+			{
+				...over,
+				fields: [
+					field({ name: 'Title', kind: 'title', value: null, empty: false, protected: true })
+				]
+			},
+			readOnly
+		);
+		expect(host.querySelector('[aria-label="Show title"]')).not.toBeNull();
+		expect(host.querySelector('[aria-label="Copy title"]')).not.toBeNull();
+		expect(host.querySelector('[aria-label="Change Title"]')).toBeNull();
+		unmount(component);
+	}
+});
+
+/**
+ * A protected title that is empty has nothing to hide and nothing to reveal,
+ * and is typed into the heading like any other title. It is written back
+ * protected: the database asked for that, and an empty value is no reason to
+ * put the next one into the file as plain text.
+ */
+it('types a protected title that is empty into the heading, and writes it protected', () => {
+	ipc.setField.mockReset();
+	ipc.setField.mockResolvedValue(entry());
+	const { component, entry: shown } = pane({
+		fields: [field({ name: 'Title', kind: 'title', value: null, empty: true, protected: true })]
+	});
+
+	const header = host.querySelector('header');
+	expect(
+		header?.querySelector('use[href="#redact"]'),
+		'nothing is hidden behind the mask'
+	).toBeNull();
+	for (const label of ['Show title', 'Copy title', 'Change Title']) {
+		expect(host.querySelector(`[aria-label="${label}"]`), label).toBeNull();
+	}
+	const title = header?.querySelector('input[aria-label="Title"]') as HTMLInputElement;
+	expect(title).not.toBeNull();
+	enter(title, 'Bank');
+	title.dispatchEvent(new Event('blur'));
+
+	expect(ipc.setField).toHaveBeenCalledTimes(1);
+	expect(ipc.setField).toHaveBeenCalledWith(shown.id, 'Title', 'Bank', true, expect.any(Number));
+
+	return unmount(component);
+});
+
+/**
+ * Rust hands the reader's own fields over in the order of their bytes, which
+ * puts "Code 10" before "Code 2", every capital before every small letter and
+ * every accent after the end of the alphabet. The pane draws them the way a
+ * reader looks for them, and the same way however Rust happens to send them.
+ */
+it("draws the fields of the reader's own in reading order, not in the order Rust sends", () => {
+	const ETAGERE = '\u00c9tag\u00e8re';
+	const OMEGA = '\u03a9mega';
+	const bytewise = [
+		'Code 1',
+		'Code 10',
+		'Code 2',
+		'PIN',
+		'Pin',
+		'Zone',
+		'apple',
+		'pin',
+		ETAGERE,
+		OMEGA
+	];
+	expect([...bytewise].sort(), 'the fixture is not in the order Rust sends').toEqual(bytewise);
+	const { component, props } = deleting({
+		fields: [
+			PASSWORD,
+			...bytewise.map((name) => field({ name, kind: 'custom', value: name, empty: false })),
+			field({ name: 'Notes', kind: 'notes', value: 'a note', empty: false })
+		]
+	});
+
+	const reading = [
+		'apple',
+		'Code 1',
+		'Code 2',
+		'Code 10',
+		ETAGERE,
+		'PIN',
+		'Pin',
+		'pin',
+		'Zone',
+		OMEGA
+	];
+	expect(drawnOrder()).toEqual(reading);
+
+	props.entry = { ...props.entry, fields: [...props.entry.fields].reverse() };
+	flushSync();
+	expect(drawnOrder(), 'the order changed with the order Rust sent').toEqual(reading);
+
+	return unmount(component);
+});
+
+/**
+ * Whether a field is hidden is the lock's to say, on every row, at any time:
+ * Rust moves the value from one kind of storage to the other and hands back
+ * the entry, which is what the window is given.
+ */
+it("hides a field of the reader's own or shows it from its lock", async () => {
+	const nowHidden = entry();
+	const nowOpen = entry();
+	ipc.setProtection.mockReset();
+	ipc.setProtection.mockResolvedValueOnce(nowHidden).mockResolvedValueOnce(nowOpen);
+	const {
+		component,
+		entry: shown,
+		onChanged,
+		onFailure
+	} = pane({
+		fields: [
+			field({ name: 'Expiry', kind: 'custom', value: '12/29', empty: false }),
+			hiddenField('CVC')
+		]
+	});
+
+	const open = icon('Keep Expiry hidden');
+	const kept = icon('Keep CVC hidden');
+	expect(open.getAttribute('aria-pressed')).toBe('false');
+	expect(open.querySelector('use')?.getAttribute('href')).toBe('#i-unlock');
+	expect(kept.getAttribute('aria-pressed')).toBe('true');
+	expect(kept.querySelector('use')?.getAttribute('href')).toBe('#i-lock');
+
+	open.click();
+	await vi.waitFor(() => expect(onChanged).toHaveBeenCalledWith(nowHidden));
+	expect(ipc.setProtection).toHaveBeenCalledWith(shown.id, 'Expiry', true);
+
+	kept.click();
+	await vi.waitFor(() => expect(onChanged).toHaveBeenCalledWith(nowOpen));
+	expect(ipc.setProtection).toHaveBeenLastCalledWith(shown.id, 'CVC', false);
+	expect(ipc.setProtection).toHaveBeenCalledTimes(2);
+	expect(ipc.setField, 'the value was written to move it').not.toHaveBeenCalled();
+	expect(onFailure).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/**
+ * A second press while the first is on its way would undo it before either
+ * landed, so the lock takes one press at a time. A refusal is said, changes
+ * nothing, and leaves the lock to be pressed again.
+ */
+it('takes one press of a lock at a time, and says so when Rust refuses it', async () => {
+	const answer = Promise.withResolvers<Entry>();
+	ipc.setProtection.mockReset();
+	ipc.setProtection.mockReturnValue(answer.promise);
+	const {
+		component,
+		entry: shown,
+		onChanged,
+		onFailure
+	} = pane({
+		fields: [field({ name: 'Expiry', kind: 'custom', value: '12/29', empty: false })]
+	});
+
+	const lock = icon('Keep Expiry hidden');
+	lock.click();
+	lock.click();
+	await vi.waitFor(() => expect(ipc.setProtection).toHaveBeenCalledTimes(1));
+	flushSync();
+	expect(lock.disabled, 'the lock can be pressed while its answer is on its way').toBe(true);
+	lock.click();
+	await Promise.resolve();
+	expect(ipc.setProtection).toHaveBeenCalledTimes(1);
+
+	answer.reject({ code: 'readOnly', message: 'this database is read only' });
+	await vi.waitFor(() =>
+		expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({ code: 'readOnly' }))
+	);
+	flushSync();
+	expect(onChanged).not.toHaveBeenCalled();
+	expect(lock.disabled, 'a refused press left the lock stuck').toBe(false);
+	expect(lock.getAttribute('aria-pressed')).toBe('false');
+
+	ipc.setProtection.mockResolvedValue(entry());
+	lock.click();
+	await vi.waitFor(() => expect(ipc.setProtection).toHaveBeenCalledTimes(2));
+	expect(ipc.setProtection).toHaveBeenLastCalledWith(shown.id, 'Expiry', true);
+
+	return unmount(component);
+});
+
+/**
+ * Pressing the lock leaves the value being typed, which writes it. That value
+ * lands before the protection changes; the other way round, the entry drawn
+ * last is the one from before the press, and the lock says the opposite of
+ * what the file holds.
+ */
+it('lets a value typed into a field land before its lock changes how it is kept', async () => {
+	const writing = Promise.withResolvers<Entry>();
+	ipc.setField.mockReset();
+	ipc.setField.mockReturnValue(writing.promise);
+	ipc.setProtection.mockReset();
+	ipc.setProtection.mockResolvedValue(entry());
+	const { component, entry: shown } = pane({
+		fields: [field({ name: 'Expiry', kind: 'custom', value: '12/29', empty: false })]
+	});
+
+	const typed = host.querySelector('textarea[aria-label="Expiry"]') as HTMLTextAreaElement;
+	enter(typed, '01/31');
+	typed.dispatchEvent(new Event('blur'));
+	icon('Keep Expiry hidden').click();
+	await new Promise((resolve) => setTimeout(resolve, 0));
+
+	expect(ipc.setField).toHaveBeenCalledWith(shown.id, 'Expiry', '01/31', false, expect.any(Number));
+	expect(ipc.setProtection, 'the protection moved under a value on its way').not.toHaveBeenCalled();
+
+	writing.resolve(entry());
+	await vi.waitFor(() => expect(ipc.setProtection).toHaveBeenCalledWith(shown.id, 'Expiry', true));
+	expect(ipc.setField.mock.invocationCallOrder[0]).toBeLessThan(
+		ipc.setProtection.mock.invocationCallOrder[0]
+	);
+
+	return unmount(component);
+});
+
+/**
+ * The value the lock waits for can take a while to land, and the reader does
+ * not wait with it: by the time it has, the pane may be on the next entry,
+ * with a field of the same name kept the other way. The press was about the
+ * field it was made on. Read when the answer was ready, the entry was the
+ * next one, and the lock hid or showed a field nobody had pressed anything on.
+ */
+it('changes how a field is kept on the entry its lock was pressed on, after the pane has moved on', async () => {
+	const writing = Promise.withResolvers<Entry>();
+	ipc.setField.mockReset();
+	ipc.setField.mockReturnValue(writing.promise);
+	ipc.setProtection.mockReset();
+	ipc.setProtection.mockResolvedValue(entry());
+	const { component, props } = deleting({
+		fields: [field({ name: 'Expiry', kind: 'custom', value: '12/29', empty: false })]
+	});
+	const pressed = props.entry.id;
+
+	const typed = host.querySelector('textarea[aria-label="Expiry"]') as HTMLTextAreaElement;
+	enter(typed, '01/31');
+	typed.dispatchEvent(new Event('blur'));
+	icon('Keep Expiry hidden').click();
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(ipc.setProtection, 'the lock did not wait for the value').not.toHaveBeenCalled();
+
+	const next = entry({ fields: [hiddenField('Expiry')] });
+	props.entry = next;
+	flushSync();
+	writing.resolve(entry());
+
+	await vi.waitFor(() => expect(ipc.setProtection).toHaveBeenCalledTimes(1));
+	expect(ipc.setProtection).toHaveBeenCalledWith(pressed, 'Expiry', true);
+	expect(ipc.setProtection, 'the press went to the entry on the screen').not.toHaveBeenCalledWith(
+		next.id,
+		expect.anything(),
+		expect.anything()
+	);
+	flushSync();
+	const lock = icon('Keep Expiry hidden');
+	expect(lock.getAttribute('aria-pressed'), "the next entry's field moved").toBe('true');
+	expect(lock.disabled, "the next entry's lock is held by the last one's press").toBe(false);
+	expect(props.onFailure).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/**
+ * A new value being typed in a field's Change is on its way to that field,
+ * under that name and that protection. Neither the lock nor the name moves
+ * under it, and the other rows' do.
+ */
+it("holds a field's lock and name still while its Change is open", () => {
+	ipc.setProtection.mockReset();
+	ipc.setProtection.mockResolvedValue(entry());
+	const { component } = pane({
+		fields: [
+			hiddenField('CVC'),
+			field({ name: 'Expiry', kind: 'custom', value: '12/29', empty: false })
+		]
+	});
+
+	icon('Change CVC').click();
+	flushSync();
+	expect(icon('Keep CVC hidden').disabled).toBe(true);
+	icon('Keep CVC hidden').click();
+	expect(host.querySelector('[aria-label="Rename CVC"]'), 'the name can be changed').toBeNull();
+	expect(host.querySelector('span[title="CVC"]')?.textContent).toBe('CVC');
+	expect(icon('Keep Expiry hidden').disabled).toBe(false);
+	expect(host.querySelector('[aria-label="Rename Expiry"]')).not.toBeNull();
+	expect(ipc.setProtection).not.toHaveBeenCalled();
+
+	button('Cancel').click();
+	flushSync();
+	expect(icon('Keep CVC hidden').disabled).toBe(false);
+	expect(host.querySelector('[aria-label="Rename CVC"]')).not.toBeNull();
+
+	return unmount(component);
+});
+
+/**
+ * The name is pressed to be changed, which takes the value and its protection
+ * with it rather than asking for them again. The field opens with the name in
+ * it and selected, Return finishes it - once, though the field leaving the
+ * screen is a blur as well - and spaces at either end are no part of a name.
+ */
+it("renames a field of the reader's own from its name, once, without the spaces around it", async () => {
+	const renamed = entry();
+	ipc.renameField.mockReset();
+	ipc.renameField.mockResolvedValue(renamed);
+	const { component, entry: shown, onChanged } = pane({ fields: [hiddenField('PIN')] });
+
+	const name = icon('Rename PIN');
+	expect(name.title).toBe('PIN');
+	name.click();
+	flushSync();
+	const typed = renaming('PIN');
+	expect(typed.value).toBe('PIN');
+	expect(document.activeElement).toBe(typed);
+	expect([typed.selectionStart, typed.selectionEnd]).toEqual([0, 3]);
+
+	typed.value = '  Card PIN  ';
+	expect(returned(typed).defaultPrevented).toBe(true);
+	typed.dispatchEvent(new FocusEvent('blur'));
+	await vi.waitFor(() => expect(onChanged).toHaveBeenCalledWith(renamed));
+
+	expect(ipc.renameField).toHaveBeenCalledTimes(1);
+	expect(ipc.renameField).toHaveBeenCalledWith(shown.id, 'PIN', 'Card PIN');
+	expect(host.querySelector('[aria-label="New name for PIN"]')).toBeNull();
+
+	return unmount(component);
+});
+
+/** Leaving the name finishes it the way Return does; nothing, or the name it
+ * already had, changes nothing whichever way it is finished. */
+it('renames nothing for an empty name or the name the field already has', async () => {
+	ipc.renameField.mockReset();
+	ipc.renameField.mockResolvedValue(entry());
+	const { component, entry: shown } = pane({ fields: [hiddenField('PIN')] });
+
+	for (const typed of ['', '   ', 'PIN', '  PIN  ']) {
+		for (const finish of ['Return', 'leaving'] as const) {
+			icon('Rename PIN').click();
+			flushSync();
+			const input = renaming('PIN');
+			input.value = typed;
+			if (finish === 'Return') returned(input);
+			else input.dispatchEvent(new FocusEvent('blur'));
+			flushSync();
+			expect(
+				host.querySelector('[aria-label="New name for PIN"]'),
+				`${finish} "${typed}"`
+			).toBeNull();
+		}
+	}
+	await Promise.resolve();
+	expect(ipc.renameField).not.toHaveBeenCalled();
+
+	icon('Rename PIN').click();
+	flushSync();
+	renaming('PIN').value = 'Card PIN';
+	renaming('PIN').dispatchEvent(new FocusEvent('blur'));
+	await vi.waitFor(() => expect(ipc.renameField).toHaveBeenCalledWith(shown.id, 'PIN', 'Card PIN'));
+
+	return unmount(component);
+});
+
+/**
+ * Escape puts the name back and is the name's alone: the window reads Escape
+ * as "close the entry", and a name put back is not an entry put away. The
+ * Escape that cancels an input method's conversion is the input method's.
+ */
+it('puts the name back on Escape without closing the entry', () => {
+	ipc.renameField.mockReset();
+	const elsewhere = vi.fn();
+	window.addEventListener('keydown', elsewhere);
+	const { component } = pane({ fields: [hiddenField('PIN')] });
+
+	try {
+		icon('Rename PIN').click();
+		flushSync();
+		const input = renaming('PIN');
+		input.value = 'Card PIN';
+		for (const composition of [{ isComposing: true }, { keyCode: 229 }]) {
+			returned(input, { key: 'Escape', ...composition });
+			returned(input, composition);
+			flushSync();
+			expect(renaming('PIN').value, JSON.stringify(composition)).toBe('Card PIN');
+		}
+		elsewhere.mockClear();
+
+		input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+		flushSync();
+		expect(elsewhere, 'the Escape closed the entry as well').not.toHaveBeenCalled();
+		expect(host.querySelector('[aria-label="New name for PIN"]')).toBeNull();
+		expect(icon('Rename PIN').textContent?.trim()).toBe('PIN');
+		expect(ipc.renameField).not.toHaveBeenCalled();
+	} finally {
+		window.removeEventListener('keydown', elsewhere);
+	}
+
+	return unmount(component);
+});
+
+/**
+ * A name the entry already gives another field is Rust's to refuse, and the
+ * refusal is said. Nothing moved: the field is still under its own name, with
+ * its value, and the one whose name was asked for is untouched.
+ */
+it('keeps the old name when Rust refuses the new one, and says why', async () => {
+	const REFUSED = { code: 'refused', message: 'that name is already taken on this entry' };
+	ipc.renameField.mockReset();
+	ipc.renameField.mockRejectedValue(REFUSED);
+	const {
+		component,
+		entry: shown,
+		onChanged,
+		onFailure
+	} = pane({
+		fields: [hiddenField('PIN'), field({ name: 'Code', kind: 'custom', value: '7', empty: false })]
+	});
+
+	icon('Rename PIN').click();
+	flushSync();
+	renaming('PIN').value = 'Code';
+	returned(renaming('PIN'));
+	await vi.waitFor(() => expect(onFailure).toHaveBeenCalledWith(REFUSED));
+	flushSync();
+
+	expect(ipc.renameField).toHaveBeenCalledWith(shown.id, 'PIN', 'Code');
+	expect(onChanged).not.toHaveBeenCalled();
+	expect(host.querySelector('[aria-label^="New name for"]')).toBeNull();
+	expect(drawnOrder()).toEqual(['Code', 'PIN']);
+	expect(host.querySelector('[aria-label="Show PIN"]')).not.toBeNull();
+
+	return unmount(component);
+});
+
+/**
+ * A refused name finished with Return closes the field it was typed in, and
+ * the focus fell out of the pane with it - where the next Escape closes the
+ * entry. It goes back to the name that stayed, which is where the reader
+ * pressed to begin with; the name was a plain label while the refusal was on
+ * its way, so the button it goes to is a new one. A reader who has put the
+ * focus somewhere else in the meantime keeps it there.
+ */
+it('gives the focus back to the name a refused rename leaves in place', async () => {
+	const REFUSED = { code: 'refused', message: 'that name is already taken on this entry' };
+	ipc.renameField.mockReset();
+	ipc.renameField.mockRejectedValue(REFUSED);
+	const { component, props } = landing({
+		fields: [hiddenField('PIN'), field({ name: 'Code', kind: 'custom', value: '7', empty: false })]
+	});
+
+	icon('Rename PIN').click();
+	flushSync();
+	renaming('PIN').value = 'Code';
+	returned(renaming('PIN'));
+	await vi.waitFor(() => expect(props.onFailure).toHaveBeenCalledWith(REFUSED));
+	await vi.waitFor(() => expect(document.activeElement).toBe(icon('Rename PIN')));
+	expect(drawnOrder()).toEqual(['Code', 'PIN']);
+	expect(props.onChanged).not.toHaveBeenCalled();
+
+	const refusing = Promise.withResolvers<Entry>();
+	ipc.renameField.mockReturnValue(refusing.promise);
+	icon('Rename PIN').click();
+	flushSync();
+	renaming('PIN').value = 'Code';
+	returned(renaming('PIN'));
+	await vi.waitFor(() => expect(ipc.renameField).toHaveBeenCalledTimes(2));
+	const tags = button('+ tag');
+	tags.focus();
+	refusing.reject(REFUSED);
+	await vi.waitFor(() => expect(props.onFailure).toHaveBeenCalledTimes(2));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	flushSync();
+
+	expect(document.activeElement, 'the refusal took the focus from where the reader put it').toBe(
+		tags
+	);
+	expect(icon('Rename PIN').textContent?.trim()).toBe('PIN');
+
+	return unmount(component);
+});
+
+/** Clicking the name to change it leaves the value being typed, which writes
+ * it; the rename goes after that value has landed, under the name it was
+ * typed for. */
+it('renames a field only once the value typed into it has landed', async () => {
+	const writing = Promise.withResolvers<Entry>();
+	ipc.setField.mockReset();
+	ipc.setField.mockReturnValue(writing.promise);
+	ipc.renameField.mockReset();
+	ipc.renameField.mockResolvedValue(entry());
+	const { component, entry: shown } = pane({
+		fields: [field({ name: 'Port', kind: 'custom', value: PORT, empty: false })]
+	});
+
+	const typed = host.querySelector('textarea[aria-label="Port"]') as HTMLTextAreaElement;
+	enter(typed, '2203');
+	typed.dispatchEvent(new Event('blur'));
+	icon('Rename Port').click();
+	flushSync();
+	renaming('Port').value = 'SSH port';
+	returned(renaming('Port'));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+
+	expect(ipc.setField).toHaveBeenCalledWith(shown.id, 'Port', '2203', false, expect.any(Number));
+	expect(ipc.renameField, 'the name moved under a value on its way').not.toHaveBeenCalled();
+
+	writing.resolve(entry());
+	await vi.waitFor(() =>
+		expect(ipc.renameField).toHaveBeenCalledWith(shown.id, 'Port', 'SSH port')
+	);
+
+	return unmount(component);
+});
+
+/**
+ * The same wait for a rename: the value typed into the field lands first, and
+ * the reader may be on the next entry by then, with a field of the same name.
+ * The new name was typed for the field it was typed on. Given to the entry on
+ * the screen instead, it renamed a field on an entry nobody had touched.
+ */
+it('renames the field on the entry the name was typed on, after the pane has moved on', async () => {
+	const writing = Promise.withResolvers<Entry>();
+	ipc.setField.mockReset();
+	ipc.setField.mockReturnValue(writing.promise);
+	ipc.renameField.mockReset();
+	ipc.renameField.mockResolvedValue(entry());
+	const { component, props } = deleting({
+		fields: [field({ name: 'Port', kind: 'custom', value: PORT, empty: false })]
+	});
+	const typedOn = props.entry.id;
+
+	const typed = host.querySelector('textarea[aria-label="Port"]') as HTMLTextAreaElement;
+	enter(typed, '2203');
+	typed.dispatchEvent(new Event('blur'));
+	icon('Rename Port').click();
+	flushSync();
+	renaming('Port').value = 'SSH port';
+	returned(renaming('Port'));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(ipc.renameField, 'the rename did not wait for the value').not.toHaveBeenCalled();
+
+	const next = entry({
+		fields: [field({ name: 'Port', kind: 'custom', value: '22', empty: false })]
+	});
+	props.entry = next;
+	flushSync();
+	writing.resolve(entry());
+
+	await vi.waitFor(() => expect(ipc.renameField).toHaveBeenCalledTimes(1));
+	expect(ipc.renameField).toHaveBeenCalledWith(typedOn, 'Port', 'SSH port');
+	expect(ipc.renameField, 'the name went to the entry on the screen').not.toHaveBeenCalledWith(
+		next.id,
+		expect.anything(),
+		expect.anything()
+	);
+	flushSync();
+	expect(drawnOrder()).toEqual(['Port']);
+	expect(
+		host.querySelector('[aria-label="Rename Port"]'),
+		"the next entry's name is held by the last one's rename"
+	).not.toBeNull();
+	expect(props.onFailure).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/**
+ * A name finished with Return is a reader working from the keyboard. The row
+ * under the old name goes when the new name lands, and the one under the new
+ * name takes the focus as it is drawn; the focus used to fall out of the pane,
+ * where the next Escape closes the entry. Only then: not for a name finished
+ * by going somewhere else, and not from a reader who has gone on elsewhere
+ * while the rename was on its way.
+ */
+it('gives the focus to the new name once a rename finished with Return has landed', async () => {
+	ipc.renameField.mockReset();
+	const { component, props } = landing({ fields: [PASSWORD, hiddenField('PIN')] });
+	const under = (name: string): Entry => ({
+		...props.entry,
+		fields: [PASSWORD, hiddenField(name)]
+	});
+
+	ipc.renameField.mockResolvedValueOnce(under('Card PIN'));
+	icon('Rename PIN').click();
+	flushSync();
+	renaming('PIN').value = 'Card PIN';
+	returned(renaming('PIN'));
+	await vi.waitFor(() => expect(document.activeElement).toBe(icon('Rename Card PIN')));
+	expect(host.querySelector('[aria-label="Rename PIN"]')).toBeNull();
+
+	const slow = Promise.withResolvers<Entry>();
+	ipc.renameField.mockReturnValueOnce(slow.promise);
+	icon('Rename Card PIN').click();
+	flushSync();
+	renaming('Card PIN').value = 'Door PIN';
+	returned(renaming('Card PIN'));
+	await vi.waitFor(() => expect(ipc.renameField).toHaveBeenCalledTimes(2));
+	const tags = button('+ tag');
+	tags.focus();
+	slow.resolve(under('Door PIN'));
+	await vi.waitFor(() => expect(drawnOrder()).toEqual(['Door PIN']));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	flushSync();
+	expect(document.activeElement, 'the new name took the focus from where the reader put it').toBe(
+		tags
+	);
+
+	tags.blur();
+	ipc.renameField.mockResolvedValueOnce(under('Gate PIN'));
+	icon('Rename Door PIN').click();
+	flushSync();
+	renaming('Door PIN').value = 'Gate PIN';
+	renaming('Door PIN').dispatchEvent(new FocusEvent('blur'));
+	await vi.waitFor(() => expect(drawnOrder()).toEqual(['Gate PIN']));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	flushSync();
+	expect(document.activeElement, 'a name finished elsewhere took the focus').not.toBe(
+		icon('Rename Gate PIN')
+	);
+	expect(ipc.renameField).toHaveBeenCalledTimes(3);
+	expect(props.onFailure).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/** Nothing here may be changed in a database Coffer cannot write, or in the
+ * bin, and that includes a name: it is drawn, whole in its title, and not
+ * offered. */
+it('offers no rename where nothing may be changed', () => {
+	const binned = { since: null, within: null, from: null };
+	for (const [over, readOnly] of [
+		[{}, true],
+		[{ binned, deletion: 'forever' as const }, false]
+	] as const) {
+		const { component } = pane({ ...over, fields: [hiddenField('Recovery email')] }, readOnly);
+		expect(host.querySelector('[aria-label="Rename Recovery email"]')).toBeNull();
+		expect(host.querySelector('span[title="Recovery email"]')?.textContent).toBe('Recovery email');
+		expect(host.querySelector('[aria-label="Keep Recovery email hidden"]')).toBeNull();
+		unmount(component);
+	}
+});
+
+/**
+ * Lines are not in the file - a value is in lines because it has a break -
+ * so a field named to be written in lines is the pane's to remember, by
+ * name. A new name is the same field: its Change is still four lines tall
+ * under it. The name it had is nobody's in lines any more.
+ */
+it('keeps a field named to be in lines in lines once it is renamed, and only under the new name', async () => {
+	ipc.setField.mockReset();
+	ipc.setField.mockResolvedValue(entry());
+	ipc.renameField.mockReset();
+	const { component, props } = deleting({ fields: [PASSWORD] });
+
+	icon('Add a field').click();
+	flushSync();
+	named().value = 'Codes';
+	button('Multi-line').click();
+	flushSync();
+	returned(named());
+	await vi.waitFor(() =>
+		expect(ipc.setField).toHaveBeenCalledWith(props.entry.id, 'Codes', '', true, expect.any(Number))
+	);
+	props.entry = { ...props.entry, fields: [PASSWORD, hiddenField('Codes')] };
+	flushSync();
+
+	const renamed: Entry = { ...props.entry, fields: [PASSWORD, hiddenField('Recovery codes')] };
+	ipc.renameField.mockResolvedValue(renamed);
+	icon('Rename Codes').click();
+	flushSync();
+	renaming('Codes').value = 'Recovery codes';
+	returned(renaming('Codes'));
+	await vi.waitFor(() => expect(props.onChanged).toHaveBeenCalledWith(renamed));
+	props.entry = renamed;
+	flushSync();
+	await Promise.resolve();
+	flushSync();
+
+	icon('Change Recovery codes').click();
+	flushSync();
+	const typed = changer('New value of Recovery codes');
+	expect(typed.getAttribute('rows'), 'the rename put the field on one line').toBe('4');
+	enter(typed, 'first code');
+	expect(returned(typed).defaultPrevented, 'Return saved the first code alone').toBe(false);
+	typed.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+	flushSync();
+
+	props.entry = { ...renamed, fields: [...renamed.fields, hiddenField('Codes')] };
+	flushSync();
+	icon('Change Codes').click();
+	flushSync();
+	expect(changer('New value of Codes').getAttribute('rows'), 'the old name kept its lines').toBe(
+		'1'
+	);
+	expect(ipc.setField).toHaveBeenCalledTimes(1);
+
+	return unmount(component);
+});
+
+/**
+ * A hidden field of the reader's own is given a made value the way the
+ * password is: Make one opens the generator under its row, and the value goes
+ * straight in, hidden, from the press that puts it there. A field kept in the
+ * open is not offered one, and neither is anything that cannot be written.
+ */
+it("makes a value for a hidden field of the reader's own and writes it hidden", async () => {
+	const MADE = '4096-1123-8807';
+	ipc.generatePassword.mockReset();
+	ipc.generatePassword.mockResolvedValue(generated(MADE));
+	ipc.setField.mockReset();
+	ipc.setField.mockResolvedValue(entry());
+	const {
+		component,
+		entry: shown,
+		onFailure
+	} = pane({
+		fields: [
+			hiddenField('PIN'),
+			field({ name: 'Backup PIN', kind: 'custom', protected: true, value: null, empty: true }),
+			field({ name: 'Region', kind: 'custom', value: 'eu-central', empty: false })
+		]
+	});
+
+	expect(host.querySelector('[aria-label="Make one for Backup PIN"]')).not.toBeNull();
+	expect(host.querySelector('[aria-label="Make one for Region"]')).toBeNull();
+
+	const make = icon('Make one for PIN');
+	make.click();
+	flushSync();
+	expect(make.getAttribute('aria-expanded')).toBe('true');
+	await vi.waitFor(() => expect(button('Put it in the field').disabled).toBe(false));
+	expect(ipc.generatePassword).toHaveBeenCalledWith(expect.any(Object), 'field');
+	expect(attributes().join(' ')).not.toContain(MADE);
+	expect(written()).not.toContain(MADE);
+	expect(ipc.setField, 'a made value was written before it was put in').not.toHaveBeenCalled();
+
+	button('Put it in the field').click();
+	flushSync();
+	await vi.waitFor(() =>
+		expect(ipc.setField).toHaveBeenCalledWith(shown.id, 'PIN', MADE, true, expect.any(Number))
+	);
+	expect(ipc.setField).toHaveBeenCalledTimes(1);
+	expect(host.querySelector('[aria-label="Generator for PIN"]')).toBeNull();
+	expect(host.textContent).not.toContain('Password generator');
+	expect(screen()).not.toContain(MADE);
+	await vi.waitFor(() => expect(document.activeElement).toBe(icon('Make one for PIN')));
+	expect(onFailure).not.toHaveBeenCalled();
+	unmount(component);
+
+	const read = pane({ fields: [hiddenField('PIN')] }, true);
+	expect(host.querySelector('[aria-label="Make one for PIN"]')).toBeNull();
+
+	return unmount(read.component);
+});
+
+/**
+ * A Change and the generator are two ways to give a field a new value, and a
+ * made value put in while a typed one waits would be written over by it a
+ * moment later. Opening the Change puts the generator away.
+ */
+it("puts a field's generator away when its Change is opened", async () => {
+	ipc.generatePassword.mockReset();
+	ipc.generatePassword.mockResolvedValue(generated('4096-1123-8807'));
+	const { component } = pane({ fields: [hiddenField('PIN')] });
+
+	icon('Make one for PIN').click();
+	flushSync();
+	await vi.waitFor(() => expect(button('Put it in the field').disabled).toBe(false));
+	icon('Change PIN').click();
+	flushSync();
+
+	expect(host.querySelector('[aria-label="Generator for PIN"]')).toBeNull();
+	expect(host.textContent).not.toContain('Password generator');
+	expect(host.querySelector('[aria-label="Make one for PIN"]')).toBeNull();
+	expect(changer('New value of PIN')).not.toBeNull();
+	expect(ipc.setField).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/**
+ * Nothing one entry's field rows were doing is still there under the next
+ * entry's fields of the same names: a name being changed would be given to
+ * the wrong entry's field, and a made value put into it. A value that was
+ * being made for the entry that was open arrives to nowhere.
+ */
+it("closes a rename and a generator in a field's row when another entry is shown", async () => {
+	const making = Promise.withResolvers<Generated>();
+	ipc.generatePassword.mockReset();
+	ipc.generatePassword.mockReturnValue(making.promise);
+	ipc.renameField.mockReset();
+	ipc.setField.mockReset();
+	const fields = () => [
+		hiddenField('PIN'),
+		field({ name: 'Region', kind: 'custom', value: 'eu-central', empty: false })
+	];
+	const { component, props } = deleting({ fields: fields() });
+
+	icon('Make one for PIN').click();
+	flushSync();
+	await vi.waitFor(() => expect(ipc.generatePassword).toHaveBeenCalled());
+	icon('Rename Region').click();
+	flushSync();
+	renaming('Region').value = 'Zone';
+
+	props.entry = entry({ fields: fields() });
+	flushSync();
+
+	expect(host.querySelector('[aria-label="Generator for PIN"]')).toBeNull();
+	expect(host.textContent).not.toContain('Password generator');
+	expect(host.querySelector('[aria-label="New name for Region"]')).toBeNull();
+	expect(icon('Make one for PIN').getAttribute('aria-expanded')).toBe('false');
+	expect(icon('Rename Region').textContent?.trim()).toBe('Region');
+
+	making.resolve(generated('Made-For-The-Last-One'));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	flushSync();
+	expect(screen()).not.toContain('Made-For-The-Last-One');
+	expect(ipc.setField).not.toHaveBeenCalled();
+	expect(ipc.renameField).not.toHaveBeenCalled();
+	expect(props.onFailure).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/**
+ * The password's generator and a field's each remember a recipe of their own,
+ * so a PIN set up under a field is not what the next password is made from,
+ * and the two can be open at once. Each asks Rust as what it is, makes its
+ * value from its own recipe, and puts it in its own field: the password's
+ * made value under the PIN, or the other way round, is a secret written where
+ * nobody looks for it, over one that is gone.
+ */
+it("asks the password's generator and a field's as what each is, and puts each one's value in its own field", async () => {
+	const PIN: Recipe = { length: 4, alphabets: ['digits'], similar: true, avoid: '' };
+	const forField = drawing({ recipe: PIN, shortest: 4, pin: true, lookAlikes: '' });
+	ipc.generator.mockReset();
+	ipc.generator.mockImplementation((purpose: Purpose) =>
+		Promise.resolve(purpose === 'field' ? forField : drawing())
+	);
+	ipc.generatePassword.mockReset();
+	ipc.generatePassword.mockImplementation((_recipe: unknown, purpose: Purpose) =>
+		Promise.resolve(
+			purpose === 'field'
+				? generated('4711', { generator: forField })
+				: generated('Made-Password-123')
+		)
+	);
+	ipc.setField.mockReset();
+	ipc.setField.mockResolvedValue(entry());
+	const {
+		component,
+		entry: shown,
+		onFailure
+	} = pane({
+		fields: [PASSWORD, hiddenField('PIN')]
+	});
+
+	const forPassword = [...host.querySelectorAll('button')].find(
+		(each) => each.textContent?.trim() === 'Make one' && !each.hasAttribute('aria-label')
+	);
+	forPassword?.click();
+	icon('Make one for PIN').click();
+	flushSync();
+	const put = (panel: string) => {
+		const found = [
+			...(host.querySelector(`[role="group"][aria-label="${panel}"]`)?.querySelectorAll('button') ??
+				[])
+		].find((each) => each.textContent?.trim() === 'Put it in the field');
+		if (!found) throw new Error(`no ${panel} is open`);
+		return found;
+	};
+	await vi.waitFor(() => {
+		expect(put('Password generator').disabled).toBe(false);
+		expect(put('Generator for PIN').disabled).toBe(false);
+	});
+
+	expect(ipc.generator).toHaveBeenCalledWith('password');
+	expect(ipc.generator).toHaveBeenCalledWith('field');
+	expect(ipc.generator).toHaveBeenCalledTimes(2);
+	expect(ipc.generatePassword).toHaveBeenCalledWith(drawing().recipe, 'password');
+	expect(ipc.generatePassword).toHaveBeenCalledWith(PIN, 'field');
+	expect(ipc.generatePassword).toHaveBeenCalledTimes(2);
+
+	put('Generator for PIN').click();
+	flushSync();
+	await vi.waitFor(() => expect(ipc.setField).toHaveBeenCalledTimes(1));
+	expect(ipc.setField).toHaveBeenCalledWith(shown.id, 'PIN', '4711', true, expect.any(Number));
+	expect(host.querySelector('[aria-label="Generator for PIN"]')).toBeNull();
+
+	put('Password generator').click();
+	flushSync();
+	await vi.waitFor(() => expect(ipc.setField).toHaveBeenCalledTimes(2));
+	expect(ipc.setField).toHaveBeenLastCalledWith(
+		shown.id,
+		'Password',
+		'Made-Password-123',
+		true,
+		expect.any(Number)
+	);
+	expect(screen()).not.toContain('4711');
+	expect(screen()).not.toContain('Made-Password-123');
+	expect(onFailure).not.toHaveBeenCalled();
 
 	return unmount(component);
 });

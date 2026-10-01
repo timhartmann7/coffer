@@ -8,17 +8,20 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import type {
-	Alphabet,
 	Attached,
 	Calibration,
 	Database,
 	Deletion,
 	Entry,
 	Failure,
+	Generated,
+	Generator,
 	Group,
 	History,
 	Made,
 	Position,
+	Purpose,
+	Recipe,
 	Rival,
 	Settings,
 	Snapshot,
@@ -304,11 +307,14 @@ export function emptyRecycleBin(): Promise<Group> {
 /**
  * Writes one field.
  *
- * `protect` is what the screen read off the field it is editing. Sending it
- * back is what keeps a value the database protects from being written into the
- * file as plain text. `sequence` is the write's place in the count the drafts
- * of the field carry (`drafts.ts`), so that a draft sent before it and arriving
- * after it is known for what it is.
+ * `protect` is how a field the entry does not have yet is made. A field it has
+ * keeps its own protection whatever this says - `setProtection` is the one way
+ * to change that - so a value written on the way out of a field the reader has
+ * just hidden cannot put it back into the file as plain text.
+ *
+ * `sequence` is the write's place in the count the drafts of the field carry
+ * (`drafts.ts`), so that a draft sent before it and arriving after it is known
+ * for what it is.
  */
 export function setField(
 	entry: string,
@@ -347,6 +353,23 @@ export function draft(
  */
 export function removeField(entry: string, field: string, forever: boolean): Promise<Entry> {
 	return invoke('remove_field', { entry, field, forever });
+}
+
+/**
+ * Hides a field of the reader's own, or stops hiding it. The value moves
+ * between the two kinds of storage inside Rust and is never sent from here. A
+ * field hidden comes back with no value; a field shown is an open field from
+ * then on, and its value arrives in the entry that comes back like any other
+ * open value.
+ */
+export function setProtection(entry: string, field: string, protect: boolean): Promise<Entry> {
+	return invoke('set_protection', { entry, field, protect });
+}
+
+/** Gives a field of the reader's own another name; its value and protection go
+ * with it inside Rust. Rejects, changing nothing, when the name is taken. */
+export function renameField(entry: string, from: string, to: string): Promise<Entry> {
+	return invoke('rename_field', { entry, from, to });
 }
 
 /**
@@ -470,19 +493,22 @@ export function clearHistory(entry: string): Promise<History> {
 	return history(entry, invoke('clear_history', { entry }));
 }
 
+/** The recipe a generator opens with - the last one it made a password from -
+ * and what the screen draws around it. */
+export function generator(purpose: Purpose): Promise<Generator> {
+	return invoke('generator', { purpose });
+}
+
 /**
- * Makes a password.
+ * Makes a password, and has Rust remember what it was made from for the
+ * generator that asked.
  *
- * It comes back the way a revealed value does, and it is treated the same way:
- * it goes into the node that shows it and into the field it was made for, and
- * it is not kept anywhere else.
+ * The password comes back the way a revealed value does, and it is treated the
+ * same way: it goes into the node that shows it and into the field it was made
+ * for, and it is not kept anywhere else.
  */
-export function generatePassword(
-	length: number,
-	alphabets: Alphabet[],
-	similar: boolean
-): Promise<string> {
-	return invoke('generate_password', { length, alphabets, similar });
+export function generatePassword(recipe: Recipe, purpose: Purpose): Promise<Generated> {
+	return invoke('generate_password', { recipe, purpose });
 }
 
 /** Writes the database back. Rejects with `externalChange` when the file is not

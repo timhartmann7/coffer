@@ -1,6 +1,4 @@
 <script lang="ts">
-	import type { Attachment } from 'svelte/attachments';
-	import { SvelteSet } from 'svelte/reactivity';
 	import { eraseQuestion } from '$lib/bin';
 	import { settle, type Place } from '$lib/drafts';
 	import { called, fully, NO_LOGIN, quoted, size, UNTITLED } from '$lib/format';
@@ -13,19 +11,32 @@
 		removeAttachment,
 		removeAttachmentAndVersions,
 		removeField,
+		renameField,
 		replaceAttachment,
 		setField,
+		setProtection,
 		setTags,
 		withdrawAttachment
 	} from '$lib/ipc';
 	import { cancels, composing } from '$lib/lines';
-	import type { Clash, Entry, Field, Group, History, Position, Span } from '$lib/model';
-	import Change from './Change.svelte';
+	import {
+		masked,
+		type Clash,
+		type Entry,
+		type Field,
+		type Group,
+		type History,
+		type Position,
+		type Span
+	} from '$lib/model';
+	import { byName } from '$lib/order';
+	import Changer from './Changer.svelte';
 	import Confirm from './Confirm.svelte';
 	import Editable from './Editable.svelte';
 	import Heading from './Heading.svelte';
 	import Icon from './Icon.svelte';
 	import InBin from './InBin.svelte';
+	import OwnField from './OwnField.svelte';
 	import PasswordField from './PasswordField.svelte';
 	import ProtectedValue from './ProtectedValue.svelte';
 	import Tags from './Tags.svelte';
@@ -109,7 +120,11 @@
 	const password = $derived(of('password'));
 	const url = $derived(of('url'));
 	const notes = $derived(of('notes'));
-	const custom = $derived(entry.fields.filter((field) => field.kind === 'custom'));
+	/** In the order a reader looks for them - "Code 2" before "Code 10", "pin"
+	 * beside "PIN" - rather than the order of their bytes, which is how Rust
+	 * hands them over. Only how they are drawn: the file has no order of fields
+	 * to keep. */
+	const custom = $derived(entry.fields.filter((field) => field.kind === 'custom').toSorted(byName));
 
 	let naming = $state(false);
 	let named = $state<HTMLInputElement>();
@@ -117,16 +132,17 @@
 	 * no such flag - a value is in lines because it has a line break - so this
 	 * decides only the field its first value is written in. */
 	let inLines = $state(false);
+	/** Whether the field being named is to be hidden. The format's own flag:
+	 * the value is kept protected, and shown only on request. */
+	let hidden = $state(true);
 	/** The field just made to be written in lines, until another entry is shown. */
 	let longhand = $state<string | null>(null);
-	/**
-	 * The protected values a new one is being written for, by name.
-	 *
-	 * Each has a field of its own under its row, opened by its Change and closed
-	 * by Save or Cancel. More than one at a time, because a field left with
-	 * something typed in it asks what to do with it and waits for the answer.
-	 */
-	const changing = new SvelteSet<string>();
+	/** The field just named with Return, whose value takes the focus as it is
+	 * drawn, until another entry is shown. */
+	let fresh = $state<string | null>(null);
+	/** The name a field was just given with Return, which takes the focus as
+	 * its row is drawn, until the rename has landed. */
+	let retitled = $state<string | null>(null);
 	/**
 	 * A file the entry's own previous versions still hold, and the reason it
 	 * cannot go yet. The format keeps those versions inside the entry and the
@@ -216,8 +232,10 @@
 			held = false;
 			naming = false;
 			inLines = false;
+			hidden = true;
 			longhand = null;
-			changing.clear();
+			fresh = null;
+			retitled = null;
 			asking = null;
 			dropping = null;
 			erasing = false;
@@ -257,32 +275,6 @@
 				return false;
 			}
 		);
-	}
-
-	/**
-	 * The field whose new value was just put away with the focus in it.
-	 *
-	 * Its Change comes back in place of the field, and takes the focus back as
-	 * it is drawn, rather than the focus falling out of the pane - where the
-	 * next Escape closes the entry. Nothing is drawn from it, so it is not
-	 * state.
-	 */
-	let returning: string | null = null;
-
-	/** A field's own Change field closed, with the focus in it or not. */
-	function closed(name: string, back: boolean) {
-		if (back) returning = name;
-		changing.delete(name);
-	}
-
-	/** Gives the focus to a field's Change as it is drawn again, when its own
-	 * field just closed with the focus in it. */
-	function returned(name: string): Attachment<HTMLButtonElement> {
-		return (button) => {
-			if (returning !== name) return;
-			returning = null;
-			button.focus();
-		};
 	}
 
 	/**
@@ -444,6 +436,27 @@
 		onFieldRemoved(id, name, forever);
 	}
 
+	/** Hides one of the reader's own fields, or stops hiding it. */
+	/** Hides one of the reader's own fields, or stops hiding it, on the entry
+	 * the lock was pressed on. */
+	async function protect(id: string, name: string, wanted: boolean) {
+		await change(() => setProtection(id, name, wanted));
+	}
+
+	/**
+	 * Gives one of the reader's own fields another name, on the entry the name
+	 * was changed on, and says whether it took. A field that was to be written
+	 * in lines still is, under the new one. A name finished with Return takes
+	 * the focus back when its row is drawn under it.
+	 */
+	async function rename(id: string, from: string, to: string, typed: boolean): Promise<boolean> {
+		if (typed) retitled = to;
+		const taken = await change(() => renameField(id, from, to));
+		if (retitled === to) retitled = null;
+		if (taken && standing === id && longhand === from) longhand = to;
+		return taken;
+	}
+
 	/** The name a standard field carries in the file. An entry that arrived
 	 * without one still has to be editable, so the format's own name is used. */
 	function nameOf(field: Field | undefined, standard: string): string {
@@ -466,27 +479,46 @@
 	 * outside.
 	 */
 	function addField() {
-		naming = !naming;
-		if (!naming) return;
+		if (naming) {
+			putAway();
+			return;
+		}
+		naming = true;
 		queueMicrotask(() => named?.focus());
 	}
 
-	/** The focus left the name and the option beside it, which is where the
-	 * name is finished. Moving from one to the other is not leaving. */
+	/** The field that asks for a name goes, and what was chosen in it goes
+	 * with it: the next one starts hidden and on one line whether or not this
+	 * one made a field. */
+	function putAway() {
+		naming = false;
+		inLines = false;
+		hidden = true;
+	}
+
+	/** The focus left the name and the options beside it, which is where the
+	 * name is finished. Moving from one to another is not leaving. */
 	function leaving(event: FocusEvent) {
 		const into = event.relatedTarget;
 		const group = event.currentTarget;
 		if (into instanceof Node && group instanceof Node && group.contains(into)) return;
-		makeField();
+		makeField(false);
 	}
 
-	function makeField() {
+	/**
+	 * Makes the field the reader named.
+	 *
+	 * Named with Return, the field's value takes the focus as it is drawn: the
+	 * reader is about to give it one. Named by clicking somewhere else, the
+	 * focus stays where they clicked.
+	 */
+	function makeField(typing: boolean) {
 		if (!named) return;
 		const name = named.value.trim();
 		const lined = inLines;
+		const protect = hidden;
 		named.value = '';
-		naming = false;
-		inLines = false;
+		putAway();
 		if (name === '') return;
 
 		// Writing a field is writing over whatever that name held, so a name the
@@ -501,51 +533,41 @@
 			return;
 		}
 
-		// A new field of the reader's own is protected: a field somebody adds to
-		// a password entry is far more often a secret than not, and the value is
-		// shown behind an eye until they say otherwise.
+		// A new field of the reader's own is hidden unless the reader said
+		// otherwise when they named it: a field somebody adds to a password
+		// entry is far more often a secret than not. A card's expiry date is
+		// not, and the lock beside the field changes it later either way.
 		if (lined) longhand = name;
-		void write(name, '', true);
+		if (typing) fresh = name;
+		void write(name, '', protect).then(() => {
+			// The value took the focus when it was drawn. Cleared once the
+			// field is written, so the focus is not taken again when the value
+			// is drawn afresh - hidden, or shown.
+			if (fresh === name) fresh = null;
+		});
 	}
 </script>
 
 <!--
-	The way to write a new value into a field the database protects, on the line
-	under the field: a Change in words, and in its place, once pressed, a field
-	of its own with Save and Cancel. A value in lines is replaced in lines, and so
-	is one the reader asked to write in lines when they named the field, for as
-	long as the entry is open.
+	The way to write a new value into a standard field the database protects, on
+	the line under the field (`Changer.svelte`). A value in lines is replaced in
+	lines, and so are the notes, which are prose whatever they hold now.
 -->
-{#snippet changer(field: Field)}
+{#snippet changer(field: Field, lined: boolean)}
 	{#if !locked}
-		{#if changing.has(field.name)}
-			<Change
-				class="mt-2 animate-rise"
-				label="New value of {field.name}"
-				placeholder="New value"
-				what="value of {quoted(field.name)}"
-				multiline={field.lines || field.name === longhand}
-				draft={place(field, field.name)}
-				onSave={(value) => put(field.name, value, field.protected)}
-				onClose={(back) => closed(field.name, back)}
-				{onFailure}
-			/>
-		{:else}
-			<button
-				{@attach returned(field.name)}
-				type="button"
-				onclick={() => changing.add(field.name)}
-				class="mt-1 text-fine text-txt3 transition-colors hover:text-txt"
-				aria-label="Change {field.name}"
-			>
-				Change
-			</button>
-		{/if}
+		<Changer
+			entry={entry.id}
+			name={field.name}
+			multiline={lined}
+			draft={place(field, field.name)}
+			onSave={(value) => put(field.name, value, field.protected)}
+			{onFailure}
+		/>
 	{/if}
 {/snippet}
 
 <section class="flex h-full flex-col overflow-hidden bg-surface">
-	<Heading {path} masked={title !== undefined && title.value === null} {onClose}>
+	<Heading {path} masked={masked(title)} {onClose}>
 		{@const at = place(title, 'Title')}
 		<Editable
 			value={title?.value ?? ''}
@@ -575,10 +597,30 @@
 			{/key}
 		{/if}
 
+		{#if masked(title)}
+			<!-- A database may protect the title, and the heading then draws it as
+			     the mask. The title is read, copied and changed here, the way any
+			     other protected value is; an empty one is typed into the heading
+			     like any other title, and written protected. -->
+			<div class="mb-5">
+				<span class="font-mono text-label tracking-label text-txt3 uppercase">Title</span>
+				<span class="mt-1.5 flex items-center gap-2">
+					<ProtectedValue
+						entry={entry.id}
+						field={title.name}
+						label="title"
+						onCopy={(range) => onCopy(entry.id, title.name, range)}
+						{onFailure}
+					/>
+				</span>
+				{@render changer(title, title.lines)}
+			</div>
+		{/if}
+
 		<div class="block">
 			<span class="font-mono text-label tracking-label text-txt3 uppercase">Login</span>
 			<span class="mt-1.5 flex items-center gap-2">
-				{#if username && username.value === null && !username.empty}
+				{#if masked(username)}
 					<!-- A database may protect any field, the login included. Coffer
 					     does not protect one, so this is a file from another client -
 					     and a login is a standard field with no way to delete it, so
@@ -615,8 +657,8 @@
 					</button>
 				{/if}
 			</span>
-			{#if username && username.value === null && !username.empty}
-				{@render changer(username)}
+			{#if masked(username)}
+				{@render changer(username, username.lines)}
 			{/if}
 		</div>
 
@@ -634,7 +676,7 @@
 
 		<div class="mt-5">
 			<span class="font-mono text-label tracking-label text-txt3 uppercase">Address</span>
-			{#if url && url.value === null && !url.empty}
+			{#if masked(url)}
 				<!-- Coffer never protects an address, but a database from another
 				     client may, and a protected one carries the same defect any
 				     other protected field of the reader's does. There is no opener
@@ -648,7 +690,7 @@
 						{onFailure}
 					/>
 				</span>
-				{@render changer(url)}
+				{@render changer(url, url.lines)}
 			{:else}
 				{@const at = place(url, 'URL')}
 				<span class="mt-1.5 flex items-center gap-2">
@@ -670,6 +712,20 @@
 							<Icon name="export" class="h-4 w-4" />
 						</button>
 					{/if}
+					<!-- Last in the row, where the login's is, so the two copies sit
+					     one above the other. Through Rust like every copy, so an
+					     address selected by hand is not what lands on the ordinary
+					     pasteboard. -->
+					{#if url && !url.empty}
+						<button
+							type="button"
+							onclick={() => onCopy(entry.id, url.name)}
+							class="shrink-0 text-txt4 transition-colors hover:text-txt2"
+							aria-label="Copy address"
+						>
+							<Icon name="copy" class="h-4 w-4" />
+						</button>
+					{/if}
 				</span>
 			{/if}
 		</div>
@@ -685,12 +741,12 @@
 
 		<div class="mt-6 border-t border-line pt-5">
 			<div class="font-mono text-label tracking-label text-txt3 uppercase">Notes</div>
-			{#if notes && notes.value === null && !notes.empty}
-				<!-- The one protected value still only readable. Notes is the field
-				     that is a textarea rather than a line, so it is not the row the
-				     others share, and Coffer never protects one: this is a note a
-				     foreign client protected, and it is revealed and copied rather
-				     than written into. -->
+			{#if masked(notes)}
+				<!-- A database that protects notes - another client can be set to - gets
+				     them back protected on every entry, Coffer's own included. They
+				     are read and copied like any protected value, and changed in a
+				     field of their own written in lines, the way a protected login
+				     is: the first note used to be the last one anybody could write. -->
 				<div class="mt-3 flex items-center gap-3">
 					<ProtectedValue
 						entry={entry.id}
@@ -700,9 +756,10 @@
 						{onFailure}
 					/>
 				</div>
+				{@render changer(notes, true)}
 			{:else}
 				{@const at = place(notes, 'Notes')}
-				<div class="mt-3 flex items-start">
+				<div class="mt-3 flex items-start gap-3">
 					<Editable
 						value={notes?.value ?? ''}
 						label="Notes"
@@ -713,6 +770,18 @@
 						draft={at}
 						onCommit={(value) => write(at.field, value, at.protect)}
 					/>
+					{#if notes && !notes.empty}
+						<!-- Level with the first line, where the copy of every value on
+						     one line sits. -->
+						<button
+							type="button"
+							onclick={() => onCopy(entry.id, notes.name)}
+							class="mt-3 shrink-0 text-txt4 transition-colors hover:text-txt2"
+							aria-label="Copy notes"
+						>
+							<Icon name="copy" class="h-4 w-4" />
+						</button>
+					{/if}
 				</div>
 			{/if}
 		</div>
@@ -733,86 +802,38 @@
 				{/if}
 			</div>
 
-			<!--
-				The trash is the last thing in the row and is there only while the
-				row is under the pointer or holds the focus, in a box the size of a
-				fingertip and a step further off than the gap between the others.
-				It used to sit twelve pixels from Copy at the same size, on every
-				row, and a press meant for the value took the field.
-
-				The name is a column of its own and the value another, and a
-				protected value's Change goes under the value in the value's
-				column. It starts where the value starts because it is in the same
-				column, not because a margin was worked out to match the width of
-				the name.
-			-->
-			{#each custom as field (field.name)}
-				{@const masked = field.value === null && !field.empty}
-				{@const at = place(field, field.name)}
-				<div class="mt-3">
-					<div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3">
-						<span class="w-24 truncate text-small text-txt2">{field.name}</span>
-						<div class="group flex min-w-0 items-center gap-3">
-							{#if masked}
-								<ProtectedValue
-									entry={entry.id}
-									field={field.name}
-									onCopy={(range) => onCopy(entry.id, field.name, range)}
-									{onFailure}
-								/>
-							{:else}
-								<!-- A protected field that is empty comes back with no value to
-								     reveal, and it goes back protected: what the file says about
-								     a field is what is written back, and nothing here decides it
-								     again. A field of the reader's own may be given lines, so a
-								     paste keeps its breaks. -->
-								<Editable
-									value={field.value ?? ''}
-									label={field.name}
-									placeholder="Empty"
-									mono
-									breaks
-									multiline={field.name === longhand}
-									readonly={locked}
-									draft={at}
-									onCommit={(value) => write(at.field, value, at.protect)}
-								/>
-							{/if}
-							{#if !locked && dropping !== field.name}
-								<button
-									type="button"
-									onclick={() => void dropField(field.name)}
-									class="ml-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-sm text-txt4 opacity-0 transition group-focus-within:opacity-100 group-hover:opacity-100 hover:bg-dangerwash hover:text-danger"
-									aria-label="Remove the field {field.name}"
-								>
-									<Icon name="trash" class="h-4 w-4" />
-								</button>
-							{/if}
-						</div>
-						{#if masked}
-							<div class="col-start-2 min-w-0">
-								{@render changer(field)}
-							</div>
-						{/if}
-					</div>
-					{#if dropping === field.name}
-						<Confirm
-							class="mt-3 bg-surface2"
-							question="Remove {quoted(
-								field.name
-							)}? This vault keeps no version to bring it back from, so this can’t be undone."
-							act="Remove"
-							onKeep={() => (dropping = null)}
-							onAct={() => void dropField(field.name, true)}
-						/>
-					{/if}
-				</div>
-			{/each}
+			<!-- Drawn afresh for each entry, so nothing one row was doing - a name
+			     being changed, a generator open - is still there under the next
+			     entry's field of the same name. -->
+			{#key entry.id}
+				{#each custom as field (field.name)}
+					<OwnField
+						entry={entry.id}
+						{field}
+						draft={place(field, field.name)}
+						multiline={field.name === longhand}
+						fresh={field.name === fresh}
+						renamed={field.name === retitled}
+						readOnly={locked}
+						removing={dropping === field.name}
+						onCopy={(range) => onCopy(entry.id, field.name, range)}
+						onWrite={(value) => write(field.name, value, field.protected)}
+						onPut={(value) => put(field.name, value, field.protected)}
+						onProtect={(id, wanted) => protect(id, field.name, wanted)}
+						onRename={(id, to, typed) => rename(id, field.name, to, typed)}
+						onRemove={(forever) => void dropField(field.name, forever)}
+						onKeep={() => (dropping = null)}
+						{onFailure}
+					/>
+				{/each}
+			{/key}
 
 			{#if naming}
-				<!-- The name, and whether the value is written in lines. Leaving the
-				     two of them finishes the name; the option does not take the
-				     focus from it, so pressing it is not leaving. -->
+				<!-- The name, whether the value is hidden, and whether it is written
+				     in lines. Leaving them finishes the name; the options do not
+				     take the focus from it, so pressing one is not leaving. Hidden
+				     is on to begin with, the way every field of the reader's own
+				     used to be with no say in it. -->
 				<div class="mt-3 flex animate-rise items-center gap-2" onfocusout={leaving}>
 					<input
 						bind:this={named}
@@ -822,14 +843,28 @@
 						aria-label="The name of the new field"
 						placeholder="What is it called?"
 						onkeydown={(event) => {
-							if (cancels(event)) naming = false;
+							if (cancels(event)) putAway();
 							if (event.key === 'Enter' && !composing(event)) {
 								event.preventDefault();
-								makeField();
+								makeField(true);
 							}
 						}}
 						class="min-w-0 flex-1 rounded-sm border border-accent bg-surface2 px-3 py-2 text-small text-txt ring-4 ring-accent/15 outline-none placeholder:text-txt4"
 					/>
+					<button
+						type="button"
+						onmousedown={(event) => event.preventDefault()}
+						onclick={() => (hidden = !hidden)}
+						aria-pressed={hidden}
+						class="flex shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 py-1.5 font-mono text-meta transition-colors {hidden
+							? 'bg-surface2 text-txt'
+							: 'text-txt4 hover:text-txt3'}"
+					>
+						{#if hidden}
+							<Icon name="check" class="h-3.5 w-3.5 text-txt2" />
+						{/if}
+						Hidden
+					</button>
 					<button
 						type="button"
 						onmousedown={(event) => event.preventDefault()}

@@ -233,13 +233,18 @@ it('puts a revealed value in the row it was asked for', async () => {
 	await vi.waitFor(() => expect(host.querySelectorAll('[data-value]')).toHaveLength(2));
 	flushSync();
 
-	const rows = [...host.querySelectorAll('[data-value]')];
+	// Each value's node is found from its own eye, not by where it stands: the
+	// version lists the standard fields first and the reader's own after them.
+	const row = (label: string) =>
+		host.querySelector(`[aria-label="${label}"]`)?.parentElement?.querySelector('[data-value]');
+	const [token, password] = [row('Show API token as it was'), row('Show Password as it was')];
+	expect(token && password && token !== password).toBe(true);
 	host.querySelector<HTMLButtonElement>('[aria-label="Show Password as it was"]')?.click();
 	await vi.waitFor(() => expect(host.textContent).toContain('the Password'));
 	flushSync();
 
-	expect(rows[0].textContent).toBe('');
-	expect(rows[1].textContent).toBe('the Password');
+	expect(token?.textContent).toBe('');
+	expect(password?.textContent).toBe('the Password');
 
 	return unmount(component);
 });
@@ -592,6 +597,91 @@ it('takes the question about clearing the history away when the list changes', (
 	flushSync();
 	expect(host.querySelector('[data-confirm]')).toBeNull();
 	expect(ipc.clearHistory).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/** The rows of a viewed version's fields, in the order they are drawn, each
+ * by the name it starts with. */
+function fieldRows(): [string, Element][] {
+	const note = [...host.querySelectorAll('p')].find((each) =>
+		each.textContent?.includes('A version is read only')
+	);
+	if (!note?.parentElement) throw new Error('no version is open');
+	return [...note.parentElement.children]
+		.filter((each) => each.tagName === 'DIV')
+		.map((each) => [each.firstElementChild?.textContent?.trim() ?? '', each]);
+}
+
+const drawnNames = () => fieldRows().map(([name]) => name);
+
+/**
+ * Rust hands a version's fields over in the order of their bytes, the way it
+ * hands over the entry's: "Code 10" before "Code 2", every capital before
+ * every small letter, and a standard field between two of the reader's own. A
+ * version is opened to be compared with the entry, so it lists its fields
+ * where the entry does - the standard ones first, then the reader's own as a
+ * reader looks for them - however Rust happened to send them. A value
+ * revealed in the list stays in the row of the name it was asked for.
+ */
+it("lists a version's own fields after the standard ones, in the order a reader looks for them", async () => {
+	const own = (name: string, hidden = false) =>
+		field({ name, kind: 'custom', value: hidden ? null : `${name} was`, empty: false });
+	const bytewise = [
+		own('Code 1'),
+		own('Code 10', true),
+		own('Code 2'),
+		field({ name: 'Notes', kind: 'notes', value: 'a note', empty: false }),
+		own('PIN'),
+		field({ name: 'Password', kind: 'password', value: null, empty: false }),
+		field({ name: 'Title', kind: 'title', value: 'Bank', empty: false }),
+		field({ name: 'URL', kind: 'url', value: 'https://bank.example', empty: false }),
+		field({ name: 'UserName', kind: 'username', value: 'alice', empty: false }),
+		own('Zone'),
+		own('pin', true)
+	];
+	const names = bytewise.map((each) => each.name);
+	expect([...names].sort(), 'the fixture is not in the order Rust sends').toEqual(names);
+	const standard = ['Notes', 'Password', 'Title', 'URL', 'UserName'];
+	const reading = ['Code 1', 'Code 2', 'Code 10', 'PIN', 'pin', 'Zone'];
+	ipc.version.mockResolvedValueOnce(entry({ fields: bytewise }));
+	ipc.version.mockResolvedValueOnce(entry({ fields: [...bytewise].reverse() }));
+	ipc.revealVersion.mockImplementation((_entry: string, _at: unknown, name: string) =>
+		Promise.resolve(`the ${name}`)
+	);
+
+	const component = show();
+	open();
+	button('View').click();
+	await vi.waitFor(() => expect(host.textContent).toContain('A version is read only'));
+	flushSync();
+
+	const drawn = drawnNames();
+	expect(drawn.slice(0, standard.length).toSorted(), 'a standard field is not first').toEqual(
+		standard
+	);
+	expect(drawn.slice(standard.length)).toEqual(reading);
+
+	host.querySelector<HTMLButtonElement>('[aria-label="Show Code 10 as it was"]')?.click();
+	await vi.waitFor(() => expect(host.textContent).toContain('the Code 10'));
+	flushSync();
+	expect(ipc.revealVersion).toHaveBeenCalledWith('an-entry', at(2), 'Code 10');
+	const shownIn = (name: string) =>
+		fieldRows()
+			.find(([drawn]) => drawn === name)?.[1]
+			.querySelector('[data-value]')?.textContent;
+	expect(shownIn('Code 10')).toBe('the Code 10');
+	expect(shownIn('pin'), 'the value landed in a row it was not asked for').toBe('');
+
+	button('Close').click();
+	flushSync();
+	button('View').click();
+	await vi.waitFor(() => expect(ipc.version).toHaveBeenCalledTimes(2));
+	await vi.waitFor(() => expect(host.textContent).toContain('A version is read only'));
+	flushSync();
+	expect(drawnNames().slice(standard.length), 'the order changed with the order Rust sent').toEqual(
+		reading
+	);
 
 	return unmount(component);
 });

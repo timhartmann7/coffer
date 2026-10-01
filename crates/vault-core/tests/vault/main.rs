@@ -10,6 +10,7 @@ mod bin;
 mod clash;
 mod create;
 mod edit;
+mod fields;
 mod generate;
 mod history;
 mod normalise;

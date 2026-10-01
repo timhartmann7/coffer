@@ -135,6 +135,23 @@ pub enum VaultError {
     #[error("that entry has no such field")]
     NoSuchField,
 
+    /// One of the five fields every entry has was asked to be renamed or to
+    /// change its protection. Its name is what makes it the title or the
+    /// password in every KeePass client, and its protection is the database's
+    /// to decide, so neither is the reader's to change from here.
+    #[error("that field is one every entry has, and it keeps its name and protection")]
+    StandardField,
+
+    /// A field was to be renamed to a name the entry already gives another
+    /// field, or to one of the five every entry keeps for its own. Renaming
+    /// onto it would put one value over another.
+    #[error("that name is already taken on this entry")]
+    FieldNameTaken,
+
+    /// A field was to be renamed to nothing at all.
+    #[error("a field needs a name")]
+    UnnamedField,
+
     /// Taking the field off would be for good. The version the removal writes
     /// is the only way back, and the database's own limits drop it at the next
     /// save, so the removal waits until the reader has said that is what they

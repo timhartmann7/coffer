@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { entry, field } from './fixtures';
-import { ago, at, called, day, fully, quoted, size, when } from './format';
+import { ago, at, called, copied, day, fully, quoted, size, when } from './format';
 
 /** The suite runs with TZ pinned to UTC, so the local clock the screen writes
  * in is the same one the database keeps. */
@@ -111,37 +111,37 @@ describe('what a sentence calls an entry', () => {
 	});
 });
 
-describe('a name in running text', () => {
-	/** What UAX #9 counts as the end of a paragraph, written out again rather
-	 * than taken from the code under test. */
-	const SEPARATORS = ['\n', '\r', '\u001C', '\u001D', '\u001E', '\u0085', '\u2029'];
-	const OVERRIDES = /[‪-‮]/u;
+/** What UAX #9 counts as the end of a paragraph, written out again rather
+ * than taken from the code under test. */
+const SEPARATORS = ['\n', '\r', '\u001C', '\u001D', '\u001E', '\u0085', '\u2029'];
+const OVERRIDES = /[\u202A-\u202E]/u;
 
-	/**
-	 * What a mark opened inside a name can reach, by the rules of UAX #9: an
-	 * override or embedding lasts until the isolate around it closes, a closing
-	 * mark with nothing open is ignored, and anything left open lasts to the
-	 * end of the paragraph, where a paragraph separator closes every isolate
-	 * there is. Answers with the text outside every isolate, and fails when
-	 * the sentence ends with one still open or an override stands outside them
-	 * all.
-	 */
-	function outside(sentence: string): string {
-		let depth = 0;
-		let left = '';
-		for (const char of sentence) {
-			if (['⁦', '⁧', '⁨'].includes(char)) depth += 1;
-			else if (char === '⁩') depth = Math.max(0, depth - 1);
-			else if (SEPARATORS.includes(char)) depth = 0;
-			else if (depth === 0) {
-				expect(char, `an override reaches ${JSON.stringify(sentence)}`).not.toMatch(OVERRIDES);
-				left += char;
-			}
+/**
+ * What a mark opened inside a name can reach, by the rules of UAX #9: an
+ * override or embedding lasts until the isolate around it closes, a closing
+ * mark with nothing open is ignored, and anything left open lasts to the
+ * end of the paragraph, where a paragraph separator closes every isolate
+ * there is. Answers with the text outside every isolate, and fails when
+ * the sentence ends with one still open or an override stands outside them
+ * all.
+ */
+function outside(sentence: string): string {
+	let depth = 0;
+	let left = '';
+	for (const char of sentence) {
+		if (['\u2066', '\u2067', '\u2068'].includes(char)) depth += 1;
+		else if (char === '\u2069') depth = Math.max(0, depth - 1);
+		else if (SEPARATORS.includes(char)) depth = 0;
+		else if (depth === 0) {
+			expect(char, `an override reaches ${JSON.stringify(sentence)}`).not.toMatch(OVERRIDES);
+			left += char;
 		}
-		expect(depth, 'an isolate runs on past the sentence').toBe(0);
-		return left;
 	}
+	expect(depth, 'an isolate runs on past the sentence').toBe(0);
+	return left;
+}
 
+describe('a name in running text', () => {
 	it('keeps a right-to-left override in a name off the rest of the sentence', () => {
 		const sentence = `This entry already has ${quoted('evil‮fdp.exe')} (1.2 MB). Keep both to add the new one (840 KB) as ${quoted('evil‮fdp 2.exe')}. A replaced file can’t be brought back.`;
 
@@ -177,5 +177,139 @@ describe('a name in running text', () => {
 		expect(quoted('Bank')).toBe('“⁨Bank⁩”');
 		expect(quoted('בנק ⁧x⁩')).toBe('“⁨בנק ⁧x⁩⁩”');
 		expect(quoted('')).toBe('“⁨⁩”');
+	});
+});
+
+describe('what a notice says was copied', () => {
+	/** A name of the reader's own as the notice puts it, written out again
+	 * rather than taken from the code under test. */
+	const own = (name: string) => `\u201C\u2068${name}\u2069\u201D`;
+
+	/** The five fields every entry has, by their names in the file, and what
+	 * the pane calls each one. */
+	const STANDARD: [string, string][] = [
+		['Title', 'title'],
+		['UserName', 'login'],
+		['Password', 'password'],
+		['URL', 'address'],
+		['Notes', 'notes']
+	];
+
+	it('calls each standard field by the word the pane uses for it', () => {
+		expect(STANDARD.map(([name]) => copied(name, false))).toEqual([
+			'Title copied.',
+			'Login copied.',
+			'Password copied.',
+			'Address copied.',
+			'Notes copied.'
+		]);
+	});
+
+	it('says only part of a standard field went when a selection was copied', () => {
+		expect(STANDARD.map(([name]) => copied(name, true))).toEqual([
+			'Part of the title copied.',
+			'Part of the login copied.',
+			'Part of the password copied.',
+			'Part of the address copied.',
+			'Part of the notes copied.'
+		]);
+	});
+
+	/** The login a second before the password used to be announced in the
+	 * same words, and the reader pasted an email address into a password box.
+	 * No two fields may be told apart by nothing. */
+	it('never says the same thing about two different fields', () => {
+		const names = [...STANDARD.map(([name]) => name), 'PIN', 'pin', 'Login', 'login', 'API token'];
+		for (const part of [false, true]) {
+			const said = names.map((name) => copied(name, part));
+			expect(new Set(said).size, said.join(' | ')).toBe(names.length);
+		}
+	});
+
+	it('quotes a field of the reader’s own by its name', () => {
+		expect(copied('PIN', false)).toBe(`${own('PIN')} copied.`);
+		expect(copied('API token', false)).toBe(`${own('API token')} copied.`);
+		expect(copied('PIN', true)).toBe(`Part of ${own('PIN')} copied.`);
+	});
+
+	/**
+	 * A field of the reader's own may be called anything, including a standard
+	 * field's name in another case, the word the pane uses for one, or that
+	 * name with a space or a look-alike letter in it. None of them is the
+	 * standard field, and a notice that said "Password copied." for a field
+	 * called "password" told the reader the entry's password was on the
+	 * pasteboard when something else was.
+	 */
+	it('does not take a field of the reader’s own for a standard one it is spelled like', () => {
+		const lookalikes = [
+			'password',
+			'PASSWORD',
+			'url',
+			'Url',
+			'username',
+			'userName',
+			'title',
+			'notes',
+			'Login',
+			'login',
+			'Address',
+			'Password ',
+			' Password',
+			'Pass\u200Bword',
+			'Passw\u03BFrd',
+			'Pa\u0301ssword'
+		];
+		for (const name of lookalikes) {
+			expect(copied(name, false), JSON.stringify(name)).toBe(`${own(name)} copied.`);
+			expect(copied(name, true), JSON.stringify(name)).toBe(`Part of ${own(name)} copied.`);
+		}
+	});
+
+	/** The standard names are looked up by the field's name, and a lookup that
+	 * walked up to what every object inherits found a function for
+	 * "constructor" and a whole object for "__proto__". */
+	it('quotes a field named after a property every object has, and does not break on it', () => {
+		const inherited = [
+			'__proto__',
+			'constructor',
+			'toString',
+			'hasOwnProperty',
+			'valueOf',
+			'isPrototypeOf',
+			'propertyIsEnumerable',
+			'toLocaleString',
+			'__defineGetter__',
+			'__lookupSetter__'
+		];
+		for (const name of inherited) {
+			expect(copied(name, false), name).toBe(`${own(name)} copied.`);
+			expect(copied(name, true), name).toBe(`Part of ${own(name)} copied.`);
+		}
+	});
+
+	it('keeps an override in a field’s name off the rest of the notice', () => {
+		for (const name of [
+			'a\u202Eb',
+			'\u2069\u202Eexe',
+			'\u2067\u202Eopen',
+			'x\n\u202Ey',
+			'z\u2029\u202Dz'
+		]) {
+			for (const part of [false, true]) {
+				const notice = `${copied(name, part)} The clipboard clears in 1 minute.`;
+				expect(outside(notice), JSON.stringify(name)).toBe(
+					`${part ? 'Part of ' : ''}\u201C\u201D copied. The clipboard clears in 1 minute.`
+				);
+			}
+		}
+	});
+
+	/** A field another client saved with no name, or with a name the size of
+	 * a document, is still a field a copy can be made from. */
+	it('names a field with an empty or an enormous name without losing the sentence', () => {
+		expect(copied('', false)).toBe(`${own('')} copied.`);
+		expect(copied('', true)).toBe(`Part of ${own('')} copied.`);
+		const huge = 'x'.repeat(1_000_000);
+		expect(copied(huge, false)).toBe(`${own(huge)} copied.`);
 	});
 });

@@ -413,9 +413,9 @@ fn typing_a_lock_finishes_is_an_edit_like_any_other() {
 }
 
 /// Typing that came back to what the field holds is not an edit: no version,
-/// no modification time, nothing for the lock to save. The same text under
-/// another protection is one, because the protection is part of what the file
-/// says about the field.
+/// no modification time, nothing for the lock to save. Nor is the same text
+/// said under another protection: a field the entry has keeps its own, and
+/// typing is not the way to change it.
 #[test]
 fn typing_that_changes_nothing_writes_nothing() {
     let scratch = tempfile::tempdir().expect("a scratch directory");
@@ -452,9 +452,18 @@ fn typing_that_changes_nothing_writes_nothing() {
         vault
             .set_typed(id, "PIN", NewValue::Open("1234".into()), Typing::InPlace)
             .ok(),
-        Some(Written::Into),
-        "a protected value going into the open is not nothing"
+        Some(Written::Nothing),
+        "a draft took a protected value into the open"
     );
+    assert!(
+        vault
+            .entry(id)
+            .expect("the entry is there")
+            .field("PIN")
+            .is_some_and(|pin| pin.value.open().is_none()),
+        "the PIN is no longer protected"
+    );
+    assert!(vault.versions(id).is_empty());
 }
 
 /// A new value typed beside the one it would replace - a new password half

@@ -49,6 +49,15 @@ fn root_of(vault: &Vault) -> GroupId {
     vault.tree().id
 }
 
+/// What an entry's notes say, read the way a reveal reads them: the fixture
+/// these tests edit protects its notes, and writing one keeps that protection.
+fn note(vault: &Vault, id: EntryId) -> Option<String> {
+    vault
+        .reveal(id, fields::NOTES)?
+        .expose_str()
+        .map(str::to_owned)
+}
+
 #[test]
 fn a_new_entry_carries_the_fields_the_database_asks_to_protect() {
     let scratch = tempfile::tempdir().expect("a scratch directory");
@@ -1214,12 +1223,37 @@ fn an_edit_changes_the_field_it_was_asked_to_change_and_nothing_else() {
         .iter()
         .find(|(entry, _, _, _)| *entry == id)
         .expect("the entry is still there");
-    assert!(
-        changed
-            .1
-            .contains(&("Notes".to_owned(), Some("a new note".to_owned()), false)),
+    assert_eq!(
+        note(&vault, id).as_deref(),
+        Some("a new note"),
         "the note was not written"
     );
+
+    // The value changed and nothing else about the field did: the fixture
+    // protects its notes, and a value written without saying so is still one
+    // the database protects. Every other field is as it was.
+    let was = before
+        .iter()
+        .find(|(entry, _, _, _)| *entry == id)
+        .expect("the entry was there");
+    assert!(
+        changed.1.contains(&("Notes".to_owned(), None, true)),
+        "writing the note took its protection off"
+    );
+    let others =
+        |fields: &[(String, Option<String>, bool)]| -> Vec<(String, Option<String>, bool)> {
+            fields
+                .iter()
+                .filter(|(name, _, _)| name != "Notes")
+                .cloned()
+                .collect()
+        };
+    assert_eq!(
+        others(&was.1),
+        others(&changed.1),
+        "a field nobody edited changed"
+    );
+    assert_eq!((&was.2, &was.3), (&changed.2, &changed.3));
 }
 
 /// Every entry, with everything about it that a save must not change on its
@@ -1302,24 +1336,11 @@ fn a_file_written_before_the_edit_stops_the_save_just_the_same() {
     drop(ours);
 
     let mine = open(&beside, SECRET);
-    assert_eq!(
-        mine.entry(id)
-            .expect("the entry is there")
-            .field(fields::NOTES)
-            .and_then(|field| field.value.open()),
-        Some("ours")
-    );
+    assert_eq!(note(&mine, id).as_deref(), Some("ours"));
     drop(mine);
 
     let theirs = open(&database, SECRET);
-    assert_eq!(
-        theirs
-            .entry(id)
-            .expect("the entry is there")
-            .field(fields::NOTES)
-            .and_then(|field| field.value.open()),
-        Some("theirs")
-    );
+    assert_eq!(note(&theirs, id).as_deref(), Some("theirs"));
 }
 
 #[test]
@@ -1587,28 +1608,14 @@ fn writing_over_a_file_somebody_else_changed_keeps_theirs_in_the_first_snapshot(
     drop(ours);
 
     let vault = open(&database, SECRET);
-    assert_eq!(
-        vault
-            .entry(id)
-            .expect("the entry is there")
-            .field(fields::NOTES)
-            .and_then(|field| field.value.open()),
-        Some("ours")
-    );
+    assert_eq!(note(&vault, id).as_deref(), Some("ours"));
 
     // Nothing was lost: what was on disk went into the snapshot chain before the
     // write, so the other version is still openable.
     drop(vault);
     let snapshot = vault_core::storage::snapshot::slot(&database, 1).expect("a slot has a name");
     let theirs = open(&snapshot, SECRET);
-    assert_eq!(
-        theirs
-            .entry(id)
-            .expect("the entry is there")
-            .field(fields::NOTES)
-            .and_then(|field| field.value.open()),
-        Some("theirs")
-    );
+    assert_eq!(note(&theirs, id).as_deref(), Some("theirs"));
 }
 
 #[test]
@@ -1629,21 +1636,11 @@ fn a_copy_is_a_database_of_its_own_and_the_original_is_untouched() {
     drop(vault);
 
     let copy = open(&beside, SECRET);
-    assert_eq!(
-        copy.entry(id)
-            .expect("the entry is there")
-            .field(fields::NOTES)
-            .and_then(|field| field.value.open()),
-        Some("only in the copy")
-    );
+    assert_eq!(note(&copy, id).as_deref(), Some("only in the copy"));
 
     let original = open(&database, SECRET);
     assert_ne!(
-        original
-            .entry(id)
-            .expect("the entry is there")
-            .field(fields::NOTES)
-            .and_then(|field| field.value.open()),
+        note(&original, id).as_deref(),
         Some("only in the copy"),
         "writing a copy wrote the database as well"
     );
@@ -1673,14 +1670,7 @@ fn reading_the_file_again_throws_away_what_was_not_saved() {
 
     vault.reload().expect("the file reads again");
     assert_eq!(vault.rescue(), vault_core::Rescue::Nothing);
-    assert_ne!(
-        vault
-            .entry(id)
-            .expect("the entry is there")
-            .field(fields::NOTES)
-            .and_then(|field| field.value.open()),
-        Some("unsaved")
-    );
+    assert_ne!(note(&vault, id).as_deref(), Some("unsaved"));
 }
 
 #[test]
@@ -1699,6 +1689,8 @@ fn a_snapshot_is_opened_to_read_and_never_written_back() {
     assert!(vault.is_read_only());
     for refused in [
         vault.set_field(id, fields::NOTES, NewValue::Open("x".to_owned())),
+        vault.set_protection(id, "x", true),
+        vault.rename_field(id, "x", "y"),
         vault.delete_entry(id, Deletion::Bin),
         vault.clear_history(id),
         vault.add_attachment(id, "x", b"x").map(drop),
@@ -1956,14 +1948,7 @@ fn a_database_somebody_deleted_is_written_back_when_the_reader_asks() {
     drop(vault);
 
     let vault = open(&database, SECRET);
-    assert_eq!(
-        vault
-            .entry(id)
-            .expect("the entry is there")
-            .field(fields::NOTES)
-            .and_then(|field| field.value.open()),
-        Some("ours")
-    );
+    assert_eq!(note(&vault, id).as_deref(), Some("ours"));
 }
 
 /// A version is addressed by its position, and a save brings every entry's

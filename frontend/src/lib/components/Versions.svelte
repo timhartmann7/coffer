@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { fully } from '$lib/format';
 	import { clearHistory, deleteVersion, restoreVersion, revealVersion, version } from '$lib/ipc';
-	import type { Entry, History, Position, Span } from '$lib/model';
+	import { masked, type Entry, type History, type Position, type Span } from '$lib/model';
+	import { byName } from '$lib/order';
 	import Confirm from './Confirm.svelte';
 	import Icon from './Icon.svelte';
 	import ProtectedValue from './ProtectedValue.svelte';
@@ -59,6 +60,17 @@
 
 	let open = $state(false);
 	let showing = $state<{ at: Position; entry: Entry } | null>(null);
+	/** The version's fields as the entry draws its own: the reader's own in the
+	 * order they are looked for in, after the rest, so a version opened to be
+	 * compared lists them where the entry does. */
+	const fields = $derived(
+		showing
+			? [
+					...showing.entry.fields.filter((field) => field.kind !== 'custom'),
+					...showing.entry.fields.filter((field) => field.kind === 'custom').toSorted(byName)
+				]
+			: []
+	);
 	let confirming = $state(false);
 	/** The version whose deletion is being asked about. Nothing brings one back
 	 * once the vault is written, and the vault is written straight away. */
@@ -222,10 +234,10 @@
 					{#if here && showing}
 						{@const viewed = showing.at}
 						<div class="animate-rise border-t border-hairline px-3 py-3">
-							{#each showing.entry.fields as field (field.name)}
+							{#each fields as field (field.name)}
 								<div class="mt-1.5 flex items-start gap-3 first:mt-0">
 									<span class="w-24 shrink-0 truncate text-fine text-txt3">{field.name}</span>
-									{#if field.value === null && !field.empty}
+									{#if masked(field)}
 										<!-- One of these per value, each holding its own node, so the
 										     value that was asked for cannot land in another row. -->
 										<ProtectedValue

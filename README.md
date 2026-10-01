@@ -113,9 +113,11 @@ an hour after the refusal, so the command is the reliable one.
 - A copied password is written as a concealed, transient item, which keeps it
   out of clipboard history tools, and cleared after a minute.
 
-Coffer keeps two things of its own, both in
-`~/Library/Application Support/app.coffer.vault/`: `settings.json` and
-`last-database`. Nothing else, and nothing anywhere else.
+Coffer keeps three things of its own, all in
+`~/Library/Application Support/app.coffer.vault/`: `settings.json`,
+`last-database`, and `generator.json`, the length and kinds of character the
+password generator last made a password from (never a password). Nothing else,
+and nothing anywhere else.
 
 ## Building it
 

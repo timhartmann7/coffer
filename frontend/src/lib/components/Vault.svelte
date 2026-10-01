@@ -16,7 +16,7 @@
 	import { deleted as deletedLine, eraseQuestion } from '$lib/bin';
 	import { flush } from '$lib/drafts';
 	import { named as howLong } from '$lib/duration';
-	import { quoted } from '$lib/format';
+	import { copied, quoted } from '$lib/format';
 	import { held } from '$lib/holding';
 	import { copying, typing } from '$lib/keys';
 	import { cancels, composing } from '$lib/lines';
@@ -463,7 +463,7 @@
 				version === undefined
 					? await copyToClipboard(entry, name, range)
 					: await copyVersion(entry, version, name, range);
-			announce(seconds);
+			announce(name, range !== null, seconds);
 		} catch (thrown) {
 			failed(thrown);
 		}
@@ -474,15 +474,19 @@
 	}
 
 	/**
-	 * Says what was copied and how long the clipboard will hold it, then goes.
+	 * Says which field was copied and how long the clipboard will hold it, then
+	 * goes.
 	 *
 	 * The seconds are Rust's answer and the sentence states them once. Counting
 	 * them down was a notice about something already decided sitting in the
 	 * corner for a whole minute.
 	 */
-	function announce(seconds: number) {
+	function announce(field: string, part: boolean, seconds: number) {
 		notices.tell(
-			{ message: `Copied. The clipboard clears in ${howLong(seconds)}.`, kind: 'copied' },
+			{
+				message: `${copied(field, part)} The clipboard clears in ${howLong(seconds)}.`,
+				kind: 'copied'
+			},
 			COPIED
 		);
 	}

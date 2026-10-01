@@ -48,7 +48,22 @@ three-pixel `line` rail, a sixteen-pixel `txt` knob with a hairline around it â€
 and does not take its filled portion. WebKit exposes no pseudo-element for the
 fill, and the only other way to draw it is a width computed into a style
 attribute, which this window's `style-src 'self'` throws away. The number beside
-the label is what says where the handle is.
+the label is what says where the handle is. With digits and nothing else chosen
+the rail runs from four rather than eight and its label reads "PIN length", and
+the look-alike switch is not drawn: a PIN keeps 0 and 1, having no letter in it
+to take them for. The password's generator and a field's remember their own
+settings, so a PIN made for a card does not become the next password.
+
+**The generator says what its switches mean.** The mockup's "!@#$%" switch reads
+"Symbols", and under the switches, in `label` mono `txt4`, the thirty-two
+characters it draws from are written out. The mockup's "Look-alike characters"
+switch reads "Avoid look-alikes (0 O 1 l I |)" and is on to begin with, which is
+what the generator always did with it off. Under them, in the length's own
+label, "Avoid these characters" and the mockup's field in mono `small`, for the
+quote and the backslash a bank turns away. The footnote beside "Put it in the
+field" gives way, in `warn`, to "No digit in this one." and a line saying to
+make another when a password lacks a kind that was asked for: it stands where
+the reader decides, and takes no room the footnote did not.
 
 **The two draining bars are exempt from the reduced-motion rule.** The mockup
 carries the blanket, but the mockup is a still picture. A bar whose length is a
@@ -147,16 +162,48 @@ more, so "Change" sits under the value, where the value starts, in `fine` and
 name's `w-24` and the value's, and Change is in the value's column: it starts
 where the value starts because it is in the same column, not because a margin
 was worked out to match the name. Pressed, it gives way to the
-same field and answers as the password's. A login or an address another client
-protected gets the same line under its value. A protected note and a previous
-version get a copy beside their eye and no Change: a note Coffer never protects
-is read and copied, and a version cannot be written into.
+same field and answers as the password's. A login, an address or a note another
+client protected gets the same line under its value - the note's Change written
+in lines - and so does a title: a database that protects titles draws the
+heading as the mask, and a "Title" row above the login, in the login's label
+and field, reads, copies and changes it. An empty protected title is typed into
+the heading like any other. A previous version gets a copy beside its eye and no
+Change, because a version cannot be written into.
 
-**The step that names a new field offers "Multi-line".** Beside the name, the
-generator's own toggle pill - hairline, `meta` mono, the check in `txt2` and
-`surface2` behind it when it is on - because it is the same kind of choice. The
-format has no such flag, so it decides the fields the value is written in for as
-long as the entry is open: a text area four lines tall, where Return starts a
+**A field of the reader's own carries the password's tools.** A hidden one has
+"Make one" beside its Change, in the same `fine` `txt3` words, and pressing it
+opens the generator under the row at the width of the pane, the way the
+password's does; it reads `txt` while the generator is open, the pressed look
+the password's Make one takes. An empty hidden field, which is typed into where
+it stands, has Make one alone on that line. Every value in the pane that is not
+empty has a copy - the address after its opener, the notes level with their
+first line, a field of the reader's own after its value - the mockup's
+sixteen-pixel copy in `txt4`, where the login's stands. In the name's column,
+before the name, every field of the reader's own carries the sprite's lock -
+`lock` while the value is hidden, `unlock` while it is kept in the open - in
+`txt4` at the size of the toggle pills' check, pressed to change which, and
+drawn whether or not the row is under the pointer, because on an empty field it
+is the only thing that says which the value will be. It stands there rather
+than in the value's column, where it took the width a revealed value is read
+in. The mockup's row has an eye and nothing else; the copy and the lock are
+additions of the same kind as the eye, in its colour.
+
+**A field's name is pressed to be renamed.** The name in its `w-24` column is a
+button in the same `small` `txt2`, `txt` under the pointer, with the whole name
+in its tooltip, because the column truncates. Pressed, the row gives way to the
+field the name of a new field is typed in - `border-accent`, the accent ring,
+`surface2`, `small` - across both columns, holding the name selected. Return or
+leaving it renames; Escape puts it back. Fields of the reader's own are drawn
+in the order a reader looks for them, "Code 2" before "Code 10" and "pin"
+beside "PIN", which the mockup's two rows say nothing about.
+
+**The step that names a new field offers "Hidden" and "Multi-line".** Beside
+the name, the generator's own toggle pill - hairline, `meta` mono, the check in
+`txt2` and `surface2` behind it when it is on - because it is the same kind of
+choice. "Hidden" is on to begin with, and decides whether the value is kept
+protected; the lock beside the field changes it later. The format has no
+multi-line flag, so "Multi-line" decides the fields the value is written in for
+as long as the entry is open: a text area four lines tall, where Return starts a
 line - the first value's, and a Change's after that.
 
 **A field holding typing that is not written yet carries a dot.** There is no

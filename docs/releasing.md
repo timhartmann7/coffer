@@ -93,9 +93,9 @@ the rest of the vault's list is in the spec.
 - `install.sh` again over the installed copy, with Coffer running. It refuses and
   says why. This is the one check that catches `mainBinaryName` going missing:
   without it the process is called `vault-gui` and the guard is a silent no-op.
-- `install.sh` again with Coffer quit. It replaces cleanly, and `settings.json`
-  and `last-database` in `~/Library/Application Support/app.coffer.vault/`
-  survive.
+- `install.sh` again with Coffer quit. It replaces cleanly, and `settings.json`,
+  `last-database` and `generator.json` in
+  `~/Library/Application Support/app.coffer.vault/` survive.
 - A hand-edited digit in `checksums.txt`. The script prints both hashes, deletes
   the download, exits non-zero, and never reaches `hdiutil`. `/Applications` is
   untouched.

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { drop, typed as said, unfinished, type Place } from '$lib/drafts';
 	import { cancels, composing, finishes, lines } from '$lib/lines';
 	import Bare from './Bare.svelte';
@@ -45,6 +46,7 @@
 		classes = 'text-body text-txt',
 		readonly = false,
 		bare = false,
+		focused = false,
 		draft,
 		onCommit
 	}: {
@@ -69,6 +71,10 @@
 		 * only one: a hairline around a nineteen-pixel name is a box around the
 		 * name of the screen. */
 		bare?: boolean;
+		/** Takes the focus as it is drawn: the value of a field the reader has
+		 * just named, which is what they are about to type. Read once, so the
+		 * field does not take the focus again when this changes. */
+		focused?: boolean;
 		/** Where what is typed would be written: the entry, the field, and whether
 		 * the database protects it. What is typed is told to Rust before the field
 		 * is left; `onCommit` is what writes it. */
@@ -80,6 +86,15 @@
 	} = $props();
 
 	let node = $state<HTMLInputElement | HTMLTextAreaElement>();
+
+	/** Takes the focus when asked to and when nobody has put it anywhere since:
+	 * a reader who went on to the login while the new field was on its way is
+	 * typing there, and a field that took the focus would write half a login. */
+	function taking(element: HTMLInputElement | HTMLTextAreaElement) {
+		if (!untrack(() => focused)) return;
+		if (document.activeElement && document.activeElement !== document.body) return;
+		element.focus();
+	}
 	/** Whether the reader has written in the field since it last showed what the
 	 * vault holds. Nothing is drawn from it. */
 	let edited = false;
@@ -155,6 +170,7 @@
 		     beside it do. -->
 		<textarea
 			bind:this={node}
+			{@attach taking}
 			{value}
 			{placeholder}
 			aria-label={label}
@@ -172,6 +188,7 @@
 	{:else}
 		<input
 			bind:this={node}
+			{@attach taking}
 			{value}
 			{placeholder}
 			aria-label={label}

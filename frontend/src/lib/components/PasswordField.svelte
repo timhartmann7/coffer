@@ -42,8 +42,8 @@
 		/** Whether the password has a line break in it, so that a new one is
 		 * written in lines too. */
 		lines: boolean;
-		/** Whether the database keeps this value protected. It goes back with the
-		 * edit so the file does not quietly lose the protection. */
+		/** How the password is stored if the entry has none yet. A password the
+		 * entry has keeps its own protection whatever this says. */
 		protect: boolean;
 		/** A database Coffer will not write back: the value can still be shown
 		 * and copied, and nothing here offers to change it. */
@@ -231,7 +231,13 @@
 
 	{#if generating}
 		<div class="mt-3 animate-rise">
-			<Generator onInsert={insert} onClose={() => (generating = false)} {onFailure} />
+			<Generator
+				purpose="password"
+				label="Password generator"
+				onInsert={insert}
+				onClose={() => (generating = false)}
+				{onFailure}
+			/>
 		</div>
 	{/if}
 </div>
