@@ -8,8 +8,9 @@
  * all arrive on the thread the window is drawn on, and neither a message into
  * this page nor its answer can get through while that thread is busy locking.
  * So nothing asks the page to finish first. The page says what is in a field a
- * moment after the last key, and at once when the window loses focus, and the
- * lock writes the last of it into the vault before wiping it.
+ * moment after the last key, every second or so while the keys keep coming, and
+ * at once when the window loses focus, and the lock writes the last of it into
+ * the vault before wiping it.
  *
  * Every word about a field - what is in it, that it was taken back, the value
  * written - carries a number from one count that only goes up. Tauri runs
@@ -32,9 +33,14 @@
 import { SvelteMap } from 'svelte/reactivity';
 import { draft as tell } from './ipc';
 
-/** How long after the last key the field is told to Rust. A lid closed in the
- * middle of a word costs at most this much of it. */
+/** How long after the last key the field is told to Rust. */
 const PAUSE = 250;
+
+/** How long the reader can go on typing before the field is told to Rust
+ * anyway. A pause alone never comes for somebody typing steadily, a key every
+ * fifth of a second, and a lid closed then would cost everything since they
+ * last stopped. With this, it costs at most this much of the typing. */
+const LONGEST = 1000;
 
 let count = Date.now() * 1000;
 
@@ -58,6 +64,9 @@ interface Typing {
 	read: () => string;
 	/** The pause before Rust is told, while one is running. */
 	waiting: ReturnType<typeof setTimeout> | null;
+	/** The latest Rust is told, however the keys go on: set by the first key
+	 * it has not heard and not moved by the ones after it. */
+	due: ReturnType<typeof setTimeout> | null;
 	/** Whether Rust has been told anything since the field was last written or
 	 * taken back, and so has something to be told to let go of. */
 	told: boolean;
@@ -87,32 +96,44 @@ function track<T>(sent: Promise<T>): Promise<T> {
 	return sent;
 }
 
-function say(held: Typing) {
+/** Rust is hearing the field now, or never will: neither clock may run on. */
+function hush(held: Typing) {
+	if (held.waiting) clearTimeout(held.waiting);
+	if (held.due) clearTimeout(held.due);
 	held.waiting = null;
+	held.due = null;
+}
+
+function say(held: Typing) {
+	hush(held);
 	held.told = true;
 	const { entry, field, protect } = held.place;
 	track(tell(entry, field, held.read(), protect, held.beside, next()));
 }
 
+/** Starts the pause again, and the longest wait if it is not running. */
+function wait(held: Typing) {
+	if (held.waiting) clearTimeout(held.waiting);
+	held.waiting = setTimeout(() => say(held), PAUSE);
+	held.due ??= setTimeout(() => say(held), LONGEST);
+}
+
 function forget(name: string) {
 	const held = typing.get(name);
-	if (held?.waiting) clearTimeout(held.waiting);
+	if (held) hush(held);
 	typing.delete(name);
 }
 
 function hear(place: Place, read: () => string, beside: boolean) {
 	const name = key(place);
-	const held = typing.get(name);
-	if (held) {
-		if (held.waiting) clearTimeout(held.waiting);
-		held.place = place;
-		held.read = read;
-		held.waiting = setTimeout(() => say(held), PAUSE);
-		return;
+	let held = typing.get(name);
+	if (!held) {
+		held = { place, beside, read, waiting: null, due: null, told: false };
+		typing.set(name, held);
 	}
-	const fresh: Typing = { place, beside, read, waiting: null, told: false };
-	fresh.waiting = setTimeout(() => say(fresh), PAUSE);
-	typing.set(name, fresh);
+	held.place = place;
+	held.read = read;
+	wait(held);
 }
 
 /** The reader typed into a field where it stands. `read` answers with what is
@@ -172,9 +193,7 @@ export function release(entry: string | null): number {
  */
 export async function flush(): Promise<void> {
 	for (const held of typing.values()) {
-		if (held.waiting === null) continue;
-		clearTimeout(held.waiting);
-		say(held);
+		if (held.waiting !== null) say(held);
 	}
 	await Promise.allSettled([...sending]);
 }

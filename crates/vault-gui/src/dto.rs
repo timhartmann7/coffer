@@ -11,7 +11,7 @@
 
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize, Serializer};
-use vault_core::model::{self, FieldValue, fields};
+use vault_core::model::{self, FieldValue, fields::Standard};
 use zeroize::Zeroizing;
 
 use crate::settings;
@@ -527,16 +527,17 @@ pub enum FieldKind {
 }
 
 impl FieldKind {
-    /// The names live in `vault-core`, which is the only place that knows what
-    /// KeePass calls a field.
+    /// Which names are standard is decided in `vault-core`, which is the only
+    /// place that knows what KeePass calls a field, and the one a lock asks
+    /// before it writes a draft into a field the entry does not hold yet.
     fn of(name: &str) -> FieldKind {
-        match name {
-            fields::TITLE => FieldKind::Title,
-            fields::USERNAME => FieldKind::Username,
-            fields::PASSWORD => FieldKind::Password,
-            fields::URL => FieldKind::Url,
-            fields::NOTES => FieldKind::Notes,
-            _ => FieldKind::Custom,
+        match Standard::of(name) {
+            Some(Standard::Title) => FieldKind::Title,
+            Some(Standard::Username) => FieldKind::Username,
+            Some(Standard::Password) => FieldKind::Password,
+            Some(Standard::Url) => FieldKind::Url,
+            Some(Standard::Notes) => FieldKind::Notes,
+            None => FieldKind::Custom,
         }
     }
 }
@@ -719,7 +720,9 @@ pub(crate) fn moment(time: std::time::SystemTime) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use chrono::NaiveDate;
-    use vault_core::model::{Attachment, EntryId, EntrySummary, Field, GroupId, Timestamps};
+    use vault_core::model::{
+        Attachment, EntryId, EntrySummary, Field, GroupId, Timestamps, fields,
+    };
 
     use super::*;
 

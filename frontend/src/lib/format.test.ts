@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { entry, field } from './fixtures';
-import { ago, at, called, day, fully, size, when } from './format';
+import { ago, at, called, day, fully, quoted, size, when } from './format';
 
 /** The suite runs with TZ pinned to UTC, so the local clock the screen writes
  * in is the same one the database keeps. */
@@ -101,10 +101,60 @@ describe('what a sentence calls an entry', () => {
 		entry({ fields: [field({ name: 'Title', kind: 'title', value, empty: value === '' })] });
 
 	it('quotes the title, and says "this entry" when there is none to show', () => {
-		expect(called(titled('Bank'))).toBe('“Bank”');
+		expect(called(titled('Bank'))).toBe('“\u2068Bank\u2069”');
 		expect(called(titled(''))).toBe('this entry');
 		// Protected: the value is not here, and a notice is no reason to fetch it.
 		expect(called(titled(null))).toBe('this entry');
 		expect(called(entry({ fields: [] }))).toBe('this entry');
+	});
+});
+
+describe('a name in running text', () => {
+	const OVERRIDES = /[‪-‮]/u;
+
+	/**
+	 * What a mark opened inside a name can reach, by the rules of UAX #9: an
+	 * override or embedding lasts until the isolate around it closes, a closing
+	 * mark with nothing open is ignored, and anything left open lasts to the
+	 * end of the paragraph. Answers with the text outside every isolate, and
+	 * fails when the sentence ends with one still open or an override stands
+	 * outside them all.
+	 */
+	function outside(sentence: string): string {
+		let depth = 0;
+		let left = '';
+		for (const char of sentence) {
+			if (['⁦', '⁧', '⁨'].includes(char)) depth += 1;
+			else if (char === '⁩') depth = Math.max(0, depth - 1);
+			else if (depth === 0) {
+				expect(char, `an override reaches ${JSON.stringify(sentence)}`).not.toMatch(OVERRIDES);
+				left += char;
+			}
+		}
+		expect(depth, 'an isolate runs on past the sentence').toBe(0);
+		return left;
+	}
+
+	it('keeps a right-to-left override in a name off the rest of the sentence', () => {
+		const sentence = `This entry already has ${quoted('evil‮fdp.exe')} (1.2 MB). Keep both to add the new one (840 KB) as ${quoted('evil‮fdp 2.exe')}. A replaced file can’t be brought back.`;
+
+		expect(quoted('evil‮fdp.exe')).toBe('“⁨evil‮fdp.exe⁩”');
+		expect(outside(sentence)).toBe(
+			'This entry already has “” (1.2 MB). Keep both to add the new one (840 KB) as “”. A replaced file can’t be brought back.'
+		);
+	});
+
+	it('does not let a name close the isolate early, or leave one of its own open', () => {
+		for (const name of ['a⁩‮b', '⁩⁩‭c', '⁧‮open', '⁦⁨‮nested', '⁧ok⁩⁩‮']) {
+			expect(outside(`Delete ${quoted(name)} forever? This can’t be undone.`), name).toBe(
+				'Delete “” forever? This can’t be undone.'
+			);
+		}
+	});
+
+	it('leaves a name that needs nothing as it was, between the marks', () => {
+		expect(quoted('Bank')).toBe('“⁨Bank⁩”');
+		expect(quoted('בנק ⁧x⁩')).toBe('“⁨בנק ⁧x⁩⁩”');
+		expect(quoted('')).toBe('“⁨⁩”');
 	});
 });

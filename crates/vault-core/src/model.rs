@@ -122,10 +122,32 @@ pub struct Binned {
 pub mod fields {
     pub use keepass::db::fields::{NOTES, PASSWORD, TITLE, URL, USERNAME};
 
-    /// The five, together. Every entry is drawn with all of them whether or not
+    /// One of the five. Every entry is drawn with all of them whether or not
     /// the file gives it each one, so each is a field that can be written into
     /// on any entry.
-    pub(crate) const STANDARD: [&str; 5] = [TITLE, USERNAME, PASSWORD, URL, NOTES];
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Standard {
+        Title,
+        Username,
+        Password,
+        Url,
+        Notes,
+    }
+
+    impl Standard {
+        /// Which of the five a name is, or nothing for a custom field. The
+        /// match is exact, as KeePass's is: `title` is a custom field.
+        pub fn of(name: &str) -> Option<Standard> {
+            match name {
+                TITLE => Some(Standard::Title),
+                USERNAME => Some(Standard::Username),
+                PASSWORD => Some(Standard::Password),
+                URL => Some(Standard::Url),
+                NOTES => Some(Standard::Notes),
+                _ => None,
+            }
+        }
+    }
 }
 
 impl Entry {

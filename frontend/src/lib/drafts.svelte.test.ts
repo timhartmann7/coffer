@@ -58,6 +58,37 @@ it('tells Rust what is in the field once the reader pauses, and not at every key
 	expect(ipc.draft).toHaveBeenCalledTimes(1);
 });
 
+/**
+ * Somebody typing steadily never pauses for a quarter of a second, and a lid
+ * closed then must not cost everything since they last stopped. Rust hears the
+ * field at least once a second while the keys keep coming, and what it hears is
+ * what the field holds then.
+ */
+it('tells Rust what is in the field every second while the reader keeps typing', () => {
+	const at = place();
+	let field = '';
+	const sentence = 'my new passport number is 4711 0815 2031, issued in March';
+	for (const key of sentence) {
+		field += key;
+		typed(at, () => field);
+		vi.advanceTimersByTime(200);
+	}
+
+	const heard = told();
+	expect(heard.length).toBeGreaterThanOrEqual(Math.floor((sentence.length * 200) / 1000));
+	for (const [value] of heard) expect(sentence.startsWith(value ?? '-')).toBe(true);
+	// The last thing Rust heard is no more than a second of typing behind.
+	expect(sentence.length - (heard.at(-1)?.[0]?.length ?? 0)).toBeLessThanOrEqual(5);
+
+	// The deadline does not outlive the typing: one more word after the pause,
+	// and nothing more after that.
+	vi.advanceTimersByTime(250);
+	const last = ipc.draft.mock.calls.length;
+	vi.advanceTimersByTime(10_000);
+	expect(ipc.draft).toHaveBeenCalledTimes(last);
+	expect(told().at(-1)?.[0]).toBe(sentence);
+});
+
 /** Each field is its own draft, and a protected one goes as protected. */
 it('tells each field on its own, under the protection it was given', () => {
 	const notes = place();

@@ -421,7 +421,7 @@
 				</div>
 				<p class="mt-2 text-fine leading-relaxed text-txt2">
 					A lock could not save it, so Coffer put it in
-					<span class="font-mono text-txt">{rescue.name}</span>{kept ? ` ${kept}` : ''}.
+					<bdi class="font-mono text-txt">{rescue.name}</bdi>{kept ? ` ${kept}` : ''}.
 					{#if standIn && !mustOpen}
 						Your vault file is not there any more, so the copy can go back in its place with nothing
 						to type.
@@ -501,7 +501,7 @@
 				</div>
 				<p class="mt-2 text-fine leading-relaxed text-txt2">
 					{copied}
-					<span class="font-mono text-txt">{copy.vault}</span>. It opens with the same password.
+					<bdi class="font-mono text-txt">{copy.vault}</bdi>. It opens with the same password.
 				</p>
 				<button
 					type="button"
@@ -626,7 +626,7 @@
 							onclick={() => openSnapshot(only.index)}
 							class="mt-5 h-9 rounded-full border border-hairline px-5 text-small text-txt transition-colors hover:border-txt3 active:bg-surface2"
 						>
-							Open {only.name}
+							Open <bdi>{only.name}</bdi>
 						</button>
 					{/if}
 
@@ -697,8 +697,8 @@
 					<div class="flex items-start gap-2">
 						<Icon name="disk" class="mt-0.5 h-4 w-4 shrink-0 text-txt4" />
 						<p class="text-body leading-relaxed text-txt">
-							We found your vault: <span class="font-mono">{found.name}</span> in {found.folder} (your
-							home folder).
+							We found your vault: <bdi class="font-mono">{found.name}</bdi> in
+							<bdi>{found.folder}</bdi> (your home folder).
 						</p>
 					</div>
 					<button

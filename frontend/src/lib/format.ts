@@ -84,6 +84,39 @@ export function ago(stamp: string | null, now: Date): string {
 export const UNTITLED = 'Untitled';
 export const NO_LOGIN = 'No login';
 
+const FIRST_STRONG_ISOLATE = '\u2068';
+const POP_DIRECTIONAL_ISOLATE = '\u2069';
+/** The three marks that open an isolate, each closed by the one above. */
+const OPENS_ISOLATE = new Set(['\u2066', '\u2067', FIRST_STRONG_ISOLATE]);
+
+/**
+ * A name from the vault or the disk - an entry's title, a field's, a file's or
+ * a folder's name - in quotes, the way running text puts it.
+ *
+ * Isolated from the sentence around it. The name is the reader's or another
+ * client's and may hold right-to-left text or an override, and left bare, a
+ * U+202E in it turns the rest of the sentence around: the sizes and the warning
+ * a question asks the reader to read before they choose. The closing mark ends
+ * every override and embedding the name opened, but only once it closes the
+ * isolate it was meant for: an isolate the name opens and leaves open is closed
+ * first, and a closing mark of the name's own that has nothing in the name to
+ * close is left out, so it cannot close this one early. Neither changes how the
+ * name itself reads, and the vault keeps it as it is.
+ */
+export function quoted(name: string): string {
+	let open = 0;
+	let kept = '';
+	for (const char of name) {
+		if (OPENS_ISOLATE.has(char)) open += 1;
+		else if (char === POP_DIRECTIONAL_ISOLATE) {
+			if (open === 0) continue;
+			open -= 1;
+		}
+		kept += char;
+	}
+	return `“${FIRST_STRONG_ISOLATE}${kept}${POP_DIRECTIONAL_ISOLATE.repeat(open + 1)}”`;
+}
+
 /**
  * What a sentence calls an entry: its title in quotes, or "this entry" when
  * it has none to show - left empty, or kept protected by the database, which
@@ -91,7 +124,7 @@ export const NO_LOGIN = 'No login';
  */
 export function called(entry: Entry): string {
 	const title = entry.fields.find((field) => field.kind === 'title')?.value;
-	return title ? `“${title}”` : 'this entry';
+	return title ? quoted(title) : 'this entry';
 }
 
 /** An attachment's size, in the unit that keeps it to three or four digits. */

@@ -671,7 +671,7 @@ it('keeps the work elsewhere when the vault file is gone', async () => {
 	flushSync();
 
 	expect(ipc.reload, 'it read back a file that is not there').not.toHaveBeenCalled();
-	expect(host.textContent).toContain('Kept as rescued');
+	expect(host.textContent).toContain('Kept as “\u2068rescued\u2069”');
 
 	return unmount(component);
 });
@@ -1251,14 +1251,14 @@ it('offers a removed field back and takes it back in one call to Rust', async ()
 		const component = await removePin();
 
 		expect(ipc.removeField).toHaveBeenCalledWith(kept.id, 'PIN', false);
-		expect(toast()?.textContent).toContain('Field “PIN” removed');
+		expect(toast()?.textContent).toContain('Field “\u2068PIN\u2069” removed');
 		expect(undo()?.textContent).toContain('Undo');
 		expect(ipc.save).toHaveBeenCalledTimes(1);
 
 		// Heard as well as seen, in a region that was there before the words.
 		const region = host.querySelector('[role="status"]');
 		expect(region?.getAttribute('aria-live')).toBe('polite');
-		expect(region?.textContent).toContain('Field “PIN” removed');
+		expect(region?.textContent).toContain('Field “\u2068PIN\u2069” removed');
 
 		undo()?.click();
 		await settled();
@@ -1434,7 +1434,7 @@ it('asks before a removal nothing could take back, and says it went forever', as
 
 		expect(ipc.removeField).toHaveBeenLastCalledWith(kept.id, 'PIN', true);
 		expect(ipc.save).toHaveBeenCalledTimes(1);
-		expect(toast()?.textContent).toContain('Field “PIN” removed forever');
+		expect(toast()?.textContent).toContain('Field “\u2068PIN\u2069” removed forever');
 		expect(undo()).toBeNull();
 		expect(press('z').defaultPrevented).toBe(false);
 		await settled();
@@ -1654,7 +1654,7 @@ it('asks before a folder goes, and keeps it on the way out', async () => {
 	trash()?.click();
 	flushSync();
 	expect(host.querySelector('[data-confirm]')?.textContent).toContain(
-		'Move “Work” and everything in it to the Recycle Bin?'
+		'Move “\u2068Work\u2069” and everything in it to the Recycle Bin?'
 	);
 	const keep = [...host.querySelectorAll('button')].find(
 		(each) => each.textContent?.trim() === 'Keep it'
@@ -1674,7 +1674,9 @@ it('asks before a folder goes, and keeps it on the way out', async () => {
 		?.click();
 	await vi.waitFor(() => expect(ipc.deleteGroup).toHaveBeenCalledWith(work.id));
 	await vi.waitFor(() => expect(ipc.save).toHaveBeenCalledTimes(1));
-	await vi.waitFor(() => expect(toast()?.textContent).toContain('Moved “Work” to the Recycle Bin'));
+	await vi.waitFor(() =>
+		expect(toast()?.textContent).toContain('Moved “\u2068Work\u2069” to the Recycle Bin')
+	);
 
 	undo()?.click();
 	await vi.waitFor(() => expect(ipc.putBackGroup).toHaveBeenCalledWith(work.id));
@@ -1816,9 +1818,9 @@ it('shows a deleted folder as a folder in the bin, saying when and where from', 
 		const folders = [...host.querySelectorAll('[data-folder]')];
 		expect(folders).toHaveLength(1);
 		expect(folders[0].textContent).toContain('Banking');
-		expect(folders[0].textContent).toContain('Deleted 3 days ago · from “Personal”');
+		expect(folders[0].textContent).toContain('Deleted 3 days ago · from “\u2068Personal\u2069”');
 		expect(reads()).toContain('Old mail');
-		expect(reads()).toContain('Deleted yesterday · from “Work”');
+		expect(reads()).toContain('Deleted yesterday · from “\u2068Work\u2069”');
 		expect(reads(), 'the folder was poured out into the bin').not.toContain('Visa');
 		// Nothing is made in the bin.
 		expect(host.querySelector('[aria-label="New folder"]')).toBeNull();
@@ -1833,10 +1835,10 @@ it('shows a deleted folder as a folder in the bin, saying when and where from', 
 		flushSync();
 		expect(folderCard()?.textContent).toContain('Banking');
 		expect(folderCard()?.textContent).toContain(
-			'In the Recycle Bin since 26 Aug · was in “Personal”'
+			'In the Recycle Bin since 26 Aug · was in “\u2068Personal\u2069”'
 		);
 		expect(reads()).toContain('Visa');
-		expect(reads()).toContain('Deleted 3 days ago · with “Banking”');
+		expect(reads()).toContain('Deleted 3 days ago · with “\u2068Banking\u2069”');
 		expect(reads(), 'emptying is for the whole bin, not a folder in it').not.toContain(
 			'Empty the bin'
 		);
@@ -1865,7 +1867,7 @@ it('searches the folders in the bin too, and says which one a row went in with',
 		type('visa');
 		expect(reads()).not.toContain('Nothing matches');
 		expect(reads()).toContain('Visa');
-		expect(reads()).toContain('Deleted 3 days ago · with “Banking”');
+		expect(reads()).toContain('Deleted 3 days ago · with “\u2068Banking\u2069”');
 		expect(reads(), 'a search answered with the mail it did not match').not.toContain('Old mail');
 		expect(host.querySelector('[data-folder]')).toBeNull();
 
@@ -1938,7 +1940,7 @@ it('moves the open entry to the bin and offers it back', async () => {
 		expect(ipc.save).toHaveBeenCalledTimes(1);
 		expect(onTree).toHaveBeenLastCalledWith(after);
 		expect(host.querySelector('h1'), 'the pane stayed open on a deleted entry').toBeNull();
-		expect(toast()?.textContent).toContain('Moved “node-3” to the Recycle Bin');
+		expect(toast()?.textContent).toContain('Moved “\u2068node-3\u2069” to the Recycle Bin');
 		expect(undo()?.textContent).toContain('Undo');
 
 		expect(press('z').defaultPrevented).toBe(true);
@@ -2008,7 +2010,7 @@ it('says an entry went for good when it is not in the tree that came back', asyn
 		pressed('Move to Recycle Bin');
 		await settled();
 
-		expect(toast()?.textContent).toContain('Deleted “node-3” forever');
+		expect(toast()?.textContent).toContain('Deleted “\u2068node-3\u2069” forever');
 		expect(undo()).toBeNull();
 		expect(press('z').defaultPrevented).toBe(false);
 		await settled();
@@ -2074,7 +2076,9 @@ it('puts an entry back from the bin, or deletes it for good after asking', async
 		pressed('Old mail');
 		await settled();
 
-		expect(entryCard()?.textContent).toContain('In the Recycle Bin since 28 Aug · was in “Work”');
+		expect(entryCard()?.textContent).toContain(
+			'In the Recycle Bin since 28 Aug · was in “\u2068Work\u2069”'
+		);
 		expect(host.querySelector('section h1 input'), 'the title can be written into').toBeNull();
 
 		ipc.entry.mockResolvedValue(home);
@@ -2098,14 +2102,14 @@ it('puts an entry back from the bin, or deletes it for good after asking', async
 		pressed('Delete forever…', entryCard() ?? host);
 		flushSync();
 		expect(host.querySelector('[data-confirm]')?.textContent).toContain(
-			'Delete “Old mail” forever? This can’t be undone.'
+			'Delete “\u2068Old mail\u2069” forever? This can’t be undone.'
 		);
 		expect(ipc.deleteEntry).not.toHaveBeenCalled();
 		pressed('Delete forever', host.querySelector('[data-confirm]') ?? host);
 		await settled();
 
 		expect(ipc.deleteEntry).toHaveBeenCalledWith(vault.mail.id, expect.any(Number));
-		expect(toast()?.textContent).toContain('Deleted “Old mail” forever');
+		expect(toast()?.textContent).toContain('Deleted “\u2068Old mail\u2069” forever');
 		expect(undo()).toBeNull();
 	} finally {
 		await unmount(component);
@@ -2171,13 +2175,13 @@ it('deletes a folder in the bin for good after asking, and goes up a level', asy
 		pressed('Delete forever…', folderCard() ?? host);
 		flushSync();
 		expect(host.querySelector('[data-confirm]')?.textContent).toContain(
-			'Delete “Banking” and everything in it forever? This can’t be undone.'
+			'Delete “\u2068Banking\u2069” and everything in it forever? This can’t be undone.'
 		);
 		pressed('Delete forever', host.querySelector('[data-confirm]') ?? host);
 		await settled();
 
 		expect(ipc.deleteGroup).toHaveBeenCalledWith(vault.banking.id);
-		expect(toast()?.textContent).toContain('Deleted “Banking” forever');
+		expect(toast()?.textContent).toContain('Deleted “\u2068Banking\u2069” forever');
 		expect(undo()).toBeNull();
 		expect(reads(), 'the list did not go back up to the bin').toContain('Old mail');
 	} finally {
@@ -2203,13 +2207,13 @@ it('says so when deleting a folder is for good', async () => {
 		flushSync();
 
 		expect(host.querySelector('[data-confirm]')?.textContent).toContain(
-			'Delete “Work” and everything in it forever? This can’t be undone.'
+			'Delete “\u2068Work\u2069” and everything in it forever? This can’t be undone.'
 		);
 		pressed('Delete forever', host.querySelector('[data-confirm]') ?? host);
 		await settled();
 
 		expect(ipc.deleteGroup).toHaveBeenCalledWith(work.id);
-		expect(toast()?.textContent).toContain('Deleted “Work” forever');
+		expect(toast()?.textContent).toContain('Deleted “\u2068Work\u2069” forever');
 		expect(undo()).toBeNull();
 	} finally {
 		await unmount(component);
@@ -2270,7 +2274,7 @@ it('offers no way out of the bin on a database it cannot write', async () => {
 		(host.querySelector('[data-folder]') as HTMLElement).click();
 		flushSync();
 
-		expect(folderCard()?.textContent).toContain('was in “Personal”');
+		expect(folderCard()?.textContent).toContain('was in “\u2068Personal\u2069”');
 		expect(reads()).not.toContain('Put back');
 		expect(reads()).not.toContain('Delete forever');
 	} finally {
@@ -2300,10 +2304,14 @@ it('writes the names of folders in the bin as text', async () => {
 	try {
 		pressed('Recycle Bin');
 		flushSync();
-		expect(host.querySelector('[data-folder]')?.textContent).toContain(`Deleted from “${hostile}”`);
+		expect(host.querySelector('[data-folder]')?.textContent).toContain(
+			`Deleted from “\u2068${hostile}\u2069”`
+		);
 		(host.querySelector('[data-folder]') as HTMLElement).click();
 		flushSync();
-		expect(folderCard()?.textContent).toContain(`In the Recycle Bin · was in “${hostile}”`);
+		expect(folderCard()?.textContent).toContain(
+			`In the Recycle Bin · was in “\u2068${hostile}\u2069”`
+		);
 		expect(host.querySelector('img')).toBeNull();
 	} finally {
 		await unmount(component);
@@ -2340,7 +2348,7 @@ it('moves an entry to the bin once however quickly the button is pressed again',
 		await settled();
 
 		expect(ipc.deleteEntry).toHaveBeenCalledTimes(1);
-		expect(toast()?.textContent).toContain('Moved “node-3” to the Recycle Bin');
+		expect(toast()?.textContent).toContain('Moved “\u2068node-3\u2069” to the Recycle Bin');
 	} finally {
 		await unmount(component);
 		vi.useRealTimers();
@@ -2479,7 +2487,9 @@ it('keeps the place of the bin’s card while an entry in the bin is read', asyn
 
 		expect(paneReads()).toContain('Opening…');
 		const waiting = entryCard();
-		expect(waiting?.textContent).toContain('In the Recycle Bin since 28 Aug · was in “Work”');
+		expect(waiting?.textContent).toContain(
+			'In the Recycle Bin since 28 Aug · was in “\u2068Work\u2069”'
+		);
 		const login = [...(pane()?.querySelectorAll('span') ?? [])].find(
 			(each) => each.textContent === 'Login'
 		);
@@ -2504,7 +2514,9 @@ it('keeps the place of the bin’s card while an entry in the bin is read', asyn
 		);
 		await settled();
 		expect(paneReads()).not.toContain('Opening…');
-		expect(entryCard()?.textContent).toContain('In the Recycle Bin since 28 Aug · was in “Work”');
+		expect(entryCard()?.textContent).toContain(
+			'In the Recycle Bin since 28 Aug · was in “\u2068Work\u2069”'
+		);
 		expect([...(entryCard()?.querySelectorAll('button') ?? [])].some((each) => each.disabled)).toBe(
 			false
 		);
@@ -2889,7 +2901,7 @@ it('offers an entry moved to the bin back once another is open, and leaves that 
 
 		expect(ipc.save).toHaveBeenCalledTimes(1);
 		expect(titleField()?.value).toBe('Google Drive');
-		expect(toast()?.textContent).toContain('Moved “Gmail” to the Recycle Bin');
+		expect(toast()?.textContent).toContain('Moved “\u2068Gmail\u2069” to the Recycle Bin');
 		expect(undo()).not.toBeNull();
 
 		ipc.putBackEntry.mockResolvedValue(tree);
@@ -3012,7 +3024,7 @@ it('does not move an entry on its own while its folder is on its way to the bin'
 		moving.resolve(gone);
 		await settled();
 		expect(pane()).toBeNull();
-		expect(toast()?.textContent).toContain('Moved “Work” to the Recycle Bin');
+		expect(toast()?.textContent).toContain('Moved “\u2068Work\u2069” to the Recycle Bin');
 	} finally {
 		await unmount(component);
 		vi.useRealTimers();
@@ -3168,7 +3180,7 @@ it('offers a removed field back after its save even when another entry is open',
 		saving.resolve();
 		await settled();
 
-		expect(toast()?.textContent).toContain('Field “PIN” removed');
+		expect(toast()?.textContent).toContain('Field “\u2068PIN\u2069” removed');
 		ipc.entry.mockClear();
 		undo()?.click();
 		await settled();

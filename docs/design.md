@@ -172,7 +172,11 @@ of the line about work a lock could not write - `small`, centred, `mt-6` - in
 is written beside the value it was for rather than over it, in a protected
 field of its own called after it - "Password (typed before locking)" - where it
 is found under Own fields; into the field itself only when that held nothing. A
-Change field emptied again has no dot and nothing to write.
+Change field emptied again has no dot and nothing to write. A box that holds a
+name rather than a value - a tag being typed, the name of a new field, a
+folder's name - has no dot either: a lock does not write a name the reader has
+not finished, so there is nothing for the dot to promise (`docs/ipc.md`, "Only
+values are drafted, not names").
 
 **A value of the reader's own in lines is written in lines.** Any value with a
 line break is edited in a text area that grows with it, up to twenty lines and
@@ -241,6 +245,17 @@ destructive answer last, in `danger` over `dangerwash`. Asked inside something
 that is already a card - a file's row, a version's - it drops its own box and
 sits under a hairline in the card. Clearing the history used to ask on one line
 without a box; it asks in the box now, like the rest.
+
+**A name in a sentence is set apart from it.** Questions, notices, the bin's
+lines and the banners about a lock's copy put the reader's names into running
+text: an entry's title, a field's, a file's or a folder's name. Each one is
+bidi-isolated - a `<bdi>` in markup, and in a sentence built as a string the
+quotes from `quoted()` in `format.ts`, which put the name between U+2068 and
+U+2069 and close whatever isolate it leaves open. A name is the reader's or
+another client's and may hold right-to-left text or an override; bare, a U+202E
+in "This entry already has “…” (1.2 MB)" ran on to the end of the paragraph and
+drew the sizes and the warning backwards. Nothing changes on the screen for a
+name without one. The mockup draws no such name.
 
 **A file whose name is taken is asked about in that box,** under the
 Attachments label and the plus that asked for the file: "This entry already has

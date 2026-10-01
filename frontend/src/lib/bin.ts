@@ -1,7 +1,7 @@
 /** What the recycle bin says about what is in it, and what a deletion asks
  * before it, in the words the window uses. */
 
-import { ago, day } from './format';
+import { ago, day, quoted } from './format';
 import type { Binned, Group } from './model';
 import { find } from './tree';
 
@@ -17,7 +17,7 @@ const TOP = 'the top of the vault';
  * not hold it. */
 function named(root: Group, id: string): string | null {
 	const folder = find(root, id);
-	return folder ? `“${folder.name}”` : null;
+	return folder ? quoted(folder.name) : null;
 }
 
 /**

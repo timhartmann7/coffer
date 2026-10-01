@@ -132,7 +132,8 @@ impl Held {
 /// One value rather than three fields, so that nothing can take the vault away
 /// and leave the file or the typing behind. A lock, another database chosen, an
 /// unlock over the top: every way the vault goes, the rest goes with it, wiped,
-/// and no path through here has to remember to say so.
+/// and no path through here has to remember to say so. The file goes the same
+/// way with its entry (see [`Open::settle`]).
 struct Open {
     vault: Vault,
     offered: Option<Offered>,
@@ -165,6 +166,21 @@ impl Open {
                 .unwrap_or(false);
         }
         changed
+    }
+
+    /// Lets go of the file waiting on an entry the reader can no longer be
+    /// looking at: one deleted, emptied out of the bin, or in the bin, where
+    /// nothing goes on an entry. Under the lock of the change that took the
+    /// entry away, so that no answer can land between the two.
+    fn settle(&mut self) {
+        let gone = self.offered.as_ref().is_some_and(|offered| {
+            self.vault
+                .entry(offered.entry)
+                .is_none_or(|entry| entry.binned.is_some())
+        });
+        if gone {
+            self.offered = None;
+        }
     }
 }
 
@@ -662,8 +678,14 @@ impl Session {
     /// meanwhile, which is the point: a window drawing a tree from a database
     /// that is half way through a change would be drawing something that was
     /// never true.
+    ///
+    /// A file waiting on an entry the change takes away goes with it.
     pub fn with_mut<T>(&self, change: impl FnOnce(&mut Vault) -> T) -> Result<T, Failure> {
-        Ok(change(&mut self.held().changing()?.vault))
+        let mut held = self.held();
+        let open = held.changing()?;
+        let changed = change(&mut open.vault);
+        open.settle();
+        Ok(changed)
     }
 
     /// Borrows the open vault to change it, the way [`Session::with_mut`]
@@ -676,6 +698,9 @@ impl Session {
     /// back in the window, and an entry that could not be deleted or a file
     /// that could not be read again is still something the reader chose to
     /// leave behind.
+    ///
+    /// A file waiting on an entry goes on the same terms as in
+    /// [`Session::with_mut`], and every file waiting goes with a reload.
     pub fn overtaking<T>(
         &self,
         over: Over<'_>,
@@ -684,8 +709,15 @@ impl Session {
     ) -> Result<T, Failure> {
         let mut held = self.held();
         let open = held.changing()?;
+        // The file read again keeps an entry's id and may not keep the file
+        // the reader was asked about, so whatever was waiting goes as well.
+        if matches!(over, Over::Everything) {
+            open.offered = None;
+        }
         open.drafts.over(over, sequence);
-        Ok(change(&mut open.vault))
+        let changed = change(&mut open.vault);
+        open.settle();
+        Ok(changed)
     }
 
     /// Holds the window's latest word about a field the reader is typing into:
@@ -2068,6 +2100,130 @@ mod tests {
             }
             assert_eq!(files_of(&session, id), before, "{way}");
         }
+    }
+
+    /// A file waiting on an entry goes with the entry, under the lock that takes
+    /// the entry away: a reload, the entry deleted, the folder it is in deleted,
+    /// the bin it is in emptied. An answer that was already on its way, or
+    /// queued behind the change, would otherwise land on a vault the reader
+    /// was never asked about, and a replacement would go over a file they never
+    /// saw.
+    #[test]
+    fn the_file_waiting_goes_with_its_entry() {
+        type Step = fn(&Session, EntryId);
+        let nothing: Step = |_, _| {};
+        let ways: [(&str, Step, Step); 4] = [
+            (
+                "a reload",
+                |session, _| {
+                    session
+                        .with_mut(Vault::save)
+                        .expect("the session is open")
+                        .expect("the entry reaches the file");
+                },
+                |session, _| {
+                    session
+                        .overtaking(Over::Everything, 1, Vault::reload)
+                        .expect("the session is open")
+                        .expect("the file reads again");
+                },
+            ),
+            ("the entry deleted", nothing, |session, id| {
+                session
+                    .overtaking(Over::Entry(id), 1, |vault| vault.delete_entry(id))
+                    .expect("the session is open")
+                    .expect("the entry goes");
+            }),
+            ("its folder deleted", nothing, |session, id| {
+                let folder = session.entry(id).expect("the entry is there").group;
+                session
+                    .with_mut(|vault| vault.delete_group(folder))
+                    .expect("the session is open")
+                    .expect("the folder goes");
+            }),
+            (
+                "the bin it is in emptied",
+                |session, id| {
+                    session
+                        .with_mut(|vault| vault.delete_entry(id))
+                        .expect("the session is open")
+                        .expect("the entry goes to the bin");
+                },
+                |session, _| {
+                    session
+                        .with_mut(Vault::empty_recycle_bin)
+                        .expect("the session is open")
+                        .expect("the bin empties");
+                },
+            ),
+        ];
+
+        for (way, before, going) in ways {
+            let (_scratch, session) = unlocked(RICH);
+            let root = session.tree().expect("the tree comes back").id;
+            let id = session
+                .with_mut(|vault| -> Result<EntryId, VaultError> {
+                    let folder = vault.create_group(root, "Keys")?;
+                    vault.create_entry(folder)
+                })
+                .expect("the session is open")
+                .expect("an entry is made in a folder of its own");
+            let added = session
+                .offer(id, KEY.to_owned(), Zeroizing::new(b"the key".to_vec()))
+                .expect("the file goes on");
+            assert!(matches!(added, Attached::Added), "{way}");
+            before(&session, id);
+
+            let asked = session
+                .offer(id, KEY.to_owned(), Zeroizing::new(b"a new key".to_vec()))
+                .expect("the file is offered");
+            assert!(matches!(asked, Attached::Taken(_)), "{way}");
+            going(&session, id);
+
+            for answer in [Vault::keep_both, Vault::replace_attachment] {
+                let refused = session
+                    .answer(id, answer)
+                    .expect_err("nothing is waiting any more");
+                assert_eq!(code_of(&refused), "refused", "{way}");
+            }
+            if session.entry(id).is_ok() {
+                assert_eq!(
+                    files_of(&session, id),
+                    [(KEY.to_owned(), b"the key".to_vec())],
+                    "{way}"
+                );
+            }
+        }
+    }
+
+    /// Only a change that takes the entry away lets go of its file: the
+    /// reader is still being asked about it.
+    #[test]
+    fn the_file_waiting_outlasts_a_change_that_leaves_its_entry() {
+        let (_scratch, session) = unlocked(RICH);
+        let id = entry_titled(&session, "ssh key").id;
+        let other = entry_titled(&session, "basic").id;
+        let root = session.tree().expect("the tree comes back").id;
+
+        let _ = session
+            .offer(id, KEY.to_owned(), Zeroizing::new(b"a new key".to_vec()))
+            .expect("the file is offered");
+        session
+            .with_mut(|vault| vault.create_group(root, "Elsewhere"))
+            .expect("the session is open")
+            .expect("a folder is made");
+        session
+            .overtaking(Over::Entry(other), 1, |vault| vault.delete_entry(other))
+            .expect("the session is open")
+            .expect("another entry goes");
+
+        session
+            .answer(id, Vault::keep_both)
+            .expect("the file is still waiting");
+        assert!(
+            files_of(&session, id).contains(&(format!("{KEY} 2"), b"a new key".to_vec())),
+            "the answer did not put the file that was chosen"
+        );
     }
 
     /// A file picked is a new question. The last one is let go, whichever entry

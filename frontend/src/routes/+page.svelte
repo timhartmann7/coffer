@@ -6,10 +6,10 @@
 	import Unlock from '$lib/components/Unlock.svelte';
 	import Vault from '$lib/components/Vault.svelte';
 	import { flush } from '$lib/drafts';
+	import { lockByHand } from '$lib/locking';
 	import {
 		chooseDatabase,
 		leaveRescue,
-		lock as lockVault,
 		promoteRescue,
 		settings as loadSettings,
 		status,
@@ -139,7 +139,7 @@
 	/**
 	 * Goes back from the copy to its vault. With the copy open that is a lock,
 	 * which takes this window with it, so the screen is only cleared once Rust
-	 * has answered - the same order the Lock button keeps, for the same reason.
+	 * has answered - the same order `lockByHand` keeps, for the same reason.
 	 */
 	async function back() {
 		await flush();
@@ -149,26 +149,11 @@
 		await chosen_elsewhere();
 	}
 
-	/**
-	 * Locking destroys this window, so nothing after the call is guaranteed to
-	 * run.
-	 *
-	 * What the reader was typing is handed to Rust before the lock is asked
-	 * for, and every write already on its way is waited for, so that the lock
-	 * finds all of it. The screen is cleared after the lock rather than before:
-	 * clearing it tears down the fields the typing is in, and a field that goes
-	 * with typing in it tells Rust to let go of it - which, sent ahead of the
-	 * lock, would be the lock losing it. A window that outlives its own lock
-	 * still stops drawing a tree that is no longer in memory.
-	 */
-	async function lock() {
-		await flush();
-		try {
-			await lockVault();
-		} finally {
+	function lock() {
+		return lockByHand(() => {
 			root = null;
 			showing = 'vault';
-		}
+		});
 	}
 
 	/** The way in to the settings is the way back out of them, wherever it is

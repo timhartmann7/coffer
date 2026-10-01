@@ -203,14 +203,33 @@ own - sleep, the screen locking, Coffer quitting - arrive on the thread the
 window is drawn on, where neither a message into the page nor its answer can get
 through: a lock that asked the page to finish first could only wait for nothing.
 So the page never is asked. It sends `draft` for a field a quarter of a second
-after the last key, and at once when the window loses focus, with what is in the
-field; `value` is `null` when the typing was taken back - Escape, Cancel,
+after the last key, at least once a second while the keys keep coming - a
+steady typist never pauses that long, and a lock then would cost everything
+since they last stopped - and at once when the window loses focus, with what is
+in the field; `value` is `null` when the typing was taken back - Escape, Cancel,
 Discard, a field left as it was, a Change field emptied again, or a new password
 whose entry the pane stopped showing. Rust keeps the last of it per field, beside the open vault, in
 `Zeroizing` storage whose `Debug` prints `[redacted]`, and every lock writes it
 into the vault before it wipes it (see Locking). The Lock button waits for every
 draft and every value already on its way before it asks for the lock. The text
 travels the way `set_field`'s does, window to Rust, and nothing comes back.
+
+**Only values are drafted, not names.** A lock writes what was typed into the
+value of any of an entry's fields, the standard five and the reader's own, in
+the box where the value stands and in a Change field. It does not write a tag still
+being typed, the name in the step that adds a field, the name of a new folder
+or a folder being renamed: those go to Rust when they are finished, with Return
+or by leaving the box, and a lock before that loses them. That is a decision,
+not an omission. A draft finishes a value the vault already has a place for,
+and a lock is not the reader saying a name is done: half a tag would be a label
+on the entry and in the vault's list of tags, half a field name a field called
+something nobody chose, half a folder name a folder made or renamed - each a
+change to the shape of the vault rather than text left in a box, and each one
+the reader would have to find and undo. What is lost is a word or two the reader
+typed a moment before and can see is missing, never anything the vault held.
+The search box, the generator's options and the unlock and creation screens
+hold nothing of the vault and are not drafted either. None of these boxes
+carries the dot that marks typing not yet written.
 
 Every word about typing carries `sequence`, from one count per window that only
 goes up and starts at the moment the window was built, in microseconds, so that
@@ -416,7 +435,12 @@ it only for the entry it names, because the window sends that about the entry it
 is leaving and the message can arrive after a file was picked for the next one.
 It goes with the vault on a lock or when another database is chosen, when the
 button is pressed again, when another file is picked for any entry, and when the
-window stops showing the question.
+window stops showing the question. It also goes in Rust, under the lock of the
+change itself, with a `reload` and with any change that leaves its entry
+deleted or in the recycle bin: `delete_entry`, `delete_group` on a folder
+holding it, `empty_recycle_bin`. An answer already on its way, or queued behind
+the change, is then refused rather than landing on a vault the reader was never
+asked about, and nothing hangs on the window's `withdraw_attachment` arriving.
 
 A name that differs only in letter case is not taken. The format and every
 KeePass client keep `Scan.pdf` and `scan.pdf` apart, so adding the second loses

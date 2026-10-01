@@ -3,7 +3,7 @@
 	import { SvelteSet } from 'svelte/reactivity';
 	import { eraseQuestion } from '$lib/bin';
 	import { settle, type Place } from '$lib/drafts';
-	import { called, fully, NO_LOGIN, size, UNTITLED } from '$lib/format';
+	import { called, fully, NO_LOGIN, quoted, size, UNTITLED } from '$lib/format';
 	import {
 		addAttachment,
 		asFailure,
@@ -353,12 +353,12 @@
 	/** What the question about a taken name says, as the entry stands now. */
 	function said(offer: Clash): string {
 		if (freed) {
-			return `“${offer.name}” is no longer on this entry, so the new one (${size(offer.chosen)}) can go on under that name.`;
+			return `${quoted(offer.name)} is no longer on this entry, so the new one (${size(offer.chosen)}) can go on under that name.`;
 		}
 		if (held) {
-			return `Earlier versions are holding the “${offer.name}” that is here in place, so it can’t be replaced. Keep both, or remove that one first - its trash offers to clear the versions in the way.`;
+			return `Earlier versions are holding the ${quoted(offer.name)} that is here in place, so it can’t be replaced. Keep both, or remove that one first - its trash offers to clear the versions in the way.`;
 		}
-		return `This entry already has “${offer.name}” (${size(offer.size)}). Keep both to add the new one (${size(offer.chosen)}) as “${offer.free}”. A replaced file is not kept in Versions, so replacing can’t be undone.`;
+		return `This entry already has ${quoted(offer.name)} (${size(offer.size)}). Keep both to add the new one (${size(offer.chosen)}) as ${quoted(offer.free)}. A replaced file is not kept in Versions, so replacing can’t be undone.`;
 	}
 
 	/** The way out: the file waiting is let go, and the entry is as it was. */
@@ -496,7 +496,7 @@
 		if (entry.fields.some((field) => field.name === name)) {
 			onFailure({
 				code: 'refused',
-				message: `this entry already has a field called “${name}”`
+				message: `this entry already has a field called ${quoted(name)}`
 			});
 			return;
 		}
@@ -523,7 +523,7 @@
 				class="mt-2 animate-rise"
 				label="New value of {field.name}"
 				placeholder="New value"
-				what="value of “{field.name}”"
+				what="value of {quoted(field.name)}"
 				multiline={field.lines || field.name === longhand}
 				draft={place(field, field.name)}
 				onSave={(value) => put(field.name, value, field.protected)}
@@ -798,7 +798,9 @@
 					{#if dropping === field.name}
 						<Confirm
 							class="mt-3 bg-surface2"
-							question="Remove “{field.name}”? This vault keeps no version to bring it back from, so this can’t be undone."
+							question="Remove {quoted(
+								field.name
+							)}? This vault keeps no version to bring it back from, so this can’t be undone."
 							act="Remove"
 							onKeep={() => (dropping = null)}
 							onAct={() => void dropField(field.name, true)}
@@ -917,7 +919,7 @@
 						<Confirm
 							bare
 							class="mt-3 border-t border-hairline pt-3"
-							question="Remove {attachment.name} ({size(
+							question="Remove {quoted(attachment.name)} ({size(
 								attachment.size
 							)})? Files are not kept in Versions, so this can’t be undone."
 							act="Remove"

@@ -172,3 +172,33 @@ it('draws a vault name that holds markup as the characters it is', () => {
 
 	unmount(component);
 });
+
+/**
+ * A file name can hold a right-to-left override, and one in the vault's name
+ * would turn the rest of the sentence around: which file is replaced, and the
+ * name it is kept under. Each name is isolated in a bdi of its own, which is
+ * where the override ends.
+ */
+it('keeps a right-to-left override in a file name off the rest of the sentence', () => {
+	for (const there of [true, false]) {
+		const component = banner({ there, written: null }, undefined, undefined, {
+			vault: 'evil‮xcbdk.kdbx',
+			saved: null,
+			keptAs: 'evil‮xcbdk.kdbx.1.bak'
+		});
+
+		const names = [...host.querySelectorAll('bdi')].map((each) => each.textContent);
+		expect(names).toEqual(
+			there ? ['evil‮xcbdk.kdbx', 'evil‮xcbdk.kdbx.1.bak'] : ['evil‮xcbdk.kdbx']
+		);
+		for (const text of host.querySelectorAll('p')) {
+			const loose = [...text.childNodes]
+				.filter((node) => node.nodeType === Node.TEXT_NODE)
+				.map((node) => node.textContent)
+				.join('');
+			expect(loose).not.toMatch(/[‪-‮]/u);
+		}
+
+		unmount(component);
+	}
+});

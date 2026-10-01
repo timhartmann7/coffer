@@ -26,7 +26,7 @@
 	import { deleted as deletedLine, eraseQuestion } from '$lib/bin';
 	import { flush, release } from '$lib/drafts';
 	import { named as howLong } from '$lib/duration';
-	import { called } from '$lib/format';
+	import { called, quoted } from '$lib/format';
 	import { held } from '$lib/holding';
 	import { copying, typing } from '$lib/keys';
 	import { composing } from '$lib/lines';
@@ -588,7 +588,7 @@
 		deleting = false;
 		if (group === null) return;
 		const id = group;
-		const name = `“${shown.name}”`;
+		const name = quoted(shown.name);
 		try {
 			const tree = await once(id, () => deleteGroup(id));
 			if (tree === null) return;
@@ -635,7 +635,7 @@
 	async function eraseFolder() {
 		if (group === null || held()) return;
 		const id = group;
-		const name = `“${shown.name}”`;
+		const name = quoted(shown.name);
 		const above = pathTo(root, id)?.at(-2)?.id ?? null;
 		try {
 			const tree = await once(id, () => deleteGroup(id));
@@ -715,7 +715,7 @@
 			const beside = await saveCopy();
 			if (!beside) return;
 			conflict = null;
-			tell({ message: `Kept as ${beside.name}`, kind: 'copied' });
+			tell({ message: `Kept as ${quoted(beside.name)}`, kind: 'copied' });
 			// Only where there is a file to take instead. When the vault itself
 			// is gone there is nothing to read back, and the window goes on
 			// holding the version the copy was made from - which is still the
@@ -921,7 +921,7 @@
 	 */
 	function fieldRemoved(entry: string, name: string, forever: boolean) {
 		if (unsaved) return;
-		const said = `Field “${name}” removed`;
+		const said = `Field ${quoted(name)} removed`;
 		if (forever) {
 			tell({ message: `${said} forever`, kind: 'removed' });
 			return;
@@ -1126,8 +1126,8 @@
 				<Confirm
 					class="mx-2 mb-2 shrink-0 bg-surface"
 					question={shown.deletion === 'bin'
-						? `Move “${shown.name}” and everything in it to the Recycle Bin?`
-						: eraseQuestion(`“${shown.name}”`, true)}
+						? `Move ${quoted(shown.name)} and everything in it to the Recycle Bin?`
+						: eraseQuestion(quoted(shown.name), true)}
 					act={shown.deletion === 'bin' ? 'Move to Recycle Bin' : 'Delete forever'}
 					onKeep={() => (deleting = false)}
 					onAct={() => void removeFolder()}
@@ -1264,7 +1264,7 @@
 						name={shown.name}
 						{readOnly}
 						ways={{
-							question: eraseQuestion(`“${shown.name}”`, true),
+							question: eraseQuestion(quoted(shown.name), true),
 							onPutBack: () => void putBackFolder(),
 							onDelete: () => void eraseFolder()
 						}}
@@ -1316,14 +1316,14 @@
 				{:else}
 					<Empty
 						icon="folder"
-						title="There is nothing in “{shown.name}”"
+						title="There is nothing in {quoted(shown.name)}"
 						detail="It is in the recycle bin with nothing left inside it."
 					/>
 				{/if}
 			{:else if found.length === 0 && !binned}
 				<Empty
 					icon="folder"
-					title="There is nothing in “{shown.name}” yet"
+					title="There is nothing in {quoted(shown.name)} yet"
 					detail="Entries live in folders. This one has none of its own."
 				>
 					{#snippet action()}

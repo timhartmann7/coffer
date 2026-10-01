@@ -11,8 +11,10 @@ const root = group({ name: 'Passwords', sections: [personal] });
 describe('what the bin says about what is in it', () => {
 	it('says since when and which folder it was in', () => {
 		const binned = { since: '2026-08-27T10:00:00Z', within: null, from: personal.id };
-		expect(standing(binned, root, now)).toBe('In the Recycle Bin since 27 Aug · was in “Personal”');
-		expect(deleted(binned, root, now)).toBe('Deleted 2 days ago · from “Personal”');
+		expect(standing(binned, root, now)).toBe(
+			'In the Recycle Bin since 27 Aug · was in “\u2068Personal\u2069”'
+		);
+		expect(deleted(binned, root, now)).toBe('Deleted 2 days ago · from “\u2068Personal\u2069”');
 	});
 
 	/** The top group has a name in the file that the window never shows. */
@@ -56,18 +58,18 @@ describe('what the bin says about what is in it', () => {
 		const tree = group({ ...root, sections: [personal, bin] });
 
 		const filed = { since: '2026-08-27T10:00:00Z', within: banking.id, from: personal.id };
-		expect(deleted(filed, tree, now)).toBe('Deleted 2 days ago · with “Banking”');
+		expect(deleted(filed, tree, now)).toBe('Deleted 2 days ago · with “\u2068Banking\u2069”');
 		expect(standing(filed, tree, now)).toBe(
-			'In the Recycle Bin since 27 Aug · deleted with “Banking” · goes back to “Personal”'
+			'In the Recycle Bin since 27 Aug · deleted with “\u2068Banking\u2069” · goes back to “\u2068Personal\u2069”'
 		);
 
 		const homeless = { since: null, within: banking.id, from: null };
-		expect(deleted(homeless, tree, now)).toBe('Deleted with “Banking”');
+		expect(deleted(homeless, tree, now)).toBe('Deleted with “\u2068Banking\u2069”');
 		expect(standing(homeless, tree, now)).toBe(
-			'In the Recycle Bin · deleted with “Banking” · goes back to the top of the vault'
+			'In the Recycle Bin · deleted with “\u2068Banking\u2069” · goes back to the top of the vault'
 		);
 		expect(standing({ ...homeless, from: tree.id }, tree, now)).toBe(
-			'In the Recycle Bin · deleted with “Banking” · goes back to the top of the vault'
+			'In the Recycle Bin · deleted with “\u2068Banking\u2069” · goes back to the top of the vault'
 		);
 	});
 
@@ -77,7 +79,7 @@ describe('what the bin says about what is in it', () => {
 		const renamed = group({ ...personal, name: 'Home' });
 		const tree = group({ ...root, sections: [renamed] });
 		expect(deleted({ since: null, within: null, from: personal.id }, tree, now)).toBe(
-			'Deleted from “Home”'
+			'Deleted from “\u2068Home\u2069”'
 		);
 	});
 });

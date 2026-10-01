@@ -84,12 +84,12 @@
 		</p>
 		<p class="mt-1 text-fine leading-relaxed text-txt2">
 			{#if !copy.vaultFile.there}
-				<span class="font-mono">{copy.vault}</span> is not there any more, so making this your vault puts
+				<bdi class="font-mono">{copy.vault}</bdi> is not there any more, so making this your vault puts
 				the copy in its place.
 			{:else}
-				Making this your vault puts it in place of <span class="font-mono">{copy.vault}</span
+				Making this your vault puts it in place of <bdi class="font-mono">{copy.vault}</bdi
 				>{#if changed}, last changed {changed}{/if}, which is kept as
-				<span class="font-mono">{copy.keptAs}</span> until later saves push it out of the snapshots.
+				<bdi class="font-mono">{copy.keptAs}</bdi> until later saves push it out of the snapshots.
 			{/if}
 		</p>
 		{#if failure}

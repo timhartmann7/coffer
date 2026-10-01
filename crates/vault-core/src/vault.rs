@@ -525,7 +525,7 @@ impl Vault {
         let held = entry.fields.get(field);
         let unchanged = match held {
             Some(held) => held.get() == text && held.is_protected() == protect,
-            None if fields::STANDARD.contains(&field) => text.is_empty(),
+            None if fields::Standard::of(field).is_some() => text.is_empty(),
             None => return Err(VaultError::NoSuchField),
         };
         let beside = typing == Typing::Beside;

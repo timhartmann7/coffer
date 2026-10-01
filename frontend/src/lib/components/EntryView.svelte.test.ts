@@ -1550,6 +1550,22 @@ function question(): string {
 }
 
 /**
+ * A file name from another client's database can hold a right-to-left
+ * override. Bare in the question, it would turn the rest of it around - both
+ * sizes and the warning the reader has to read to choose - so each name is
+ * isolated, and the sentence after it reads as written.
+ */
+it('keeps a right-to-left override in a file name off the rest of the question', async () => {
+	const { component } = await asked({ name: 'evil\u202efdp.exe', free: 'evil\u202efdp 2.exe' });
+
+	expect(question()).toContain(
+		'This entry already has “\u2068evil\u202efdp.exe\u2069” (1.2 MB). Keep both to add the new one (840 KB) as “\u2068evil\u202efdp 2.exe\u2069”. A replaced file is not kept in Versions'
+	);
+
+	return unmount(component);
+});
+
+/**
  * Every phone calls every scan the same thing, and the second page of a
  * passport used to take the place of the first without a word. Now nothing is
  * on the entry until the reader has been asked, in sizes as well as names, and
@@ -1558,9 +1574,9 @@ function question(): string {
 it('asks before a file goes on under a name the entry already has', async () => {
 	const { component, onChanged, onFailure } = await asked();
 
-	expect(question()).toContain(`This entry already has “${SCAN}” (1.2 MB).`);
+	expect(question()).toContain(`This entry already has “\u2068${SCAN}\u2069” (1.2 MB).`);
 	expect(question()).toContain(
-		'Keep both to add the new one (840 KB) as “Scanned Document 2.pdf”.'
+		'Keep both to add the new one (840 KB) as “\u2068Scanned Document 2.pdf\u2069”.'
 	);
 	expect(question()).toContain('can’t be undone');
 
@@ -1663,7 +1679,9 @@ it('asks again without the refused answer when earlier versions hold the file', 
 	await vi.waitFor(() => expect(question()).toContain('Earlier versions are holding'));
 	flushSync();
 
-	expect(question()).toContain(`“${SCAN}” that is here in place, so it can’t be replaced.`);
+	expect(question()).toContain(
+		`“\u2068${SCAN}\u2069” that is here in place, so it can’t be replaced.`
+	);
 	expect(question()).toContain('its trash offers to clear the versions in the way');
 	expect(host.textContent).not.toContain('Right you are');
 	expect(onFailure).not.toHaveBeenCalled();
@@ -1723,7 +1741,7 @@ it('offers the name itself once the file there has gone', async () => {
 	props.entry = { ...first, attachments: [] };
 	flushSync();
 
-	expect(question()).toContain(`“${SCAN}” is no longer on this entry`);
+	expect(question()).toContain(`“\u2068${SCAN}\u2069” is no longer on this entry`);
 	const answers = [...host.querySelectorAll('[data-confirm] button')];
 	expect(answers.map((each) => each.textContent?.trim())).toEqual(['Don’t add it', 'Add it']);
 
@@ -1842,7 +1860,7 @@ it('keeps the question while the entry it is about changes', async () => {
 	props.entry = { ...first, fields: [field({ name: 'Title', value: 'Passport', empty: false })] };
 	flushSync();
 
-	expect(question()).toContain(`This entry already has “${SCAN}”`);
+	expect(question()).toContain(`This entry already has “\u2068${SCAN}\u2069”`);
 	expect(ipc.withdrawAttachment).not.toHaveBeenCalled();
 
 	return unmount(component);
@@ -2069,7 +2087,7 @@ it('writes nothing when the reader escapes out of a protected own field', async 
 	flushSync();
 	enter(changer('New value of API token'), 'half a to');
 	leave(changer('New value of API token'));
-	expect(host.textContent).toContain('Save the new value of “API token”?');
+	expect(host.textContent).toContain('Save the new value of “\u2068API token\u2069”?');
 	expect(ipc.setField).not.toHaveBeenCalled();
 
 	return unmount(component);
@@ -2323,7 +2341,7 @@ it("asks in the file's row before a file is removed", async () => {
 
 	const asked = host.querySelector('[data-confirm]');
 	expect(asked?.textContent).toContain(
-		'Remove passport.pdf (1.2 MB)? Files are not kept in Versions, so this can’t be undone.'
+		'Remove “\u2068passport.pdf\u2069” (1.2 MB)? Files are not kept in Versions, so this can’t be undone.'
 	);
 	// In the row it is about, and only there.
 	expect(asked?.closest('.bg-surface2')?.textContent).toContain('passport.pdf');
@@ -2368,7 +2386,7 @@ it('saves a copy first and leaves the question open', async () => {
 	flushSync();
 
 	expect(host.querySelector('[data-confirm]')?.textContent).toContain(
-		'Remove ../scan.pdf (2.0 KB)?'
+		'Remove “\u2068../scan.pdf\u2069” (2.0 KB)?'
 	);
 	expect(ipc.removeAttachment).not.toHaveBeenCalled();
 
@@ -2525,7 +2543,7 @@ it('asks before a removal nothing could take back, and removes only on the red a
 	await vi.waitFor(() => expect(question()).not.toBe(''));
 	flushSync();
 	expect(question()).toContain(
-		'Remove “PIN”? This vault keeps no version to bring it back from, so this can’t be undone.'
+		'Remove “\u2068PIN\u2069”? This vault keeps no version to bring it back from, so this can’t be undone.'
 	);
 	expect(ipc.removeField).toHaveBeenCalledWith(shown.id, 'PIN', false);
 	expect(onChanged).not.toHaveBeenCalled();
@@ -2700,7 +2718,7 @@ it('asks before an entry goes for good, and keeps it on the way out', () => {
 	flushSync();
 
 	expect(host.querySelector('[data-confirm]')?.textContent).toContain(
-		'Delete “Bank” forever? This can’t be undone.'
+		'Delete “\u2068Bank\u2069” forever? This can’t be undone.'
 	);
 	expect(document.activeElement).toBe(button('Keep it'));
 	expect(props.onDelete).not.toHaveBeenCalled();
@@ -2757,7 +2775,7 @@ it('drops the question about deleting an entry in the bin when another is shown'
 	const { component, props } = deleting({ fields: titled('Bank'), binned, deletion: 'forever' });
 	button('Delete forever…').click();
 	flushSync();
-	expect(host.querySelector('[data-confirm]')?.textContent).toContain('“Bank”');
+	expect(host.querySelector('[data-confirm]')?.textContent).toContain('“\u2068Bank\u2069”');
 
 	props.entry = entry({ fields: titled('Mail'), binned, deletion: 'forever' });
 	flushSync();
@@ -2795,7 +2813,7 @@ it('shows an entry in the bin read only, with the way back out on top', () => {
 	);
 
 	expect(host.querySelector('[data-binned]')?.textContent).toContain(
-		'In the Recycle Bin since 27 Aug · was in “Personal”'
+		'In the Recycle Bin since 27 Aug · was in “\u2068Personal\u2069”'
 	);
 	const writable = [...host.querySelectorAll<HTMLInputElement>('input, textarea')].filter(
 		(each) => !each.readOnly
@@ -2820,7 +2838,7 @@ it('shows an entry in the bin read only, with the way back out on top', () => {
 	button('Delete forever…').click();
 	flushSync();
 	expect(host.querySelector('[data-confirm]')?.textContent).toContain(
-		'Delete “Bank” forever? This can’t be undone.'
+		'Delete “\u2068Bank\u2069” forever? This can’t be undone.'
 	);
 	button('Delete forever').click();
 	expect(props.onDelete).toHaveBeenCalledTimes(1);
@@ -2868,7 +2886,7 @@ it('writes the name of the folder an entry came from as text', () => {
 
 	expect(host.querySelector('img')).toBeNull();
 	expect(host.querySelector('[data-binned]')?.textContent).toContain(
-		'In the Recycle Bin · was in “<img src=x onerror="alert(1)">”'
+		'In the Recycle Bin · was in “\u2068<img src=x onerror="alert(1)">\u2069”'
 	);
 
 	return unmount(component);
@@ -2887,7 +2905,9 @@ it('offers no way out of the bin on a database it cannot write', () => {
 		tree
 	);
 
-	expect(host.querySelector('[data-binned]')?.textContent).toContain('was in “Personal”');
+	expect(host.querySelector('[data-binned]')?.textContent).toContain(
+		'was in “\u2068Personal\u2069”'
+	);
 	expect(host.textContent).not.toContain('Put back');
 	expect(host.textContent).not.toContain('Delete forever');
 
