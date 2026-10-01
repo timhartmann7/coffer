@@ -31,6 +31,7 @@ mod dto;
 mod error;
 mod home;
 mod lock;
+mod menu;
 mod opener;
 mod recent;
 mod session;
@@ -51,6 +52,9 @@ use crate::session::Session;
 pub fn run() {
     let application = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Tauri draws a bar of its own for an application that names none, and
+        // that one carries Services (see `menu.rs`).
+        .menu(menu::bar)
         .setup(|app| {
             let directory = app.path().app_config_dir().ok();
             let remembered = directory.as_deref().and_then(recent::remembered);

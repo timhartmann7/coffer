@@ -95,14 +95,26 @@ it('counts in the units the text node counts in', () => {
 	expect(across([text(), 3], [text(), 4])).toEqual({ from: 3, to: 4 });
 });
 
-/** A node with nothing shown in it has nothing to count. */
-it('names nothing in a node that holds no value', () => {
+/** A node with nothing shown in it holds nothing to protect: it is every
+ * row's node while its value is hidden, and the system's copy of the chrome
+ * around it is the reader's. */
+it('leaves a node that holds no value to the system', () => {
 	node.textContent = '';
-	expect(selected()).toBeNull();
+	const copy = vi.fn();
+	const detach = sealed(copy)(node);
+	select([host.firstChild as Text, 0], [host.lastChild as Text, 3]);
+
+	for (const kind of ['copy', 'contextmenu']) {
+		const event = new MouseEvent(kind, { bubbles: true, cancelable: true });
+		node.dispatchEvent(event);
+		expect(event.defaultPrevented, kind).toBe(false);
+	}
+	detach?.();
+	expect(copy).not.toHaveBeenCalled();
 });
 
-/** What the attachment does to the system's own handling of the node, and
- * that it lets go of the node again. */
+/** What the guard does to the system's own handling of the node, and that it
+ * lets go of the document again. */
 it('takes the copy, the cut, the menu and the drag, and lets go when detached', () => {
 	const copy = vi.fn();
 	const detach = sealed(copy)(node);
@@ -127,4 +139,104 @@ it('takes the copy, the cut, the menu and the drag, and lets go when detached', 
 	node.dispatchEvent(after);
 	expect(after.defaultPrevented).toBe(false);
 	expect(copy).toHaveBeenCalledTimes(2);
+});
+
+/** The selection here starts in the label before the value and ends in the
+ * chrome after it, so every event lands on the chrome and none on the value's
+ * node. What is on the pasteboard afterwards is the value's part, from Rust,
+ * and nothing else. */
+it('takes a copy that lands on the chrome around a selected value', () => {
+	const copy = vi.fn();
+	const detach = sealed(copy)(node);
+	select([host.firstChild as Text, 2], [text(), 9]);
+
+	for (const kind of ['copy', 'cut']) {
+		const event = new ClipboardEvent(kind, { bubbles: true, cancelable: true });
+		host.dispatchEvent(event);
+		expect(event.defaultPrevented, kind).toBe(true);
+	}
+	select([host.firstChild as Text, 2], [host.lastChild as Text, 3]);
+	host.dispatchEvent(new ClipboardEvent('copy', { bubbles: true, cancelable: true }));
+	detach?.();
+	expect(copy.mock.calls).toEqual([[{ from: 0, to: 9 }], [{ from: 0, to: 9 }], [null]]);
+});
+
+/** Right-click on the label inside a selection that reaches into the value:
+ * WebKit's menu there is about the whole selection, Look Up and Share
+ * included. And a drag started on the label carries the whole selection. */
+it('draws no menu and starts no drag on chrome inside a selection that reaches a value', () => {
+	const detach = sealed(vi.fn())(node);
+	select([host.firstChild as Text, 0], [text(), 4]);
+
+	for (const kind of ['contextmenu', 'dragstart']) {
+		const event = new MouseEvent(kind, { bubbles: true, cancelable: true });
+		host.dispatchEvent(event);
+		expect(event.defaultPrevented, kind).toBe(true);
+	}
+	detach?.();
+});
+
+/** A selection that ends exactly at the value's first character covers none
+ * of it, and one elsewhere on the page has nothing to do with it: the page's
+ * own copy and menu are left alone, and Rust is not asked for anything. */
+it('leaves a selection that covers none of a value to the system', () => {
+	const copy = vi.fn();
+	const detach = sealed(copy)(node);
+
+	for (const [start, end] of [
+		[
+			[host.firstChild as Text, 0],
+			[node, 0]
+		],
+		[
+			[host.firstChild as Text, 0],
+			[host.firstChild as Text, 6]
+		],
+		[
+			[node, 1],
+			[host.lastChild as Text, 3]
+		]
+	] as [[Node, number], [Node, number]][]) {
+		select(start, end);
+		for (const kind of ['copy', 'contextmenu', 'dragstart']) {
+			const event = new MouseEvent(kind, { bubbles: true, cancelable: true });
+			host.dispatchEvent(event);
+			expect(event.defaultPrevented, kind).toBe(false);
+		}
+	}
+	detach?.();
+	expect(copy).not.toHaveBeenCalled();
+});
+
+/** Two values in one selection - a username and a password, read across the
+ * rows of an entry - are two fields, and Rust copies one field at a time. So
+ * nothing is copied at all: half of it through Rust would be a copy the reader
+ * did not make, and all of it through the system is the copy this stops. */
+it('copies nothing from a selection that reaches two values', () => {
+	const second = document.createElement('span');
+	second.textContent = 'hunter2';
+	host.append(second, ' end');
+
+	const first = vi.fn();
+	const other = vi.fn();
+	const detachFirst = sealed(first)(node);
+	const detachOther = sealed(other)(second);
+	select([text(), 20], [second.firstChild as Text, 3]);
+
+	for (const kind of ['copy', 'cut', 'contextmenu', 'dragstart']) {
+		const event = new MouseEvent(kind, { bubbles: true, cancelable: true });
+		host.dispatchEvent(event);
+		expect(event.defaultPrevented, kind).toBe(true);
+	}
+	expect(first).not.toHaveBeenCalled();
+	expect(other).not.toHaveBeenCalled();
+
+	// One value going does not take the other's guard with it.
+	detachFirst?.();
+	const copy = new ClipboardEvent('copy', { bubbles: true, cancelable: true });
+	host.dispatchEvent(copy);
+	expect(copy.defaultPrevented).toBe(true);
+	expect(other).toHaveBeenCalledWith({ from: 0, to: 3 });
+
+	detachOther?.();
 });

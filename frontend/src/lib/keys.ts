@@ -22,9 +22,9 @@ export function typing(target: EventTarget | null): boolean {
  * Whether a key is Cmd+C for Coffer rather than for the system.
  *
  * Not while the reader is writing, which is their own text. And not while
- * anything is selected: the system's copy then fires on the node holding the
- * selection, and a revealed value's node sends it to Rust itself (see
- * `guard.ts`), with the part that was selected rather than the whole field.
+ * anything is selected: the system's copy then fires, and one that reaches a
+ * revealed value is sent to Rust instead (see `guard.ts`), with the part that
+ * was selected rather than the whole field.
  *
  * A selection inside a field is reported collapsed - WebKit never exposes a
  * position inside a control's own shadow tree - so the selection test is about

@@ -2164,6 +2164,12 @@ it('draws no menu and starts no drag on a revealed value', async () => {
 
 	const nodes = [...host.querySelectorAll<HTMLElement>('[data-value]')];
 	expect(nodes).toHaveLength(4);
+	// The password's own Show is a word on a button rather than an eye.
+	for (const eye of host.querySelectorAll<HTMLButtonElement>('button'))
+		if (eye.textContent.trim() === 'Show' || eye.getAttribute('aria-label')?.startsWith('Show '))
+			eye.click();
+	await vi.waitFor(() => expect(nodes.every((node) => node.textContent === SECRET)).toBe(true));
+
 	for (const node of nodes) {
 		for (const kind of ['contextmenu', 'dragstart']) {
 			const event = new MouseEvent(kind, { bubbles: true, cancelable: true });

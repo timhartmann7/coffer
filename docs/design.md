@@ -270,6 +270,16 @@ rather than five or six, because it is asking for one, and it stays when the
 reader opens another entry: the undo is about the thing it names, not about the
 pane.
 
+**Edit ▸ Undo in the menu bar is not the notice's.** Cmd+Z reaches the page as a
+key before AppKit looks for it in the menu, so the window takes it while an offer
+stands and the focus is not in a field. The same item chosen with the pointer
+never reaches the page as a key: AppKit sends it to WebKit's own undo, which is
+about typing in fields, and the removal stays removed. Making the item the
+notice's would mean an Undo of Coffer's own in place of the system's, and that
+one would take Cmd+Z away from every field in the window. So the item stays the
+system's, the key cap on the notice names the key rather than the menu, and the
+button is how the pointer takes a removal back.
+
 **A destructive icon gets room.** The mockup's icons are sixteen pixels with
 nothing around them, and a trash twelve pixels from an export or a copy is the
 one a press meant for its neighbour lands on. Every trash that removes something

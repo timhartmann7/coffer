@@ -77,6 +77,13 @@ afterwards if you did not.
 Run these on a real machine before announcing anything. They are the pre-release
 list for the release itself; the vault's own list is in the spec.
 
+- A revealed value, selected: the Coffer menu has no Services, and Shift+Cmd+Y
+  (New Sticky Note) and every other enabled Services shortcut put nothing in
+  another application. A right-click on the label inside a selection that runs
+  into the value draws no menu, and Cmd+C there leaves only the value's part,
+  through Coffer's own copy. It is a check of the vault's, and it is written
+  here as well because the spec is not kept in the repository.
+
 - Both disk images mount, and the application inside each launches on a Mac of
   that architecture. `file Coffer.app/Contents/MacOS/Coffer` says the
   architecture you expect. Run the Intel image on an Intel Mac, not under

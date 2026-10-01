@@ -509,25 +509,46 @@ ordinary pasteboard write - no concealed type, no auto-clear, and the clipboard
 history tools keep it - its menu under the pointer offers Look Up, Translate,
 Search and Share, and a selection can be dragged into any other application.
 
-So the node a reveal writes into (`guard.ts`) cancels the system's copy and cut
-and hands them to Rust with the part that was selected: `copy` and
-`copy_version` take a `range`, two positions counted in UTF-16 code units the
-way the text node counts them, or `null` for the whole value.
-`vault_core::SecretValue::part` cuts the value in Rust and refuses a range the
-value does not have, an empty one, or one with an end between the two halves of
-a character outside the basic plane. The positions come from the selection's
-own offsets and never from its text, which would be a copy of the secret in a
-JavaScript string. The same node draws no WebKit menu and starts no drag. The
-generator's value is the one revealed value with nothing in the vault to copy
-by name, and its copy is refused with a sentence that says to put it in the
-field first.
+So `guard.ts` takes the system's copy and cut wherever they land - on the
+value's node or on chrome inside a selection that runs through the value, which
+is where a selection begun in a label lands them - and hands them to Rust with
+the part of the value that was selected, dropping the chrome around it. A
+selection that reaches two values copies nothing at all, because Rust copies one
+field at a time. `copy` and `copy_version` take a `range`, two positions counted
+in UTF-16 code units the way the text node counts them, or `null` for the whole
+value. `vault_core::SecretValue::part` cuts the value in Rust and refuses a
+range the value does not have, an empty one, or one with an end between the two
+halves of a character outside the basic plane. The positions come from the
+selection's own offsets and never from its text, which would be a copy of the
+secret in a JavaScript string. A right-click or a drag on anything inside such a
+selection draws no WebKit menu and starts no drag. The generator's value is the
+one revealed value with nothing in the vault to copy by name, and its copy is
+refused with a sentence that says to put it in the field first.
 
 `Cmd+C` follows the same rule. With the focus on the row of a protected value -
 which is where Show puts it - it copies that row's value; with nothing selected
 and the focus anywhere else, the entry's password, as the mockup has it. A
-selection is left to the system's copy, which lands on the node holding it and
-from there goes to Rust. Text the reader is typing into a field is theirs, and
+selection is left to the system's copy, which the guard sends to Rust when the
+selection reaches a value. Text the reader is typing into a field is theirs, and
 the system copies it as it copies anything typed.
+
+What the page cannot see is what the system does without asking it. The
+Services submenu is the one way in the menu bar: a service is handed the
+selection by WebKit directly, with no copy event for the guard to take, and New
+Sticky Note or a TextEdit window containing the selection keeps a revealed value
+in plain text in another application. So Coffer builds its own menu bar
+(`menu.rs`), Tauri's item for item less Services. What is still open:
+
+- A service's keyboard shortcut, such as Shift+Cmd+Y for a new sticky note, is
+  the system's and not the menu's. Whether AppKit still runs one with no
+  Services menu in the bar is on the pre-release checklist rather than assumed.
+- Look Up by a force click, or Ctrl+Cmd+D, reads the word under the pointer
+  without a menu or a copy.
+- macOS adds items of its own to an application's Edit menu - Start Dictation,
+  Emoji & Symbols and, where Apple Intelligence is on, Writing Tools - and
+  Writing Tools works on a selection. Coffer cannot take them out from here.
+- Anything the reader has granted Accessibility or Screen Recording can read
+  the screen, a revealed value included, for as long as it is shown.
 
 A version's value goes through `copy_version`, the copying twin of
 `reveal_version`, because a version is read on the screen like the entry is

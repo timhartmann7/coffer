@@ -8,8 +8,14 @@
 
 /// Everything above a file's test module. A test names the calls it is looking
 /// for, and would otherwise count itself.
+///
+/// The module and not the first `#[cfg(test)]`: a file can hold a test-only
+/// item above shipping code (`lib.rs` declares this module before `run`), and
+/// cutting there would hide everything after it from the check.
 pub fn shipped(file: &str) -> &str {
-    file.split("#[cfg(test)]").next().unwrap_or_default()
+    file.split("#[cfg(test)]\nmod tests")
+        .next()
+        .unwrap_or_default()
 }
 
 /// Every function in a file, cut at each `fn` that begins a line.
