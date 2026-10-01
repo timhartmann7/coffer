@@ -10,6 +10,7 @@ mod process;
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// The mode every file Coffer creates is born with. Never applied after the
 /// fact: a file that exists for even a moment as world-readable has already
@@ -42,6 +43,34 @@ pub(crate) fn sibling(database: &Path, suffix: &str) -> Result<PathBuf, io::Erro
 /// itself, because it is an older copy of it.
 pub fn reserved(path: &Path) -> bool {
     snapshot::slot_of(path).is_some() || unsaved::reserved(path)
+}
+
+/// A file as the disk has it at the moment it is asked about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnDisk {
+    /// Nothing at all is at the name.
+    Gone,
+    /// Something is, last written at this time when the filesystem keeps one.
+    Written(Option<SystemTime>),
+}
+
+/// How the file at `path` stands, for a sentence about what a lock left.
+///
+/// Only a name with nothing at it is gone - a link that leads nowhere is still
+/// something, because it is what an exclusive create refuses - and a file that
+/// cannot be asked about is not a file known to be gone either. The sentence
+/// this is for decides whether to offer a copy in the file's place, and an
+/// offer made over something that is there would be refused anyway.
+pub fn on_disk(path: &Path) -> OnDisk {
+    match std::fs::metadata(path) {
+        Ok(about) => OnDisk::Written(about.modified().ok()),
+        Err(error)
+            if error.kind() == io::ErrorKind::NotFound && path.symlink_metadata().is_err() =>
+        {
+            OnDisk::Gone
+        }
+        Err(_) => OnDisk::Written(None),
+    }
 }
 
 /// Flushes the directory entry itself, so that a rename survives a power cut.

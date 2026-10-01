@@ -26,7 +26,7 @@ use std::sync::Arc;
 use tauri::ipc::{InvokeBody, Request};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
-use vault_core::storage::{atomic, snapshot, unsaved};
+use vault_core::storage::{self, atomic, snapshot, unsaved};
 use zeroize::Zeroizing;
 
 use vault_core::generate::{Alphabet, Recipe};
@@ -85,6 +85,19 @@ pub fn status(app: AppHandle, session: Held<'_>) -> Status {
             .as_ref()
             .map(dto::Rescued::of),
         lost: session.lost(),
+        // Read off the disk each time as well: what a lock left behind is
+        // what the reader may have moved since.
+        file: database
+            .as_deref()
+            .map(|chosen| dto::OnDisk::of(storage::on_disk(chosen))),
+        copy: database.as_deref().and_then(|copy| {
+            let vault = unsaved::taken_from(copy)?;
+            Some(dto::CopyOf::of(
+                &vault,
+                storage::on_disk(copy),
+                storage::on_disk(&vault),
+            ))
+        }),
         typed: session.typed(),
         database: database.as_deref().map(Database::of),
         key_file: session.key_file().as_deref().map(Database::of),
@@ -428,10 +441,16 @@ pub async fn create_database(
 /// it, which is what every other way of locking does too.
 #[tauri::command(async)]
 pub fn lock(app: AppHandle) {
+    by_hand(&app);
+}
+
+/// The lock a reader's press asks for, through the timer so that the deadline
+/// it was keeping is cleared by the same message that takes the window down.
+fn by_hand(app: &AppHandle) {
     match app.try_state::<Arc<Timer>>() {
         Some(timer) => timer.post(Event::Locking(Reason::ByHand)),
         // Nothing is keeping a deadline, so there is none to clear.
-        None => lock::lock(&app, Reason::ByHand),
+        None => lock::lock(app, Reason::ByHand),
     }
 }
 
@@ -674,6 +693,54 @@ pub fn discard_rescue(session: Held<'_>) -> Result<(), Failure> {
 
     let database = session.database().ok_or_else(Failure::no_vault)?;
     unsaved::discard(&database).map_err(Failure::io)
+}
+
+/// Moves the copy a lock left into the name of a vault whose file has gone:
+/// see [`unsaved::put_back`].
+///
+/// Nothing is sent and no password is asked for. The copy is moved rather than
+/// opened, and only into a name that holds nothing, so a vault that is there -
+/// or came back since the screen was drawn - is answered with `taken` and left
+/// alone.
+#[tauri::command(async)]
+pub fn put_back_rescue(session: Held<'_>) -> Result<Database, Failure> {
+    if session.is_unlocked() {
+        return Err(Failure::lock_first());
+    }
+
+    let database = session.database().ok_or_else(Failure::no_vault)?;
+    unsaved::put_back(&database)?;
+    Ok(Database::of(&database))
+}
+
+/// Makes the open copy a lock left the vault it was taken from, with the
+/// vault's file as it stood kept as the newest snapshot: see
+/// [`Vault::promote`]. Answers with the vault, which is what is open now.
+///
+/// A save's worth of work - a key derivation and the whole file encrypted - so
+/// it happens on a thread that is allowed to block.
+#[tauri::command]
+pub async fn promote_rescue(session: Held<'_>) -> Result<Database, Failure> {
+    let session = Arc::clone(&session);
+    let vault = tauri::async_runtime::spawn_blocking(move || session.promote())
+        .await
+        .map_err(|_| Failure::internal("the copy could not be made the vault"))??;
+
+    Ok(Database::of(&vault))
+}
+
+/// Goes back from the copy a lock left to the vault it was taken from, and
+/// answers with the vault.
+///
+/// A copy that is open is locked on the way, which is how any open vault is
+/// left: what it holds is written out into the copy, its window goes, and the
+/// window that comes back asks for the vault's password. A copy that is only
+/// chosen is simply not chosen any more, and nothing is locked.
+#[tauri::command(async)]
+pub fn leave_rescue(app: AppHandle, session: Held<'_>) -> Result<Database, Failure> {
+    let vault = session.back_to_vault()?;
+    by_hand(&app);
+    Ok(Database::of(&vault))
 }
 
 /// The whole tree, as it is now. Every command that changes the shape of the
@@ -1312,14 +1379,20 @@ mod tests {
             }
         }
 
-        // The three that reach it, each of which the check above would catch
+        // The four that reach it, each of which the check above would catch
         // anyway, named so that the reason survives a rewrite of their bodies.
         // Locking wipes the tree, which takes the same mutex a save is holding
         // - and writes the vault out first, so it costs a key derivation as
-        // well. A shortened timeout that has already gone, and a stir that
-        // arrives after the time ran out, are both answered by a lock on the
-        // thread that posted them.
-        for reaching in ["pub fn lock(", "pub fn set_settings(", "pub fn stirred("] {
+        // well - and going back from an open copy to its vault is a lock. A
+        // shortened timeout that has already gone, and a stir that arrives
+        // after the time ran out, are both answered by a lock on the thread
+        // that posted them.
+        for reaching in [
+            "pub fn lock(",
+            "pub fn leave_rescue(",
+            "pub fn set_settings(",
+            "pub fn stirred(",
+        ] {
             assert!(
                 source.contains(&format!("#[tauri::command(async)]\n{reaching}")),
                 "{reaching} reaches the lock and must not be answered inline"

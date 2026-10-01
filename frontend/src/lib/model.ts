@@ -54,6 +54,13 @@ export interface Status {
 	 * could not put it anywhere at all. There is no file to point at, which is
 	 * why this is a flag and not a path. */
 	lost: boolean;
+	/** The chosen database's own file as it stands. Read off the disk each
+	 * time, because it is what a lock left and what the reader may since have
+	 * moved. */
+	file: OnDisk | null;
+	/** The vault the chosen database was copied from, when it is the copy a
+	 * lock left. */
+	copy: CopyOf | null;
 	/** Whether the last lock found text the reader was still typing and saved
 	 * it into the vault with everything else. It does not say which entry: after
 	 * a lock nothing of the vault is left to say it with. */
@@ -69,6 +76,30 @@ export interface Status {
 export interface Rescued {
 	name: string;
 	written: string | null;
+}
+
+/** A file as the disk has it now. */
+export interface OnDisk {
+	/** Whether anything at all is at the name. */
+	there: boolean;
+	/** When it was last written, when it is there and the filesystem keeps the
+	 * time. */
+	written: string | null;
+}
+
+/** The vault a chosen database was copied from, when it is the copy a lock
+ * left. Names and times only: the paths stay in Rust. */
+export interface CopyOf {
+	/** The vault's file name, which is the file the copy would go over. */
+	vault: string;
+	/** When the copy was last written. */
+	saved: string | null;
+	/** What the vault's file is called once the copy has gone over it: the
+	 * newest snapshot. */
+	keptAs: string;
+	/** The vault's file as it stands, which the copy would go over or, when it
+	 * has gone, take the name of. */
+	vaultFile: OnDisk;
 }
 
 /** A snapshot Coffer took before one of its own saves. */

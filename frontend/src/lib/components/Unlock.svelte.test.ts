@@ -11,6 +11,8 @@ const ipc = vi.hoisted(() => ({
 	chooseSnapshot: vi.fn(),
 	chooseRescue: vi.fn(),
 	discardRescue: vi.fn(),
+	putBackRescue: vi.fn(),
+	leaveRescue: vi.fn(),
 	chooseKeyFile: vi.fn(),
 	forgetKeyFile: vi.fn(),
 	asFailure: (thrown: unknown) => thrown as { code: string; message: string }
@@ -62,6 +64,18 @@ function submit(password: string) {
 
 function reads(): string {
 	return (host.textContent ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function buttons(): string[] {
+	return [...host.querySelectorAll('button')].map((each) => each.textContent?.trim() ?? '');
+}
+
+function button(label: string): HTMLButtonElement {
+	const found = [...host.querySelectorAll('button')].find(
+		(candidate) => candidate.textContent?.trim() === label
+	);
+	if (!found) throw new Error(`there is no button called ${label}`);
+	return found;
 }
 
 it('sends the password as bytes and empties the field before the answer', async () => {
@@ -444,10 +458,7 @@ it('offers the file a lock left behind, and never names it itself', async () => 
 	expect(host.textContent).toContain('Work that never reached the vault');
 	expect(host.textContent).toContain('personal.kdbx.unsaved.kdbx');
 
-	const found = [...host.querySelectorAll('button')].find(
-		(candidate) => candidate.textContent?.trim() === 'Open it'
-	);
-	found?.click();
+	button('Open the copy to look').click();
 	await vi.waitFor(() => expect(onChoose).toHaveBeenCalled());
 
 	// The window sends nothing: the path is Rust's, built from the database the
@@ -456,14 +467,17 @@ it('offers the file a lock left behind, and never names it itself', async () => 
 });
 
 /** The copy holds the only version of that work, so Coffer never removes it on
- * its own. The reader's own press does, and the offer goes with it. */
-it('takes the file away only when the reader says so', async () => {
+ * its own, and one press of the reader's does not either: it asks first, in
+ * words, with the way out first and focused. Only the answer removes it, and
+ * the offer goes with it. */
+it('takes the file away only when the reader says so, twice', async () => {
 	ipc.discardRescue.mockResolvedValue(undefined);
 	const component = mount(Unlock, {
 		target: host,
 		props: {
 			database,
 			rescue: { name: 'personal.kdbx.unsaved.kdbx', written: null },
+			file: { there: true, written: null },
 			onChoose: vi.fn(),
 			onKeyFile: vi.fn(),
 			onCreate: vi.fn(),
@@ -471,36 +485,217 @@ it('takes the file away only when the reader says so', async () => {
 		}
 	});
 	flushSync();
+
+	// A copy whose time the filesystem did not keep ends its sentence where
+	// the name does.
+	expect(reads()).toContain('put it in personal.kdbx.unsaved.kdbx. It opens');
+
+	button('Remove it…').click();
+	flushSync();
+	expect(ipc.discardRescue).not.toHaveBeenCalled();
+	expect(reads()).toContain('Remove the only copy of those changes?');
+	expect(document.activeElement?.textContent?.trim()).toBe('Keep it');
+
+	button('Keep it').click();
+	flushSync();
+	expect(ipc.discardRescue).not.toHaveBeenCalled();
+	expect(reads()).not.toContain('Remove the only copy');
+	expect(reads()).toContain('Work that never reached the vault');
+
+	button('Remove it…').click();
+	flushSync();
+	host
+		.querySelector('[data-confirm] button')
+		?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+	flushSync();
 	expect(ipc.discardRescue).not.toHaveBeenCalled();
 
-	const found = [...host.querySelectorAll('button')].find(
-		(candidate) => candidate.textContent?.trim() === 'Remove it'
-	);
-	found?.click();
+	button('Remove it…').click();
+	flushSync();
+	button('Remove').click();
 	await vi.waitFor(() => expect(host.textContent).not.toContain('Work that never reached'));
+	expect(ipc.discardRescue).toHaveBeenCalledTimes(1);
+	expect(ipc.discardRescue).toHaveBeenCalledWith();
+
+	unmount(component);
+});
+
+/** A screen with a lock's copy beside a vault whose file has gone. */
+function standingIn(onChoose = vi.fn()) {
+	const component = mount(Unlock, {
+		target: host,
+		props: {
+			database,
+			rescue: { name: 'personal.kdbx.unsaved.kdbx', written: '2026-09-01T14:05:00Z' },
+			file: { there: false, written: null },
+			onChoose,
+			onKeyFile: vi.fn(),
+			onCreate: vi.fn(),
+			onUnlocked: vi.fn()
+		}
+	});
+	flushSync();
+	return component;
+}
+
+/**
+ * The vault's file went, and the copy is all there is. Putting it back is the
+ * one thing to do, so it is the accent and nothing asks for a password that
+ * could only open nothing; the move sends nothing, because the paths are
+ * Rust's.
+ */
+it('puts the copy back in place of a vault whose file has gone', async () => {
+	const back = { path: database.path, name: database.name };
+	ipc.putBackRescue.mockResolvedValue(back);
+	const onChoose = vi.fn();
+	const component = standingIn(onChoose);
+
+	expect(reads()).toContain('Your vault file is not there any more');
+	expect(host.querySelector('form')?.hidden).toBe(true);
+	expect(button('Put this copy back as my vault').className).toContain('bg-accent');
+	expect(buttons()).not.toContain('Open the copy to look');
+
+	button('Put this copy back as my vault').click();
+	await vi.waitFor(() => expect(onChoose).toHaveBeenCalledWith(back));
+	expect(ipc.putBackRescue).toHaveBeenCalledWith();
+	expect(ipc.putBackRescue).toHaveBeenCalledTimes(1);
+
+	unmount(component);
+});
+
+/**
+ * Rust refuses the move when a file came back to the vault's name after the
+ * screen was drawn, or the copy went. Either way the screen says so in words
+ * about the move - not "there is already a file with that name", which is a
+ * sentence about making a vault - and reads the disk again, which is what the
+ * repeated choice of the same database asks the page to do.
+ */
+it('says why the copy was not put back and asks what is true now', async () => {
+	for (const [code, said] of [
+		['taken', 'A file is back where your vault was, so the copy was left where it is.'],
+		['gone', 'The copy is not there any more.'],
+		['heldByAnother', 'someone has this vault open on a-mac']
+	]) {
+		ipc.putBackRescue.mockRejectedValue({
+			code,
+			message: code === 'heldByAnother' ? 'someone has this vault open on a-mac' : 'no'
+		});
+		const onChoose = vi.fn();
+		const component = standingIn(onChoose);
+
+		button('Put this copy back as my vault').click();
+		await vi.waitFor(() => expect(reads()).toContain(said));
+		expect(onChoose).toHaveBeenCalledWith(database);
+		// A lock somebody holds on the copy is not an offer to take one over:
+		// that offer belongs to opening a vault, and nothing here opens one.
+		expect(reads()).not.toContain('Open it anyway');
+
+		unmount(component);
+	}
+});
+
+/**
+ * A vault that is there is never gone over from the unlock screen. The copy
+ * is opened to be looked at, and the password form stays, because the vault
+ * can still simply be unlocked.
+ */
+it('offers to look at the copy when the vault is still there', () => {
+	const component = mount(Unlock, {
+		target: host,
+		props: {
+			database,
+			rescue: { name: 'personal.kdbx.unsaved.kdbx', written: '2026-09-01T14:05:00Z' },
+			file: { there: true, written: '2026-09-01T14:07:00Z' },
+			onChoose: vi.fn(),
+			onKeyFile: vi.fn(),
+			onCreate: vi.fn(),
+			onUnlocked: vi.fn()
+		}
+	});
+	flushSync();
+
+	expect(buttons()).toContain('Open the copy to look');
+	expect(buttons()).not.toContain('Put this copy back as my vault');
+	expect(host.querySelector('form')?.hidden).toBe(false);
+	expect(reads()).toContain('put it in personal.kdbx.unsaved.kdbx on 1 Sep at 14:05. It opens');
+
+	unmount(component);
+});
+
+/**
+ * The unlock screen of the copy itself says what it is, and the way back to
+ * the vault is a press on it rather than a file panel. Nothing is sent: Rust
+ * reads the vault off the copy's name. The key file stays, since the copy
+ * opens with it.
+ */
+it('takes the reader from a copy back to the vault it was taken from', async () => {
+	const vault = { path: database.path, name: database.name };
+	ipc.leaveRescue.mockResolvedValue(vault);
+	const onChoose = vi.fn();
+	const onKeyFile = vi.fn();
+	const component = mount(Unlock, {
+		target: host,
+		props: {
+			database: {
+				path: '/Users/someone/personal.kdbx.unsaved.kdbx',
+				name: 'personal.kdbx.unsaved'
+			},
+			copy: {
+				vault: 'personal.kdbx',
+				saved: '2026-09-01T14:05:00Z',
+				keptAs: 'personal.kdbx.1.bak',
+				vaultFile: { there: true, written: null }
+			},
+			file: { there: true, written: null },
+			onChoose,
+			onKeyFile,
+			onCreate: vi.fn(),
+			onUnlocked: vi.fn()
+		}
+	});
+	flushSync();
+
+	expect(reads()).toContain('This is the copy a lock saved on 1 Sep at 14:05 beside personal.kdbx');
+
+	button('Back to my vault').click();
+	await vi.waitFor(() => expect(onChoose).toHaveBeenCalledWith(vault));
+	expect(ipc.leaveRescue).toHaveBeenCalledWith();
+	expect(onKeyFile).not.toHaveBeenCalled();
 
 	unmount(component);
 });
 
 /** The one case with no file to point at. It still has to be said: the reader
- * is about to unlock and find work missing. */
-it('says so when a lock could not write the changes anywhere', () => {
-	const component = mount(Unlock, {
-		target: host,
-		props: {
-			database,
-			lost: true,
-			onChoose: vi.fn(),
-			onKeyFile: vi.fn(),
-			onCreate: vi.fn(),
-			onUnlocked: vi.fn()
-		}
-	});
-	flushSync();
+ * is about to unlock and find work missing - and so does what survived, which
+ * is the vault's file as it was, or nothing at all when that has gone too. */
+it('says so when a lock could not write the changes anywhere, and what survived', () => {
+	for (const [file, said] of [
+		[
+			{ there: true, written: '2026-09-01T14:02:00Z' },
+			'Your vault file is as it was on 1 Sep at 14:02.'
+		],
+		[{ there: true, written: null }, 'Your vault file is as it was before those changes.'],
+		[{ there: false, written: null }, 'Your vault file is not where it was, either.']
+	] as const) {
+		const component = mount(Unlock, {
+			target: host,
+			props: {
+				database,
+				lost: true,
+				file,
+				onChoose: vi.fn(),
+				onKeyFile: vi.fn(),
+				onCreate: vi.fn(),
+				onUnlocked: vi.fn()
+			}
+		});
+		flushSync();
 
-	expect(host.textContent).toContain('could not write them anywhere');
+		expect(reads()).toContain('could not write them anywhere');
+		expect(reads()).toContain(said);
 
-	unmount(component);
+		unmount(component);
+	}
 });
 
 /**

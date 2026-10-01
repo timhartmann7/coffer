@@ -155,6 +155,11 @@ pub enum VaultError {
     #[error("a copy cannot be written over the database it came from")]
     CopyOntoItself,
 
+    /// Only the copy a lock left beside a vault can become that vault again,
+    /// and what was asked of is not one: its name names no vault.
+    #[error("this is not a copy a lock left beside a vault")]
+    NotACopy,
+
     /// A password with no characters to choose from is not a password.
     #[error("a password needs at least one kind of character")]
     NothingToGenerateFrom,

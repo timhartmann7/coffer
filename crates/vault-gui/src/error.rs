@@ -160,6 +160,7 @@ impl From<VaultError> for Failure {
             | VaultError::NotInRecycleBin
             | VaultError::NoSuchPart
             | VaultError::CopyOntoItself
+            | VaultError::NotACopy
             | VaultError::NothingToGenerateFrom
             | VaultError::RandomnessUnavailable => Code::Refused,
             VaultError::Io(_) => Code::Io,
@@ -222,6 +223,7 @@ mod tests {
             (VaultError::CannotMoveRoot, "refused"),
             (VaultError::NotInRecycleBin, "refused"),
             (VaultError::NoSuchPart, "refused"),
+            (VaultError::NotACopy, "refused"),
             (VaultError::NothingToGenerateFrom, "refused"),
             (VaultError::Io(io::Error::other("a disk")), "io"),
         ] {

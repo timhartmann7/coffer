@@ -220,6 +220,27 @@ export function discardRescue(): Promise<void> {
 	return invoke('discard_rescue');
 }
 
+/** Moves that copy into the vault's own name, for a vault whose file has gone.
+ * No password and nothing sent: the copy is moved rather than opened, and Rust
+ * refuses with `taken` when anything is at the vault's name. */
+export function putBackRescue(): Promise<Database> {
+	return invoke('put_back_rescue');
+}
+
+/** Makes the open copy the vault it was taken from, the vault's file as it
+ * stood kept as its newest snapshot, and answers with the vault, which is what
+ * is open now. */
+export function promoteRescue(): Promise<Database> {
+	return invoke('promote_rescue');
+}
+
+/** Goes back from the copy to the vault it was taken from, and answers with the
+ * vault. A copy that is open is locked on the way, so this window may be gone
+ * before the answer arrives. */
+export function leaveRescue(): Promise<Database> {
+	return invoke('leave_rescue');
+}
+
 /** Makes an entry in a folder and answers with the tree it changed. */
 export function createEntry(group: string): Promise<Made> {
 	return invoke('create_entry', { group });

@@ -124,6 +124,71 @@ impl Rescued {
     }
 }
 
+/// A file as the disk has it now, for the sentences that say what a lock left:
+/// what survived a lock that could write nothing, and whether a copy has a
+/// vault to go over or an empty name to go back into.
+#[derive(Serialize)]
+pub struct OnDisk {
+    /// Whether anything at all is at the name.
+    pub there: bool,
+    /// When it was last written, when it is there and the filesystem keeps the
+    /// time.
+    pub written: Option<String>,
+}
+
+impl OnDisk {
+    pub fn of(found: vault_core::storage::OnDisk) -> OnDisk {
+        match found {
+            vault_core::storage::OnDisk::Gone => OnDisk {
+                there: false,
+                written: None,
+            },
+            vault_core::storage::OnDisk::Written(written) => OnDisk {
+                there: true,
+                written: written.and_then(moment),
+            },
+        }
+    }
+}
+
+/// The vault a chosen database was copied from, when it is the copy a lock
+/// left: what the screen says about the copy and about what making it the vault
+/// would do. Names and times only; the paths stay in Rust.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyOf {
+    /// The vault's file name, which is the file the copy would go over.
+    pub vault: String,
+    /// When the copy was last written, as the filesystem has it.
+    pub saved: Option<String>,
+    /// What the vault's file is called once the copy has gone over it: the
+    /// newest snapshot.
+    pub kept_as: String,
+    /// The vault's file as it stands, which the copy would go over or, when
+    /// it has gone, take the name of.
+    pub vault_file: OnDisk,
+}
+
+impl CopyOf {
+    pub fn of(
+        vault: &std::path::Path,
+        copy: vault_core::storage::OnDisk,
+        vault_file: vault_core::storage::OnDisk,
+    ) -> CopyOf {
+        CopyOf {
+            vault: file_name(vault),
+            saved: match copy {
+                vault_core::storage::OnDisk::Written(written) => written.and_then(moment),
+                vault_core::storage::OnDisk::Gone => None,
+            },
+            kept_as: vault_core::storage::snapshot::slot(vault, 1)
+                .map(|slot| file_name(&slot))
+                .unwrap_or_default(),
+            vault_file: OnDisk::of(vault_file),
+        }
+    }
+}
+
 /// The name a file goes by on the screen.
 ///
 /// The file name and not the stem: an offer to open something has to say what
@@ -172,6 +237,13 @@ pub struct Status {
     /// could not put it anywhere at all. There is no file to point at, which is
     /// why this is a flag and not a path.
     pub lost: bool,
+    /// The chosen database's own file as it stands. Read off the disk each
+    /// time, because it is what a lock left and what the reader may since have
+    /// moved.
+    pub file: Option<OnDisk>,
+    /// The vault the chosen database was copied from, when it is the copy a
+    /// lock left.
+    pub copy: Option<CopyOf>,
     /// Whether the last lock found text the reader was still typing and saved
     /// it into the vault with everything else. Which entry is not said: after a
     /// lock nothing of the vault is left to say it with.
@@ -1051,5 +1123,47 @@ mod tests {
         ] {
             assert!(entry_id(text).is_err(), "{text:?}");
         }
+    }
+
+    /// What the screen is told about a copy and the vault it would go over is
+    /// file names and times, never a path: the paths stay in Rust, which is
+    /// where the move is made. The file it would go over is named as the
+    /// snapshot it becomes, so the sentence that promises it is Rust's rule
+    /// for snapshot names and not a second one in the window.
+    #[test]
+    fn a_copy_crosses_with_names_and_times_and_no_path() {
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_000_000);
+        let vault = std::path::Path::new("/Users/someone/Vault/work <b>.kdbx");
+
+        let copy = serde_json::to_value(CopyOf::of(
+            vault,
+            vault_core::storage::OnDisk::Written(Some(at)),
+            vault_core::storage::OnDisk::Gone,
+        ))
+        .expect("the copy serialises");
+        assert_eq!(copy["vault"], "work <b>.kdbx");
+        assert_eq!(copy["keptAs"], "work <b>.kdbx.1.bak");
+        assert_eq!(copy["saved"], "2026-09-21T14:13:20Z");
+        assert_eq!(copy["vaultFile"]["there"], false);
+        assert!(!copy.to_string().contains("/Users"), "{copy}");
+
+        let gone = serde_json::to_value(CopyOf::of(
+            vault,
+            vault_core::storage::OnDisk::Gone,
+            vault_core::storage::OnDisk::Written(Some(at)),
+        ))
+        .expect("the copy serialises");
+        assert_eq!(gone["saved"], serde_json::Value::Null);
+        assert_eq!(gone["vaultFile"]["written"], "2026-09-21T14:13:20Z");
+
+        let there = serde_json::to_value(OnDisk::of(vault_core::storage::OnDisk::Written(None)))
+            .expect("the file serialises");
+        assert_eq!(there, serde_json::json!({ "there": true, "written": null }));
+        let missing = serde_json::to_value(OnDisk::of(vault_core::storage::OnDisk::Gone))
+            .expect("the file serialises");
+        assert_eq!(
+            missing,
+            serde_json::json!({ "there": false, "written": null })
+        );
     }
 }

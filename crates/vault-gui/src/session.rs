@@ -6,11 +6,12 @@
 //! locking means dropping it: the decrypted tree, the master password and the
 //! lock file all go with it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use vault_core::kdf::Work;
 use vault_core::model::{Entry, EntryId, Project};
+use vault_core::storage::unsaved;
 use vault_core::{Attached, LockPolicy, MasterKey, Recipe, Rescue, SecretValue, Vault, VaultError};
 use zeroize::Zeroizing;
 
@@ -228,6 +229,28 @@ impl Session {
         self.use_key_file(key_file);
     }
 
+    /// Points the session back at the vault the chosen copy was taken from, and
+    /// says which that is. The path is read off the copy's name, so nothing the
+    /// window sends names it.
+    ///
+    /// A copy that is open stays open. Only what the next unlock opens changes
+    /// here: the lock that has to follow is what closes the copy, and it writes
+    /// out whatever the copy holds the way every lock does, into the copy.
+    /// Choosing another file would drop it unwritten.
+    pub fn back_to_vault(&self) -> Result<PathBuf, Failure> {
+        let mut held = self.held();
+        let chosen = held.database.clone().ok_or_else(Failure::no_vault)?;
+        let vault = unsaved::taken_from(&chosen).ok_or(VaultError::NotACopy)?;
+
+        if held.open.is_some() {
+            held.database = Some(vault.clone());
+        } else {
+            drop(held);
+            self.choose_sibling(vault.clone());
+        }
+        Ok(vault)
+    }
+
     /// Opens the chosen database.
     ///
     /// The password is consumed: it goes into the vault, which holds it for as
@@ -310,12 +333,39 @@ impl Session {
 
         // Outside the lock: nothing about it needs the vault, and a write that
         // flushes the disk has no business holding up whatever else the window
-        // is asking. A vault Coffer fails to write down is one the reader picks
-        // again next launch, which is not a reason to refuse to open it now.
-        if let Some(directory) = &self.remembering {
-            let _ = recent::remember(directory, &opened);
-        }
+        // is asking.
+        self.write_down(&opened);
         Ok(())
+    }
+
+    /// Writes a vault down for the next launch. A vault Coffer fails to write
+    /// down is one the reader picks again next launch, which is not a reason
+    /// to refuse what has just happened to it.
+    fn write_down(&self, vault: &Path) {
+        if let Some(directory) = &self.remembering {
+            let _ = recent::remember(directory, vault);
+        }
+    }
+
+    /// Makes the open copy a lock left the vault it was taken from, and leaves
+    /// the session open on that vault: see [`Vault::promote`].
+    ///
+    /// The vault opened, as far as the next launch is concerned, so it is
+    /// written down the way a vault that opened is. The key file stays: the
+    /// copy was written under the vault's credentials, and they are the same
+    /// ones now.
+    pub fn promote(&self) -> Result<PathBuf, Failure> {
+        let vault = {
+            let mut held = self.held();
+            let open = held.open.as_mut().ok_or_else(Failure::no_vault)?;
+            open.vault.promote()?;
+            let vault = open.vault.path().to_path_buf();
+            held.database = Some(vault.clone());
+            vault
+        };
+
+        self.write_down(&vault);
+        Ok(vault)
     }
 
     /// Wipes the decrypted database out of memory, and says whether there was
@@ -1444,8 +1494,25 @@ mod tests {
         assert!(
             putting
                 .iter()
-                .all(|body| body.contains("fn land(") && body.contains("recent::remember(")),
+                .all(|body| body.contains("fn land(") && body.contains("self.write_down(")),
             "the vault is put into the session somewhere that does not write it down"
+        );
+
+        // One place writes a vault down, and the door is one of its callers.
+        let remembering: Vec<String> = functions(source)
+            .into_iter()
+            .filter(|body| body.contains("recent::remember("))
+            .collect();
+        assert_eq!(
+            remembering.len(),
+            1,
+            "a vault is written down in two places"
+        );
+        assert!(
+            remembering
+                .iter()
+                .all(|body| body.contains("fn write_down(")),
+            "something other than write_down writes a vault down"
         );
 
         let opening: Vec<String> = functions(source)
@@ -2406,5 +2473,174 @@ mod tests {
             .unlock(password(SECRET), LockPolicy::TakeOver)
             .expect("a reader who said to open anyway gets in");
         assert!(session.is_unlocked());
+    }
+
+    /// A vault and the copy a lock left beside it, under the same credentials,
+    /// and the copy's path.
+    fn with_a_copy(name: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let (directory, database) = scratch(name);
+        let database = database.canonicalize().expect("the vault is there");
+        let copy = unsaved::beside(&database).expect("a sibling path");
+        std::fs::copy(&database, &copy).expect("the copy is written");
+        (directory, database, copy)
+    }
+
+    fn notes(vault: &Vault, id: EntryId) -> Option<String> {
+        vault
+            .entry(id)
+            .and_then(|entry| entry.field(fields::NOTES)?.value.open().map(str::to_owned))
+    }
+
+    /// "Make this my vault" from inside a copy of a vault that wants a key
+    /// file. The key file chosen for the vault opened the copy and still opens
+    /// the vault; the session is left open on the vault; and the vault, never
+    /// the copy, is what the next launch offers.
+    #[test]
+    fn a_copy_made_the_vault_leaves_the_session_open_on_the_vault() {
+        let (_directory, database, copy) = with_a_copy("keyfile-kdbx41.kdbx");
+        let config = tempfile::tempdir().expect("a scratch directory");
+        let session = Session::new(Some(database.clone()), Some(config.path().to_path_buf()));
+        session.use_key_file(Some(fixture("keyfile.key")));
+
+        session.choose_sibling(copy.clone());
+        assert_eq!(session.key_file(), Some(fixture("keyfile.key")));
+        session
+            .unlock(password(b"coffer-keyfile"), LockPolicy::Respect)
+            .expect("the vault's key file opens the copy");
+        assert_eq!(
+            recent::remembered(config.path()),
+            None,
+            "the copy was written down as the vault"
+        );
+
+        let id = session.tree().expect("the tree comes back").entries[0].id;
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    id,
+                    fields::NOTES,
+                    vault_core::NewValue::Open("made in the copy".to_owned()),
+                )?;
+                vault.save()
+            })
+            .expect("the session is open")
+            .expect("the copy takes the change");
+
+        assert_eq!(
+            session.promote().expect("the copy becomes the vault"),
+            database
+        );
+        assert!(session.is_unlocked());
+        assert_eq!(session.database(), Some(database.clone()));
+        assert_eq!(session.key_file(), Some(fixture("keyfile.key")));
+        assert_eq!(recent::remembered(config.path()), Some(database.clone()));
+        assert!(!copy.exists(), "the copy is still beside the vault");
+
+        // The next unlock is of the vault, with the same two halves.
+        assert!(session.lock(Reason::ByHand));
+        session
+            .unlock(password(b"coffer-keyfile"), LockPolicy::Respect)
+            .expect("the vault opens");
+        assert_eq!(
+            session
+                .with(|vault| notes(vault, id))
+                .expect("the session is open"),
+            Some("made in the copy".to_owned())
+        );
+    }
+
+    /// "Back to my vault" from inside the copy. The copy stays open until the
+    /// lock that follows, and that lock writes what the copy held into the
+    /// copy - never into the vault, whose file is left exactly as it was - and
+    /// the next unlock is of the vault.
+    #[test]
+    fn going_back_from_an_open_copy_writes_it_into_the_copy_and_asks_for_the_vault() {
+        let (_directory, database, copy) = with_a_copy(RICH);
+        let vault_bytes = std::fs::read(&database).expect("the vault reads");
+        let session = Session::new(Some(copy.clone()), None);
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the copy opens");
+
+        let id = entry_titled(&session, "basic").id;
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    id,
+                    fields::NOTES,
+                    vault_core::NewValue::Open("typed in the copy".to_owned()),
+                )
+            })
+            .expect("the session is open")
+            .expect("the note is written");
+
+        assert_eq!(
+            session.back_to_vault().expect("the copy has a vault"),
+            database
+        );
+        assert!(
+            session.is_unlocked(),
+            "the copy was dropped without its lock"
+        );
+        assert!(session.lock(Reason::ByHand));
+
+        assert_eq!(session.database(), Some(database.clone()));
+        assert_eq!(
+            std::fs::read(&database).expect("the vault reads"),
+            vault_bytes
+        );
+        let reread = Vault::open(
+            &copy,
+            MasterKey::from_password(password(SECRET)),
+            LockPolicy::Respect,
+        )
+        .expect("the copy opens");
+        assert_eq!(notes(&reread, id).as_deref(), Some("typed in the copy"));
+        drop(reread);
+
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the vault opens");
+        assert_eq!(session.database(), Some(database));
+    }
+
+    /// From the unlock screen of a copy nothing is open, so going back is only
+    /// a choice - with the key file the vault needs kept, since the copy was
+    /// opened with it.
+    #[test]
+    fn going_back_from_a_chosen_copy_keeps_the_key_file() {
+        let (_directory, database, copy) = with_a_copy("keyfile-kdbx41.kdbx");
+        let session = Session::new(Some(copy), None);
+        session.use_key_file(Some(fixture("keyfile.key")));
+
+        assert_eq!(
+            session.back_to_vault().expect("the copy has a vault"),
+            database
+        );
+        assert!(!session.is_unlocked());
+        assert_eq!(session.database(), Some(database));
+        assert_eq!(session.key_file(), Some(fixture("keyfile.key")));
+    }
+
+    /// A vault that is not a copy has no vault to go back to and none to
+    /// become: both are refused, and nothing the session holds moves.
+    #[test]
+    fn a_vault_that_is_not_a_copy_has_no_vault_to_go_back_to_or_become() {
+        let (_scratch, session) = unlocked(RICH);
+        let chosen = session.database();
+
+        assert_eq!(
+            code_of(&session.back_to_vault().expect_err("refused")),
+            "refused"
+        );
+        assert_eq!(code_of(&session.promote().expect_err("refused")), "refused");
+        assert_eq!(session.database(), chosen);
+        assert!(session.is_unlocked());
+
+        session.lock(Reason::ByHand);
+        assert_eq!(
+            code_of(&session.promote().expect_err("nothing is open")),
+            "noVault"
+        );
     }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { entry, field } from './fixtures';
-import { ago, called, day, fully, size, when } from './format';
+import { ago, at, called, day, fully, size, when } from './format';
 
 /** The suite runs with TZ pinned to UTC, so the local clock the screen writes
  * in is the same one the database keeps. */
@@ -31,6 +31,22 @@ describe('a date as the list writes it', () => {
 		expect(fully('2026-08-29T13:08:00Z', now)).toBe('today at 13:08');
 		expect(fully('2024-03-12T18:42:00Z', now)).toBe('12 Mar 2024');
 		expect(fully(null, now)).toBe('unknown');
+	});
+});
+
+describe('a moment two files are compared by', () => {
+	/** A copy and the vault it was taken from are usually hours apart on the
+	 * same day, so the minute is always there and the day is said as a day. */
+	it('always gives the minute, and the day the way a sentence says it', () => {
+		expect(at('2026-08-29T14:05:00Z', now)).toBe('today at 14:05');
+		expect(at('2026-08-28T09:07:00Z', now)).toBe('on 28 Aug at 9:07');
+		expect(at('2025-12-31T23:59:00Z', now)).toBe('on 31 Dec 2025 at 23:59');
+		expect(at('3000-01-01T00:00:00Z', now)).toBe('on 1 Jan 3000 at 0:00');
+	});
+
+	it('writes nothing for a time the filesystem did not keep', () => {
+		expect(at(null, now)).toBe('');
+		expect(at('not a date', now)).toBe('');
 	});
 });
 

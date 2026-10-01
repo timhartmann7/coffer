@@ -46,6 +46,19 @@ export function day(stamp: string | null, now: Date): string {
 }
 
 /**
+ * A moment as a sentence says it, to the minute: "today at 14:05", "on 12 Sep
+ * at 14:05", with the year for any other year. Nothing for a date that is not
+ * one. For the times of two files a reader is choosing between, where the day
+ * alone would make a copy and the vault it was taken from look the same age.
+ */
+export function at(stamp: string | null, now: Date): string {
+	const moment = parse(stamp);
+	if (!moment) return '';
+	const on = day(stamp, now);
+	return `${on === 'today' ? on : `on ${on}`} at ${time(moment)}`;
+}
+
+/**
  * How long ago, the way a row in the recycle bin says it: "today",
  * "yesterday", a count of days for the week behind, and the day itself before
  * that. A date after today is a clock somebody else set, and it is written as

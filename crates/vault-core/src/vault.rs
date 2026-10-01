@@ -1213,6 +1213,45 @@ impl Vault {
         }
     }
 
+    /// Makes this vault, opened from the copy a lock left, the vault the copy
+    /// was taken from.
+    ///
+    /// What is in it goes over the vault's file the way [`Vault::save_over`]
+    /// goes over a file somebody else wrote: the file as it stands is pushed
+    /// into the snapshots first, so what this replaces is `<vault>.1.bak` and
+    /// opens again with the same password. The copy is taken off the disk only
+    /// once the vault's file holds this; a refusal or a failure anywhere before
+    /// that leaves both files as they were, and this vault still the copy.
+    ///
+    /// From then on this is the vault: its path, the lock beside it, and every
+    /// save after this one. The copy's own lock goes with the copy.
+    pub fn promote(&mut self) -> Result<(), VaultError> {
+        let vault = unsaved::taken_from(&self.path).ok_or(VaultError::NotACopy)?;
+        self.writable()?;
+        let lock = unsaved::claim(&vault)?;
+
+        // The write is the ordinary one aimed at the vault's name, so that it
+        // proves the place will take it, snapshots what is there and records
+        // what it leaves exactly as every save does. What it records is put
+        // back if it does not go through.
+        let copy = std::mem::replace(&mut self.path, vault);
+        let agreed = (self.stamp, self.content);
+        if let Err(error) = self.write(Guard::Ignore) {
+            self.path = copy;
+            (self.stamp, self.content) = agreed;
+            return Err(error);
+        }
+
+        self._lock = Some(lock);
+        self.source = classify(&self.database, &self.path, self._lock.as_ref());
+
+        // A copy that will not go is offered again beside a vault that now
+        // holds the same thing, which loses nothing and is said on the unlock
+        // screen the next time it is drawn.
+        let _ = std::fs::remove_file(&copy);
+        Ok(())
+    }
+
     /// What the file on disk holds now.
     ///
     /// Reading it means decrypting it, which is another key derivation, so this

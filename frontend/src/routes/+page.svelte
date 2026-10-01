@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Create from '$lib/components/Create.svelte';
+	import InCopy from '$lib/components/InCopy.svelte';
 	import Settings from '$lib/components/Settings.svelte';
 	import Titlebar from '$lib/components/Titlebar.svelte';
 	import Unlock from '$lib/components/Unlock.svelte';
@@ -7,14 +8,25 @@
 	import { flush } from '$lib/drafts';
 	import {
 		chooseDatabase,
+		leaveRescue,
 		lock as lockVault,
+		promoteRescue,
 		settings as loadSettings,
 		status,
 		tree
 	} from '$lib/ipc';
 	import { Presence } from '$lib/presence';
 	import { wear } from '$lib/theme';
-	import type { Database, Found, Group, Rescued, Settings as Chosen } from '$lib/model';
+	import type {
+		CopyOf,
+		Database,
+		Found,
+		Group,
+		OnDisk,
+		Rescued,
+		Settings as Chosen,
+		Status
+	} from '$lib/model';
 
 	let database = $state<Database | null>(null);
 	/** A vault Rust found in Coffer's own folder, when nothing was remembered. */
@@ -35,6 +47,11 @@
 	let lost = $state(false);
 	/** Whether the last lock found what the reader was typing and saved it. */
 	let typed = $state(false);
+	/** The chosen file as the disk has it, which is what the sentences about
+	 * a lock's copy and about lost work are measured against. */
+	let file = $state<OnDisk | null>(null);
+	/** The vault the chosen file was copied from, when it is a lock's copy. */
+	let copy = $state<CopyOf | null>(null);
 
 	/** The throttle on telling Rust that somebody is at the machine. */
 	const presence = new Presence();
@@ -54,9 +71,7 @@
 				found = opening.found;
 				keyFile = opening.keyFile;
 				reason = opening.lockedBy;
-				rescue = opening.rescue;
-				lost = opening.lost;
-				typed = opening.typed;
+				heard(opening);
 				chosen = await loadSettings();
 				if (opening.unlocked) await opened();
 			} finally {
@@ -82,9 +97,48 @@
 		database = now.database;
 		readOnly = now.readOnly;
 		reason = null;
-		rescue = now.rescue;
-		lost = now.lost;
-		typed = now.typed;
+		heard(now);
+	}
+
+	/** What Rust says about the files beside the vault, which every reading of
+	 * the status brings. */
+	function heard(now: Status | null) {
+		rescue = now?.rescue ?? null;
+		lost = now?.lost ?? false;
+		typed = now?.typed ?? false;
+		file = now?.file ?? null;
+		copy = now?.copy ?? null;
+	}
+
+	/**
+	 * Makes the open copy the vault it was taken from. The session stays open,
+	 * now on the vault, so the window reads again what is true of it: its name,
+	 * whether it can be written, and that it is no copy.
+	 *
+	 * Every value already on its way to Rust is waited for first, so that the
+	 * file that goes over the vault holds every field the reader has left.
+	 * What is still being typed stays with the session, which is now the
+	 * vault's, and the next lock writes it there.
+	 */
+	async function promote() {
+		await flush();
+		database = await promoteRescue();
+		const now = await status();
+		readOnly = now.readOnly;
+		heard(now);
+	}
+
+	/**
+	 * Goes back from the copy to its vault. With the copy open that is a lock,
+	 * which takes this window with it, so the screen is only cleared once Rust
+	 * has answered - the same order the Lock button keeps, for the same reason.
+	 */
+	async function back() {
+		await flush();
+		database = await leaveRescue();
+		root = null;
+		showing = 'vault';
+		await chosen_elsewhere();
 	}
 
 	/**
@@ -151,10 +205,7 @@
 	 * wrong one. Only Rust knows whether the new one has a copy beside it.
 	 */
 	async function chosen_elsewhere() {
-		const now = await status().catch(() => null);
-		rescue = now?.rescue ?? null;
-		lost = now?.lost ?? false;
-		typed = now?.typed ?? false;
+		heard(await status().catch(() => null));
 	}
 </script>
 
@@ -205,6 +256,9 @@
 			onOpen={(picked) => void pointAt(picked)}
 		/>
 	{:else if root && database}
+		{#if copy}
+			<InCopy {copy} onPromote={promote} onBack={back} />
+		{/if}
 		<!-- An open vault keeps the screen, and the settings go over it. There is
 		     one way in and out of them while a vault is open, it is in the status
 		     bar, and it does not move when it is pressed. -->
@@ -228,6 +282,8 @@
 			{reason}
 			{rescue}
 			{lost}
+			{file}
+			{copy}
 			{typed}
 			onChoose={(picked) => {
 				database = picked;

@@ -485,6 +485,39 @@ Neither reaches an Objective-C allocation or another process. The pasteboard is
 both, which is why a copied secret is taken back on a timer rather than trusted
 to a wipe.
 
+## The copy a lock leaves, and putting it back
+
+[`storage/unsaved.rs`](../crates/vault-core/src/storage/unsaved.rs) is the whole
+life of the copy `Vault::rescue` writes: where it goes, whether one is there,
+removing it, and the two ways it becomes the vault again. Which vault a copy
+belongs to is read off its name by `unsaved::taken_from` and recorded nowhere
+else - not inside it, where it would be a field no other client knows, and not
+in a file beside it that could disagree with the name.
+
+**Putting a copy back is a copy into a taken name, not a rename.** `rename`
+replaces whatever is at the target, and the whole point of `unsaved::put_back`
+is that it never does: it runs only for a vault whose file has gone, and without
+a password. So the vault's name is taken with `atomic::reserve`, the copy's
+bytes go through the staged writer into it, and the copy is removed only after
+the commit. A file that arrived at the name first is `DatabaseExists`, a copy
+that is not there leaves nothing at the name, and a process killed part way
+leaves the copy where it was. The lock files beside both names are taken for as
+long as it runs, with `unsaved::claim`, which is stricter than opening: a lock
+somebody else holds is a refusal, not an offer to take it over.
+
+**Making a copy the vault is an ordinary save aimed at another name.**
+`Vault::promote` points the vault at the name `taken_from` gives, takes the lock
+beside it, and runs the same write `save_over` runs, so the place is proved
+writable, what is there becomes `<vault>.1.bak`, and the stamp is recorded as
+for any save. If that write is refused or fails, the path and the stamp are put
+back and the vault is still the copy; only once it went through does the vault
+keep the new lock, drop the copy's, and remove the copy.
+
+**Whether a file is there is its own question.** `storage::on_disk` answers it
+for the screen - gone only when nothing at all is at the name, and a link that
+leads nowhere is still something - and it is only ever advice. The two moves above ask the disk again,
+with the exclusive create and with the write's own check.
+
 ## Making a vault, and what a second of work costs
 
 [`kdf.rs`](../crates/vault-core/src/kdf.rs) measures rather than assumes. Coffer

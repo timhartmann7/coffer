@@ -300,6 +300,54 @@ is free.
 `~/Coffer/vault.kdbx` rather than the whole path, which is how the mockup draws
 a place (`~/Vault`), and the sentence about a taken place names it the same way.
 
+## Work a lock could not save
+
+The mockup draws no lock at all, so nothing of what one leaves behind. The
+unlock screen already had a card for the copy a lock writes beside the vault -
+`surface2` behind a hairline, `rounded-sm`, the warn icon and a heading in
+`body` - and everything below is that card, the question box, and the
+mockup's own warning plane.
+
+**The card offers one way back, and which one depends on the vault's file.**
+While the file is there, the card's call is "Open the copy to look" in the
+bordered `h-9` pill, because the vault itself can still simply be unlocked and
+the accent stays on Unlock. When the file has gone, there is nothing to unlock:
+the password field is not drawn, the sentence says the file is not there any
+more, and "Put this copy back as my vault" is the accent pill at `h-9`, the way
+"Put back" is in the recycle bin's card - on this screen it is the one call
+there is. A move that is refused is said under the card in `small` and
+`danger`, in words about the move.
+
+**Removing the copy asks.** "Remove it…" is the plain `txt3` pill that takes
+`dangerwash` and `danger` under the pointer, like "Delete forever…", and it
+opens the question in the card, under a hairline: "Remove the only copy of those
+changes?", with "Keep it" first and focused and "Remove" last in red.
+
+**A lock that could write nothing says what survived.** Under the red line, in
+the same `small` and centred, in `txt2`: "Your vault file is as it was today at
+14:02.", or that it is not where it was either. Times of files a reader is
+comparing are always said to the minute.
+
+**The copy's own unlock screen says what it is.** The same card, headed "A
+copy, not your vault", with when the lock saved it and the vault's file name in
+mono, and "Back to my vault" in the bordered pill. Before, only the file panel
+led back.
+
+**An open copy says so across the top of the window.** A strip under the title
+bar, the full width of the window, on the mockup's warning plane - `warnwash`
+behind a `warn/35` hairline at its foot, the plane the creation screen's
+password warning is drawn on - with the warn icon. The first line, in `small`
+and `txt`, says it is the copy and when it was saved, and that what is changed
+here changes the copy and not the vault. The second, in `fine` and `txt2`, says
+what "Make this my vault" does to the vault's file: which file it goes over,
+when that file last changed - which is how a reader sees that somebody wrote it
+after the copy was made - and the snapshot name it is kept under, file names in
+mono. At the end, "Back to my vault" in the bordered `h-9` pill and "Make this
+my vault" in the accent pill, which is what the copy was opened to decide; while
+it writes, it takes the Unlock button's busy look and reads "Making it your
+vault…". A refusal is said under the second line in `danger`. The strip is not
+part of the panes, so the settings do not cover it.
+
 ## The settings, and the way in and out of them
 
 The mockup draws the settings as a whole window with a title bar of their own and

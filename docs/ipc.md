@@ -36,7 +36,7 @@ is still a password; `empty` says whether there is one to ask for.
 
 | Command | Takes | Answers |
 |---|---|---|
-| `status` | | the chosen database, whether it is open, how many entries, whether it can be written, why it locked, whether that lock saved something being typed, the unsaved copy sitting beside it, and - when nothing is remembered - a vault found in Coffer's own folder |
+| `status` | | the chosen database, whether it is open, how many entries, whether it can be written, why it locked, whether that lock saved something being typed, the unsaved copy sitting beside it, the chosen file as it stands on disk, the vault it was copied from when it is a lock's copy, and - when nothing is remembered - a vault found in Coffer's own folder |
 | `choose_database` | | the database the user picked, or nothing if they closed the dialog |
 | `choose_found` | | the vault found in Coffer's own folder, now chosen |
 | `unlock` | the master password, as the raw body | nothing |
@@ -50,6 +50,9 @@ is still a password; `empty` says whether there is one to ask for.
 | `choose_snapshot` | `index` | the snapshot now chosen |
 | `choose_rescue` | | the unsaved copy now chosen |
 | `discard_rescue` | | |
+| `put_back_rescue` | | the vault, now at its own name again |
+| `promote_rescue` | | the vault, which is what is open now |
+| `leave_rescue` | | the vault the chosen copy was taken from, now chosen |
 
 Everything slice 3 added:
 
@@ -678,7 +681,58 @@ out with the rest. The ordinary save is tried first; what it will not take goes 
 `<database>.unsaved.kdbx` beside the vault, under the same credentials. The lock
 happens either way, and `status` reports the copy as `rescue` and a rescue that
 could not be written anywhere as `lost`. The copy stays until the reader removes
-it through `discard_rescue`; Coffer never removes it on its own.
+it through `discard_rescue` or makes it the vault again; Coffer never removes it
+on its own.
+
+**The copy becomes the vault again in one of two ways, and the paths are Rust's
+in both.** Which vault a copy belongs to is read off its name - the vault's
+file name with `.unsaved.kdbx` after it - and nothing else records it. `status`
+answers `file`, the chosen file as the disk has it (`there`, and `written` when
+the filesystem keeps a time), and, when the chosen file is a lock's copy,
+`copy`: the vault's file name, when the copy was written, the name the vault's
+file will be kept under (`keptAs`, the newest snapshot's), and `vaultFile`, the
+vault's own file as it stands. Names and times; no path crosses.
+
+- **The vault's file has gone.** `put_back_rescue` moves the copy into the
+  vault's name without a password, because nothing is opened. The name is taken
+  with an exclusive create before a byte moves, so a file that arrives while it
+  runs - the vault dragged back from the Trash, a sync client catching up - is
+  never written over and the answer is `taken`; the copy is removed only once
+  the vault's name holds all of it, and the vault is born owner-only. A copy
+  that has gone answers `gone` and leaves nothing at the vault's name.
+- **The vault's file is there.** The copy is opened to be looked at, with
+  `choose_rescue` and the vault's password, and the key file chosen for the vault
+  goes with it. Everything changed inside it changes the copy, and the window says
+  so across the top. `promote_rescue` writes what is open over the vault's file
+  the way `save_over` does - the file as it stands becomes `<vault>.1.bak` first -
+  removes the copy only after that write went through, and leaves the session
+  open on the vault, which is then the vault written down for the next launch. A
+  refusal or a failure before the write lands leaves both files as they were,
+  and the copy still open. `leave_rescue` goes back instead: with the copy open
+  it points the next unlock at the vault and locks, so what the copy holds is
+  written into the copy on the way out, and the window that comes back asks for
+  the vault's password; with nothing open it only points the unlock screen
+  back, key file and all.
+
+Both moves hold the lock file beside the vault's name and the one beside the
+copy while they run, and refuse with `heldByAnother` when somebody else holds
+either. A move leaves no note behind: the copy's goes with the copy, and the
+vault's stays only while the vault is open, like any vault's. Both answer
+`readOnly` where the folder will not take one.
+
+A password-free move over a vault that is there is deliberately not offered,
+even when the vault's modification time is older than the copy. The usual reason
+a lock needed a copy is that another client had already rewritten the vault,
+before the copy was made, and a rule by time would quietly push that client's
+work into a snapshot. Every other way a lock writes a copy while the vault's
+file is unchanged - the file made read only, a snapshot slot that would not
+rotate, a disk that failed the write - is the vault's file refusing a write,
+and a move that stepped round it would step round the very check that refused.
+The copy is opened and looked at first, and the write that replaces the vault is
+the ordinary one, with its snapshot behind it.
+
+When a lock could write nothing at all, `lost` is said with what survived: the
+chosen file's `written`, or that it has gone as well.
 
 **A vault kept in a place that will not take a file opens read only.** A vault
 on a read-only disk image, inside a Time Machine snapshot, on a stick macOS

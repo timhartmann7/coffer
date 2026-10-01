@@ -8,12 +8,15 @@
 		chooseSnapshot,
 		discardRescue,
 		forgetKeyFile,
+		leaveRescue,
+		putBackRescue,
 		snapshots,
 		unlock,
 		unlockTakingOver
 	} from '$lib/ipc';
-	import { fully } from '$lib/format';
-	import type { Database, Failure, Found, Rescued, Snapshot } from '$lib/model';
+	import { at, fully } from '$lib/format';
+	import type { CopyOf, Database, Failure, Found, OnDisk, Rescued, Snapshot } from '$lib/model';
+	import Confirm from './Confirm.svelte';
 	import Icon from './Icon.svelte';
 	import Mark from './Mark.svelte';
 
@@ -24,6 +27,8 @@
 		reason = null,
 		rescue = null,
 		lost = false,
+		file = null,
+		copy = null,
 		typed = false,
 		onChoose,
 		onKeyFile,
@@ -59,6 +64,15 @@
 		rescue?: Rescued | null;
 		/** Whether the last lock had work to write and nowhere to put it. */
 		lost?: boolean;
+		/**
+		 * The chosen file as the disk has it: what survived a lock that could
+		 * write nothing, and whether the copy a lock left beside it has a vault
+		 * to go over or only an empty name to go back into.
+		 */
+		file?: OnDisk | null;
+		/** The vault the chosen file was copied from, when the chosen file is
+		 * the copy a lock left. */
+		copy?: CopyOf | null;
 		/**
 		 * Whether the last lock found text the reader was still typing and saved
 		 * it into the vault. Only whether: after a lock nothing of the vault is
@@ -122,6 +136,57 @@
 	 * rather than by reading it again. */
 	let dropped = $state(false);
 
+	/** Whether the reader pressed Remove and is being asked whether they mean
+	 * it: the copy holds the only copy of those changes. */
+	let removing = $state(false);
+
+	/** When the copy beside the vault was written, when the filesystem kept
+	 * that. */
+	const kept = $derived(rescue ? at(rescue.written, new Date()) : '');
+
+	/** Why the copy could not be put back, when it could not. */
+	let unmoved = $state<string | null>(null);
+
+	/**
+	 * The copy stands in for a vault whose file has gone.
+	 *
+	 * There is nothing to unlock, so the password is not asked for, and the
+	 * copy goes back into the vault's name without one: nothing is opened. A
+	 * vault that is there is never gone over from here - the copy is opened
+	 * and looked at first, and only from inside it does it become the vault.
+	 */
+	const standIn = $derived(rescue !== null && !dropped && file?.there === false);
+
+	/** What survived a lock that could write nothing: the vault's file, as it
+	 * was before the changes that were lost. */
+	const survived = $derived.by(() => {
+		if (!file) return null;
+		if (!file.there) return 'Your vault file is not where it was, either.';
+		const when = at(file.written, new Date());
+		return when
+			? `Your vault file is as it was ${when}.`
+			: 'Your vault file is as it was before those changes.';
+	});
+
+	/** The start of the sentence that says the chosen file is a copy, with
+	 * when it was written when the filesystem kept that. */
+	const copied = $derived.by(() => {
+		const when = copy ? at(copy.saved, new Date()) : '';
+		return when
+			? `This is the copy a lock saved ${when} beside`
+			: 'This is the copy a lock saved beside';
+	});
+
+	/**
+	 * What a move that did not go says, in words about the move. The codes are
+	 * the ones every command shares, and "there is already a file with that
+	 * name" is a sentence about making a vault.
+	 */
+	const unmovedBecause: Record<string, string> = {
+		taken: 'A file is back where your vault was, so the copy was left where it is.',
+		gone: 'The copy is not there any more.'
+	};
+
 	async function submit(event: SubmitEvent) {
 		event.preventDefault();
 		if (busy || !database || !field) return;
@@ -179,12 +244,49 @@
 		}
 	}
 
-	/** Takes the copy away, once the reader says they are done with it. */
+	/** Takes the copy away, once the reader has answered the question about
+	 * it: it holds the only copy of those changes. */
 	async function dropRescue() {
+		removing = false;
 		if (busy) return;
 		try {
 			await discardRescue();
 			dropped = true;
+		} catch (thrown) {
+			failure = asFailure(thrown);
+		}
+	}
+
+	/**
+	 * Moves the copy into the name of a vault whose file has gone. Nothing is
+	 * sent: Rust moves it, and only into a name that holds nothing.
+	 *
+	 * Whatever stood in the way - a vault that came back, a copy that went -
+	 * is a fact about the disk, so the offer is read again from there, and the
+	 * screen says what it found rather than repeating what it believed.
+	 */
+	async function putBack() {
+		if (busy || !database) return;
+		const chosen = database;
+		busy = true;
+		unmoved = null;
+		try {
+			chose(await putBackRescue(), true);
+		} catch (thrown) {
+			const refused = asFailure(thrown);
+			unmoved = unmovedBecause[refused.code] ?? refused.message;
+			onChoose(chosen);
+		} finally {
+			busy = false;
+		}
+	}
+
+	/** Points the screen back at the vault the chosen copy was taken from.
+	 * Nothing is sent: Rust reads the vault off the copy's name. */
+	async function backToVault() {
+		if (busy) return;
+		try {
+			chose(await leaveRescue(), true);
 		} catch (thrown) {
 			failure = asFailure(thrown);
 		}
@@ -236,10 +338,11 @@
 	/**
 	 * Points the screen at another file.
 	 *
-	 * `sameVault` is true for a snapshot, which is a copy of the vault that was
-	 * already chosen and opens with the same credentials. Rust keeps the key file
-	 * for one of those and forgets it for anything else, and this has to say the
-	 * same thing: a screen that showed no key file while Rust was still using one
+	 * `sameVault` is true for a snapshot or the copy a lock left, each a copy of
+	 * the vault that was already chosen, and for the vault a copy was taken
+	 * from: all of them open with the same credentials. Rust keeps the key file
+	 * for those and forgets it for anything else, and this has to say the same
+	 * thing: a screen that showed no key file while Rust was still using one
 	 * would be a screen nobody could reason about.
 	 *
 	 * A lock somebody said to take over is this file's lock and nothing else's,
@@ -249,6 +352,8 @@
 		onChoose(picked);
 		failure = null;
 		snapshot = null;
+		unmoved = null;
+		removing = false;
 		takingOver = false;
 		if (!sameVault) onKeyFile(null);
 		field?.focus();
@@ -288,6 +393,14 @@
 			<p class="mx-auto mt-6 max-w-[38ch] text-center text-small leading-relaxed text-danger">
 				There were changes the vault had not taken, and Coffer could not write them anywhere.
 			</p>
+			<!-- What is left is as much the news as what is not, and the reader's
+			     next question: whether the vault they are about to open is the
+			     one they last saw. -->
+			{#if survived}
+				<p class="mx-auto mt-2 max-w-[38ch] text-center text-small leading-relaxed text-txt2">
+					{survived}
+				</p>
+			{/if}
 		{/if}
 
 		{#if rescue && !dropped}
@@ -298,29 +411,87 @@
 				</div>
 				<p class="mt-2 text-fine leading-relaxed text-txt2">
 					A lock could not save it, so Coffer put it in
-					<span class="font-mono text-txt">{rescue.name}</span>
-					{#if rescue.written}{fully(rescue.written, new Date())}{/if}. It opens with the same
-					password. It is a file of its own: copy what you need back into your vault, then remove
-					it.
+					<span class="font-mono text-txt">{rescue.name}</span>{kept ? ` ${kept}` : ''}.
+					{#if standIn}
+						Your vault file is not there any more, so the copy can go back in its place with nothing
+						to type.
+					{:else}
+						It opens with the same password, and inside it you can make it your vault or come back
+						to this one.
+					{/if}
 				</p>
-				<div class="mt-4 flex gap-2">
-					<button
-						type="button"
-						onclick={openRescue}
-						disabled={busy}
-						class="h-9 rounded-full border border-hairline px-4 text-small text-txt transition-colors hover:border-txt3 active:bg-surface2 disabled:cursor-not-allowed"
-					>
-						Open it
-					</button>
-					<button
-						type="button"
-						onclick={dropRescue}
-						disabled={busy}
-						class="h-9 rounded-full px-4 text-small text-txt3 transition-colors hover:text-txt disabled:cursor-not-allowed"
-					>
-						Remove it
-					</button>
+				{#if removing}
+					<Confirm
+						bare
+						class="mt-4 border-t border-hairline pt-3"
+						question="Remove the only copy of those changes?"
+						act="Remove"
+						onKeep={() => (removing = false)}
+						onAct={dropRescue}
+					/>
+				{:else}
+					<div class="mt-4 flex flex-wrap gap-2">
+						<!-- The one call this card makes is the accent only when there is
+						     no vault to unlock instead: then it is the screen's call. -->
+						{#if standIn}
+							<button
+								type="button"
+								onclick={putBack}
+								disabled={busy}
+								class="h-9 rounded-full bg-accent px-4 text-small font-medium text-canvas transition-colors hover:bg-accenthi active:bg-accenthi disabled:cursor-not-allowed"
+							>
+								Put this copy back as my vault
+							</button>
+						{:else}
+							<button
+								type="button"
+								onclick={openRescue}
+								disabled={busy}
+								class="h-9 rounded-full border border-hairline px-4 text-small text-txt transition-colors hover:border-txt3 active:bg-surface2 disabled:cursor-not-allowed"
+							>
+								Open the copy to look
+							</button>
+						{/if}
+						<button
+							type="button"
+							onclick={() => (removing = true)}
+							disabled={busy}
+							class="h-9 rounded-full px-3 text-small text-txt3 transition-colors hover:bg-dangerwash hover:text-danger disabled:cursor-not-allowed"
+						>
+							Remove it…
+						</button>
+					</div>
+				{/if}
+			</div>
+		{/if}
+
+		{#if unmoved}
+			<p class="mx-auto mt-3 max-w-[38ch] text-center text-small leading-relaxed text-danger">
+				{unmoved}
+			</p>
+		{/if}
+
+		<!-- The chosen file is a copy, and the unlock screen is where a reader
+		     who opened it to look finds their way back: before this, only a file
+		     panel pointed at the vault again. -->
+		{#if copy}
+			<div class="mt-6 rounded-sm border border-hairline bg-surface2 px-4 py-4">
+				<div class="flex items-center gap-2">
+					<Icon name="warn" class="h-4 w-4 shrink-0 text-warn" />
+					<span class="text-body text-txt">A copy, not your vault</span>
 				</div>
+				<p class="mt-2 text-fine leading-relaxed text-txt2">
+					{copied}
+					<span class="font-mono text-txt">{copy.vault}</span>. It opens with the same password.
+				</p>
+				<button
+					type="button"
+					onclick={backToVault}
+					disabled={busy}
+					class="mt-4 h-9 rounded-full border border-hairline px-4 text-small text-txt transition-colors hover:border-txt3 active:bg-surface2 disabled:cursor-not-allowed"
+				>
+					Back to my vault
+				</button>
 			</div>
 		{/if}
 
@@ -339,7 +510,9 @@
 				<Icon name="chev-d" class="h-4 w-4 shrink-0 text-txt4" />
 			</button>
 
-			<form onsubmit={submit}>
+			<!-- Nothing to unlock while the copy stands in for a vault whose file
+			     has gone: the card above is the whole of what can happen next. -->
+			<form onsubmit={submit} hidden={standIn}>
 				<label class="mt-4 block">
 					<span class="mb-2 block font-mono text-label tracking-label text-txt3 uppercase">
 						Vault password
