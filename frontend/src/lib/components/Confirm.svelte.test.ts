@@ -176,3 +176,43 @@ it('is labelled by its own question', () => {
 
 	return unmount(component);
 });
+
+/**
+ * A question raised by the focus leaving something leaves the focus where the
+ * reader put it: taken back, the next key they meant for the field they had
+ * just clicked into would land on an answer instead. Its answers still work,
+ * and a question with nothing destructive to offer has no red one.
+ */
+it('leaves the focus alone when the question comes from the focus leaving', () => {
+	const elsewhere = document.createElement('input');
+	document.body.appendChild(elsewhere);
+	elsewhere.focus();
+	try {
+		const onKeep = vi.fn();
+		const saved = vi.fn();
+		const component = mount(Confirm, {
+			target: host,
+			props: {
+				question: 'Save the new password?',
+				keep: 'Discard',
+				neutral: { label: 'Save', run: saved },
+				focus: 'none',
+				onKeep
+			}
+		});
+		flushSync();
+
+		expect(document.activeElement).toBe(elsewhere);
+		expect(buttons().map((each) => each.textContent?.trim())).toEqual(['Discard', 'Save']);
+		expect(host.querySelector('.text-danger')).toBeNull();
+
+		button('Save').click();
+		expect(saved).toHaveBeenCalledTimes(1);
+		button('Discard').click();
+		expect(onKeep).toHaveBeenCalledTimes(1);
+
+		unmount(component);
+	} finally {
+		elsewhere.remove();
+	}
+});

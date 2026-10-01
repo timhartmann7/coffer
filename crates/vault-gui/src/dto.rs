@@ -70,6 +70,16 @@ impl Serialize for Revealed {
     }
 }
 
+/// The part of a value a reader selected on the screen, from one position to
+/// another, counted the way the text node showing it counts: in UTF-16 code
+/// units. Two numbers and nothing of the value; whether they name a part of it
+/// at all is [`vault_core::SecretValue::part`]'s to say.
+#[derive(Deserialize, Clone, Copy)]
+pub struct Span {
+    pub from: usize,
+    pub to: usize,
+}
+
 /// The entry an id names, or nothing at all. An id that does not parse is not
 /// an entry Coffer has, which is the same answer as an id that parses and names
 /// nothing.

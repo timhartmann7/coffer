@@ -19,6 +19,7 @@ import type {
 	Rival,
 	Settings,
 	Snapshot,
+	Span,
 	Status,
 	Target,
 	Version
@@ -182,11 +183,12 @@ export function reveal(entry: string, field: string): Promise<string> {
 }
 
 /**
- * Copies a field to the clipboard without the value passing through here.
- * Answers with the number of seconds until Coffer takes it off again.
+ * Copies a field to the clipboard without the value passing through here, or
+ * the part of it a reader selected on the screen. Answers with the number of
+ * seconds until Coffer takes it off again.
  */
-export function copy(entry: string, field: string): Promise<number> {
-	return invoke('copy', { entry, field });
+export function copy(entry: string, field: string, range: Span | null = null): Promise<number> {
+	return invoke('copy', { entry, field, range });
 }
 
 /** Opens an entry's address, if Coffer opens addresses of that kind. */
@@ -344,6 +346,17 @@ export function version(entry: string, index: number): Promise<Entry> {
 /** One field of one version, once - the same terms as a reveal. */
 export function revealVersion(entry: string, index: number, field: string): Promise<string> {
 	return invoke('reveal_version', { entry, index, field });
+}
+
+/** Copies one field of one version, or the part of it a reader selected - the
+ * same terms as a copy. */
+export function copyVersion(
+	entry: string,
+	index: number,
+	field: string,
+	range: Span | null
+): Promise<number> {
+	return invoke('copy_version', { entry, index, field, range });
 }
 
 export function restoreVersion(entry: string, index: number): Promise<Entry> {

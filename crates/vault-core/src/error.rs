@@ -135,6 +135,12 @@ pub enum VaultError {
     #[error("that entry has no such field")]
     NoSuchField,
 
+    /// Part of a value was asked for that the value does not have: an empty
+    /// or backwards range, an end past the last character, or an end between
+    /// the two halves of a character outside the basic plane.
+    #[error("that part of the value is not there")]
+    NoSuchPart,
+
     /// The file offered is larger than Coffer will put into a database.
     #[error("that file is too large to keep in a vault")]
     AttachmentTooLarge,

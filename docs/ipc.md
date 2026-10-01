@@ -21,7 +21,7 @@ travels the other way, as bytes.
 | Open an entry | the same, plus every field's name, kind and whether it is empty, plus attachment names and sizes, plus what deleting it would do |
 | Reveal a field | the value, one field, once |
 | Read a previous version | the same as an entry, and one value at a time on a reveal |
-| Copy a field | nothing; Rust writes the pasteboard |
+| Copy a field, or the part of it selected on the screen | nothing; Rust writes the pasteboard |
 | Open an address | nothing; Rust hands the URL to the system |
 | Add a file | nothing; Rust opens the panel and reads the file |
 | Write a file out | nothing; Rust opens the panel and writes it |
@@ -44,7 +44,7 @@ is still a password; `empty` says whether there is one to ask for.
 | `tree` | | the root group, its sections and their entry rows |
 | `entry` | `id` | one entry's fields, attachments, tags, dates and version count |
 | `reveal` | `entry`, `field` | the value of that field |
-| `copy` | `entry`, `field` | the seconds until Coffer clears the pasteboard |
+| `copy` | `entry`, `field`, `range` | the seconds until Coffer clears the pasteboard |
 | `open_url` | `entry` | nothing |
 | `snapshots` | | the `.bak` files beside the chosen database, newest first |
 | `choose_snapshot` | `index` | the snapshot now chosen |
@@ -76,6 +76,7 @@ Everything slice 3 added:
 | `versions` | `entry` | the previous versions, oldest first |
 | `version` | `entry`, `index` | one version, read like an entry |
 | `reveal_version` | `entry`, `index`, `field` | the value of that field in that version |
+| `copy_version` | `entry`, `index`, `field`, `range` | the seconds until Coffer clears the pasteboard |
 | `restore_version` | `entry`, `index` | the entry |
 | `before_removal` | `entry`, `field` | the version that puts back a field the entry just lost, or nothing |
 | `delete_version` | `entry`, `index` | the versions that are left |
@@ -353,9 +354,11 @@ A rejected command rejects with that object and not with an `Error`, so
 A field the reader is editing crosses as ordinary JSON, and the master password
 does not. The difference is not carelessness, it is what the two values are.
 
-A password being edited is in the window already: it is the `value` of an input
-element the reader is typing into, which is a JavaScript string by construction,
-and no shape of message changes that. The master password is different in one
+A password being changed is in the window already: it is the `value` of the
+field the reader is typing the new one into, which is a JavaScript string by
+construction, and no shape of message changes that. It is the reader's own,
+typed by them; a value Coffer revealed is never in a field anything can type
+into. The master password is different in one
 way that matters - it is never displayed, never edited in place, and it opens
 everything - so it is worth the machinery of a raw body, and `unlock` is the
 only command that gets it.
@@ -366,6 +369,39 @@ protects **leaves** the vault only through `reveal`, `reveal_version` or
 `set_field` carries `protect`, which the screen read off the field it is
 editing, so a value the database keeps protected goes back protected rather than
 being written into the file as plain text.
+
+## A value selected on the screen
+
+A revealed value is text a reader can select, because somebody reading ten
+recovery codes off the screen needs to keep their place. What the system does
+with a selection is not something Coffer lets happen to a secret: its copy is an
+ordinary pasteboard write - no concealed type, no auto-clear, and the clipboard
+history tools keep it - its menu under the pointer offers Look Up, Translate,
+Search and Share, and a selection can be dragged into any other application.
+
+So the node a reveal writes into (`guard.ts`) cancels the system's copy and cut
+and hands them to Rust with the part that was selected: `copy` and
+`copy_version` take a `range`, two positions counted in UTF-16 code units the
+way the text node counts them, or `null` for the whole value.
+`vault_core::SecretValue::part` cuts the value in Rust and refuses a range the
+value does not have, an empty one, or one with an end between the two halves of
+a character outside the basic plane. The positions come from the selection's
+own offsets and never from its text, which would be a copy of the secret in a
+JavaScript string. The same node draws no WebKit menu and starts no drag. The
+generator's value is the one revealed value with nothing in the vault to copy
+by name, and its copy is refused with a sentence that says to put it in the
+field first.
+
+`Cmd+C` follows the same rule. With the focus on the row of a protected value -
+which is where Show puts it - it copies that row's value; with nothing selected
+and the focus anywhere else, the entry's password, as the mockup has it. A
+selection is left to the system's copy, which lands on the node holding it and
+from there goes to Rust. Text the reader is typing into a field is theirs, and
+the system copies it as it copies anything typed.
+
+A version's value goes through `copy_version`, the copying twin of
+`reveal_version`, because a version is read on the screen like the entry is
+and a value selected there is as much a secret.
 
 ## The master password
 
@@ -611,26 +647,6 @@ makes it configurable, but the copy toast in `design.html` promises a clipboard
 that empties itself, and a toast that promises what the application does not do
 is worse than an early timer. Sixty seconds, the spec's own default, with the
 change count checked before the clear and the contents never read.
-
-**A value on the screen can be selected, and a selection is not Coffer's
-clipboard.** The boundary above says a copy is Rust's: the value reaches the
-pasteboard marked concealed and transient, and Coffer takes it off again after a
-minute. A reader who selects a revealed value by hand and presses the system's
-own copy gets none of that - no concealed type, no auto-clear, and the clipboard
-history tools keep it.
-
-It is still what the window offers, because a note, an address and a field of
-somebody's own have no copy button of their own, and a value that can be read on
-the screen and not copied off it is a value the reader retypes. So `app.css`
-names exactly three things that may hold a selection - a text field, a text
-area, and the node a reveal writes into - and everything else in the window
-paints no selection at all. `Cmd+C` steps aside when there is one, which is the
-only reason the guard in `Vault.svelte` exists.
-
-What it is not is a way around the boundary: nothing crosses IPC that did not
-cross for the reveal, and a reader who can select a value can already read it.
-The README's list of what Coffer does not protect against is where this belongs
-when that list is next written.
 
 **The Tauri crate is `crates/vault-gui`, not `src-tauri`.** `SPEC.md` names
 `src-tauri/capabilities/` when it describes capabilities, which is the framework's

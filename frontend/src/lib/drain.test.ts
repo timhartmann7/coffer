@@ -13,7 +13,9 @@ import { describe, expect, it } from 'vitest';
 
 const css = readFileSync('src/app.css', 'utf8');
 const reveal = readFileSync('src/lib/reveal.svelte.ts', 'utf8');
-const field = readFileSync('src/lib/components/PasswordField.svelte', 'utf8');
+// Every revealed value in the window is drawn by this one component, and so is
+// the bar under it.
+const field = readFileSync('src/lib/components/Shown.svelte', 'utf8');
 
 describe('the drain empties in exactly as long as the value is shown', () => {
 	it('gives the reveal a bar of its own length', () => {

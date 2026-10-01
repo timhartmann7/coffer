@@ -1,6 +1,7 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { attachment, entry, field, group } from '$lib/fixtures';
+import { typing } from '$lib/keys';
 import type { Attached, Clash } from '$lib/model';
 import { reactive } from '$lib/props.svelte';
 import EntryView from './EntryView.svelte';
@@ -50,6 +51,10 @@ beforeEach(() => {
 afterEach(() => {
 	host.remove();
 	localStorage.clear();
+	// A selection one test made is still standing in the next one otherwise,
+	// and a stand-in for the selection has to go before it can be cleared.
+	vi.restoreAllMocks();
+	document.getSelection()?.removeAllRanges();
 });
 
 function show(entryOver: Parameters<typeof entry>[0]) {
@@ -105,11 +110,60 @@ function screen(): string {
 	return [host.textContent ?? '', ...written].join(' ');
 }
 
-/** What the field showing a secret has in it. */
+/** What the node showing a secret has in it. */
 function value(): string {
 	const found = host.querySelector('[data-value]');
 	if (!found) throw new Error('the pane has nowhere to show a value');
-	return found instanceof HTMLInputElement ? found.value : (found.textContent ?? '');
+	return found.textContent ?? '';
+}
+
+/** Everything in the fields of the pane that can be typed into. */
+function written(): string {
+	return [...host.querySelectorAll('input, textarea')]
+		.map((each) => (each as HTMLInputElement | HTMLTextAreaElement).value)
+		.join(' ');
+}
+
+/** What a reader typing does: the value changes, and the field hears it. */
+function enter(into: HTMLInputElement | HTMLTextAreaElement, typed: string) {
+	into.value = typed;
+	into.dispatchEvent(new Event('input', { bubbles: true }));
+	flushSync();
+}
+
+/** The field a new value is written in, found by what it is called. */
+function changer(label: string): HTMLTextAreaElement {
+	const found = host.querySelector<HTMLTextAreaElement>(`textarea[aria-label="${label}"]`);
+	if (!found) throw new Error(`no field for ${label}`);
+	return found;
+}
+
+/** The focus leaving a field for somewhere outside it, with the two events a
+ * browser sends for that. */
+function leave(from: HTMLElement, to: EventTarget | null = null) {
+	from.dispatchEvent(new FocusEvent('blur', { relatedTarget: to }));
+	from.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: to }));
+	flushSync();
+}
+
+/** Selects part of a revealed value, the way a drag across it would. */
+function choose(node: HTMLElement, from: number, to: number) {
+	const text = node.firstChild;
+	if (!text) throw new Error('nothing is shown to select');
+	const range = document.createRange();
+	range.setStart(text, from);
+	range.setEnd(text, to);
+	const selection = document.getSelection();
+	selection?.removeAllRanges();
+	selection?.addRange(range);
+}
+
+/** What the system's Copy or Cut menu item fires at the node holding the
+ * selection. */
+function clipboard(node: HTMLElement, kind: 'copy' | 'cut'): ClipboardEvent {
+	const event = new ClipboardEvent(kind, { bubbles: true, cancelable: true });
+	node.dispatchEvent(event);
+	return event;
 }
 
 it('writes a value that is markup as text and never as markup', () => {
@@ -142,10 +196,14 @@ it('keeps a revealed password in one node and nowhere else', async () => {
 	await vi.waitFor(() => expect(value()).toBe(SECRET));
 	flushSync();
 
-	// The value is on the screen, and it is only on the screen: not in the
-	// markup, not in an attribute, and nowhere a crash could write it down.
+	// On the screen, and only there: the one text node of the one element a
+	// value is written into. Not in an attribute, not in anything that can be
+	// typed into, and nowhere a crash could write it down.
+	const node = host.querySelector('[data-value]');
+	expect(node?.childNodes).toHaveLength(1);
+	expect(host.innerHTML.split(SECRET), 'the value is in the markup twice').toHaveLength(2);
 	expect(attributes().join(' ')).not.toContain(SECRET);
-	expect(host.innerHTML).not.toContain(SECRET);
+	expect(written()).not.toContain(SECRET);
 	expect(JSON.stringify(localStorage)).not.toContain(SECRET);
 	expect(JSON.stringify(sessionStorage)).not.toContain(SECRET);
 	expect(window.location.href).not.toContain(SECRET);
@@ -154,6 +212,7 @@ it('keeps a revealed password in one node and nowhere else', async () => {
 	button('Hide').click();
 	flushSync();
 	expect(screen()).not.toContain(SECRET);
+	expect(host.innerHTML).not.toContain(SECRET);
 
 	return unmount(component);
 });
@@ -198,66 +257,289 @@ it('hides the value on a press, without writing it or opening it again', async (
 });
 
 /**
- * Hide is the one press that keeps the focus, and it is not where a reader goes
- * next: they press Copy, or click another entry, or reach for the search box.
- * Every one of those blurs the live field, and the blur used to write the
- * revealed value straight back - a full save, a second of key derivation, and
- * one of the ten snapshots beside the vault rotated away, spent on the reader
- * having looked at a password.
+ * Showing is reading. The value used to be revealed into the field it was
+ * edited in, with the focus put there, so a guest being read the Wi-Fi
+ * password out watched one stray key change it and the next click anywhere
+ * save it. The value is text now, nothing that takes a key appears, and the
+ * focus goes to the button that hides it again.
  */
-it('does not write a revealed value back when the focus leaves the field', async () => {
+it('focuses nothing editable on Show, so a stray key changes nothing', async () => {
 	const component = show({
-		fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+		fields: [
+			field({ name: 'Title', kind: 'title', value: 'Home Wi-Fi', empty: false }),
+			field({ name: 'Password', kind: 'password', value: null, empty: false })
+		]
 	});
 	flushSync();
+	const fields = host.querySelectorAll('input, textarea').length;
 
 	button('Show').click();
 	await vi.waitFor(() => expect(value()).toBe(SECRET));
 	flushSync();
 
-	const node = host.querySelector('[data-value]') as HTMLInputElement;
-	node.focus();
-	node.dispatchEvent(new FocusEvent('blur'));
+	expect(host.querySelector('[data-value]')?.tagName).toBe('SPAN');
+	expect(host.querySelectorAll('input, textarea'), 'Show opened a field').toHaveLength(fields);
+	expect(document.activeElement, 'the focus is not on the way to hide it').toBe(button('Hide'));
+	expect(typing(document.activeElement)).toBe(false);
+
+	// The keys a reader leans on while a password is being read out, and the
+	// focus going somewhere else afterwards.
+	for (const key of [' ', 'a', 'Backspace', 'Delete', 'v']) {
+		document.activeElement?.dispatchEvent(
+			new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
+		);
+	}
+	button('Hide').dispatchEvent(new FocusEvent('blur'));
 	flushSync();
 
-	expect(ipc.setField, 'looking at a password rewrote the whole vault').not.toHaveBeenCalled();
-	expect(screen(), 'the value is still on the screen').not.toContain(SECRET);
+	expect(ipc.setField, 'looking at a password wrote it').not.toHaveBeenCalled();
+	expect(value(), 'the value on the screen changed under the keys').toBe(SECRET);
+	expect(host.textContent).toContain('Hides in');
 
 	return unmount(component);
 });
 
-/** The other half of the same rule: a value the reader typed is still written. */
-it('writes a password the reader typed over a revealed one', async () => {
-	const component = show({
-		fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+/** Changing is a press of its own, and only Save or Return writes. */
+it('writes a new password on Save or Return, and nothing on Cancel or Escape', async () => {
+	ipc.setField.mockResolvedValue(entry());
+	const { component } = pane({
+		fields: [
+			field({ name: 'Password', kind: 'password', value: null, empty: false, protected: true })
+		]
 	});
-	flushSync();
+	const elsewhere = vi.fn();
+	window.addEventListener('keydown', elsewhere);
 
-	button('Show').click();
-	await vi.waitFor(() => expect(value()).toBe(SECRET));
-	flushSync();
+	try {
+		button('Change').click();
+		flushSync();
+		expect(document.activeElement, 'Change did not put the reader in the new field').toBe(
+			changer('New password')
+		);
+		enter(changer('New password'), 'a different one');
+		button('Cancel').click();
+		flushSync();
+		expect(host.querySelector('[aria-label="New password"]')).toBeNull();
 
-	const node = host.querySelector('[data-value]') as HTMLInputElement;
-	node.focus();
-	node.value = 'a different one';
-	node.dispatchEvent(new Event('input', { bubbles: true }));
-	flushSync();
-	node.dispatchEvent(new FocusEvent('blur'));
-	flushSync();
+		button('Change').click();
+		flushSync();
+		const escaped = changer('New password');
+		enter(escaped, 'a different one');
+		escaped.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+		flushSync();
+		expect(host.querySelector('[aria-label="New password"]')).toBeNull();
+		expect(escaped.value, 'what was typed outlived the field').toBe('');
+		expect(elsewhere, 'the Escape closed the entry as well').not.toHaveBeenCalled();
 
+		expect(ipc.setField).not.toHaveBeenCalled();
+		expect(written()).not.toContain('a different one');
+
+		button('Change').click();
+		flushSync();
+		enter(changer('New password'), 'a different one');
+		button('Save').click();
+		await vi.waitFor(() =>
+			expect(ipc.setField).toHaveBeenCalledWith(
+				expect.any(String),
+				'Password',
+				'a different one',
+				true
+			)
+		);
+		await vi.waitFor(() => expect(host.querySelector('[aria-label="New password"]')).toBeNull());
+
+		button('Change').click();
+		flushSync();
+		enter(changer('New password'), 'a third one');
+		const returned = new KeyboardEvent('keydown', {
+			key: 'Enter',
+			bubbles: true,
+			cancelable: true
+		});
+		changer('New password').dispatchEvent(returned);
+		expect(returned.defaultPrevented).toBe(true);
+		await vi.waitFor(() =>
+			expect(ipc.setField).toHaveBeenLastCalledWith(
+				expect.any(String),
+				'Password',
+				'a third one',
+				true
+			)
+		);
+		expect(ipc.setField).toHaveBeenCalledTimes(2);
+	} finally {
+		window.removeEventListener('keydown', elsewhere);
+	}
+
+	return unmount(component);
+});
+
+/**
+ * Leaving the new password with something typed in it asks, in the row. The
+ * click that took the focus away could have been meant for anything, so it
+ * decides nothing: not writing half a password over the real one, and not
+ * throwing away one the reader has just set on a website. The question leaves
+ * the focus where the reader put it.
+ */
+it('asks about a new password left half way, and does what the answer says', async () => {
+	ipc.setField.mockResolvedValue(entry());
+	const { component } = pane({
+		fields: [
+			field({ name: 'Password', kind: 'password', value: null, empty: false, protected: true })
+		]
+	});
+
+	button('Change').click();
+	flushSync();
+	const typed = changer('New password');
+	enter(typed, 'half a pass');
+
+	// A Tab onto its own Cancel is not leaving it; a Tab on out of there is.
+	const cancel = button('Cancel');
+	leave(typed, cancel);
+	expect(host.textContent).not.toContain('Save the new password?');
+	leave(cancel);
+
+	expect(ipc.setField, 'leaving wrote it').not.toHaveBeenCalled();
+	expect(host.textContent).toContain('Save the new password?');
+	expect(typed.value, 'leaving threw it away').toBe('half a pass');
+	expect(document.activeElement, 'the question took the focus').not.toBe(button('Discard'));
+	expect(document.activeElement, 'the question took the focus').not.toBe(button('Save'));
+
+	// Going back into the field is going on with it.
+	typed.dispatchEvent(new FocusEvent('focus'));
+	flushSync();
+	expect(host.textContent).not.toContain('Save the new password?');
+
+	leave(typed);
+	button('Discard').click();
+	flushSync();
+	expect(ipc.setField).not.toHaveBeenCalled();
+	expect(host.querySelector('[aria-label="New password"]')).toBeNull();
+	expect(typed.value, 'a discarded password stayed in its field').toBe('');
+
+	button('Change').click();
+	flushSync();
+	enter(changer('New password'), 'the whole new one');
+	leave(changer('New password'));
+	button('Save').click();
 	await vi.waitFor(() =>
 		expect(ipc.setField).toHaveBeenCalledWith(
 			expect.any(String),
 			'Password',
-			'a different one',
-			false
+			'the whole new one',
+			true
 		)
 	);
 
 	return unmount(component);
 });
 
-/** Opening the field on an entry that has none and typing nothing is not an
+/** A field opened and left with nothing in it is put away, with nothing to
+ * ask about; and so is one left while the window was only behind another. */
+it('asks nothing about a new password nobody typed, or when the window went to the back', () => {
+	const { component } = pane({
+		fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+	});
+
+	button('Change').click();
+	flushSync();
+	leave(changer('New password'));
+	expect(host.querySelector('[aria-label="New password"]')).toBeNull();
+	expect(host.textContent).not.toContain('Save the new password?');
+
+	button('Change').click();
+	flushSync();
+	enter(changer('New password'), 'mid-word');
+	vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+	leave(changer('New password'));
+	expect(host.textContent).not.toContain('Save the new password?');
+	expect(changer('New password').value).toBe('mid-word');
+	expect(ipc.setField).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/**
+ * A new password half typed for an entry the pane no longer shows has nobody
+ * left to ask. It is not written into the file unasked, and it does not go
+ * quietly either: the window says it was not saved.
+ */
+it('says so when a new password half typed goes with its entry', () => {
+	const { component, props } = deleting({
+		fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+	});
+
+	button('Change').click();
+	flushSync();
+	const typed = changer('New password');
+	enter(typed, 'half');
+	props.entry = entry({
+		fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+	});
+	flushSync();
+
+	expect(props.onFailure).toHaveBeenCalledWith(
+		expect.objectContaining({ message: 'The new password was not saved.' })
+	);
+	expect(ipc.setField).not.toHaveBeenCalled();
+	expect(typed.value, 'the half typed password outlived its field').toBe('');
+	expect(host.querySelector('[aria-label="New password"]')).toBeNull();
+
+	// Nothing typed is nothing to report.
+	button('Change').click();
+	flushSync();
+	props.entry = entry({
+		fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+	});
+	flushSync();
+	expect(props.onFailure).toHaveBeenCalledTimes(1);
+
+	return unmount(component);
+});
+
+/**
+ * The generator's insert is an answer of its own and writes straight away.
+ * What it must not do is leave a field behind with a password in it: a new
+ * one half typed by hand beside it is put away as well, because the made one
+ * was chosen over it.
+ */
+it('puts a made password straight in and leaves no field open behind it', async () => {
+	ipc.generatePassword.mockResolvedValue('Made-Password-123');
+	ipc.setField.mockResolvedValue(entry());
+	const { component, onFailure } = pane({
+		fields: [
+			field({ name: 'Password', kind: 'password', value: null, empty: false, protected: true })
+		]
+	});
+
+	button('Change').click();
+	flushSync();
+	enter(changer('New password'), 'by hand');
+	button('Make one').click();
+	flushSync();
+	await vi.waitFor(() => expect(button('Put it in the field').disabled).toBe(false));
+	button('Put it in the field').click();
+	flushSync();
+
+	await vi.waitFor(() =>
+		expect(ipc.setField).toHaveBeenCalledWith(
+			expect.any(String),
+			'Password',
+			'Made-Password-123',
+			true
+		)
+	);
+	expect(ipc.setField).toHaveBeenCalledTimes(1);
+	expect(host.querySelector('[aria-label="New password"]')).toBeNull();
+	expect(written()).not.toContain('Made-Password-123');
+	expect(written()).not.toContain('by hand');
+	expect(onFailure).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/** Opening the field on an entry that has none and writing nothing is not an
  * edit either, and it is the one case where the pane knows what it would be
  * writing over. */
 it('does not write an empty password when the field was opened and left alone', async () => {
@@ -267,11 +549,17 @@ it('does not write an empty password when the field was opened and left alone', 
 	flushSync();
 
 	button('Set one').click();
-	await Promise.resolve();
 	flushSync();
+	button('Save').click();
+	flushSync();
+	expect(host.querySelector('[aria-label="New password"]')).toBeNull();
 
-	const node = host.querySelector('[data-value]') as HTMLInputElement;
-	node.dispatchEvent(new FocusEvent('blur'));
+	button('Set one').click();
+	flushSync();
+	enter(changer('New password'), 'x');
+	enter(changer('New password'), '');
+	button('Save').click();
+	await Promise.resolve();
 	flushSync();
 
 	expect(ipc.setField).not.toHaveBeenCalled();
@@ -323,7 +611,7 @@ it('drops a value that arrives after the pane has gone', async () => {
 	await Promise.resolve();
 	flushSync();
 
-	expect((target as HTMLInputElement).value).toBe('');
+	expect(target.textContent).toBe('');
 	expect(document.body.textContent).not.toContain(SECRET);
 });
 
@@ -344,15 +632,15 @@ it('takes the value off the screen when its half minute is up', async () => {
 		await Promise.resolve();
 		await Promise.resolve();
 		flushSync();
-		expect((target as HTMLInputElement).value).toBe(SECRET);
+		expect(target.textContent).toBe(SECRET);
 
 		vi.advanceTimersByTime(29_000);
 		flushSync();
-		expect((target as HTMLInputElement).value).toBe(SECRET);
+		expect(target.textContent).toBe(SECRET);
 
 		vi.advanceTimersByTime(1_000);
 		flushSync();
-		expect((target as HTMLInputElement).value).toBe('');
+		expect(target.textContent).toBe('');
 		expect(host.textContent).not.toContain('Hides in');
 
 		await unmount(component);
@@ -536,9 +824,9 @@ it('shows a file under the name the database holds and exports it under a safe o
 });
 
 /**
- * A field the database keeps protected has to go back protected. The screen
- * cannot work that out from the value, because a protected value never crosses:
- * it reads it off the field it was given and sends it back unchanged.
+ * The pane sends back the protection a field arrived with. The screen cannot
+ * work that out from the value, because a protected value never crosses: it
+ * reads it off the field it was given and sends it back unchanged.
  */
 it('writes a field back with the protection it arrived with', () => {
 	ipc.setField.mockResolvedValue(entry());
@@ -552,7 +840,7 @@ it('writes a field back with the protection it arrived with', () => {
 	flushSync();
 
 	const login = host.querySelector('[aria-label="Login"]') as HTMLInputElement;
-	login.value = 'bob';
+	enter(login, 'bob');
 	login.dispatchEvent(new Event('blur'));
 
 	expect(ipc.setField).toHaveBeenCalledWith(expect.any(String), 'UserName', 'bob', false);
@@ -631,15 +919,62 @@ it('writes a custom field back with the protection it arrived with', () => {
 	});
 	flushSync();
 
-	const plain = host.querySelector('[aria-label="Region"]') as HTMLInputElement;
-	plain.value = 'eu-west';
+	const plain = host.querySelector('[aria-label="Region"]') as HTMLTextAreaElement;
+	enter(plain, 'eu-west');
 	plain.dispatchEvent(new Event('blur'));
 	expect(ipc.setField).toHaveBeenCalledWith(expect.any(String), 'Region', 'eu-west', false);
 
-	const kept = host.querySelector('[aria-label="API token"]') as HTMLInputElement;
-	kept.value = 'a new token';
+	const kept = host.querySelector('[aria-label="API token"]') as HTMLTextAreaElement;
+	enter(kept, 'a new token');
 	kept.dispatchEvent(new Event('blur'));
 	expect(ipc.setField).toHaveBeenCalledWith(expect.any(String), 'API token', 'a new token', true);
+
+	return unmount(component);
+});
+
+/**
+ * The field of the reader's own that went wrong: ten recovery codes, one per
+ * line, from another client. Clicking into it to select one code and clicking
+ * away wrote all ten back as one line. It is drawn in lines, it writes nothing
+ * when nothing was typed, an edit writes every line, and a paste into a field
+ * on one line keeps its breaks.
+ */
+it("keeps the lines of a field of the reader's own through a click, an edit and a paste", () => {
+	ipc.setField.mockResolvedValue(entry());
+	const codes = ['1111-aaaa', '2222-bbbb', '3333-cccc'].join('\n');
+	const windows = codes.replaceAll('\n', '\r\n');
+
+	const component = show({
+		fields: [
+			field({ name: 'Recovery codes', kind: 'custom', value: codes, empty: false }),
+			field({ name: 'From Windows', kind: 'custom', value: windows, empty: false }),
+			field({ name: 'Backup', kind: 'custom', value: '', empty: true })
+		]
+	});
+	flushSync();
+
+	const lined = host.querySelector('[aria-label="Recovery codes"]') as HTMLTextAreaElement;
+	expect(lined.tagName).toBe('TEXTAREA');
+	expect(lined.value).toBe(codes);
+	lined.dispatchEvent(new FocusEvent('focus'));
+	lined.dispatchEvent(new FocusEvent('blur'));
+	// A text area in WebKit reads a CRLF back as a line feed, so this field
+	// differs from the vault's value the moment it is drawn.
+	const crlf = host.querySelector('[aria-label="From Windows"]') as HTMLTextAreaElement;
+	crlf.value = codes;
+	crlf.dispatchEvent(new FocusEvent('focus'));
+	crlf.dispatchEvent(new FocusEvent('blur'));
+	expect(ipc.setField, 'a click through wrote the codes back').not.toHaveBeenCalled();
+
+	const fixed = codes.replace('2222-bbbb', '2222-bbbc');
+	enter(lined, fixed);
+	lined.dispatchEvent(new FocusEvent('blur'));
+	expect(ipc.setField).toHaveBeenCalledWith(expect.any(String), 'Recovery codes', fixed, false);
+
+	const single = host.querySelector('[aria-label="Backup"]') as HTMLTextAreaElement;
+	enter(single, codes);
+	single.dispatchEvent(new FocusEvent('blur'));
+	expect(ipc.setField).toHaveBeenLastCalledWith(expect.any(String), 'Backup', codes, false);
 
 	return unmount(component);
 });
@@ -854,14 +1189,15 @@ it('offers no change on a database it cannot write', () => {
 });
 
 /**
- * The half minute is how long a password Coffer put on the screen stays there.
- * What the reader has started typing is not that: a timer that wiped the field
- * mid-word would take away the password they were writing and leave them
- * looking at an empty one.
+ * The half minute is how long a value Coffer put on the screen stays there.
+ * A new password being typed beside it is not that value: the old one goes
+ * when its time is up, and what the reader is writing stays until they save
+ * it or put it away.
  */
-it('stops the clock once the reader starts writing a password', async () => {
+it('keeps a new password being typed when the old one hides', async () => {
 	vi.useFakeTimers();
 	try {
+		ipc.setField.mockResolvedValue(entry());
 		const component = show({
 			fields: [
 				field({
@@ -879,21 +1215,22 @@ it('stops the clock once the reader starts writing a password', async () => {
 		await Promise.resolve();
 		await Promise.resolve();
 		flushSync();
-		expect(value()).toBe(SECRET);
 
-		const written = host.querySelector('[data-value]') as HTMLInputElement;
-		written.value = 'a password of my own';
-		written.dispatchEvent(new Event('input', { bubbles: true }));
+		button('Change').click();
 		flushSync();
+		expect(value(), 'the old one went when the new one was asked for').toBe(SECRET);
+		enter(changer('New password'), 'a password of my own');
 
 		vi.advanceTimersByTime(60_000);
 		flushSync();
 
-		expect(written.value).toBe('a password of my own');
+		expect(value()).toBe('');
 		expect(host.textContent).not.toContain('Hides in');
+		expect(changer('New password').value).toBe('a password of my own');
 
-		// And it is still what gets written when the focus leaves.
-		written.dispatchEvent(new Event('blur'));
+		changer('New password').dispatchEvent(
+			new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+		);
 		expect(ipc.setField).toHaveBeenCalledWith(
 			expect.any(String),
 			'Password',
@@ -1512,10 +1849,10 @@ it('writes the names in the question as text and never as markup', async () => {
 	return unmount(component);
 });
 
-/** The row for a field of the reader's own that the database protects. */
-function own(label: string): HTMLInputElement {
-	const found = host.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
-	if (!found) throw new Error(`no field labelled ${label}`);
+/** The node a protected field of the reader's own is shown in, in its own row. */
+function own(label: string): HTMLElement {
+	const found = icon(`Copy ${label}`).parentElement?.querySelector<HTMLElement>('[data-value]');
+	if (!found) throw new Error(`no value shown for ${label}`);
 	return found;
 }
 
@@ -1571,59 +1908,40 @@ it('copies a protected own field through rust rather than off the screen', async
 });
 
 /**
- * Showing a value is not an edit. Writing one back costs a key derivation, a
- * rewrite of the whole file and one of the ten snapshots beside it, so a reader
- * who looked at a token must not have spent a recovery point on it.
+ * A protected field of the reader's own follows the password's rule. Showing
+ * it is reading it; changing it is its own Change, on the line under the row,
+ * with the old value still on the screen while the new one is typed.
  */
-it('writes a protected own field back only when the reader typed in it', async () => {
+it('changes a protected own field only through its own Change', async () => {
 	ipc.reveal.mockResolvedValue(TOKEN);
-	const onChanged = vi.fn();
-	const component = mount(EntryView, {
-		target: host,
-		props: {
-			entry: entry({
-				fields: [
-					field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false })
-				]
-			}),
-			root: group({ name: 'Root' }),
-			path: [group({ name: 'Work' })],
-			versions: [],
-			now: new Date('2026-08-29T14:30:00Z'),
-			readOnly: false,
-			onCopy: vi.fn(),
-			onChanged,
-			onVersions: vi.fn(),
-			onClose: vi.fn(),
-			onDelete: vi.fn(),
-			onPutBack: vi.fn(),
-			onFieldRemoved: vi.fn(),
-			onFailure: vi.fn()
-		}
+	ipc.setField.mockResolvedValue(entry());
+	const { component } = pane({
+		fields: [
+			field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false })
+		]
 	});
-	flushSync();
 
 	icon('Show API token').click();
-	await vi.waitFor(() => expect(own('API token').value).toBe(TOKEN));
+	await vi.waitFor(() => expect(own('API token').textContent).toBe(TOKEN));
 	flushSync();
 
-	// On the screen, and only there.
+	// On the screen, only there, and not in anything that takes a key.
 	expect(attributes().join(' ')).not.toContain(TOKEN);
-	expect(host.innerHTML).not.toContain(TOKEN);
-
-	// Looked at and put away: nothing is written.
-	own('API token').dispatchEvent(new FocusEvent('blur'));
-	await vi.waitFor(() => expect(own('API token').value).toBe(''));
+	expect(written()).not.toContain(TOKEN);
+	expect(document.activeElement).toBe(icon('Hide API token'));
+	icon('Hide API token').dispatchEvent(new FocusEvent('blur'));
 	expect(ipc.setField).not.toHaveBeenCalled();
 
-	// Typed in: written, with the protection it arrived with.
-	icon('Show API token').click();
-	await vi.waitFor(() => expect(own('API token').value).toBe(TOKEN));
-	own('API token').value = 'sk-live-rotated';
-	own('API token').dispatchEvent(new Event('input', { bubbles: true }));
+	icon('Change API token').click();
 	flushSync();
-	own('API token').dispatchEvent(new FocusEvent('blur'));
-	flushSync();
+	const typed = changer('New value of API token');
+	expect(own('API token').textContent, 'the old value went when the new one was asked for').toBe(
+		TOKEN
+	);
+	enter(typed, 'sk-live-rotated');
+	typed.dispatchEvent(
+		new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+	);
 
 	await vi.waitFor(() => expect(ipc.setField).toHaveBeenCalledTimes(1));
 	expect(ipc.setField).toHaveBeenCalledWith(
@@ -1636,50 +1954,33 @@ it('writes a protected own field back only when the reader typed in it', async (
 	return unmount(component);
 });
 
-/**
- * Escape closes the field, and the blur that follows the input going hidden
- * must not then write an empty value over a real one. The two events arrive in
- * that order, and only `Secret` knows the field is no longer the reader's.
- */
+/** Escape puts a new value away unwritten, and leaving one half typed asks
+ * about it by the field's own name. */
 it('writes nothing when the reader escapes out of a protected own field', async () => {
-	ipc.reveal.mockResolvedValue(TOKEN);
-	const component = mount(EntryView, {
-		target: host,
-		props: {
-			entry: entry({
-				fields: [
-					field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false })
-				]
-			}),
-			root: group({ name: 'Root' }),
-			path: [group({ name: 'Work' })],
-			versions: [],
-			now: new Date('2026-08-29T14:30:00Z'),
-			readOnly: false,
-			onCopy: vi.fn(),
-			onChanged: vi.fn(),
-			onVersions: vi.fn(),
-			onClose: vi.fn(),
-			onDelete: vi.fn(),
-			onPutBack: vi.fn(),
-			onFieldRemoved: vi.fn(),
-			onFailure: vi.fn()
-		}
+	ipc.setField.mockResolvedValue(entry());
+	const { component } = pane({
+		fields: [
+			field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false })
+		]
 	});
-	flushSync();
 
-	icon('Show API token').click();
-	await vi.waitFor(() => expect(own('API token').value).toBe(TOKEN));
-	own('API token').value = 'half a to';
-	own('API token').dispatchEvent(new Event('input', { bubbles: true }));
+	icon('Change API token').click();
 	flushSync();
-	own('API token').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+	enter(changer('New value of API token'), 'half a to');
+	changer('New value of API token').dispatchEvent(
+		new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+	);
 	flushSync();
-	own('API token').dispatchEvent(new FocusEvent('blur'));
-	flushSync();
-
 	expect(ipc.setField).not.toHaveBeenCalled();
-	expect(screen()).not.toContain('half a to');
+	expect(written()).not.toContain('half a to');
+	expect(host.querySelector('[aria-label="New value of API token"]')).toBeNull();
+
+	icon('Change API token').click();
+	flushSync();
+	enter(changer('New value of API token'), 'half a to');
+	leave(changer('New value of API token'));
+	expect(host.textContent).toContain('Save the new value of “API token”?');
+	expect(ipc.setField).not.toHaveBeenCalled();
 
 	return unmount(component);
 });
@@ -1688,41 +1989,195 @@ it('writes nothing when the reader escapes out of a protected own field', async 
  * offer to change anything. */
 it('offers a look and a copy of a protected own field it cannot write', async () => {
 	ipc.reveal.mockResolvedValue(TOKEN);
-	const component = mount(EntryView, {
-		target: host,
-		props: {
-			entry: entry({
-				fields: [
-					field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false })
-				]
-			}),
-			root: group({ name: 'Root' }),
-			path: [group({ name: 'Work' })],
-			versions: [],
-			now: new Date('2026-08-29T14:30:00Z'),
-			readOnly: true,
-			onCopy: vi.fn(),
-			onChanged: vi.fn(),
-			onVersions: vi.fn(),
-			onClose: vi.fn(),
-			onDelete: vi.fn(),
-			onPutBack: vi.fn(),
-			onFieldRemoved: vi.fn(),
-			onFailure: vi.fn()
-		}
-	});
-	flushSync();
+	const { component, onCopy } = pane(
+		{
+			fields: [
+				field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false })
+			]
+		},
+		true
+	);
 
-	expect(own('API token').readOnly).toBe(true);
+	expect(host.querySelector('[aria-label="Change API token"]')).toBeNull();
 	icon('Show API token').click();
-	await vi.waitFor(() => expect(own('API token').value).toBe(TOKEN));
+	await vi.waitFor(() => expect(own('API token').textContent).toBe(TOKEN));
+	icon('Copy API token').click();
+	expect(onCopy).toHaveBeenCalledWith(expect.any(String), 'API token', null);
 
-	own('API token').value = 'typed anyway';
-	own('API token').dispatchEvent(new Event('input', { bubbles: true }));
-	flushSync();
-	own('API token').dispatchEvent(new FocusEvent('blur'));
-	flushSync();
+	expect(host.querySelectorAll('textarea, input')).toHaveLength(0);
 	expect(ipc.setField).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/**
+ * Every copy of a revealed value goes through Rust. The system's own copy of a
+ * selection is an ordinary pasteboard write - no concealed type, nothing
+ * clearing it after a minute - so it is cancelled, and Rust is asked instead,
+ * for exactly the part that was selected: one recovery code out of ten.
+ */
+it('hands a copy or a cut of a revealed value to Rust, the part selected and no more', async () => {
+	const codes = ['1111-aaaa', '2222-bbbb', '3333-cccc', '4444-dddd'].join('\n');
+	ipc.reveal.mockResolvedValue(codes);
+	const { component, onCopy } = pane({
+		fields: [
+			field({ name: 'Recovery codes', kind: 'custom', protected: true, value: null, empty: false })
+		]
+	});
+
+	icon('Show Recovery codes').click();
+	const node = own('Recovery codes');
+	await vi.waitFor(() => expect(node.textContent).toBe(codes));
+
+	choose(node, 20, 29);
+	const copied = clipboard(node, 'copy');
+	expect(copied.defaultPrevented, 'the system copied a secret').toBe(true);
+	expect(onCopy).toHaveBeenLastCalledWith(expect.any(String), 'Recovery codes', {
+		from: 20,
+		to: 29
+	});
+
+	const cut = clipboard(node, 'cut');
+	expect(cut.defaultPrevented, 'the system cut a secret').toBe(true);
+	expect(onCopy).toHaveBeenLastCalledWith(expect.any(String), 'Recovery codes', {
+		from: 20,
+		to: 29
+	});
+
+	// All of it selected is the whole field, which is how Rust is asked for one.
+	choose(node, 0, codes.length);
+	clipboard(node, 'copy');
+	expect(onCopy).toHaveBeenLastCalledWith(expect.any(String), 'Recovery codes', null);
+
+	// And the line breaks are on the screen as line breaks.
+	expect(node.textContent).toBe(codes);
+	expect(node.className).toContain('whitespace-pre');
+
+	return unmount(component);
+});
+
+/**
+ * The menu WebKit draws under the pointer offers Look Up, Translate, Search
+ * and Share, each of which hands the value to another application, and a
+ * selection dragged out of the window goes wherever it is dropped. Neither
+ * starts on a revealed value, wherever in the pane that value is.
+ */
+it('draws no menu and starts no drag on a revealed value', async () => {
+	const { component } = pane({
+		fields: [
+			field({ name: 'UserName', kind: 'username', value: null, empty: false }),
+			field({ name: 'Password', kind: 'password', value: null, empty: false }),
+			field({ name: 'Notes', kind: 'notes', value: null, empty: false }),
+			field({ name: 'PIN', kind: 'custom', protected: true, value: null, empty: false })
+		]
+	});
+
+	const nodes = [...host.querySelectorAll<HTMLElement>('[data-value]')];
+	expect(nodes).toHaveLength(4);
+	for (const node of nodes) {
+		for (const kind of ['contextmenu', 'dragstart']) {
+			const event = new MouseEvent(kind, { bubbles: true, cancelable: true });
+			node.dispatchEvent(event);
+			expect(event.defaultPrevented, `${kind} was left to the system`).toBe(true);
+		}
+	}
+
+	return unmount(component);
+});
+
+/**
+ * Show puts the focus on the row's own eye, so Cmd+C then copies that row's
+ * value through Rust rather than the entry's password - and the window, which
+ * would copy the password, hears that the key has been answered.
+ */
+it('copies the row the focus is on when Cmd+C is pressed there', async () => {
+	ipc.reveal.mockResolvedValue(TOKEN);
+	const { component, onCopy } = pane({
+		fields: [
+			field({ name: 'Notes', kind: 'notes', value: null, empty: false }),
+			field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false })
+		]
+	});
+
+	icon('Show API token').click();
+	await vi.waitFor(() => expect(document.activeElement).toBe(icon('Hide API token')));
+
+	const pressed = new KeyboardEvent('keydown', {
+		key: 'c',
+		metaKey: true,
+		bubbles: true,
+		cancelable: true
+	});
+	icon('Hide API token').dispatchEvent(pressed);
+	expect(pressed.defaultPrevented).toBe(true);
+	expect(onCopy).toHaveBeenCalledWith(expect.any(String), 'API token', null);
+
+	icon('Copy Notes').dispatchEvent(
+		new KeyboardEvent('keydown', { key: 'c', metaKey: true, bubbles: true, cancelable: true })
+	);
+	expect(onCopy).toHaveBeenLastCalledWith(expect.any(String), 'Notes', null);
+
+	// A selection standing somewhere is the system's copy to fire, on the node
+	// holding it, and not this row's.
+	vi.spyOn(document, 'getSelection').mockReturnValue({ isCollapsed: false } as Selection);
+	const selecting = new KeyboardEvent('keydown', {
+		key: 'c',
+		metaKey: true,
+		bubbles: true,
+		cancelable: true
+	});
+	icon('Hide API token').dispatchEvent(selecting);
+	expect(selecting.defaultPrevented).toBe(false);
+	expect(onCopy).toHaveBeenCalledTimes(2);
+
+	return unmount(component);
+});
+
+/**
+ * The step that names a new field offers to write it in lines. The format has
+ * no such flag, so the choice decides only the first field the value is
+ * written in: one that takes Return as the next line. Pressing the option is
+ * not leaving the name.
+ */
+it('names a new field to be written in lines', async () => {
+	const named = 'Recovery codes';
+	const made = entry({
+		fields: [field({ name: named, kind: 'custom', value: null, empty: true, protected: true })]
+	});
+	ipc.setField.mockResolvedValue(made);
+	const { component, props } = deleting({ fields: [] });
+
+	icon('Add a field').click();
+	flushSync();
+	const name = host.querySelector('[aria-label="The name of the new field"]') as HTMLInputElement;
+	name.value = named;
+
+	const option = [...host.querySelectorAll('button')].find(
+		(each) => each.textContent?.trim() === 'Multi-line'
+	);
+	if (!option) throw new Error('there is no Multi-line option');
+	const press = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+	option.dispatchEvent(press);
+	expect(press.defaultPrevented, 'the option takes the focus off the name').toBe(true);
+	// Moving between the name and the option is not leaving the two of them.
+	name.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: option }));
+	option.click();
+	flushSync();
+	expect(option.getAttribute('aria-pressed')).toBe('true');
+	expect(ipc.setField, 'the name was finished by the option').not.toHaveBeenCalled();
+
+	name.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+	flushSync();
+	expect(ipc.setField).toHaveBeenCalledWith(props.entry.id, named, '', true);
+
+	props.entry = { ...made, id: props.entry.id };
+	flushSync();
+	const first = host.querySelector(`[aria-label="${named}"]`) as HTMLTextAreaElement;
+	expect(first.tagName).toBe('TEXTAREA');
+	expect(first.getAttribute('rows')).toBe('4');
+	const returned = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+	first.dispatchEvent(returned);
+	expect(returned.defaultPrevented, 'Return finished a field asked for in lines').toBe(false);
 
 	return unmount(component);
 });

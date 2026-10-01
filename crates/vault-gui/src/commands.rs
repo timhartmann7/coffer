@@ -475,19 +475,49 @@ pub fn reveal(entry: String, field: String, session: Held<'_>) -> Result<Reveale
     Ok(Revealed::new(text(&secret)?))
 }
 
-/// Copies one field's value to the clipboard. Nothing comes back but the number
-/// of seconds until Coffer takes it off again.
+/// Copies one field's value to the clipboard, or the part of it the reader
+/// selected on the screen. Nothing comes back but the number of seconds until
+/// Coffer takes it off again.
 #[tauri::command(async)]
 pub fn copy(
     entry: String,
     field: String,
+    range: Option<dto::Span>,
     app: AppHandle,
     session: Held<'_>,
 ) -> Result<u64, Failure> {
     let secret = session.reveal(dto::entry_id(&entry)?, &field)?;
-    let after = chosen(&app).clipboard();
+    copied(&app, &secret, range)
+}
 
-    clipboard::copy(text(&secret)?, after);
+/// Copies one field's value out of a previous version, on the same terms as
+/// [`copy`]. A version is read on the screen like the entry is, and a value
+/// selected there is as much a secret as one selected in the entry.
+#[tauri::command(async)]
+pub fn copy_version(
+    entry: String,
+    index: usize,
+    field: String,
+    range: Option<dto::Span>,
+    app: AppHandle,
+    session: Held<'_>,
+) -> Result<u64, Failure> {
+    let secret = session.reveal_version(dto::entry_id(&entry)?, index, &field)?;
+    copied(&app, &secret, range)
+}
+
+/// Puts a value on the pasteboard, whole or the part that was asked for, and
+/// answers with how long it stays there.
+fn copied(
+    app: &AppHandle,
+    secret: &vault_core::SecretValue,
+    range: Option<dto::Span>,
+) -> Result<u64, Failure> {
+    let after = chosen(app).clipboard();
+    match range {
+        None => clipboard::copy(text(secret)?, after),
+        Some(span) => clipboard::copy(text(&secret.part(span.from, span.to)?)?, after),
+    }
     Ok(after.as_secs())
 }
 
@@ -947,9 +977,7 @@ pub fn reveal_version(
     field: String,
     session: Held<'_>,
 ) -> Result<Revealed, Failure> {
-    let id = dto::entry_id(&entry)?;
-    let secret = session.with(|vault| vault.reveal_version(id, index, &field))?;
-    let secret = secret.ok_or_else(|| Failure::refused("that version has no such field"))?;
+    let secret = session.reveal_version(dto::entry_id(&entry)?, index, &field)?;
     Ok(Revealed::new(text(&secret)?))
 }
 

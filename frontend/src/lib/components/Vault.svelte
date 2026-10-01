@@ -5,6 +5,7 @@
 		asFailure,
 		beforeRemoval,
 		copy as copyToClipboard,
+		copyVersion,
 		createEntry,
 		createGroup,
 		deleteEntry,
@@ -26,8 +27,9 @@
 	import { deleted as deletedLine } from '$lib/bin';
 	import { named as howLong } from '$lib/duration';
 	import { called } from '$lib/format';
+	import { copying, typing } from '$lib/keys';
 	import { RISE, span } from '$lib/motion';
-	import type { Database, Entry, EntryRow, Group, Rival, Version } from '$lib/model';
+	import type { Database, Entry, EntryRow, Group, Rival, Span, Version } from '$lib/model';
 	import { index, search } from '$lib/search';
 	import { entriesOf, find, inBin, liveEntries, pathTo, recycleBin, shownEntries } from '$lib/tree';
 	import BinFolders from './BinFolders.svelte';
@@ -559,9 +561,18 @@
 		}
 	}
 
-	async function copy(entry: string, name: string) {
+	/**
+	 * Copies a value in Rust and says so: a field of an entry, or of one of its
+	 * previous versions, whole or the part of it the reader selected. Every copy
+	 * in the window comes through here, so every one of them gets the same
+	 * concealed, self-clearing pasteboard write and the same notice.
+	 */
+	async function copy(entry: string, name: string, range: Span | null = null, version?: number) {
 		try {
-			const seconds = await copyToClipboard(entry, name);
+			const seconds =
+				version === undefined
+					? await copyToClipboard(entry, name, range)
+					: await copyVersion(entry, version, name, range);
 			announce(seconds);
 		} catch (thrown) {
 			failed(thrown);
@@ -737,15 +748,6 @@
 		});
 	}
 
-	/** Whether the key went to somewhere the reader is writing. */
-	function typing(target: EventTarget | null): boolean {
-		return (
-			target instanceof HTMLInputElement ||
-			target instanceof HTMLTextAreaElement ||
-			(target instanceof HTMLElement && target.isContentEditable)
-		);
-	}
-
 	function shortcut(event: KeyboardEvent) {
 		// The settings screen is over the list, so nothing that acts on the list
 		// is what a key means while it is open. Escape is the way back out of it,
@@ -786,16 +788,13 @@
 		const wanted = event.key === 'b' ? 'username' : event.key === 'c' ? 'password' : null;
 		if (!wanted) return;
 
-		// A revealed value, a login and a note are all selectable on purpose. If
-		// the reader has selected something, the copy they pressed is theirs and
-		// not the entry's.
-		//
-		// A selection inside a field is reported collapsed - WebKit never exposes
-		// a position inside a control's own shadow tree - so this predicate is
-		// about a selection in the page, and the field itself is what answers for
-		// one inside a field.
-		if (typing(event.target)) return;
-		if (wanted === 'password' && document.getSelection()?.isCollapsed === false) return;
+		// A key a row of the pane has already answered: Cmd+C on a protected
+		// value's own row copies that value, not the password.
+		if (event.defaultPrevented) return;
+		// Text the reader is writing is theirs to copy. A selection is copied by
+		// the node holding it, and a revealed value's node hands that to Rust
+		// itself, with the part that was selected.
+		if (wanted === 'password' ? !copying(event) : typing(event.target)) return;
 
 		const chosen = opened.fields.find((entry) => entry.kind === wanted);
 		if (!chosen || chosen.empty) return;

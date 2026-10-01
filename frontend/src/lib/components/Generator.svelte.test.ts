@@ -128,3 +128,35 @@ it('leaves nothing behind when the panel goes', async () => {
 	await unmount(component);
 	expect(document.body.textContent).not.toContain(MADE);
 });
+
+/**
+ * A made password is not in the vault yet, so nothing in Rust can copy it by
+ * name, and the system's copy of it would be the plain pasteboard write the
+ * rest of the window is kept away from. The copy is refused, with the way that
+ * works, and the menu and the drag that would hand it to another application
+ * do not start.
+ */
+it('keeps a made password out of the system copy, its menu and a drag', async () => {
+	const onFailure = vi.fn();
+	const component = show({ onFailure });
+	await vi.waitFor(() => expect(value()).toBe(MADE));
+	const node = host.querySelector('[data-value]') as HTMLElement;
+
+	for (const kind of ['copy', 'cut']) {
+		const event = new ClipboardEvent(kind, { bubbles: true, cancelable: true });
+		node.dispatchEvent(event);
+		expect(event.defaultPrevented, `${kind} was left to the system`).toBe(true);
+	}
+	expect(onFailure).toHaveBeenCalledWith(
+		expect.objectContaining({ message: 'Put it in the field first, and copy it from there.' })
+	);
+	expect(JSON.stringify(onFailure.mock.calls)).not.toContain(MADE);
+
+	for (const kind of ['contextmenu', 'dragstart']) {
+		const event = new MouseEvent(kind, { bubbles: true, cancelable: true });
+		node.dispatchEvent(event);
+		expect(event.defaultPrevented, `${kind} was left to the system`).toBe(true);
+	}
+
+	return unmount(component);
+});

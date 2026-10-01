@@ -298,6 +298,18 @@ database is shown as the database holds it and is never used as a path; this is
 the name the save panel is offered, and it is the only place the conversion
 happens.
 
+**Part of a secret is cut here, and only here.** A reader who selects one
+recovery code out of ten and copies it asks for a part of a value, and the
+window never holds the value to cut it:
+[`SecretValue::part`](../crates/vault-core/src/secret.rs) takes the two positions
+the selection reports, counted in UTF-16 code units because that is what a text
+node counts in, and hands back that part as a secret of its own. It refuses
+rather than rounds: an empty or backwards range, an end past the value, and an
+end between the two halves of a character outside the basic plane are none of
+them a selection a reader can make, and the refusal says so without a word of
+the value. A property test holds it to what a text node would have selected for
+the same two numbers.
+
 ## The recycle bin, and putting things back
 
 `SPEC.md` says a deletion goes to the recycle bin when the database keeps one

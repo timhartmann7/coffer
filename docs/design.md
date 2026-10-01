@@ -80,9 +80,60 @@ bottom inside of the field and the words are shortened to the clock. The sentenc
 is still there for anything that reads the screen aloud, where three hundred and
 eighty-four pixels is not the constraint.
 
-**The three password buttons keep a line of their own.** The mockup gives the row
-two buttons and Coffer has three, which in a pane this narrow wrapped anyway —
-and which line they landed on depended on how long the value was.
+**The password buttons keep a line of their own.** The mockup gives the row two
+buttons and Coffer has four - Show, Copy, Change and Make one - which in a pane
+this narrow wrapped anyway, and which line they landed on depended on how long
+the value was. On their own line the last of them may take a second one, and it
+does so whether or not anything is revealed. Change is the same bordered `h-7`
+pill as the others, in words and without an icon, because the mockup's sprite has
+no pencil; it reads "Set one" on an entry with no password, and while its field
+is open it takes the pressed look Make one takes while the generator is open.
+
+**A revealed value is text, not a field.** The mockup draws it as a line of mono
+text, and that is what it is again: selectable, and nothing a key can reach. A
+value on one line stays on one line however long it is and scrolls sideways
+with no scrollbar drawn, the way the field it used to be shown in did, so
+revealing it still moves nothing. A value with line breaks takes the lines it
+has, because ten recovery codes on one line are not what the vault holds; a
+protected note and a previous version's value wrap their long lines as well. The
+field's own countdown now runs under a protected note too.
+
+**A new value is written in a field of its own.** Change opens, under the row's
+buttons, the mockup's field with a text area in mono `small`: one line tall
+until the value has more, then growing with it up to twenty lines. Under it the
+two answers in the order every question in the window uses: Cancel, the way out,
+as a plain `h-7` pill in `txt3`, then Save as the bordered `h-7` pill beside it.
+Neither takes the focus. The old value stays where it was, shown if it was
+shown, until the new one is saved.
+
+**Leaving that field with something typed asks, in the same place.** The Cancel
+and Save line gives way to the window's question box on `surface2`: "Save the
+new password?", with Discard as the way out and Save as the neutral pill. There
+is no red answer, because neither takes anything out of the vault - a saved
+password leaves the old one in Versions, and Discard throws away only what was
+typed - and the box does not take the focus, because the reader just put it
+somewhere else. Going back into the field takes the question away.
+
+**A protected field of the reader's own has its Change on the line under it.**
+Its row keeps the mockup's shape - name, value, eye - and has no room for a word
+more, so "Change" sits under the value, where the value starts, in `fine` and
+`txt3` like the Versions block's View and Restore. Pressed, it gives way to the
+same field and answers as the password's. A login or an address another client
+protected gets the same line under its value. A protected note and a previous
+version get a copy beside their eye and no Change: a note Coffer never protects
+is read and copied, and a version cannot be written into.
+
+**The step that names a new field offers "Multi-line".** Beside the name, the
+generator's own toggle pill - hairline, `meta` mono, the check in `txt2` and
+`surface2` behind it when it is on - because it is the same kind of choice. The
+format has no such flag, so it decides only the first field the value is written
+in: a text area four lines tall, where Return starts a line.
+
+**A value of the reader's own in lines is written in lines.** Any value with a
+line break is edited in a text area that grows with it, up to twenty lines and
+then scrolling, where Return starts a line and Cmd+Return finishes. A field of
+the reader's own is one from the start, one line tall and scrolling sideways
+until it has a second, so that a paste keeps its breaks.
 
 **The header is the way out of the pane, and nothing else.** The mockup's
 header carries one button and it is the trash. Escape had always closed the pane
@@ -229,9 +280,9 @@ button that opened them stays where the hand left it and closes them.
 
 **What is under them is inert, not merely covered.** An opaque sheet hides a
 pane; it does not take it out of the tab order, out of hit testing or out of the
-accessibility tree. Every value in an entry is a live field that commits what is
-in it when focus leaves, so a covered pane is an entry that can be rewritten by
-keys aimed at something else.
+accessibility tree. Every value in an entry the database does not protect is a
+live field that commits what the reader wrote in it when focus leaves, so a
+covered pane is an entry that can be rewritten by keys aimed at something else.
 
 ## Motion
 

@@ -206,6 +206,17 @@ export interface Version {
 	modified: string | null;
 }
 
+/**
+ * The part of a revealed value a reader selected, from one position to another,
+ * counted the way the text node showing it counts: in UTF-16 code units. Two
+ * numbers and nothing of the value, and Rust decides whether they name a part
+ * of it at all.
+ */
+export interface Span {
+	from: number;
+	to: number;
+}
+
 /** What a command that changed the shape of the vault hands back. */
 export interface Made {
 	tree: Group;

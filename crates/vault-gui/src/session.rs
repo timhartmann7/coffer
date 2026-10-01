@@ -413,6 +413,18 @@ impl Session {
         }
     }
 
+    /// Hands out one field's value from a previous version, on the same terms
+    /// as [`Session::reveal`] and to the same two callers.
+    pub fn reveal_version(
+        &self,
+        id: EntryId,
+        index: usize,
+        field: &str,
+    ) -> Result<SecretValue, Failure> {
+        self.with(|vault| vault.reveal_version(id, index, field))?
+            .ok_or_else(|| Failure::refused("that version has no such field"))
+    }
+
     /// Borrows the open vault. It never leaves the lock, so nothing can hold a
     /// vault past a lock that was supposed to wipe it.
     pub fn with<T>(&self, read: impl FnOnce(&Vault) -> T) -> Result<T, Failure> {
@@ -851,6 +863,56 @@ mod tests {
 
         assert!(session.reveal(entry.id, "no such field").is_err());
         assert!(session.reveal(entry.id, "").is_err());
+    }
+
+    /// A previous version hands out its values the way the entry does: one at
+    /// a time, by name, and the part a reader selected is cut from the
+    /// version's value rather than from what the entry holds now.
+    #[test]
+    fn a_version_hands_out_its_own_value_and_the_part_of_it_asked_for() {
+        let (_scratch, session) = unlocked(RICH);
+        let entry = entry_titled(&session, "basic");
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    entry.id,
+                    fields::PASSWORD,
+                    vault_core::NewValue::Protected(Zeroizing::new("a new one".to_owned())),
+                )
+            })
+            .expect("the vault is open")
+            .expect("the password is written");
+
+        let versions = session
+            .with(|vault| vault.versions(entry.id))
+            .expect("the vault is open");
+        let newest = versions.last().expect("the edit kept a version").index;
+
+        let old = session
+            .reveal_version(entry.id, newest, fields::PASSWORD)
+            .expect("the old password comes back");
+        assert_eq!(old.expose_str(), Some("correct horse battery staple"));
+        assert_eq!(
+            old.part(8, 13).expect("a word of it").expose_str(),
+            Some("horse")
+        );
+        assert!(old.part(8, 99).is_err());
+
+        assert!(
+            session
+                .reveal_version(entry.id, newest, "no such field")
+                .is_err()
+        );
+        assert!(
+            session
+                .reveal_version(entry.id, versions.len() + 5, fields::PASSWORD)
+                .is_err()
+        );
+        assert!(
+            session
+                .reveal_version(EntryId::from_uuid(uuid::Uuid::nil()), 0, fields::PASSWORD)
+                .is_err()
+        );
     }
 
     /// A change goes through the same lock the reads do, so a screen can never

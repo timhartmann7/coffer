@@ -23,6 +23,10 @@
 	 * for the pane, is never the one that destroys. The Escape stops here: the
 	 * window reads the same key as "close the entry", and a question answered by
 	 * taking the pane away is a question nobody saw answered.
+	 *
+	 * A question asked because the reader moved the focus somewhere else leaves
+	 * it there. Taking it back would put their next key - a letter meant for the
+	 * field they just clicked into, a Space - on one of the answers.
 	 */
 	let {
 		question,
@@ -38,13 +42,15 @@
 		question: string;
 		/** The way out, named by its result. */
 		keep?: string;
-		/** The destructive answer, named by what it does. Left out only when it
-		 * has been refused and the question is asked again without it. */
+		/** The destructive answer, named by what it does. Left out when it has
+		 * been refused and the question is asked again without it, and when no
+		 * answer to the question takes anything out of the vault. */
 		act?: string;
 		neutral?: { label: string; run: () => void };
 		/** Which answer the focus lands on, and so which one Return gives. Never
-		 * the destructive one. */
-		focus?: 'keep' | 'neutral';
+		 * the destructive one, and none for a question that the focus leaving
+		 * something raised. */
+		focus?: 'keep' | 'neutral' | 'none';
 		/** Without a box of its own, for a question asked inside a card that is
 		 * one already: a file's row, a version's. */
 		bare?: boolean;
@@ -52,14 +58,17 @@
 		 * the other one from the plane around it. */
 		class?: string;
 		onKeep: () => void;
-		onAct: () => void;
+		/** Given with `act`, and only then. */
+		onAct?: () => void;
 	} = $props();
 
 	const id = $props.id();
 	let safe = $state<HTMLButtonElement>();
 	let middle = $state<HTMLButtonElement>();
 
-	$effect(() => (focus === 'neutral' && middle ? middle : safe)?.focus());
+	$effect(() => {
+		if (focus !== 'none') (focus === 'neutral' && middle ? middle : safe)?.focus();
+	});
 
 	function keys(event: KeyboardEvent) {
 		if (event.key !== 'Escape') return;

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { fully } from '$lib/format';
 	import { clearHistory, deleteVersion, restoreVersion, revealVersion, version } from '$lib/ipc';
-	import type { Entry, Version } from '$lib/model';
+	import type { Entry, Span, Version } from '$lib/model';
 	import Confirm from './Confirm.svelte';
 	import Icon from './Icon.svelte';
 	import ProtectedValue from './ProtectedValue.svelte';
@@ -22,6 +22,7 @@
 		versions,
 		now,
 		readOnly,
+		onCopy,
 		onVersions,
 		onChanged,
 		onFailure
@@ -32,6 +33,10 @@
 		/** A database Coffer will not write back: a version can be read and not
 		 * restored, dropped or cleared. */
 		readOnly: boolean;
+		/** Copies a field of a version in Rust, whole or the part of it the
+		 * reader selected. A value read here is as much a secret as the one in
+		 * the entry, and goes to the clipboard the same way. */
+		onCopy: (index: number, field: string, range: Span | null) => void;
 		onVersions: (versions: Version[]) => void;
 		onChanged: (entry: Entry) => Promise<void>;
 		onFailure: (thrown: unknown) => void;
@@ -191,6 +196,7 @@
 											label="{field.name} as it was"
 											read={(of, name) => revealVersion(of, at, name)}
 											bare
+											onCopy={(range) => onCopy(at, field.name, range)}
 											{onFailure}
 										/>
 									{:else}

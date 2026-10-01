@@ -23,7 +23,13 @@ beforeEach(() => {
 	ipc.revealVersion.mockResolvedValue(OLD);
 });
 
-afterEach(() => host.remove());
+afterEach(() => {
+	host.remove();
+	// A selection one test made is still standing in the next one otherwise,
+	// and a stand-in for the selection has to go before it can be cleared.
+	vi.restoreAllMocks();
+	document.getSelection()?.removeAllRanges();
+});
 
 const listed = [
 	version({ index: 0, modified: '2021-06-02T12:00:00Z' }),
@@ -39,6 +45,7 @@ function show(props: Record<string, unknown> = {}) {
 			versions: listed,
 			now: new Date('2026-08-29T14:30:00Z'),
 			readOnly: false,
+			onCopy: vi.fn(),
 			onVersions: vi.fn(),
 			onChanged: vi.fn(),
 			onFailure: vi.fn(),
@@ -221,6 +228,60 @@ it('puts a revealed value in the row it was asked for', async () => {
 });
 
 /**
+ * A value read in a previous version is copied the way the entry's own is:
+ * through Rust, by the version's position and the field's name, and the part
+ * the reader selected rather than the system's plain pasteboard write. The
+ * eye's row answers Cmd+C, and the copy beside it the pointer.
+ */
+it("copies a version's value through Rust, whole or the part selected", async () => {
+	ipc.version.mockResolvedValue(
+		entry({
+			fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+		})
+	);
+	const onCopy = vi.fn();
+
+	const component = show({ onCopy });
+	open();
+	button('View').click();
+	await vi.waitFor(() => expect(host.querySelector('[data-value]')).not.toBeNull());
+	flushSync();
+
+	const eye = host.querySelector<HTMLButtonElement>('[aria-label="Show Password as it was"]');
+	eye?.click();
+	await vi.waitFor(() => expect(host.textContent).toContain(OLD));
+	flushSync();
+
+	host.querySelector<HTMLButtonElement>('[aria-label="Copy Password as it was"]')?.click();
+	expect(onCopy).toHaveBeenLastCalledWith(2, 'Password', null);
+
+	const node = host.querySelector('[data-value]') as HTMLElement;
+	const range = document.createRange();
+	range.setStart(node.firstChild as Text, 8);
+	range.setEnd(node.firstChild as Text, 16);
+	document.getSelection()?.removeAllRanges();
+	document.getSelection()?.addRange(range);
+	const copied = new ClipboardEvent('copy', { bubbles: true, cancelable: true });
+	node.dispatchEvent(copied);
+	expect(copied.defaultPrevented, 'the system copied an old password').toBe(true);
+	expect(onCopy).toHaveBeenLastCalledWith(2, 'Password', { from: 8, to: 16 });
+	document.getSelection()?.removeAllRanges();
+
+	const pressed = new KeyboardEvent('keydown', {
+		key: 'c',
+		metaKey: true,
+		bubbles: true,
+		cancelable: true
+	});
+	host.querySelector('[aria-label="Hide Password as it was"]')?.dispatchEvent(pressed);
+	expect(pressed.defaultPrevented).toBe(true);
+	expect(onCopy).toHaveBeenLastCalledWith(2, 'Password', null);
+	expect(onCopy).toHaveBeenCalledTimes(3);
+
+	return unmount(component);
+});
+
+/**
  * A version is addressed by its position, and dropping one moves every position
  * after it. A panel left open on a number that now names a different version
  * would show one version's fields and reveal another's values.
@@ -309,6 +370,7 @@ it('takes a question about a version away when the list underneath it changes', 
 		versions: listed,
 		now: new Date('2026-08-29T14:30:00Z'),
 		readOnly: false,
+		onCopy: vi.fn(),
 		onVersions: vi.fn(),
 		onChanged: vi.fn(),
 		onFailure: vi.fn()

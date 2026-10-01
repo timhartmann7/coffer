@@ -1,6 +1,6 @@
 import { createRawSnippet, flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { entry, field, group, row } from '$lib/fixtures';
+import { entry, field, group, row, version } from '$lib/fixtures';
 import Vault from './Vault.svelte';
 
 const ipc = vi.hoisted(() => ({
@@ -8,6 +8,7 @@ const ipc = vi.hoisted(() => ({
 	tree: vi.fn(),
 	setField: vi.fn(),
 	copy: vi.fn(),
+	copyVersion: vi.fn(),
 	createEntry: vi.fn(),
 	createGroup: vi.fn(),
 	deleteEntry: vi.fn(),
@@ -75,6 +76,10 @@ beforeEach(() => {
 
 afterEach(() => {
 	host.remove();
+	// A selection one test made is still standing in the next one otherwise,
+	// and a stand-in for the selection has to go before it can be cleared.
+	vi.restoreAllMocks();
+	document.getSelection()?.removeAllRanges();
 });
 
 /** The settings screen, which this component only ever renders and never
@@ -119,6 +124,15 @@ function type(query: string) {
 	field.value = query;
 	field.dispatchEvent(new Event('input', { bubbles: true }));
 	flushSync();
+}
+
+/** An edit the way a reader makes one: typed, and then the focus leaving. A
+ * field only clicked through writes nothing, so a value set without the typing
+ * is not an edit. */
+function write(field: HTMLInputElement, value: string) {
+	field.value = value;
+	field.dispatchEvent(new Event('input', { bubbles: true }));
+	field.dispatchEvent(new Event('blur'));
 }
 
 it('shows every entry the vault holds except the ones that were deleted', () => {
@@ -219,10 +233,10 @@ it('copies the open entry through Rust on the keyboard', async () => {
 	flushSync();
 
 	window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', metaKey: true }));
-	await vi.waitFor(() => expect(ipc.copy).toHaveBeenCalledWith(kept.id, 'Password'));
+	await vi.waitFor(() => expect(ipc.copy).toHaveBeenCalledWith(kept.id, 'Password', null));
 
 	window.dispatchEvent(new KeyboardEvent('keydown', { key: 'b', metaKey: true }));
-	await vi.waitFor(() => expect(ipc.copy).toHaveBeenCalledWith(kept.id, 'UserName'));
+	await vi.waitFor(() => expect(ipc.copy).toHaveBeenCalledWith(kept.id, 'UserName', null));
 
 	await tick();
 	expect(reads()).toContain('Copied. The clipboard clears in 1 minute.');
@@ -257,7 +271,129 @@ it('leaves a copy the reader selected alone', async () => {
 
 	vi.spyOn(document, 'getSelection').mockReturnValue({ isCollapsed: true } as Selection);
 	window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', metaKey: true }));
-	await vi.waitFor(() => expect(ipc.copy).toHaveBeenCalledWith(kept.id, 'Password'));
+	await vi.waitFor(() => expect(ipc.copy).toHaveBeenCalledWith(kept.id, 'Password', null));
+
+	return unmount(component);
+});
+
+/** Opens node-3 with the fields given, and waits until the pane is drawn. */
+async function showing(fields: ReturnType<typeof field>[]) {
+	ipc.entry.mockResolvedValue(entry({ id: kept.id, group: root.id, fields }));
+	const component = open();
+	flushSync();
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('node-3'))
+		?.click();
+	await vi.waitFor(() => expect(ipc.entry).toHaveBeenCalled());
+	await tick();
+	flushSync();
+	return component;
+}
+
+/**
+ * Cmd+C copies what the reader is looking at. With the focus on the row of a
+ * field of their own - which is where Show puts it - that is the field, and
+ * the window does not go on to copy the password as well.
+ */
+it('copies the value on the row the focus is on, not the password', async () => {
+	ipc.reveal.mockResolvedValue('sk-live-9f3a2b');
+	const component = await showing([
+		field({ name: 'Password', kind: 'password', value: null, empty: false }),
+		field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false })
+	]);
+
+	host.querySelector<HTMLButtonElement>('[aria-label="Show API token"]')?.click();
+	await vi.waitFor(() =>
+		expect(document.activeElement?.getAttribute('aria-label')).toBe('Hide API token')
+	);
+
+	const pressed = new KeyboardEvent('keydown', {
+		key: 'c',
+		metaKey: true,
+		bubbles: true,
+		cancelable: true
+	});
+	document.activeElement?.dispatchEvent(pressed);
+	await vi.waitFor(() => expect(ipc.copy).toHaveBeenCalledWith(kept.id, 'API token', null));
+	expect(ipc.copy).toHaveBeenCalledTimes(1);
+	await tick();
+	expect(reads()).toContain('Copied. The clipboard clears in 1 minute.');
+
+	return unmount(component);
+});
+
+/**
+ * The reader selected part of a revealed password and pressed Cmd+C. The
+ * window steps aside for the selection, the system fires its copy at the node
+ * holding it, and the node sends that part to Rust instead of to the plain
+ * pasteboard - with the same notice as any other copy.
+ */
+it('hands the part of a revealed value the reader selected to Rust, and says so', async () => {
+	ipc.reveal.mockResolvedValue('correct horse battery staple');
+	const component = await showing([
+		field({ name: 'Password', kind: 'password', value: null, empty: false })
+	]);
+
+	[...host.querySelectorAll('button')].find((each) => each.textContent?.trim() === 'Show')?.click();
+	const node = host.querySelector('[data-value]') as HTMLElement;
+	await vi.waitFor(() => expect(node.textContent).toBe('correct horse battery staple'));
+
+	const range = document.createRange();
+	range.setStart(node.firstChild as Text, 8);
+	range.setEnd(node.firstChild as Text, 13);
+	document.getSelection()?.removeAllRanges();
+	document.getSelection()?.addRange(range);
+
+	const pressed = new KeyboardEvent('keydown', {
+		key: 'c',
+		metaKey: true,
+		bubbles: true,
+		cancelable: true
+	});
+	window.dispatchEvent(pressed);
+	expect(pressed.defaultPrevented, 'the window copied the password over the selection').toBe(false);
+
+	const copied = new ClipboardEvent('copy', { bubbles: true, cancelable: true });
+	node.dispatchEvent(copied);
+	expect(copied.defaultPrevented, 'the system copied a secret').toBe(true);
+	await vi.waitFor(() =>
+		expect(ipc.copy).toHaveBeenCalledWith(kept.id, 'Password', { from: 8, to: 13 })
+	);
+	expect(ipc.copy).toHaveBeenCalledTimes(1);
+	await tick();
+	expect(reads()).toContain('Copied. The clipboard clears in 1 minute.');
+
+	return unmount(component);
+});
+
+/** A previous version's value goes through a command of its own, which finds
+ * the value by the version's position, and gets the same notice. */
+it('copies a value out of a previous version through Rust', async () => {
+	ipc.versions.mockResolvedValue([version({ index: 0, modified: '2025-06-02T12:00:00Z' })]);
+	ipc.version.mockResolvedValue(
+		entry({ fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })] })
+	);
+	ipc.copyVersion.mockResolvedValue(60);
+	const component = await showing([
+		field({ name: 'Password', kind: 'password', value: null, empty: false })
+	]);
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('Versions'))
+		?.click();
+	flushSync();
+	[...host.querySelectorAll('button')].find((each) => each.textContent?.trim() === 'View')?.click();
+	await vi.waitFor(() =>
+		expect(host.querySelector('[aria-label="Copy Password as it was"]')).not.toBeNull()
+	);
+	host.querySelector<HTMLButtonElement>('[aria-label="Copy Password as it was"]')?.click();
+
+	await vi.waitFor(() =>
+		expect(ipc.copyVersion).toHaveBeenCalledWith(kept.id, 0, 'Password', null)
+	);
+	expect(ipc.copy).not.toHaveBeenCalled();
+	await tick();
+	expect(reads()).toContain('Copied. The clipboard clears in 1 minute.');
 
 	return unmount(component);
 });
@@ -365,8 +501,7 @@ it('asks which version to keep when the file changed underneath it', async () =>
 
 	// An edit, which is what triggers a save.
 	const title = host.querySelector('h1 input') as HTMLInputElement;
-	title.value = 'node-4';
-	title.dispatchEvent(new Event('blur'));
+	write(title, 'node-4');
 
 	await vi.waitFor(() =>
 		expect(host.textContent).toContain('The file changed while you were working')
@@ -601,8 +736,7 @@ it('redraws the list after an entry is edited', async () => {
 	flushSync();
 
 	const title = host.querySelector('h1 input') as HTMLInputElement;
-	title.value = 'node-4';
-	title.dispatchEvent(new Event('blur'));
+	write(title, 'node-4');
 
 	await vi.waitFor(() => expect(ipc.tree).toHaveBeenCalled());
 	await vi.waitFor(() =>
@@ -988,8 +1122,7 @@ it('keeps saying not saved after a write that only raised a notice', async () =>
 	flushSync();
 
 	const title = host.querySelector('h1 input') as HTMLInputElement;
-	title.value = 'node-4';
-	title.dispatchEvent(new Event('blur'));
+	write(title, 'node-4');
 
 	await vi.waitFor(() => expect(host.textContent).toContain('Not saved'));
 
@@ -1298,8 +1431,7 @@ it('withdraws the offer when another change reaches the file', async () => {
 		ipc.setField.mockResolvedValue(withPin(kept.id));
 
 		const title = host.querySelector('h1 input') as HTMLInputElement;
-		title.value = 'node-4';
-		title.dispatchEvent(new Event('blur'));
+		write(title, 'node-4');
 		await settled();
 		expect(ipc.save).toHaveBeenCalledTimes(2);
 

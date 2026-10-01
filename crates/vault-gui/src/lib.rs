@@ -134,6 +134,7 @@ pub fn run() {
             commands::versions,
             commands::version,
             commands::reveal_version,
+            commands::copy_version,
             commands::restore_version,
             commands::before_removal,
             commands::delete_version,
