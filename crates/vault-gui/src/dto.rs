@@ -343,6 +343,31 @@ impl Version {
     }
 }
 
+/// An entry's previous versions, oldest first, with the revision of the vault
+/// they were listed at. Every position taken from the list goes back to Rust
+/// with that revision; see [`crate::session::Session::at`].
+#[derive(Serialize)]
+pub struct Versions {
+    pub revision: u64,
+    pub versions: Vec<Version>,
+}
+
+impl Versions {
+    pub fn of(revision: u64, versions: &[model::Version]) -> Versions {
+        Versions {
+            revision,
+            versions: versions.iter().map(Version::of).collect(),
+        }
+    }
+}
+
+/// One version's position, with the revision of the vault it was read at.
+#[derive(Serialize)]
+pub struct Position {
+    pub index: usize,
+    pub revision: u64,
+}
+
 /// What a command that changed the shape of the vault hands back: the tree as
 /// it is now, and the entry the change was about.
 #[derive(Serialize)]

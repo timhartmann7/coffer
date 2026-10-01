@@ -30,7 +30,16 @@
 	import { called } from '$lib/format';
 	import { copying, typing } from '$lib/keys';
 	import { RISE, span } from '$lib/motion';
-	import type { Database, Entry, EntryRow, Group, History, Rival, Span } from '$lib/model';
+	import type {
+		Database,
+		Entry,
+		EntryRow,
+		Group,
+		History,
+		Position,
+		Rival,
+		Span
+	} from '$lib/model';
 	import { index, search } from '$lib/search';
 	import {
 		entriesOf,
@@ -282,6 +291,36 @@
 	}
 
 	/**
+	 * Takes the versions of the entry in the pane off the screen until they are
+	 * read again.
+	 *
+	 * For a list that is known to be out of date: after a change to the entry
+	 * has landed and before its save is back, and after Rust refused a position
+	 * from it. A save prunes, a version is addressed by its position, and the
+	 * list from before one was drawn and pressable for the whole second the save
+	 * held Rust: its trash dropped the version next to the one on its row, for
+	 * good. With no list there is nothing to press, and no number beside
+	 * "Versions".
+	 */
+	function unread(id: string) {
+		if (pane?.id === id) pane = { ...pane, history: null };
+	}
+
+	/**
+	 * Reads the versions of the entry in the pane back after a write.
+	 *
+	 * After the save, not before it: a save brings every entry's history inside
+	 * the database's limits, and a version is addressed by its position, so the
+	 * list read before a save can name versions that are no longer there. Rust
+	 * refuses a position read before any change since (see `Position`), so this
+	 * follows every write, whichever entry it was to - a list not read again is
+	 * one whose every press would only be refused.
+	 */
+	async function reread() {
+		if (showing !== null) await list(showing);
+	}
+
+	/**
 	 * Writes the vault back after a change.
 	 *
 	 * There is no save button, so this is what one means: the change is already
@@ -315,6 +354,7 @@
 		} finally {
 			saving = false;
 		}
+		await reread();
 	}
 
 	/**
@@ -326,25 +366,20 @@
 	 */
 	async function changed(entry: Entry) {
 		land(entry);
+		unread(entry.id);
 		changedAt = new Date();
 		await persist();
-		await redraw(entry.id);
+		await redraw();
 	}
 
 	/**
-	 * Reads back what the save left.
+	 * Reads back the tree the save left.
 	 *
-	 * After the save, not before it: a save brings every entry's history inside
-	 * the database's limits, and a version is addressed by its position, so the
-	 * list read before a save can name versions that are no longer there.
-	 *
-	 * The versions only while the pane is still on the entry, and the tree in
-	 * any case. The tree is the whole vault's rather than the entry's, and a
-	 * reader who moved on during the save still has the entry's row in the list,
-	 * which has to say what the file now says.
+	 * The tree is the whole vault's rather than the entry's, and a reader who
+	 * moved on during the save still has the entry's row in the list, which has
+	 * to say what the file now says.
 	 */
-	async function redraw(id: string) {
-		await list(id);
+	async function redraw() {
 		try {
 			onTree(await loadTree());
 		} catch (thrown) {
@@ -358,7 +393,7 @@
 		listed(history);
 		changedAt = new Date();
 		await persist();
-		await redraw(history.entry);
+		await redraw();
 	}
 
 	/** The tree came back changed. */
@@ -465,7 +500,9 @@
 		if (!opened) return;
 		const id = opened.id;
 		try {
-			await reshaped(await putBackEntry(id));
+			const tree = await putBackEntry(id);
+			unread(id);
+			await reshaped(tree);
 			await read(id);
 		} catch (thrown) {
 			failed(thrown);
@@ -583,25 +620,30 @@
 	 */
 	async function empty() {
 		emptying = false;
+		let tree: Group;
+		let stayed = false;
 		try {
-			const tree = await emptyRecycleBin();
-			pane = null;
-			await reshaped(tree);
+			tree = await emptyRecycleBin();
 		} catch (thrown) {
-			if (asFailure(thrown).code === 'attachmentInHistory') {
-				// The refusal is about what stayed, not about what went: emptying
-				// the bin is all-or-nothing per entry and the ones that could go
-				// are already out of the vault in memory. So this is read back and
-				// written like any other change - a screen that only reported the
-				// refusal drew a bin that was emptier than the file, and lost the
-				// erasures at the next lock.
-				pane = null;
-				await reshaped(await loadTree().catch(() => root));
-				warn('Some of it stayed: open what is left in the bin and remove its file first.');
-			} else {
+			if (asFailure(thrown).code !== 'attachmentInHistory') {
 				failed(thrown);
+				return;
 			}
+			// The refusal is about what stayed, not about what went: emptying
+			// the bin is all-or-nothing per entry and the ones that could go
+			// are already out of the vault in memory. So this is read back and
+			// written like any other change - a screen that only reported the
+			// refusal drew a bin that was emptier than the file, and lost the
+			// erasures at the next lock.
+			tree = await loadTree().catch(() => root);
+			stayed = true;
 		}
+		// The pane goes only with the entry in it. Rust may answer a second
+		// later, behind a save, and an entry the reader opened from outside the
+		// bin in that second was never in it.
+		if (showing !== null && rowOf(tree, showing) === null) pane = null;
+		await reshaped(tree);
+		if (stayed) warn('Some of it stayed: open what is left in the bin and remove its file first.');
 	}
 
 	async function takeTheirs() {
@@ -635,6 +677,7 @@
 			// holding the version the copy was made from - which is still the
 			// only one, and can still be written back where it belongs.
 			if (!missing) await takeTheirs();
+			else await reread();
 			missing = false;
 		} catch (thrown) {
 			failed(thrown);
@@ -650,6 +693,7 @@
 			conflict = null;
 			missing = false;
 			unsaved = false;
+			await reread();
 		} catch (thrown) {
 			failed(thrown);
 		} finally {
@@ -663,7 +707,7 @@
 	 * in the window comes through here, so every one of them gets the same
 	 * concealed, self-clearing pasteboard write and the same notice.
 	 */
-	async function copy(entry: string, name: string, range: Span | null = null, version?: number) {
+	async function copy(entry: string, name: string, range: Span | null = null, version?: Position) {
 		try {
 			const seconds =
 				version === undefined
@@ -695,7 +739,27 @@
 	}
 
 	function failed(thrown: unknown) {
-		warn(asFailure(thrown).message);
+		const refused = asFailure(thrown);
+		if (refused.code === 'versionsChanged') {
+			void outdated();
+			return;
+		}
+		warn(refused.message);
+	}
+
+	/**
+	 * A version was pressed in a list the vault has changed since - behind a
+	 * save, usually, which Rust answers first - and Rust refused its position
+	 * rather than act on whichever version had moved into it. Nothing was done,
+	 * so the reader is told why, and the list is read again to choose from.
+	 */
+	async function outdated() {
+		warn(
+			'The versions changed while you were choosing, so nothing was done. Choose again from the list as it is now.'
+		);
+		if (showing === null) return;
+		unread(showing);
+		await list(showing);
 	}
 
 	/**
@@ -830,7 +894,7 @@
 	async function fieldRemoved(entry: string, name: string) {
 		if (unsaved) return;
 		const said = `Field “${name}” removed`;
-		let holding: number | null;
+		let holding: Position | null;
 		try {
 			holding = await beforeRemoval(entry, name);
 		} catch (thrown) {
@@ -844,11 +908,22 @@
 		}
 		offer(said, async () => {
 			const still = await beforeRemoval(entry, name);
-			if (still === null) {
+			// Something that reaches Rust between the two answers moves the
+			// vault on, and the restore is refused rather than acting on
+			// whatever sits at that position now. Either way the removal is no
+			// longer the last thing that happened to the entry.
+			const restored =
+				still === null
+					? null
+					: await restoreVersion(entry, still).catch((thrown: unknown) => {
+							if (asFailure(thrown).code === 'versionsChanged') return null;
+							throw thrown;
+						});
+			if (restored === null) {
 				warn('The entry has changed since, so that can no longer be undone.');
 				return;
 			}
-			await changed(await restoreVersion(entry, still));
+			await changed(restored);
 		});
 	}
 

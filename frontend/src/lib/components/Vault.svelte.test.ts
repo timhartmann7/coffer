@@ -50,10 +50,14 @@ vi.mock('$lib/ipc', () => ipc);
 
 const database = { path: '/Users/someone/personal.kdbx', name: 'personal' };
 
+/** The revision of the vault a list of versions here was read at, unless a
+ * test says otherwise. */
+const REVISION = 1;
+
 /** What the commands that list versions answer, paired with the entry they were
  * asked about the way `ipc.ts` pairs them. */
-function listing(versions: Version[] = []) {
-	return (entry: string) => Promise.resolve({ entry, versions });
+function listing(versions: Version[] = [], revision = REVISION) {
+	return (entry: string) => Promise.resolve({ entry, revision, versions });
 }
 
 const kept = row({ title: 'node-3', username: 'deploy', tags: ['prod'] });
@@ -400,7 +404,12 @@ it('copies a value out of a previous version through Rust', async () => {
 	host.querySelector<HTMLButtonElement>('[aria-label="Copy Password as it was"]')?.click();
 
 	await vi.waitFor(() =>
-		expect(ipc.copyVersion).toHaveBeenCalledWith(kept.id, 0, 'Password', null)
+		expect(ipc.copyVersion).toHaveBeenCalledWith(
+			kept.id,
+			{ index: 0, revision: REVISION },
+			'Password',
+			null
+		)
 	);
 	expect(ipc.copy).not.toHaveBeenCalled();
 	await tick();
@@ -1190,11 +1199,14 @@ async function settled() {
 	flushSync();
 }
 
+/** Where Rust says the version a removal wrote sits, in the undo tests. */
+const WROTE = { index: 3, revision: 9 };
+
 /**
  * Opens node-3, takes its PIN off, and waits for whatever the window then says.
  * `answer` is what Rust says about the version the removal wrote.
  */
-async function removePin(answer: number | null) {
+async function removePin(answer: typeof WROTE | null) {
 	ipc.entry.mockImplementation((id: string) => Promise.resolve(withPin(id)));
 	ipc.removeField.mockResolvedValue(
 		entry({
@@ -1230,7 +1242,7 @@ async function removePin(answer: number | null) {
 it('offers a removed field back and restores the version the removal wrote', async () => {
 	vi.useFakeTimers();
 	try {
-		const component = await removePin(3);
+		const component = await removePin(WROTE);
 
 		expect(toast()?.textContent).toContain('Field “PIN” removed');
 		expect(undo()?.textContent).toContain('Undo');
@@ -1251,7 +1263,7 @@ it('offers a removed field back and restores the version the removal wrote', asy
 
 		expect(ipc.beforeRemoval).toHaveBeenCalledTimes(2);
 		expect(ipc.restoreVersion).toHaveBeenCalledTimes(1);
-		expect(ipc.restoreVersion).toHaveBeenCalledWith(kept.id, 3);
+		expect(ipc.restoreVersion).toHaveBeenCalledWith(kept.id, WROTE);
 		// The undo is a change like any other, and reaches the file.
 		expect(ipc.save).toHaveBeenCalledTimes(2);
 
@@ -1270,7 +1282,7 @@ it('offers a removed field back and restores the version the removal wrote', asy
 it('withdraws the offer once its eight seconds are up', async () => {
 	vi.useFakeTimers();
 	try {
-		const component = await removePin(3);
+		const component = await removePin(WROTE);
 
 		await vi.advanceTimersByTimeAsync(7_900);
 		flushSync();
@@ -1300,7 +1312,7 @@ it('withdraws the offer once its eight seconds are up', async () => {
 it('takes the removal back on Cmd+Z, except in a field being written', async () => {
 	vi.useFakeTimers();
 	try {
-		const component = await removePin(3);
+		const component = await removePin(WROTE);
 
 		const typed = press('z', search());
 		await settled();
@@ -1314,7 +1326,7 @@ it('takes the removal back on Cmd+Z, except in a field being written', async () 
 
 		expect(press('z').defaultPrevented).toBe(true);
 		await settled();
-		expect(ipc.restoreVersion).toHaveBeenCalledWith(kept.id, 3);
+		expect(ipc.restoreVersion).toHaveBeenCalledWith(kept.id, WROTE);
 
 		await unmount(component);
 	} finally {
@@ -1327,7 +1339,7 @@ it('takes the removal back on Cmd+Z, except in a field being written', async () 
 it('runs an undo once however many ways it is asked for', async () => {
 	vi.useFakeTimers();
 	try {
-		const component = await removePin(3);
+		const component = await removePin(WROTE);
 
 		const button = undo();
 		button?.click();
@@ -1375,7 +1387,7 @@ it('offers nothing back when the save pruned the version', async () => {
 it('withdraws the offer when another entry is opened', async () => {
 	vi.useFakeTimers();
 	try {
-		const component = await removePin(3);
+		const component = await removePin(WROTE);
 
 		[...host.querySelectorAll('button')]
 			.find((each) => each.textContent?.includes('Postgres'))
@@ -1400,7 +1412,7 @@ it('withdraws the offer when another entry is opened', async () => {
 it('withdraws the offer when the entry is put away', async () => {
 	vi.useFakeTimers();
 	try {
-		const component = await removePin(3);
+		const component = await removePin(WROTE);
 
 		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
 		await settled();
@@ -1419,7 +1431,7 @@ it('withdraws the offer when the entry is put away', async () => {
 it('withdraws the offer when a newer notice takes its place', async () => {
 	vi.useFakeTimers();
 	try {
-		const component = await removePin(3);
+		const component = await removePin(WROTE);
 
 		press('c');
 		await settled();
@@ -1441,7 +1453,7 @@ it('withdraws the offer when a newer notice takes its place', async () => {
 it('withdraws the offer when another change reaches the file', async () => {
 	vi.useFakeTimers();
 	try {
-		const component = await removePin(3);
+		const component = await removePin(WROTE);
 		ipc.setField.mockResolvedValue(withPin(kept.id));
 
 		const title = host.querySelector('h1 input') as HTMLInputElement;
@@ -1468,7 +1480,7 @@ it('offers nothing over a save that failed', async () => {
 	vi.useFakeTimers();
 	try {
 		ipc.save.mockRejectedValue({ code: 'other', message: 'No space left on device' });
-		const component = await removePin(3);
+		const component = await removePin(WROTE);
 
 		expect(toast()?.textContent).toContain('No space left on device');
 		expect(undo()).toBeNull();
@@ -1486,7 +1498,7 @@ it('offers nothing over a save that failed', async () => {
 it('restores nothing when the history moved before the undo reached it', async () => {
 	vi.useFakeTimers();
 	try {
-		const component = await removePin(3);
+		const component = await removePin(WROTE);
 		ipc.beforeRemoval.mockResolvedValue(null);
 
 		undo()?.click();
@@ -1505,7 +1517,7 @@ it('restores nothing when the history moved before the undo reached it', async (
 it('leaves nothing to undo once the window is gone', async () => {
 	vi.useFakeTimers();
 	try {
-		const component = await removePin(3);
+		const component = await removePin(WROTE);
 		await unmount(component);
 
 		press('z');
@@ -2376,7 +2388,7 @@ it('never draws the versions of the entry that was left under the next one', asy
 	ipc.entry.mockImplementation((id: string) =>
 		Promise.resolve(readOf(id === gmail.id ? gmail : drive))
 	);
-	const gmails = Promise.withResolvers<{ entry: string; versions: Version[] }>();
+	const gmails = Promise.withResolvers<{ entry: string; revision: number; versions: Version[] }>();
 	ipc.versions.mockImplementation((id: string) =>
 		id === gmail.id
 			? gmails.promise
@@ -2393,6 +2405,7 @@ it('never draws the versions of the entry that was left under the next one', asy
 		await settled();
 		gmails.resolve({
 			entry: gmail.id,
+			revision: REVISION,
 			versions: [
 				version({ index: 0, modified: '2021-06-02T12:00:00Z' }),
 				version({ index: 1, modified: '2022-06-02T12:00:00Z' })
@@ -2420,7 +2433,7 @@ it('restores and deletes from the list of the entry on the screen', async () => 
 	ipc.entry.mockImplementation((id: string) =>
 		Promise.resolve(readOf(id === gmail.id ? gmail : drive))
 	);
-	const gmails = Promise.withResolvers<{ entry: string; versions: Version[] }>();
+	const gmails = Promise.withResolvers<{ entry: string; revision: number; versions: Version[] }>();
 	ipc.versions.mockImplementation((id: string) =>
 		id === gmail.id
 			? gmails.promise
@@ -2437,6 +2450,7 @@ it('restores and deletes from the list of the entry on the screen', async () => 
 		await settled();
 		gmails.resolve({
 			entry: gmail.id,
+			revision: REVISION,
 			versions: [0, 1, 2].map((index) =>
 				version({ index, modified: `202${index}-06-02T12:00:00Z` })
 			)
@@ -2448,14 +2462,14 @@ it('restores and deletes from the list of the entry on the screen', async () => 
 		pressed('Restore', pane() ?? host);
 		await settled();
 		expect(ipc.restoreVersion).toHaveBeenCalledTimes(1);
-		expect(ipc.restoreVersion).toHaveBeenCalledWith(drive.id, 0);
+		expect(ipc.restoreVersion).toHaveBeenCalledWith(drive.id, { index: 0, revision: REVISION });
 
 		host.querySelector<HTMLButtonElement>('[aria-label="Delete this version"]')?.click();
 		flushSync();
 		pressed('Drop it');
 		await settled();
 		expect(ipc.deleteVersion).toHaveBeenCalledTimes(1);
-		expect(ipc.deleteVersion).toHaveBeenCalledWith(drive.id, 0);
+		expect(ipc.deleteVersion).toHaveBeenCalledWith(drive.id, { index: 0, revision: REVISION });
 	} finally {
 		await unmount(component);
 		vi.useRealTimers();
@@ -2749,7 +2763,7 @@ it('offers a removed field back only while its entry is still open', async () =>
 				fields: withPin(kept.id).fields.filter((each) => each.name !== 'PIN')
 			})
 		);
-		const naming = Promise.withResolvers<number | null>();
+		const naming = Promise.withResolvers<typeof WROTE | null>();
 		ipc.beforeRemoval.mockReturnValueOnce(naming.promise);
 
 		const component = open();
@@ -2766,7 +2780,7 @@ it('offers a removed field back only while its entry is still open', async () =>
 			.find((each) => each.textContent?.includes('Postgres'))
 			?.click();
 		await settled();
-		naming.resolve(3);
+		naming.resolve(WROTE);
 		await settled();
 
 		expect(undo()).toBeNull();
@@ -2777,5 +2791,307 @@ it('offers a removed field back only while its entry is still open', async () =>
 		await unmount(component);
 	} finally {
 		vi.useRealTimers();
+	}
+});
+
+/** Buttons in the entry pane whose words are `label` and nothing else. */
+function inPane(label: string): HTMLButtonElement[] {
+	return [...(pane()?.querySelectorAll('button') ?? [])].filter(
+		(each) => each.textContent?.trim() === label
+	);
+}
+
+const trashes = () =>
+	pane()?.querySelectorAll<HTMLButtonElement>('[aria-label="Delete this version"]') ?? [];
+
+/** What the Versions heading says: the word, and the count once there is a list. */
+const heading = () => inPaneStarting('Versions')?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+
+function inPaneStarting(words: string): HTMLButtonElement | undefined {
+	return [...(pane()?.querySelectorAll('button') ?? [])].find((each) =>
+		each.textContent?.trim().startsWith(words)
+	);
+}
+
+/** node-3 read, its three versions listed, and its Versions block open. */
+async function openVersions() {
+	ipc.entry.mockImplementation((id: string) => Promise.resolve(titled(id, 'node-3')));
+	ipc.versions.mockImplementation(
+		listing([0, 1, 2].map((index) => version({ index, modified: `202${index}-06-02T12:00:00Z` })))
+	);
+	ipc.setField.mockResolvedValue(titled(kept.id, 'node-4'));
+	pressed('node-3');
+	await settled();
+	inPaneStarting('Versions')?.click();
+	flushSync();
+	expect(heading()).toBe('Versions 3');
+	expect(trashes()).toHaveLength(3);
+}
+
+/**
+ * The blocker the review caught. An edit lands and is saved a second later,
+ * the save prunes the oldest version, and every position in the list from
+ * before it moves down by one. That list stayed drawn through the save, and
+ * its trash dropped the neighbour of the version on its row, for good. Now the
+ * list goes with the edit - rows, count and all - and comes back when the list
+ * read after the save does.
+ */
+it('draws no version to act on between an edit and the list read after its save', async () => {
+	const { component } = mounted(root);
+	try {
+		await openVersions();
+		const saving = Promise.withResolvers<void>();
+		ipc.save.mockReturnValueOnce(saving.promise);
+		ipc.versions.mockClear();
+
+		write(titleField() as HTMLInputElement, 'node-4');
+		await settled();
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+		expect(trashes()).toHaveLength(0);
+		expect(inPane('Restore')).toHaveLength(0);
+		expect(inPane('View')).toHaveLength(0);
+		expect(heading()).toBe('Versions');
+		expect(ipc.versions).not.toHaveBeenCalled();
+
+		saving.resolve();
+		await settled();
+		expect(ipc.versions).toHaveBeenCalledWith(kept.id);
+		expect(
+			ipc.save.mock.invocationCallOrder[0],
+			'the list was read before the save that moves it'
+		).toBeLessThan(ipc.versions.mock.invocationCallOrder[0]);
+		expect(heading()).toBe('Versions 3');
+		expect(trashes()).toHaveLength(3);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A question about dropping a version asks about a position, and an edit that
+ * lands under it is about to move every position. The question goes, and
+ * nothing is dropped. */
+it('takes a question about a version away when an edit lands, and drops nothing', async () => {
+	const { component } = mounted(root);
+	try {
+		await openVersions();
+		trashes()[0]?.click();
+		flushSync();
+		expect(paneReads()).toContain('Drop this version?');
+
+		const saving = Promise.withResolvers<void>();
+		ipc.save.mockReturnValueOnce(saving.promise);
+		write(titleField() as HTMLInputElement, 'node-4');
+		await settled();
+		expect(pane()?.querySelector('[data-confirm]')).toBeNull();
+
+		saving.resolve();
+		await settled();
+		expect(pane()?.querySelector('[data-confirm]')).toBeNull();
+		expect(ipc.deleteVersion).not.toHaveBeenCalled();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Restore pressed twice while its save holds Rust used to restore twice: the
+ * second press reached Rust after the save and put another version over the
+ * one chosen. */
+it('restores once when Restore is pressed again behind its save', async () => {
+	const { component } = mounted(root);
+	try {
+		await openVersions();
+		ipc.restoreVersion.mockResolvedValue(titled(kept.id, 'node-3'));
+		const saving = Promise.withResolvers<void>();
+		ipc.save.mockReturnValueOnce(saving.promise);
+
+		const restores = inPane('Restore');
+		restores[0]?.click();
+		restores[0]?.click();
+		restores[1]?.click();
+		await settled();
+		expect(inPane('Restore'), 'the list from before the restore is drawn').toHaveLength(0);
+
+		saving.resolve();
+		await settled();
+		expect(inPane('Restore')).toHaveLength(3);
+		expect(ipc.restoreVersion).toHaveBeenCalledTimes(1);
+		expect(ipc.restoreVersion).toHaveBeenCalledWith(kept.id, { index: 2, revision: REVISION });
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A version being read is read at a position, and an edit is about to move
+ * it. It closes when the edit lands, so no copy can take the value of the
+ * version that moved into its place. */
+it('closes a version being read when an edit lands, before anything is copied from it', async () => {
+	const { component } = mounted(root);
+	try {
+		ipc.version.mockResolvedValue(
+			entry({
+				fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+			})
+		);
+		await openVersions();
+		inPane('View')[0]?.click();
+		await settled();
+		const copyOld = () => pane()?.querySelector('[aria-label="Copy Password as it was"]');
+		expect(copyOld()).not.toBeNull();
+
+		ipc.save.mockReturnValueOnce(Promise.withResolvers<void>().promise);
+		write(titleField() as HTMLInputElement, 'node-4');
+		await settled();
+		expect(copyOld()).toBeNull();
+		expect(ipc.copyVersion).not.toHaveBeenCalled();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * A press on a list the vault has changed since reaches Rust with a revision
+ * that is not the vault's, and Rust refuses it and does nothing. The reader is
+ * told in a sentence, the list is read again, and the next press carries the
+ * revision of the list they can see.
+ */
+it('reads the versions again and says why when Rust finds the list out of date', async () => {
+	const { component } = mounted(root);
+	try {
+		await openVersions();
+		ipc.deleteVersion.mockRejectedValueOnce({
+			code: 'versionsChanged',
+			message: 'the versions changed after they were listed'
+		});
+		ipc.versions.mockImplementation(
+			listing([version({ index: 0, modified: '2025-06-02T12:00:00Z' })], REVISION + 1)
+		);
+
+		trashes()[0]?.click();
+		flushSync();
+		pressed('Drop it', pane() ?? host);
+		await settled();
+		expect(ipc.deleteVersion).toHaveBeenCalledTimes(1);
+		expect(toast()?.textContent).toContain(
+			'The versions changed while you were choosing, so nothing was done.'
+		);
+		expect(ipc.save, 'a refusal is not a change').not.toHaveBeenCalled();
+		expect(trashes()).toHaveLength(1);
+		expect(paneReads()).toContain('2025');
+
+		ipc.deleteVersion.mockImplementation(listing());
+		trashes()[0]?.click();
+		flushSync();
+		pressed('Drop it', pane() ?? host);
+		await settled();
+		expect(ipc.deleteVersion).toHaveBeenLastCalledWith(kept.id, {
+			index: 0,
+			revision: REVISION + 1
+		});
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Anything that reaches Rust between the undo's two answers moves the vault
+ * on, and Rust refuses the position rather than restore whatever sits there
+ * now. The removal is no longer the last thing that happened to the entry, and
+ * the reader is told so. */
+it('says a removal can no longer be undone when Rust finds its position out of date', async () => {
+	vi.useFakeTimers();
+	try {
+		const component = await removePin(WROTE);
+		ipc.restoreVersion.mockRejectedValue({
+			code: 'versionsChanged',
+			message: 'the versions changed after they were listed'
+		});
+
+		undo()?.click();
+		await settled();
+
+		expect(ipc.restoreVersion).toHaveBeenCalledTimes(1);
+		expect(toast()?.textContent).toContain('can no longer be undone');
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+
+		await unmount(component);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+/** Emptying the bin takes the entry in the pane with it when that entry was in
+ * the bin. */
+it('puts away an entry that went with the bin', async () => {
+	const { component } = mounted(root);
+	try {
+		ipc.entry.mockImplementation((id: string) => Promise.resolve(titled(id, 'thrown away')));
+		ipc.emptyRecycleBin.mockResolvedValue(
+			group({ ...root, sections: [root.sections[0], { ...root.sections[1], entries: [] }] })
+		);
+		pressed('Recycle Bin');
+		flushSync();
+		pressed('thrown away');
+		await settled();
+		expect(pane()).not.toBeNull();
+
+		pressed('Empty the bin');
+		flushSync();
+		pressed('Empty it');
+		await settled();
+		expect(pane()).toBeNull();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Rust may answer a second later, behind a save, and an entry opened from
+ * outside the bin in that second was never in it. It stays in the pane, whether
+ * the bin emptied or only some of it did. */
+it('leaves an entry opened meanwhile in the pane when the bin is emptied', async () => {
+	for (const refused of [false, true]) {
+		const { component } = mounted(root);
+		try {
+			const emptied = group({
+				...root,
+				sections: [root.sections[0], { ...root.sections[1], entries: [] }]
+			});
+			ipc.entry.mockImplementation((id: string) => Promise.resolve(titled(id, 'node-3')));
+			ipc.tree.mockResolvedValue(emptied);
+			const emptying = Promise.withResolvers<typeof emptied>();
+			ipc.emptyRecycleBin.mockReturnValueOnce(emptying.promise);
+
+			pressed('Recycle Bin');
+			flushSync();
+			pressed('Empty the bin');
+			flushSync();
+			pressed('Empty it');
+			flushSync();
+			pressed('All entries');
+			flushSync();
+			pressed('node-3');
+			await settled();
+			expect(titleField()?.value).toBe('node-3');
+
+			if (refused) {
+				emptying.reject({
+					code: 'attachmentInHistory',
+					message: 'earlier versions of an entry still hold that file in place'
+				});
+			} else {
+				emptying.resolve(emptied);
+			}
+			await settled();
+			expect(titleField()?.value, `refused: ${refused}`).toBe('node-3');
+			expect(ipc.save).toHaveBeenCalledTimes(1);
+		} finally {
+			await unmount(component);
+			vi.useRealTimers();
+			ipc.save.mockClear();
+		}
 	}
 });

@@ -73,6 +73,47 @@ struct Held {
     /// derivation takes a second and does not hold the lock, so an unlock that
     /// started before such a change must not finish over it.
     generation: u64,
+    /// Bumped every time the open vault is handed out to be changed, and when a
+    /// vault lands.
+    ///
+    /// A previous version is addressed by its position in its entry's history,
+    /// and nearly everything moves those positions: an edit adds one, a drop or
+    /// a restore renumbers the rest, a save prunes and re-sorts every entry's,
+    /// and a reload or another vault replaces them all. Rust answers one command
+    /// at a time and a save holds it for a key derivation, so a press made
+    /// behind a save used to reach the vault after the save had moved the
+    /// positions, and dropped, restored or copied a version nobody chose.
+    ///
+    /// So a list of versions goes to the window with this number, the window
+    /// sends it back with every position it acts on, and [`Session::at`] and
+    /// [`Session::at_mut`] refuse a number that is not this one, under the same
+    /// lock the action then runs in.
+    ///
+    /// Counted for every change the vault was handed out for rather than for
+    /// every history that moved. Which histories a change moved is the question
+    /// this is here to avoid answering, and a change that moved none costs the
+    /// window one more reading of a list. Nothing in it comes from what the
+    /// vault holds, and typing held as a draft is not a change to the vault.
+    revision: u64,
+}
+
+impl Held {
+    /// The open vault, to be changed: a new revision of it, whatever the
+    /// change turns out to be.
+    fn changing(&mut self) -> Result<&mut Open, Failure> {
+        let open = self.open.as_mut().ok_or_else(Failure::no_vault)?;
+        self.revision += 1;
+        Ok(open)
+    }
+
+    /// The open vault, when nothing has changed it since `revision`.
+    fn at(&self, revision: u64) -> Result<&Open, Failure> {
+        let open = self.open.as_ref().ok_or_else(Failure::no_vault)?;
+        if revision != self.revision {
+            return Err(Failure::versions_changed());
+        }
+        Ok(open)
+    }
 }
 
 /// An open vault, the file the reader chose for one of its entries while they
@@ -158,6 +199,7 @@ impl Session {
                 measured: None,
                 open: None,
                 generation: 0,
+                revision: 0,
             }),
             remembering,
         }
@@ -323,6 +365,9 @@ impl Session {
             let opened = vault.path().to_path_buf();
             held.database = Some(opened.clone());
             held.open = Some(Open::of(vault));
+            // Every position the window was sent was about the vault that was
+            // open before, if any was.
+            held.revision += 1;
             held.key_file = key_file;
             held.making = None;
             held.locked_by = None;
@@ -357,7 +402,7 @@ impl Session {
     pub fn promote(&self) -> Result<PathBuf, Failure> {
         let vault = {
             let mut held = self.held();
-            let open = held.open.as_mut().ok_or_else(Failure::no_vault)?;
+            let open = held.changing()?;
             open.vault.promote()?;
             let vault = open.vault.path().to_path_buf();
             held.database = Some(vault.clone());
@@ -505,14 +550,16 @@ impl Session {
     }
 
     /// Hands out one field's value from a previous version, on the same terms
-    /// as [`Session::reveal`] and to the same two callers.
+    /// as [`Session::reveal`] and to the same two callers, and only while the
+    /// vault is at the revision the version's position was read at.
     pub fn reveal_version(
         &self,
         id: EntryId,
         index: usize,
+        revision: u64,
         field: &str,
     ) -> Result<SecretValue, Failure> {
-        self.with(|vault| vault.reveal_version(id, index, field))?
+        self.at(revision, |vault| vault.reveal_version(id, index, field))?
             .ok_or_else(|| Failure::refused("that version has no such field"))
     }
 
@@ -524,6 +571,35 @@ impl Session {
         Ok(read(&open.vault))
     }
 
+    /// Borrows the open vault for an answer that names versions by position,
+    /// and says which revision of the vault the answer is about: see the
+    /// `revision` the session holds.
+    pub fn listing<T>(&self, read: impl FnOnce(&Vault) -> T) -> Result<(u64, T), Failure> {
+        let held = self.held();
+        let open = held.open.as_ref().ok_or_else(Failure::no_vault)?;
+        Ok((held.revision, read(&open.vault)))
+    }
+
+    /// Borrows the open vault to read a version by its position, when nothing
+    /// has changed the vault since `revision`, the one the position was read at.
+    pub fn at<T>(&self, revision: u64, read: impl FnOnce(&Vault) -> T) -> Result<T, Failure> {
+        let held = self.held();
+        Ok(read(&held.at(revision)?.vault))
+    }
+
+    /// Borrows the open vault to act on a version by its position, on the same
+    /// terms as [`Session::at`]. The check and the change happen under one
+    /// lock, so nothing can land between them and move the position.
+    pub fn at_mut<T>(
+        &self,
+        revision: u64,
+        change: impl FnOnce(&mut Vault) -> T,
+    ) -> Result<T, Failure> {
+        let mut held = self.held();
+        held.at(revision)?;
+        Ok(change(&mut held.changing()?.vault))
+    }
+
     /// Borrows the open vault to change it.
     ///
     /// The lock is held for the whole change, and a save holds it for the
@@ -532,9 +608,7 @@ impl Session {
     /// that is half way through a change would be drawing something that was
     /// never true.
     pub fn with_mut<T>(&self, change: impl FnOnce(&mut Vault) -> T) -> Result<T, Failure> {
-        let mut held = self.held();
-        let open = held.open.as_mut().ok_or_else(Failure::no_vault)?;
-        Ok(change(&mut open.vault))
+        Ok(change(&mut self.held().changing()?.vault))
     }
 
     /// Borrows the open vault to change it, the way [`Session::with_mut`]
@@ -554,7 +628,7 @@ impl Session {
         change: impl FnOnce(&mut Vault) -> T,
     ) -> Result<T, Failure> {
         let mut held = self.held();
-        let open = held.open.as_mut().ok_or_else(Failure::no_vault)?;
+        let open = held.changing()?;
         open.drafts.over(over, sequence);
         Ok(change(&mut open.vault))
     }
@@ -588,7 +662,7 @@ impl Session {
         data: Zeroizing<Vec<u8>>,
     ) -> Result<Attached, Failure> {
         let mut held = self.held();
-        let open = held.open.as_mut().ok_or_else(Failure::no_vault)?;
+        let open = held.changing()?;
         open.offered = None;
 
         let attached = open.vault.add_attachment(entry, &name, &data)?;
@@ -615,7 +689,7 @@ impl Session {
         answer: impl FnOnce(&mut Vault, EntryId, &str, &[u8]) -> Result<(), VaultError>,
     ) -> Result<(), Failure> {
         let mut held = self.held();
-        let open = held.open.as_mut().ok_or_else(Failure::no_vault)?;
+        let open = held.changing()?;
         let offered = open
             .offered
             .as_ref()
@@ -1012,13 +1086,13 @@ mod tests {
             .expect("the vault is open")
             .expect("the password is written");
 
-        let versions = session
-            .with(|vault| vault.versions(entry.id))
+        let (revision, versions) = session
+            .listing(|vault| vault.versions(entry.id))
             .expect("the vault is open");
         let newest = versions.last().expect("the edit kept a version").index;
 
         let old = session
-            .reveal_version(entry.id, newest, fields::PASSWORD)
+            .reveal_version(entry.id, newest, revision, fields::PASSWORD)
             .expect("the old password comes back");
         assert_eq!(old.expose_str(), Some("correct horse battery staple"));
         assert_eq!(
@@ -1029,18 +1103,271 @@ mod tests {
 
         assert!(
             session
-                .reveal_version(entry.id, newest, "no such field")
+                .reveal_version(entry.id, newest, revision, "no such field")
                 .is_err()
         );
         assert!(
             session
-                .reveal_version(entry.id, versions.len() + 5, fields::PASSWORD)
+                .reveal_version(entry.id, versions.len() + 5, revision, fields::PASSWORD)
                 .is_err()
         );
         assert!(
             session
-                .reveal_version(EntryId::from_uuid(uuid::Uuid::nil()), 0, fields::PASSWORD)
+                .reveal_version(
+                    EntryId::from_uuid(uuid::Uuid::nil()),
+                    0,
+                    revision,
+                    fields::PASSWORD
+                )
                 .is_err()
+        );
+    }
+
+    /// What an answer about a version came to: the code it was refused with,
+    /// or that it went through.
+    fn refusal<T>(answer: Result<T, Failure>) -> String {
+        match answer {
+            Ok(_) => "went through".to_owned(),
+            Err(failure) => code_of(&failure),
+        }
+    }
+
+    fn password_of(session: &Session, id: EntryId) -> Option<String> {
+        session
+            .reveal(id, fields::PASSWORD)
+            .ok()
+            .and_then(|secret| secret.expose_str().map(str::to_owned))
+    }
+
+    /// Every way a version is acted on by its position - read, handed out for
+    /// a reveal or a copy, restored, dropped - is refused once the vault has
+    /// changed since the position was read, even by a change nowhere near the
+    /// entry, and nothing is done. The refusal changes nothing either, so the
+    /// list read again is the one to act from.
+    #[test]
+    fn a_version_is_acted_on_only_at_the_revision_its_position_was_read_at() {
+        let (_scratch, session) = unlocked(RICH);
+        let basic = entry_titled(&session, "basic").id;
+        for password in ["first", "second"] {
+            session
+                .with_mut(|vault| {
+                    vault.set_field(
+                        basic,
+                        fields::PASSWORD,
+                        vault_core::NewValue::Protected(Zeroizing::new(password.to_owned())),
+                    )
+                })
+                .expect("the vault is open")
+                .expect("the password is written");
+        }
+        let (listed, before) = session
+            .listing(|vault| vault.versions(basic))
+            .expect("the vault is open");
+        let index = before.first().expect("the entry has versions").index;
+
+        let root = session.tree().expect("the tree comes back").id;
+        session
+            .with_mut(|vault| vault.create_group(root, "Elsewhere"))
+            .expect("the vault is open")
+            .expect("the folder is made");
+
+        let moved = "versionsChanged";
+        assert_eq!(
+            refusal(session.at(listed, |vault| vault.version(basic, index))),
+            moved,
+            "a version was read at a position from before the change"
+        );
+        assert_eq!(
+            refusal(session.reveal_version(basic, index, listed, fields::PASSWORD)),
+            moved,
+            "a version's value was handed out for a reveal or a copy"
+        );
+        assert_eq!(
+            refusal(session.at_mut(listed, |vault| vault.restore_version(basic, index))),
+            moved,
+            "a version was restored"
+        );
+        assert_eq!(
+            refusal(session.at_mut(listed, |vault| vault.delete_version(basic, index))),
+            moved,
+            "a version was dropped"
+        );
+
+        let (now, after) = session
+            .listing(|vault| vault.versions(basic))
+            .expect("the vault is open");
+        assert_eq!(
+            after.len(),
+            before.len(),
+            "a refused drop dropped a version"
+        );
+        assert_eq!(password_of(&session, basic).as_deref(), Some("second"));
+
+        session
+            .at(now, |vault| vault.version(basic, index))
+            .expect("the list is current")
+            .expect("the version is read");
+        session
+            .reveal_version(basic, index, now, fields::PASSWORD)
+            .expect("the value is handed out");
+        session
+            .at_mut(now, |vault| vault.restore_version(basic, index))
+            .expect("the list is current")
+            .expect("the version is restored");
+        // The restore is a change of its own, and the list it was pressed in
+        // is now as old as the first one was.
+        assert_eq!(
+            refusal(session.at_mut(now, |vault| vault.delete_version(basic, index))),
+            moved
+        );
+    }
+
+    /// Looking changes nothing, so it leaves the revision alone, and a list
+    /// read before any amount of looking can still be acted on. Typing held as
+    /// a draft is not a change to the vault either: it is written by the lock.
+    #[test]
+    fn reading_and_typing_leave_the_revision_where_it_was() {
+        let (_scratch, session) = unlocked(RICH);
+        let basic = entry_titled(&session, "basic").id;
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    basic,
+                    fields::NOTES,
+                    vault_core::NewValue::Open("edited".to_owned()),
+                )
+            })
+            .expect("the vault is open")
+            .expect("the notes are written");
+        let (listed, versions) = session
+            .listing(|vault| vault.versions(basic))
+            .expect("the vault is open");
+        let newest = versions.last().expect("the edit kept a version").index;
+
+        session.tree().expect("the tree comes back");
+        session.entry(basic).expect("the entry comes back");
+        session
+            .reveal(basic, fields::PASSWORD)
+            .expect("the password comes back");
+        session
+            .at(listed, |vault| vault.version(basic, newest))
+            .expect("the list is current")
+            .expect("the version is read");
+        session
+            .reveal_version(basic, newest, listed, fields::PASSWORD)
+            .expect("the value is handed out");
+        session
+            .draft(basic, fields::NOTES, words("half typed", false), 1)
+            .expect("the draft is held");
+        session.withdraw(basic);
+
+        let (again, _) = session
+            .listing(|vault| vault.versions(basic))
+            .expect("the vault is open");
+        assert_eq!(again, listed);
+        session
+            .at_mut(listed, |vault| vault.delete_version(basic, newest))
+            .expect("the list is current")
+            .expect("the version is dropped");
+    }
+
+    /// The case the revision is for. A save brings every entry's history
+    /// inside the database's limits, so a position read before it names a
+    /// different version after it - and a press made during the save reaches
+    /// the vault after it. The save moves the revision, and the press is
+    /// refused rather than dropping the neighbour of the version it was about.
+    #[test]
+    fn a_save_that_prunes_moves_the_revision() {
+        let (_scratch, session) = unlocked(RICH);
+        let basic = entry_titled(&session, "basic").id;
+        for round in 0..12 {
+            session
+                .with_mut(|vault| {
+                    vault.set_field(
+                        basic,
+                        fields::NOTES,
+                        vault_core::NewValue::Open(format!("round {round}")),
+                    )
+                })
+                .expect("the vault is open")
+                .expect("the notes are written");
+        }
+        let (listed, before) = session
+            .listing(|vault| vault.versions(basic))
+            .expect("the vault is open");
+        let notes_at = |index: usize, revision: u64| {
+            session
+                .reveal_version(basic, index, revision, fields::NOTES)
+                .ok()
+                .and_then(|notes| notes.expose_str().map(str::to_owned))
+        };
+        let chosen = before
+            .get(before.len() - 2)
+            .expect("the entry has versions")
+            .index;
+        let held = notes_at(chosen, listed);
+
+        session
+            .with_mut(Vault::save)
+            .expect("the vault is open")
+            .expect("the vault saves");
+        let (now, after) = session
+            .listing(|vault| vault.versions(basic))
+            .expect("the vault is open");
+        assert!(
+            after.len() < before.len(),
+            "the premise is a save that prunes"
+        );
+        assert_ne!(now, listed);
+        assert_ne!(
+            notes_at(chosen, now),
+            held,
+            "the premise is a position that names another version after the save"
+        );
+
+        assert_eq!(
+            refusal(session.at_mut(listed, |vault| vault.delete_version(basic, chosen))),
+            "versionsChanged"
+        );
+        assert_eq!(
+            session
+                .with(|vault| vault.versions(basic).len())
+                .expect("the vault is open"),
+            after.len()
+        );
+    }
+
+    /// A reload replaces every history, and so does another vault: a lock and
+    /// an unlock, even of the same file, leave nothing a position from before
+    /// them can name.
+    #[test]
+    fn a_reload_or_a_lock_moves_the_revision() {
+        let (_directory, _database, session) = holding(RICH);
+        let basic = entry_titled(&session, "basic").id;
+        let (first, _) = session
+            .listing(|vault| vault.versions(basic))
+            .expect("the vault is open");
+
+        session
+            .overtaking(Over::Everything, 1, Vault::reload)
+            .expect("the vault is open")
+            .expect("the file is read again");
+        let (second, _) = session
+            .listing(|vault| vault.versions(basic))
+            .expect("the vault is open");
+        assert_ne!(second, first);
+
+        session.lock(Reason::ByHand);
+        assert_eq!(
+            refusal(session.at(second, |vault| vault.version(basic, 0))),
+            "noVault"
+        );
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the database opens again");
+        assert_eq!(
+            refusal(session.at(second, |vault| vault.version(basic, 0))),
+            "versionsChanged"
         );
     }
 

@@ -38,9 +38,18 @@ const listed = [
 	version({ index: 2, modified: '2023-06-04T12:00:00Z' })
 ];
 
-/** A list of versions the way the window holds one: with the entry it is of. */
-function of(versions: Version[], entry = 'an-entry') {
-	return { entry, versions };
+/** The revision of the vault the lists here were read at. */
+const REVISION = 7;
+
+/** A list of versions the way the window holds one: with the entry it is of,
+ * and the revision of the vault it was read at. */
+function of(versions: Version[], entry = 'an-entry', revision = REVISION) {
+	return { entry, revision, versions };
+}
+
+/** A version as the commands are sent it. */
+function at(index: number, revision = REVISION) {
+	return { index, revision };
 }
 
 function show(props: Record<string, unknown> = {}) {
@@ -128,18 +137,20 @@ it('views, restores and deletes a version by its position', async () => {
 	[...host.querySelectorAll('button')]
 		.filter((each) => each.textContent?.trim() === 'View')[0]
 		?.click();
-	await vi.waitFor(() => expect(ipc.version).toHaveBeenCalledWith('an-entry', 2));
+	await vi.waitFor(() => expect(ipc.version).toHaveBeenCalledWith('an-entry', at(2)));
 
 	[...host.querySelectorAll('button')]
 		.filter((each) => each.textContent?.trim() === 'Restore')[1]
 		?.click();
-	await vi.waitFor(() => expect(ipc.restoreVersion).toHaveBeenCalledWith('an-entry', 1));
+	await vi.waitFor(() => expect(ipc.restoreVersion).toHaveBeenCalledWith('an-entry', at(1)));
 	expect(onChanged).toHaveBeenCalled();
+	// Settled: until then, every press on the list is let go.
+	await new Promise((settle) => setTimeout(settle));
 
 	host.querySelectorAll<HTMLButtonElement>('[aria-label="Delete this version"]')[2]?.click();
 	flushSync();
 	button('Drop it').click();
-	await vi.waitFor(() => expect(ipc.deleteVersion).toHaveBeenCalledWith('an-entry', 0));
+	await vi.waitFor(() => expect(ipc.deleteVersion).toHaveBeenCalledWith('an-entry', at(0)));
 	expect(onVersions).toHaveBeenCalledWith(of([]));
 
 	return unmount(component);
@@ -164,7 +175,7 @@ it("asks for a version's protected value one field at a time", async () => {
 	expect(host.textContent).not.toContain(OLD);
 	host.querySelector<HTMLButtonElement>('[aria-label="Show Password as it was"]')?.click();
 	await vi.waitFor(() => expect(host.textContent).toContain(OLD));
-	expect(ipc.revealVersion).toHaveBeenCalledWith('an-entry', 2, 'Password');
+	expect(ipc.revealVersion).toHaveBeenCalledWith('an-entry', at(2), 'Password');
 
 	await unmount(component);
 	expect(document.body.textContent).not.toContain(OLD);
@@ -212,7 +223,7 @@ it('puts a revealed value in the row it was asked for', async () => {
 			]
 		})
 	);
-	ipc.revealVersion.mockImplementation((_entry: string, _index: number, name: string) =>
+	ipc.revealVersion.mockImplementation((_entry: string, _at: unknown, name: string) =>
 		Promise.resolve(`the ${name}`)
 	);
 
@@ -259,7 +270,7 @@ it("copies a version's value through Rust, whole or the part selected", async ()
 	flushSync();
 
 	host.querySelector<HTMLButtonElement>('[aria-label="Copy Password as it was"]')?.click();
-	expect(onCopy).toHaveBeenLastCalledWith(2, 'Password', null);
+	expect(onCopy).toHaveBeenLastCalledWith(at(2), 'Password', null);
 
 	const node = host.querySelector('[data-value]') as HTMLElement;
 	const range = document.createRange();
@@ -270,7 +281,7 @@ it("copies a version's value through Rust, whole or the part selected", async ()
 	const copied = new ClipboardEvent('copy', { bubbles: true, cancelable: true });
 	node.dispatchEvent(copied);
 	expect(copied.defaultPrevented, 'the system copied an old password').toBe(true);
-	expect(onCopy).toHaveBeenLastCalledWith(2, 'Password', { from: 8, to: 16 });
+	expect(onCopy).toHaveBeenLastCalledWith(at(2), 'Password', { from: 8, to: 16 });
 	document.getSelection()?.removeAllRanges();
 
 	const pressed = new KeyboardEvent('keydown', {
@@ -281,7 +292,7 @@ it("copies a version's value through Rust, whole or the part selected", async ()
 	});
 	host.querySelector('[aria-label="Hide Password as it was"]')?.dispatchEvent(pressed);
 	expect(pressed.defaultPrevented).toBe(true);
-	expect(onCopy).toHaveBeenLastCalledWith(2, 'Password', null);
+	expect(onCopy).toHaveBeenLastCalledWith(at(2), 'Password', null);
 	expect(onCopy).toHaveBeenCalledTimes(3);
 
 	return unmount(component);
@@ -358,7 +369,7 @@ it('asks before it drops one version', async () => {
 	trash()[1]?.click();
 	flushSync();
 	button('Drop it').click();
-	await vi.waitFor(() => expect(ipc.deleteVersion).toHaveBeenCalledWith('an-entry', 1));
+	await vi.waitFor(() => expect(ipc.deleteVersion).toHaveBeenCalledWith('an-entry', at(1)));
 	expect(ipc.deleteVersion).toHaveBeenCalledTimes(1);
 	expect(onVersions).toHaveBeenCalledWith(of([listed[0], listed[2]]));
 
@@ -429,7 +440,7 @@ it("draws no list that is not its entry's, so nothing can act on one", async () 
 	expect(host.textContent).toContain('2021');
 	expect(host.textContent).not.toContain('2023');
 	button('Restore').click();
-	await vi.waitFor(() => expect(ipc.restoreVersion).toHaveBeenCalledWith('the next entry', 0));
+	await vi.waitFor(() => expect(ipc.restoreVersion).toHaveBeenCalledWith('the next entry', at(0)));
 	expect(ipc.restoreVersion).toHaveBeenCalledTimes(1);
 
 	return unmount(component);
@@ -458,7 +469,7 @@ it('drops a version that arrives after the list under it changed', async () => {
 	open();
 
 	button('View').click();
-	await vi.waitFor(() => expect(ipc.version).toHaveBeenCalledWith('an-entry', 2));
+	await vi.waitFor(() => expect(ipc.version).toHaveBeenCalledWith('an-entry', at(2)));
 	props.history = of([listed[1], listed[2]]);
 	flushSync();
 
@@ -469,6 +480,118 @@ it('drops a version that arrives after the list under it changed', async () => {
 
 	expect(host.textContent).not.toContain('what version 2 held');
 	expect(host.textContent).not.toContain('A version is read only');
+
+	return unmount(component);
+});
+
+/**
+ * A restore is a change and a save, and the list on the screen is the one from
+ * before it until the list read after that save arrives. A double press used to
+ * send the same position twice: the second one reached Rust after the save had
+ * pruned, and put another version over the one the reader chose, with nothing
+ * on the screen to say so. Every press until then is let go.
+ */
+it('restores once however often Restore is pressed before the save is back', async () => {
+	const restoring = Promise.withResolvers<ReturnType<typeof entry>>();
+	const saving = Promise.withResolvers<void>();
+	ipc.restoreVersion.mockReturnValue(restoring.promise);
+	const onChanged = vi.fn(() => saving.promise);
+
+	const component = show({ onChanged });
+	open();
+	const restores = () =>
+		[...host.querySelectorAll('button')].filter((each) => each.textContent?.trim() === 'Restore');
+
+	restores()[0]?.click();
+	restores()[0]?.click();
+	restores()[1]?.click();
+	await vi.waitFor(() => expect(ipc.restoreVersion).toHaveBeenCalled());
+	restoring.resolve(entry());
+	await vi.waitFor(() => expect(onChanged).toHaveBeenCalled());
+
+	// Rust has answered and the save is still running.
+	restores()[1]?.click();
+	button('View').click();
+	host.querySelectorAll<HTMLButtonElement>('[aria-label="Delete this version"]')[2]?.click();
+	flushSync();
+	button('Drop it').click();
+	await Promise.resolve();
+	expect(ipc.restoreVersion).toHaveBeenCalledTimes(1);
+	expect(ipc.restoreVersion).toHaveBeenCalledWith('an-entry', at(2));
+	expect(ipc.version).not.toHaveBeenCalled();
+	expect(ipc.deleteVersion).not.toHaveBeenCalled();
+
+	saving.resolve();
+	await vi.waitFor(() => {
+		restores()[1]?.click();
+		expect(ipc.restoreVersion).toHaveBeenCalledTimes(2);
+	});
+	expect(ipc.restoreVersion).toHaveBeenLastCalledWith('an-entry', at(1));
+
+	return unmount(component);
+});
+
+/**
+ * Two drops pressed behind a save both waited on Rust, and the first renumbered
+ * the versions under the second: it dropped the neighbour of the version on its
+ * row, which nobody chose. The second is let go until the first is settled.
+ */
+it('drops one version at a time', async () => {
+	const dropping = Promise.withResolvers<ReturnType<typeof of>>();
+	ipc.deleteVersion.mockReturnValue(dropping.promise);
+	const onVersions = vi.fn(() => Promise.resolve());
+
+	const component = show({ onVersions });
+	open();
+	const trash = () =>
+		host.querySelectorAll<HTMLButtonElement>('[aria-label="Delete this version"]');
+
+	trash()[2]?.click();
+	flushSync();
+	button('Drop it').click();
+	await vi.waitFor(() => expect(ipc.deleteVersion).toHaveBeenCalledWith('an-entry', at(0)));
+
+	trash()[0]?.click();
+	flushSync();
+	button('Drop it').click();
+	button('Clear the history').click();
+	flushSync();
+	button('Clear the history').click();
+	await Promise.resolve();
+	expect(ipc.deleteVersion).toHaveBeenCalledTimes(1);
+	expect(ipc.clearHistory).not.toHaveBeenCalled();
+
+	dropping.resolve(of([listed[1], listed[2]], 'an-entry', REVISION + 2));
+	await vi.waitFor(() => expect(onVersions).toHaveBeenCalled());
+
+	return unmount(component);
+});
+
+/** A question about clearing the history names how many versions there are,
+ * and a list that changed under it may hold another number. It goes with the
+ * list, like a question about one version does. */
+it('takes the question about clearing the history away when the list changes', () => {
+	const props = reactive({
+		entry: 'an-entry',
+		history: of(listed),
+		now: new Date('2026-08-29T14:30:00Z'),
+		readOnly: false,
+		onCopy: vi.fn(),
+		onVersions: vi.fn(),
+		onChanged: vi.fn(),
+		onFailure: vi.fn()
+	});
+	const component = mount(Versions, { target: host, props });
+	open();
+
+	button('Clear the history').click();
+	flushSync();
+	expect(host.textContent).toContain('Drop all 3 versions?');
+
+	props.history = of(listed, 'an-entry', REVISION + 1);
+	flushSync();
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+	expect(ipc.clearHistory).not.toHaveBeenCalled();
 
 	return unmount(component);
 });

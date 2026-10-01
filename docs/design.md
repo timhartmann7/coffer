@@ -177,6 +177,18 @@ fades in only when it opens from nothing, not when it moves from one entry to
 the next. The Versions block counts only a list of its own entry's, and has no
 number while that list is being read.
 
+**An edit takes the versions off the screen until its save is back.** The save
+prunes, and a list drawn through it offered a trash that dropped the neighbour
+of the version on its row. So from the moment an edit to the entry lands until
+the list read after its save arrives, the block is its heading alone -
+"Versions" with no number and no rows, the same state as an entry still being
+read - and a question or a version open in it closes. While a restore, a drop
+or a clear is on its way, a press on the block is let go. A press Rust still
+finds out of date does nothing, and is said in the notice a failure gets, with
+the warning in `warn`: "The versions changed while you were choosing, so
+nothing was done. Choose again from the list as it is now." The list is read
+again under it.
+
 ## Asking before, and taking back after
 
 The mockup draws one choice, the conflict dialog, and states its rule beside it:

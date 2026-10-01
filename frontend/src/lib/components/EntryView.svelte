@@ -16,7 +16,7 @@
 		setTags,
 		withdrawAttachment
 	} from '$lib/ipc';
-	import type { Clash, Entry, Field, Group, History, Span } from '$lib/model';
+	import type { Clash, Entry, Field, Group, History, Position, Span } from '$lib/model';
 	import Change from './Change.svelte';
 	import Confirm from './Confirm.svelte';
 	import Editable from './Editable.svelte';
@@ -69,9 +69,9 @@
 		readOnly: boolean;
 		/** Copies a value in Rust: a field of the entry, or of one of its
 		 * versions, whole or the part of it the reader selected. */
-		onCopy: (entry: string, field: string, range?: Span | null, version?: number) => void;
+		onCopy: (entry: string, field: string, range?: Span | null, version?: Position) => void;
 		onChanged: (entry: Entry) => Promise<void>;
-		onVersions: (history: History) => void;
+		onVersions: (history: History) => Promise<void>;
 		/** Puts the pane away. Escape does the same, and so does a press on the
 		 * empty part of either pane to the left of this one. */
 		onClose: () => void;
@@ -868,7 +868,7 @@
 			{history}
 			{now}
 			readOnly={locked}
-			onCopy={(index, name, range) => onCopy(entry.id, name, range, index)}
+			onCopy={(at, name, range) => onCopy(entry.id, name, range, at)}
 			{onVersions}
 			onChanged={(changed) => onChanged(changed)}
 			{onFailure}

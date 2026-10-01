@@ -52,6 +52,10 @@ enum Code {
     /// for the same reason: the screen offers to open that file instead, and
     /// keeps the passwords the reader typed for somewhere else.
     Taken,
+    /// A previous version was named by a position read before the vault last
+    /// changed, where it may name another version now. Nothing was done, and
+    /// the screen reads the list again rather than showing a failure.
+    VersionsChanged,
     Io,
     Other,
 }
@@ -101,6 +105,15 @@ impl Failure {
         Failure {
             code: Code::NoVault,
             message: "the database changed while it was opening".to_owned(),
+        }
+    }
+
+    /// A version named by a position from a list the vault has changed since.
+    /// See [`crate::session::Session::at`].
+    pub fn versions_changed() -> Failure {
+        Failure {
+            code: Code::VersionsChanged,
+            message: "the versions changed after they were listed".to_owned(),
         }
     }
 
@@ -245,5 +258,9 @@ mod tests {
 
         let stale = serde_json::to_string(&Failure::stale()).expect("a failure serialises");
         assert!(stale.contains(r#""code":"noVault""#), "{stale}");
+
+        let moved =
+            serde_json::to_string(&Failure::versions_changed()).expect("a failure serialises");
+        assert!(moved.contains(r#""code":"versionsChanged""#), "{moved}");
     }
 }

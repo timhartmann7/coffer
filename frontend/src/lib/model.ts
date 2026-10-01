@@ -253,8 +253,28 @@ export interface Version {
  */
 export interface History {
 	entry: string;
+	/** The revision of the vault the list was read at, which every position
+	 * taken from it is sent back with (see `Position`). */
+	revision: number;
 	/** Oldest first, as Rust keeps them. */
 	versions: Version[];
+}
+
+/**
+ * A version as a command names it: by its position, and the revision of the
+ * vault the position was read at.
+ *
+ * A position is an answer about the vault as it stood. An edit adds a version,
+ * a drop renumbers the rest, and a save prunes and re-sorts every entry's
+ * history, and Rust answers one command at a time behind a save that holds it
+ * for a key derivation - so a press made during a save reached the vault after
+ * it, and dropped or restored the version that had moved into the place. Rust
+ * refuses a revision the vault has moved on from with `versionsChanged`, and
+ * nothing is done. The number says nothing about what the vault holds.
+ */
+export interface Position {
+	index: number;
+	revision: number;
 }
 
 /**
@@ -329,6 +349,7 @@ export interface Failure {
 		| 'heldByAnother'
 		| 'externalChange'
 		| 'attachmentInHistory'
+		| 'versionsChanged'
 		| 'taken'
 		| 'readOnly'
 		| 'gone'

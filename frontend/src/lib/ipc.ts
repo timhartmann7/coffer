@@ -17,13 +17,13 @@ import type {
 	Group,
 	History,
 	Made,
+	Position,
 	Rival,
 	Settings,
 	Snapshot,
 	Span,
 	Status,
-	Target,
-	Version
+	Target
 } from './model';
 
 export function status(): Promise<Status> {
@@ -381,37 +381,43 @@ export function removeAttachmentAndVersions(entry: string, name: string): Promis
  * does not say. This is the one place that holds both, so a list never exists
  * in the window without its entry (see `History`).
  */
-async function history(entry: string, answer: Promise<Version[]>): Promise<History> {
-	return { entry, versions: await answer };
+async function history(entry: string, answer: Promise<Omit<History, 'entry'>>): Promise<History> {
+	return { entry, ...(await answer) };
 }
 
 export function versions(entry: string): Promise<History> {
 	return history(entry, invoke('versions', { entry }));
 }
 
-/** One previous version, read the way an entry is read. */
-export function version(entry: string, index: number): Promise<Entry> {
-	return invoke('version', { entry, index });
+/**
+ * One previous version, read the way an entry is read.
+ *
+ * This and every command below that takes a `Position` rejects with
+ * `versionsChanged` when the vault has changed since the position was read,
+ * and does nothing.
+ */
+export function version(entry: string, at: Position): Promise<Entry> {
+	return invoke('version', { entry, index: at.index, revision: at.revision });
 }
 
 /** One field of one version, once - the same terms as a reveal. */
-export function revealVersion(entry: string, index: number, field: string): Promise<string> {
-	return invoke('reveal_version', { entry, index, field });
+export function revealVersion(entry: string, at: Position, field: string): Promise<string> {
+	return invoke('reveal_version', { entry, index: at.index, revision: at.revision, field });
 }
 
 /** Copies one field of one version, or the part of it a reader selected - the
  * same terms as a copy. */
 export function copyVersion(
 	entry: string,
-	index: number,
+	at: Position,
 	field: string,
 	range: Span | null
 ): Promise<number> {
-	return invoke('copy_version', { entry, index, field, range });
+	return invoke('copy_version', { entry, index: at.index, revision: at.revision, field, range });
 }
 
-export function restoreVersion(entry: string, index: number): Promise<Entry> {
-	return invoke('restore_version', { entry, index });
+export function restoreVersion(entry: string, at: Position): Promise<Entry> {
+	return invoke('restore_version', { entry, index: at.index, revision: at.revision });
 }
 
 /**
@@ -420,12 +426,15 @@ export function restoreVersion(entry: string, index: number): Promise<Entry> {
  * entry changed again since. Restoring this position is the undo of the
  * removal, and restoring any other would take back more than the field.
  */
-export function beforeRemoval(entry: string, field: string): Promise<number | null> {
+export function beforeRemoval(entry: string, field: string): Promise<Position | null> {
 	return invoke('before_removal', { entry, field });
 }
 
-export function deleteVersion(entry: string, index: number): Promise<History> {
-	return history(entry, invoke('delete_version', { entry, index }));
+export function deleteVersion(entry: string, at: Position): Promise<History> {
+	return history(
+		entry,
+		invoke('delete_version', { entry, index: at.index, revision: at.revision })
+	);
 }
 
 export function clearHistory(entry: string): Promise<History> {

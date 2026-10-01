@@ -37,7 +37,8 @@ use crate::autolock::timer::Timer;
 use crate::autolock::{Event, Reason};
 use crate::drafts::{Over, Typed};
 use crate::dto::{
-    self, Database, Entry, Group, Made, Revealed, Rival, Snapshot, Status, Target, Version,
+    self, Database, Entry, Group, Made, Position, Revealed, Rival, Snapshot, Status, Target,
+    Versions,
 };
 use crate::error::Failure;
 use crate::session::Session;
@@ -518,12 +519,13 @@ pub fn copy(
 pub fn copy_version(
     entry: String,
     index: usize,
+    revision: u64,
     field: String,
     range: Option<dto::Span>,
     app: AppHandle,
     session: Held<'_>,
 ) -> Result<u64, Failure> {
-    let secret = session.reveal_version(dto::entry_id(&entry)?, index, &field)?;
+    let secret = session.reveal_version(dto::entry_id(&entry)?, index, revision, &field)?;
     copied(&app, &secret, range)
 }
 
@@ -1061,17 +1063,28 @@ pub fn remove_attachment_and_versions(
     entry_of(&session, &entry)
 }
 
+/// The previous versions of an entry, with the revision of the vault they
+/// were listed at.
+///
+/// Every command below that names a version by its position takes that
+/// revision back, and refuses with `versionsChanged` when the vault has
+/// changed since: see [`Session::at`].
 #[tauri::command(async)]
-pub fn versions(entry: String, session: Held<'_>) -> Result<Vec<Version>, Failure> {
+pub fn versions(entry: String, session: Held<'_>) -> Result<Versions, Failure> {
     let id = dto::entry_id(&entry)?;
-    let found = session.with(|vault| vault.versions(id))?;
-    Ok(found.iter().map(Version::of).collect())
+    let (revision, found) = session.listing(|vault| vault.versions(id))?;
+    Ok(Versions::of(revision, &found))
 }
 
 #[tauri::command(async)]
-pub fn version(entry: String, index: usize, session: Held<'_>) -> Result<Entry, Failure> {
+pub fn version(
+    entry: String,
+    index: usize,
+    revision: u64,
+    session: Held<'_>,
+) -> Result<Entry, Failure> {
     let id = dto::entry_id(&entry)?;
-    let found = session.with(|vault| vault.version(id, index))?;
+    let found = session.at(revision, |vault| vault.version(id, index))?;
     found
         .as_ref()
         .map(Entry::of)
@@ -1084,17 +1097,23 @@ pub fn version(entry: String, index: usize, session: Held<'_>) -> Result<Entry, 
 pub fn reveal_version(
     entry: String,
     index: usize,
+    revision: u64,
     field: String,
     session: Held<'_>,
 ) -> Result<Revealed, Failure> {
-    let secret = session.reveal_version(dto::entry_id(&entry)?, index, &field)?;
+    let secret = session.reveal_version(dto::entry_id(&entry)?, index, revision, &field)?;
     Ok(Revealed::new(text(&secret)?))
 }
 
 #[tauri::command(async)]
-pub fn restore_version(entry: String, index: usize, session: Held<'_>) -> Result<Entry, Failure> {
+pub fn restore_version(
+    entry: String,
+    index: usize,
+    revision: u64,
+    session: Held<'_>,
+) -> Result<Entry, Failure> {
     let id = dto::entry_id(&entry)?;
-    session.with_mut(|vault| vault.restore_version(id, index))??;
+    session.at_mut(revision, |vault| vault.restore_version(id, index))??;
     entry_of(&session, &entry)
 }
 
@@ -1103,31 +1122,35 @@ pub fn restore_version(entry: String, index: usize, session: Held<'_>) -> Result
 ///
 /// The window asks once the removal has been written, to know whether it may
 /// offer to take the removal back, and again when the reader does, so that the
-/// restore it then asks for is of this version and of no older one. See
+/// restore it then asks for is of this version and of no older one. The
+/// position comes with the revision it was read at, so a change that reaches
+/// the vault between this answer and the restore has the restore refused. See
 /// [`vault_core::Vault::before_removal`].
 #[tauri::command(async)]
 pub fn before_removal(
     entry: String,
     field: String,
     session: Held<'_>,
-) -> Result<Option<usize>, Failure> {
+) -> Result<Option<Position>, Failure> {
     let id = dto::entry_id(&entry)?;
-    session.with(|vault| vault.before_removal(id, &field))
+    let (revision, found) = session.listing(|vault| vault.before_removal(id, &field))?;
+    Ok(found.map(|index| Position { index, revision }))
 }
 
 #[tauri::command(async)]
 pub fn delete_version(
     entry: String,
     index: usize,
+    revision: u64,
     session: Held<'_>,
-) -> Result<Vec<Version>, Failure> {
+) -> Result<Versions, Failure> {
     let id = dto::entry_id(&entry)?;
-    session.with_mut(|vault| vault.delete_version(id, index))??;
+    session.at_mut(revision, |vault| vault.delete_version(id, index))??;
     versions(entry, session)
 }
 
 #[tauri::command(async)]
-pub fn clear_history(entry: String, session: Held<'_>) -> Result<Vec<Version>, Failure> {
+pub fn clear_history(entry: String, session: Held<'_>) -> Result<Versions, Failure> {
     let id = dto::entry_id(&entry)?;
     session.with_mut(|vault| vault.clear_history(id))??;
     versions(entry, session)
@@ -1396,6 +1419,52 @@ mod tests {
             assert!(
                 source.contains(&format!("#[tauri::command(async)]\n{reaching}")),
                 "{reaching} reaches the lock and must not be answered inline"
+            );
+        }
+    }
+
+    /// A version is named by its position, and a position is an answer about
+    /// the vault as it stood when the list was read. Every command that takes
+    /// one takes the revision it was read at as well, and reaches the vault
+    /// only through the doors that check it under the lock the action runs in.
+    /// A command added the obvious way - `session.with` and an index - would
+    /// act on whichever version a save had moved into the place.
+    ///
+    /// Read out of this file's own source, because the check is about which
+    /// door a command goes through, and no running command can be asked that.
+    #[test]
+    fn every_command_that_names_a_version_by_position_checks_the_revision() {
+        let source = shipped(include_str!("commands.rs"));
+
+        let naming: Vec<String> = functions(source)
+            .into_iter()
+            .filter(|body| body.contains("index: usize"))
+            .collect();
+        assert_eq!(
+            naming.len(),
+            5,
+            "a version is read, revealed, copied, restored and dropped by position"
+        );
+
+        for body in naming {
+            let named = body.lines().take(2).collect::<Vec<_>>().join("\n");
+            assert!(
+                body.contains("revision: u64"),
+                "this command takes a position without its revision:\n{named}"
+            );
+            assert!(
+                [
+                    "session.at(revision,",
+                    "session.at_mut(revision,",
+                    "index, revision,"
+                ]
+                .iter()
+                .any(|door| body.contains(door)),
+                "this command does not check the revision it is sent:\n{named}"
+            );
+            assert!(
+                !body.contains("session.with(") && !body.contains("session.with_mut("),
+                "this command reaches the vault past the check:\n{named}"
             );
         }
     }

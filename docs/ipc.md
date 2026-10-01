@@ -76,14 +76,14 @@ Everything slice 3 added:
 | `export_attachment` | `entry`, `name` | nothing |
 | `remove_attachment` | `entry`, `name` | the entry |
 | `remove_attachment_and_versions` | `entry`, `name` | the entry |
-| `versions` | `entry` | the previous versions, oldest first |
-| `version` | `entry`, `index` | one version, read like an entry |
-| `reveal_version` | `entry`, `index`, `field` | the value of that field in that version |
-| `copy_version` | `entry`, `index`, `field`, `range` | the seconds until Coffer clears the pasteboard |
-| `restore_version` | `entry`, `index` | the entry |
-| `before_removal` | `entry`, `field` | the version that puts back a field the entry just lost, or nothing |
-| `delete_version` | `entry`, `index` | the versions that are left |
-| `clear_history` | `entry` | the versions that are left, which is none |
+| `versions` | `entry` | the previous versions, oldest first, and the revision they were listed at |
+| `version` | `entry`, `index`, `revision` | one version, read like an entry |
+| `reveal_version` | `entry`, `index`, `revision`, `field` | the value of that field in that version |
+| `copy_version` | `entry`, `index`, `revision`, `field`, `range` | the seconds until Coffer clears the pasteboard |
+| `restore_version` | `entry`, `index`, `revision` | the entry |
+| `before_removal` | `entry`, `field` | the position and revision of the version that puts back a field the entry just lost, or nothing |
+| `delete_version` | `entry`, `index`, `revision` | the versions that are left, and their revision |
+| `clear_history` | `entry` | the versions that are left, which is none, and their revision |
 | `generate_password` | `length`, `alphabets`, `similar` | a password |
 | `save` | | nothing |
 | `save_over` | | nothing |
@@ -238,7 +238,30 @@ position because a file another client wrote may hold them in any order.
 the database's limits, so a list read before a save names versions that are no
 longer there. The window reads the list back after the save rather than before
 it, which is why every change is `save` and then `versions` and never the other
-way round.
+way round. Every write is followed by that reading, whichever entry it was to.
+
+**A position goes back with the revision it was read at.** Rust answers one
+command at a time and a save holds it for a key derivation, so a press made
+while a save is running reaches the vault after the save has moved the
+positions. A drop pressed in that second dropped the neighbour of the version
+on its row, for good; a second Restore put another version over the one chosen.
+So `versions`, `delete_version`, `clear_history` and `before_removal` answer with
+a `revision`, a number the session moves every time the open vault is handed
+out to be changed - every edit, drop, restore, save, reload and move, and a
+vault that opens - and not for a draft or anything that only reads. Every
+command that takes an `index` takes that `revision` as well, and refuses with
+`versionsChanged` and does nothing when the vault has moved on, checked under
+the same lock the action runs in (`Session::at` and `Session::at_mut`). The
+number is a counter and carries nothing of what the vault holds. `model.ts`
+calls the pair a `Position`.
+
+The window keeps presses away from a list it knows is out of date. When an
+edit to the entry in the pane lands, its list goes - no rows, no count, and any
+open question or version view with it - until the list read after the save
+arrives; while a restore, a drop or a clear is on its way, every further press
+on the versions is let go. A `versionsChanged` that gets through anyway is
+answered by reading the list again and saying so in a sentence: "The versions
+changed while you were choosing, so nothing was done."
 
 **A position is an answer about one entry.** The commands that list versions
 answer with the list alone, so `ipc.ts` hands each list on paired with the entry
@@ -260,7 +283,10 @@ than the field. So once the removal is written the window asks
 back that field and only that field, and the notice then only reports. The undo
 asks again at the press and restores what that second answer names through
 `restore_version`, because a position is an answer about the history as it
-stood when it was given. Nothing crosses but the field's name and a position.
+stood when it was given. Anything that reaches Rust between the two answers
+moves the revision, the restore is refused with `versionsChanged`, and the
+reader is told the removal can no longer be undone. Nothing crosses but the
+field's name, a position and its revision.
 
 The offer lasts eight seconds, on the notice's own button and on Cmd+Z when the
 key is not aimed at a text field. It is withdrawn by the notice going, by a
@@ -375,7 +401,13 @@ the sentence the screen shows, written in `vault-core` so that it never repeats
 a secret and never says which half of a credential was wrong. The code is what
 the screen branches on: `wrongCredentials`, `notADatabase`, `unsupportedFormat`,
 `damaged`, `heldByAnother`, `externalChange`, `readOnly`, `gone`, `tooLarge`,
-`noVault`, `noSuchEntry`, `refused`, `taken`, `io`, `other`.
+`noVault`, `noSuchEntry`, `refused`, `taken`, `attachmentInHistory`,
+`versionsChanged`, `io`, `other`.
+
+`versionsChanged` is a position read at a revision the vault has moved on from
+(see above). Nothing was done, so it is not shown as a failure: the window
+reads the list again and says the versions changed while the reader was
+choosing.
 
 `taken` is `create_database` finding a file where the new vault would go. The
 creation screen says so in its own sentence, which names the place and the way
