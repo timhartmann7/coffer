@@ -116,6 +116,11 @@ pub struct Binned {
 /// entry carries is a custom field.
 pub mod fields {
     pub use keepass::db::fields::{NOTES, PASSWORD, TITLE, URL, USERNAME};
+
+    /// The five, together. Every entry is drawn with all of them whether or not
+    /// the file gives it each one, so each is a field that can be written into
+    /// on any entry.
+    pub(crate) const STANDARD: [&str; 5] = [TITLE, USERNAME, PASSWORD, URL, NOTES];
 }
 
 impl Entry {

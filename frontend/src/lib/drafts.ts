@@ -1,0 +1,164 @@
+/**
+ * What the reader is typing into an entry and has not finished, told to Rust
+ * as it is typed.
+ *
+ * A value is written when its field is left. Until then it is in this window
+ * and nowhere else, and a lock destroys this window - on triggers that cannot
+ * wait for it. The Mac going to sleep, the screen locking and Coffer quitting
+ * all arrive on the thread the window is drawn on, and neither a message into
+ * this page nor its answer can get through while that thread is busy locking.
+ * So nothing asks the page to finish first. The page says what is in a field a
+ * moment after the last key, and at once when the window loses focus, and the
+ * lock writes the last of it into the vault before wiping it.
+ *
+ * Every word about a field - what is in it, that it was taken back, the value
+ * written - carries a number from one count that only goes up. Tauri runs
+ * commands side by side, so a draft sent before its field was written can
+ * arrive after it, and Rust drops a word older than the last one it heard about
+ * the field, its entry or the whole vault. The count starts at the moment this
+ * window was built, in microseconds, so that a word from a window a lock
+ * destroyed is older than anything the next one says.
+ *
+ * What is typed is read out of the field when Rust is told, not when the key is
+ * pressed, so nothing but the field holds it in the meantime.
+ */
+
+import { SvelteMap } from 'svelte/reactivity';
+import { draft as tell } from './ipc';
+
+/** How long after the last key the field is told to Rust. A lid closed in the
+ * middle of a word costs at most this much of it. */
+const PAUSE = 250;
+
+let count = Date.now() * 1000;
+
+function next(): number {
+	count += 1;
+	return count;
+}
+
+/** A field of an entry, and whether the database protects it. */
+export interface Place {
+	entry: string;
+	field: string;
+	protect: boolean;
+}
+
+interface Typing {
+	place: Place;
+	/** What the field holds now. */
+	read: () => string;
+	/** The pause before Rust is told, while one is running. */
+	waiting: ReturnType<typeof setTimeout> | null;
+	/** Whether Rust has been told anything since the field was last written or
+	 * taken back, and so has something to be told to let go of. */
+	told: boolean;
+}
+
+/**
+ * Every field holding text that has not been written, by entry and name.
+ *
+ * Drawn: a field in here carries the mark that says so. A key is added by the
+ * first key typed and not by each one after it, so the mark is drawn once.
+ */
+const typing = new SvelteMap<string, Typing>();
+
+/** Every word on its way to Rust: drafts, and the values that finish them. */
+const sending = new Set<Promise<unknown>>();
+
+function key(place: Place): string {
+	return JSON.stringify([place.entry, place.field]);
+}
+
+/** Keeps a word in `sending` until it has arrived, whichever way it arrives. A
+ * draft refused - the vault locked meanwhile - has nobody to tell. */
+function track<T>(sent: Promise<T>): Promise<T> {
+	sending.add(sent);
+	const arrived = () => sending.delete(sent);
+	sent.then(arrived, arrived);
+	return sent;
+}
+
+function say(held: Typing) {
+	held.waiting = null;
+	held.told = true;
+	const { entry, field, protect } = held.place;
+	track(tell(entry, field, held.read(), protect, next()));
+}
+
+function forget(name: string) {
+	const held = typing.get(name);
+	if (held?.waiting) clearTimeout(held.waiting);
+	typing.delete(name);
+}
+
+/** The reader typed into a field. `read` answers with what is in it. */
+export function typed(place: Place, read: () => string): void {
+	const name = key(place);
+	const held = typing.get(name);
+	if (held) {
+		if (held.waiting) clearTimeout(held.waiting);
+		held.place = place;
+		held.read = read;
+		held.waiting = setTimeout(() => say(held), PAUSE);
+		return;
+	}
+	const fresh: Typing = { place, read, waiting: null, told: false };
+	fresh.waiting = setTimeout(() => say(fresh), PAUSE);
+	typing.set(name, fresh);
+}
+
+/** What was typed into a field was taken back: Escape, Cancel, Discard, or the
+ * field left as it was, or gone with its text still in it. */
+export function drop(place: Place): void {
+	const name = key(place);
+	const held = typing.get(name);
+	if (!held) return;
+	forget(name);
+	if (held.told) track(tell(place.entry, place.field, null, place.protect, next()));
+}
+
+/**
+ * Writes a value into a field, and finishes what was typed there.
+ *
+ * `write` is given the number the write carries, which is newer than any draft
+ * of the field already sent, so a draft still on its way is dropped when it
+ * arrives rather than written over the value at the next lock.
+ */
+export function settle<T>(place: Place, write: (sequence: number) => Promise<T>): Promise<T> {
+	forget(key(place));
+	return track(write(next()));
+}
+
+/**
+ * An entry is being deleted, or - for `null` - the file read again, and what
+ * was typed into it goes with it. Answers with the number the command carries,
+ * which is how Rust knows which drafts came before it.
+ */
+export function release(entry: string | null): number {
+	const going = [...typing].filter(([, held]) => entry === null || held.place.entry === entry);
+	for (const [name] of going) forget(name);
+	return next();
+}
+
+/**
+ * Tells Rust everything typed that it has not heard yet, now, and waits until
+ * every word on its way has arrived - the values being written included.
+ *
+ * The window losing focus is when this happens on its own: the reader may be
+ * about to close the lid. A lock the reader asked for waits for it, so that the
+ * lock finds everything that was in the window.
+ */
+export async function flush(): Promise<void> {
+	for (const held of typing.values()) {
+		if (held.waiting === null) continue;
+		clearTimeout(held.waiting);
+		say(held);
+	}
+	await Promise.allSettled([...sending]);
+}
+
+/** Whether a field holds text that has not been written. */
+export function unfinished(place: Place): boolean {
+	return typing.has(key(place));
+}

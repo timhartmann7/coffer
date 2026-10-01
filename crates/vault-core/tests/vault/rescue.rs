@@ -307,3 +307,174 @@ fn a_name_belonging_to_an_unsaved_copy_is_refused() {
     .expect_err("the name is refused");
     assert!(matches!(refused, VaultError::ReservedName));
 }
+
+/// One entry with a field of the reader's own beside the five, protected the
+/// way Coffer makes one, and no notes at all.
+fn vault_for_typing(directory: &std::path::Path) -> std::path::PathBuf {
+    built(directory, "typing.kdbx", |db| {
+        db.root_mut().add_entry().edit(|entry| {
+            entry.set_unprotected(keepass::db::fields::TITLE, "subject");
+            entry.set_unprotected(keepass::db::fields::USERNAME, "alice");
+            entry.set_protected("PIN", "1234");
+        });
+    })
+}
+
+fn value(vault: &vault_core::Vault, id: vault_core::model::EntryId, field: &str) -> Option<String> {
+    vault
+        .reveal(id, field)
+        .as_ref()
+        .and_then(vault_core::SecretValue::expose_str)
+        .map(str::to_owned)
+}
+
+/// Text a lock finds in a field is written the way leaving the field would
+/// have written it: the entry's previous state is kept as a version, and the
+/// vault has something to save.
+#[test]
+fn typing_a_lock_finishes_is_an_edit_like_any_other() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = vault_for_typing(scratch.path());
+    let mut vault = open(&database, BUILT_PASSWORD);
+    let id = vault.tree().entries[0].id;
+
+    for (field, typed) in [
+        (keepass::db::fields::USERNAME, NewValue::Open("alic".into())),
+        (
+            "PIN",
+            NewValue::Protected(zeroize::Zeroizing::new("98".to_owned())),
+        ),
+        // A standard field the entry never had is drawn all the same, and
+        // written into like any other.
+        (
+            keepass::db::fields::NOTES,
+            NewValue::Open("half a note".into()),
+        ),
+    ] {
+        assert_eq!(
+            vault.set_typed(id, field, typed).ok(),
+            Some(true),
+            "{field}"
+        );
+    }
+
+    assert_eq!(vault.versions(id).len(), 3);
+    assert_eq!(vault.rescue(), Rescue::Saved);
+    drop(vault);
+
+    let file = open(&database, BUILT_PASSWORD);
+    let entry = file.entry(id).expect("the entry is there");
+    assert_eq!(
+        value(&file, id, keepass::db::fields::USERNAME).as_deref(),
+        Some("alic")
+    );
+    assert_eq!(value(&file, id, "PIN").as_deref(), Some("98"));
+    assert!(
+        entry
+            .field("PIN")
+            .is_some_and(|pin| pin.value.open().is_none()),
+        "a protected field was written in the open"
+    );
+    assert_eq!(
+        value(&file, id, keepass::db::fields::NOTES).as_deref(),
+        Some("half a note")
+    );
+}
+
+/// Typing that came back to what the field holds is not an edit: no version,
+/// no modification time, nothing for the lock to save. The same text under
+/// another protection is one, because the protection is part of what the file
+/// says about the field.
+#[test]
+fn typing_that_changes_nothing_writes_nothing() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = vault_for_typing(scratch.path());
+    let mut vault = open(&database, BUILT_PASSWORD);
+    let id = vault.tree().entries[0].id;
+    let modified = vault.entry(id).expect("the entry is there").times.modified;
+
+    for (field, typed) in [
+        (
+            keepass::db::fields::USERNAME,
+            NewValue::Open("alice".into()),
+        ),
+        (
+            "PIN",
+            NewValue::Protected(zeroize::Zeroizing::new("1234".to_owned())),
+        ),
+        (keepass::db::fields::NOTES, NewValue::Open(String::new())),
+    ] {
+        assert_eq!(
+            vault.set_typed(id, field, typed).ok(),
+            Some(false),
+            "{field}"
+        );
+    }
+    assert!(vault.versions(id).is_empty());
+    assert_eq!(
+        vault.entry(id).expect("the entry is there").times.modified,
+        modified
+    );
+    assert_eq!(vault.rescue(), Rescue::Nothing);
+
+    assert_eq!(
+        vault
+            .set_typed(id, "PIN", NewValue::Open("1234".into()))
+            .ok(),
+        Some(true),
+        "a protected value going into the open is not nothing"
+    );
+}
+
+/// What was typed into something that has gone is refused and changes
+/// nothing: a field of the reader's own removed while its text was on the way
+/// is not made again, an entry that is not there is not made up, and text a
+/// KeePass file cannot hold is refused the way a commit of it would be.
+#[test]
+fn typing_into_what_has_gone_is_refused_and_changes_nothing() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = vault_for_typing(scratch.path());
+    let mut vault = open(&database, BUILT_PASSWORD);
+    let id = vault.tree().entries[0].id;
+
+    vault.remove_field(id, "PIN").expect("the field is removed");
+    let versions = vault.versions(id).len();
+    let stranger = open(
+        &vault_with_an_entry(scratch.path(), "other.kdbx"),
+        BUILT_PASSWORD,
+    )
+    .tree()
+    .entries[0]
+        .id;
+
+    assert!(matches!(
+        vault.set_typed(
+            id,
+            "PIN",
+            NewValue::Protected(zeroize::Zeroizing::new("5678".to_owned()))
+        ),
+        Err(VaultError::NoSuchField)
+    ));
+    assert!(matches!(
+        vault.set_typed(
+            stranger,
+            keepass::db::fields::TITLE,
+            NewValue::Open("nobody".into())
+        ),
+        Err(VaultError::NoSuchEntry)
+    ));
+    assert!(
+        vault
+            .set_typed(
+                id,
+                keepass::db::fields::USERNAME,
+                NewValue::Open("null\0byte".into())
+            )
+            .is_err()
+    );
+
+    let entry = vault.entry(id).expect("the entry is there");
+    assert!(entry.field("PIN").is_none(), "a removed field came back");
+    assert_eq!(entry.username(), "alice");
+    assert_eq!(vault.versions(id).len(), versions);
+}

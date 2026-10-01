@@ -24,6 +24,7 @@
 		reason = null,
 		rescue = null,
 		lost = false,
+		typed = false,
 		onChoose,
 		onKeyFile,
 		onCreate,
@@ -58,6 +59,13 @@
 		rescue?: Rescued | null;
 		/** Whether the last lock had work to write and nowhere to put it. */
 		lost?: boolean;
+		/**
+		 * Whether the last lock found text the reader was still typing and saved
+		 * it into the vault. Only whether: after a lock nothing of the vault is
+		 * left in memory to name the entry it went into, and this screen must
+		 * not be what keeps one.
+		 */
+		typed?: boolean;
 		onChoose: (database: Database) => void;
 		onKeyFile: (chosen: Database | null) => void;
 		/** Offered on the first run, where there is nothing to open yet. */
@@ -261,6 +269,15 @@
 			</p>
 		{:else}
 			<div class="mt-5 text-center text-lead font-bold tracking-wordmark">COFFER</div>
+		{/if}
+
+		<!-- The one thing the lock has to add about the reader's own work, and
+		     in the same place the two lines about work it could not save stand.
+		     It names no entry: none is left in memory to name. -->
+		{#if typed}
+			<p class="mx-auto mt-6 max-w-[38ch] text-center text-small leading-relaxed text-txt2">
+				What you were typing was saved before locking.
+			</p>
 		{/if}
 
 		<!-- Standing news about a file beside the vault, so it sits above the

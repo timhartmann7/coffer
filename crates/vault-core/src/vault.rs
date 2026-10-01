@@ -457,6 +457,42 @@ impl Vault {
         }
     }
 
+    /// Writes text the reader was still typing into a field when the vault had
+    /// to go, and says whether it changed the entry.
+    ///
+    /// On the terms of [`Vault::set_field`], so the entry's previous state is
+    /// kept as a version, and narrower, because nobody is looking when it
+    /// happens. The field has to be one the entry still has, or one of the five
+    /// every entry is drawn with: a field of the reader's own that was removed
+    /// while its text was on the way is not made again under their feet. And
+    /// text that is what the field already holds, under the same protection,
+    /// writes nothing at all, so a vault that heard only that has nothing to
+    /// save.
+    pub fn set_typed(
+        &mut self,
+        id: EntryId,
+        field: &str,
+        value: NewValue,
+    ) -> Result<bool, VaultError> {
+        let (text, protect) = match &value {
+            NewValue::Open(written) => (written.as_str(), false),
+            NewValue::Protected(written) => (written.as_str(), true),
+        };
+
+        let entry = self.database.entry(id).ok_or(VaultError::NoSuchEntry)?;
+        let unchanged = match entry.fields.get(field) {
+            Some(held) => held.get() == text && held.is_protected() == protect,
+            None if fields::STANDARD.contains(&field) => text.is_empty(),
+            None => return Err(VaultError::NoSuchField),
+        };
+        if unchanged {
+            return Ok(false);
+        }
+
+        self.set_field(id, field, value)?;
+        Ok(true)
+    }
+
     /// Whether the file on disk is still the one this vault was opened from.
     pub fn external_change(&self) -> Result<Change, VaultError> {
         Ok(watch::since(&self.path, self.stamp, self.content)?)

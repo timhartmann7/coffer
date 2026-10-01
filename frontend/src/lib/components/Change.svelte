@@ -1,7 +1,10 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
+	import { drop, typed as said, unfinished, type Place } from '$lib/drafts';
 	import { finishes, lines } from '$lib/lines';
 	import Confirm from './Confirm.svelte';
 	import Field from './Field.svelte';
+	import Unsaved from './Unsaved.svelte';
 
 	/**
 	 * A new value for something the database protects, written on purpose.
@@ -21,21 +24,20 @@
 	 * leaves the focus wherever the reader put it, and going back into the field
 	 * takes the question away again.
 	 *
-	 * What is typed here is the reader's own and is nowhere but in this field,
-	 * which is wiped when the field closes, whichever way it closes. A field that
+	 * What is typed here is the reader's own. It is in this field, and - so that
+	 * a lock that comes before Save or Discard, a lid closed or the reader
+	 * walking away, writes it the way Save would have rather than wiping it with
+	 * the window - in Rust as a draft of the field (`drafts.ts`), told as it is
+	 * typed. Both go when the field closes, whichever way it closes. A field that
 	 * goes while holding something nobody answered for - its entry closed, or
 	 * another one opened - says so rather than going quietly.
-	 *
-	 * Every key the reader types into it arrives at `typed`, which is the one
-	 * place a value is being written into a field of an entry before anything
-	 * has been saved; the owner's `onSave` knows which entry, which field and
-	 * whether the database protects it.
 	 */
 	let {
 		label,
 		placeholder,
 		what,
 		class: classes = '',
+		draft,
 		onSave,
 		onClose,
 		onFailure
@@ -47,6 +49,9 @@
 		 * “API token”". The question and the notice both say it. */
 		what: string;
 		class?: string;
+		/** The entry and field the new value is for, and whether the database
+		 * protects it: what is typed is told to Rust as a draft of that field. */
+		draft: Place;
 		/** Writes the value, and answers whether the vault took it. A value that
 		 * was refused stays in the field to be put right. */
 		onSave: (value: string) => Promise<boolean>;
@@ -78,10 +83,16 @@
 	 */
 	function held(element: HTMLTextAreaElement) {
 		element.focus();
+		// Where the typing goes is settled when the field opens, and a field
+		// going is the one moment its owner may already be gone. Read without
+		// being followed: an attachment runs again for whatever it reads, and
+		// running again is wiping the field.
+		const place = untrack(() => draft);
 		return () => {
 			if (edited && element.value !== '') {
 				onFailure({ code: 'refused', message: `The new ${what} was not saved.` });
 			}
+			drop(place);
 			element.value = '';
 		};
 	}
@@ -90,6 +101,8 @@
 		if (!node) return;
 		edited = true;
 		written = lines(node.value);
+		const element = node;
+		said(draft, () => element.value);
 	}
 
 	/**
@@ -143,6 +156,7 @@
 	export function close() {
 		edited = false;
 		asking = false;
+		drop(draft);
 		if (node) node.value = '';
 		onClose();
 	}
@@ -166,6 +180,9 @@
 			1
 				? 'overflow-x-hidden overflow-y-auto'
 				: 'overflow-hidden'}"></textarea>
+		{#if unfinished(draft)}
+			<Unsaved class="mt-2 self-start" />
+		{/if}
 	</Field>
 
 	{#if asking}

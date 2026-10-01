@@ -36,7 +36,7 @@ is still a password; `empty` says whether there is one to ask for.
 
 | Command | Takes | Answers |
 |---|---|---|
-| `status` | | the chosen database, whether it is open, how many entries, whether it can be written, why it locked, the unsaved copy sitting beside it, and - when nothing is remembered - a vault found in Coffer's own folder |
+| `status` | | the chosen database, whether it is open, how many entries, whether it can be written, why it locked, whether that lock saved something being typed, the unsaved copy sitting beside it, and - when nothing is remembered - a vault found in Coffer's own folder |
 | `choose_database` | | the database the user picked, or nothing if they closed the dialog |
 | `choose_found` | | the vault found in Coffer's own folder, now chosen |
 | `unlock` | the master password, as the raw body | nothing |
@@ -56,14 +56,14 @@ Everything slice 3 added:
 | Command | Takes | Answers |
 |---|---|---|
 | `create_entry` | `group` | the tree, and the entry it made |
-| `delete_entry` | `entry` | the tree |
+| `delete_entry` | `entry`, `sequence` | the tree |
 | `create_group` | `parent`, `name` | the tree |
 | `rename_group` | `group`, `name` | the tree |
 | `delete_group` | `group` | the tree |
 | `put_back_entry` | `entry` | the tree |
 | `put_back_group` | `group` | the tree |
 | `empty_recycle_bin` | | the tree |
-| `set_field` | `entry`, `field`, `value`, `protect` | the entry |
+| `set_field` | `entry`, `field`, `value`, `protect`, `sequence` | the entry |
 | `remove_field` | `entry`, `field` | the entry |
 | `set_tags` | `entry`, `tags` | the entry |
 | `add_attachment` | `entry` | the entry, or what already has the file's name, or nothing if the panel was closed |
@@ -85,7 +85,7 @@ Everything slice 3 added:
 | `save` | | nothing |
 | `save_over` | | nothing |
 | `save_copy` | | the file it wrote, or nothing if the panel was closed |
-| `reload` | | the tree |
+| `reload` | `sequence` | the tree |
 | `rival` | | when the file on disk was written and how many entries it holds |
 
 Everything slice 4 added:
@@ -95,6 +95,7 @@ Everything slice 4 added:
 | `settings` | | the two timers, the two switches, the look, and the values each may be set to |
 | `set_settings` | `settings` | what was actually stored, which is not always what was sent |
 | `stirred` | | the seconds the open vault has left, or nothing when none is open |
+| `draft` | `entry`, `field`, `value`, `protect`, `sequence` | nothing |
 | `default_new_database` | | where a first vault goes when nobody has said, and whether something is already there |
 | `choose_new_database` | | where the reader wants the new vault instead, on the same terms |
 | `choose_existing` | | what already sits where the new vault would go, now chosen |
@@ -184,6 +185,45 @@ one entry answers with that entry; a change to the shape of the vault answers
 with the whole tree. The screen never patches its own copy of the database from
 what it thinks a command did, because a screen that guessed wrong would go on
 drawing something that is not in the file.
+
+**What is typed reaches Rust before the field is left.** A value is written by
+`set_field` when its field is left, and until then it was in the window and
+nowhere else. A lock destroys the window, and the triggers that lock on their
+own - sleep, the screen locking, Coffer quitting - arrive on the thread the
+window is drawn on, where neither a message into the page nor its answer can get
+through: a lock that asked the page to finish first could only wait for nothing.
+So the page never is asked. It sends `draft` for a field a quarter of a second
+after the last key, and at once when the window loses focus, with what is in the
+field; `value` is `null` when the typing was taken back - Escape, Cancel,
+Discard, a field left as it was, or a new password whose entry the pane stopped
+showing. Rust keeps the last of it per field, beside the open vault, in
+`Zeroizing` storage whose `Debug` prints `[redacted]`, and every lock writes it
+into the vault before it wipes it (see Locking). The Lock button waits for every
+draft and every value already on its way before it asks for the lock. The text
+travels the way `set_field`'s does, window to Rust, and nothing comes back.
+
+Every word about typing carries `sequence`, from one count per window that only
+goes up and starts at the moment the window was built, in microseconds, so that
+a word from a window a lock destroyed is older than any the next one sends.
+Tauri runs commands side by side, so a draft sent before its field was written
+can arrive after it. Rust drops a draft that is no newer than the last word it
+heard about the field - a draft, a draft taken back, or the value `set_field`
+wrote, which carries its own number and ends the draft under the same lock as the
+write - or than a `delete_entry` of its entry or a `reload`, which carry one too
+and let go of everything typed into what they take away. A restore is not on
+that list, because nothing on the screen goes with it: every value typed into a
+field of the entry was written when the field was left, before the Restore
+button could be pressed, and a new password still waiting in its own field with
+the question under it is still the reader's.
+
+A draft is written only into a field the entry still has, or one of the five
+standard ones every entry is drawn with, and only when it differs from what the
+field holds; a draft the vault refuses is let go and the lock goes on. When the
+lock's save went through, `status` answers `typed`, and the unlock screen says
+"What you were typing was saved before locking." - a flag and nothing more,
+because after a lock nothing of the vault is left in memory to name the entry
+with. When the save went beside the vault instead, the typing is in that copy
+with everything else, and `rescue` is what is said.
 
 **A version is addressed by `(entry, index)`.** The index is its position in the
 entry's history, which is the only thing that identifies one: modification times
@@ -351,8 +391,9 @@ A rejected command rejects with that object and not with an `Error`, so
 
 ## The one value that goes the other way
 
-A field the reader is editing crosses as ordinary JSON, and the master password
-does not. The difference is not carelessness, it is what the two values are.
+A field the reader is editing crosses as ordinary JSON - its draft as well as
+the value it is left with - and the master password does not. The difference is
+not carelessness, it is what the two values are.
 
 A password being changed is in the window already: it is the `value` of the
 field the reader is typing the new one into, which is a JavaScript string by
@@ -619,7 +660,9 @@ other database.
 
 **A lock writes the vault out before it wipes it.** A vault is dirty exactly
 when saving is what failed, so locking on its own would be a session's work
-ended by a timer. The ordinary save is tried first; what it will not take goes to
+ended by a timer. What the reader was typing and had not finished goes in first,
+through the same edit leaving each field would have made, so that it is written
+out with the rest. The ordinary save is tried first; what it will not take goes to
 `<database>.unsaved.kdbx` beside the vault, under the same credentials. The lock
 happens either way, and `status` reports the copy as `rescue` and a rescue that
 could not be written anywhere as `lost`. The copy stays until the reader removes

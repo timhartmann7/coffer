@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { SvelteSet } from 'svelte/reactivity';
+	import { settle, type Place } from '$lib/drafts';
 	import { called, fully, size } from '$lib/format';
 	import {
 		addAttachment,
@@ -205,8 +206,15 @@
 		}
 	}
 
+	/** Writes a value into a field of this entry, and finishes whatever was
+	 * typed there. */
 	function write(field: string, value: string, protect: boolean): Promise<boolean> {
-		return change(() => setField(entry.id, field, value, protect));
+		const id = entry.id;
+		return change(() =>
+			settle({ entry: id, field, protect }, (sequence) =>
+				setField(id, field, value, protect, sequence)
+			)
+		);
 	}
 
 	/**
@@ -357,6 +365,12 @@
 		return field?.name ?? standard;
 	}
 
+	/** Where a value typed into one of this entry's fields goes: the field's
+	 * name in the file, and whether the file protects it. */
+	function place(field: Field | undefined, standard: string): Place {
+		return { entry: entry.id, field: nameOf(field, standard), protect: field?.protected ?? false };
+	}
+
 	/**
 	 * Opens the field that asks for a name, and closes it again.
 	 *
@@ -424,6 +438,7 @@
 				label="New value of {field.name}"
 				placeholder="New value"
 				what="value of “{field.name}”"
+				draft={place(field, field.name)}
 				onSave={(value) => write(field.name, value, field.protected)}
 				onClose={() => changing.delete(field.name)}
 				{onFailure}
@@ -464,6 +479,7 @@
 					<Mask />
 				</h1>
 			{:else}
+				{@const at = place(title, 'Title')}
 				<h1 class="-ml-2 flex min-w-0 flex-1">
 					<Editable
 						value={title?.value ?? ''}
@@ -472,7 +488,8 @@
 						classes="text-title font-medium tracking-tight text-txt"
 						readonly={locked}
 						bare
-						onCommit={(value) => write(nameOf(title, 'Title'), value, title?.protected ?? false)}
+						draft={at}
+						onCommit={(value) => write(at.field, value, at.protect)}
 					/>
 				</h1>
 			{/if}
@@ -521,14 +538,15 @@
 						{onFailure}
 					/>
 				{:else}
+					{@const at = place(username, 'UserName')}
 					<Editable
 						value={username?.value ?? ''}
 						label="Login"
 						placeholder="No login"
 						mono
 						readonly={locked}
-						onCommit={(value) =>
-							write(nameOf(username, 'UserName'), value, username?.protected ?? false)}
+						draft={at}
+						onCommit={(value) => write(at.field, value, at.protect)}
 					/>
 				{/if}
 				<!-- Not for a protected login: the row above draws its own, beside
@@ -578,13 +596,15 @@
 				</span>
 				{@render changer(url, '')}
 			{:else}
+				{@const at = place(url, 'URL')}
 				<span class="mt-1.5 flex items-center gap-2">
 					<Editable
 						value={url?.value ?? ''}
 						label="Address"
 						placeholder="No address"
 						readonly={locked}
-						onCommit={(value) => write(nameOf(url, 'URL'), value, url?.protected ?? false)}
+						draft={at}
+						onCommit={(value) => write(at.field, value, at.protect)}
 					/>
 					{#if url?.openable}
 						<button
@@ -627,6 +647,7 @@
 					/>
 				</div>
 			{:else}
+				{@const at = place(notes, 'Notes')}
 				<div class="mt-3 flex items-start">
 					<Editable
 						value={notes?.value ?? ''}
@@ -635,7 +656,8 @@
 						multiline
 						classes="text-small leading-relaxed text-txt2 focus:text-txt"
 						readonly={locked}
-						onCommit={(value) => write(nameOf(notes, 'Notes'), value, notes?.protected ?? false)}
+						draft={at}
+						onCommit={(value) => write(at.field, value, at.protect)}
 					/>
 				</div>
 			{/if}
@@ -666,6 +688,7 @@
 			-->
 			{#each custom as field (field.name)}
 				{@const masked = field.value === null && !field.empty}
+				{@const at = place(field, field.name)}
 				<div class="mt-3">
 					<div class="group flex items-center gap-3">
 						<span class="w-24 shrink-0 truncate text-small text-txt2">{field.name}</span>
@@ -690,7 +713,8 @@
 								breaks
 								multiline={field.name === longhand}
 								readonly={locked}
-								onCommit={(value) => write(field.name, value, field.protected)}
+								draft={at}
+								onCommit={(value) => write(at.field, value, at.protect)}
 							/>
 						{/if}
 						{#if !locked}

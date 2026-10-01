@@ -310,6 +310,19 @@ them a selection a reader can make, and the refusal says so without a word of
 the value. A property test holds it to what a text node would have selected for
 the same two numbers.
 
+**Typing a lock finds is written here, on narrower terms than a commit.**
+[`Vault::set_typed`](../crates/vault-core/src/vault.rs) is `set_field` - the
+entry's previous state kept as a version - for text the reader had typed into a
+field and not left when the vault had to lock. Nobody is looking when it runs,
+so it refuses what a commit would take: a field the entry no longer has, unless
+it is one of the five standard ones every entry is drawn with, is not made
+again, because a field of the reader's own removed while its text was on the
+way would otherwise come back under their feet. And text that is what the field
+already holds, under the same protection, writes nothing and marks nothing to
+save, so a lock that found only that saves nothing and says nothing. What was
+typed, and in which order it arrived, is the window's business and is kept in
+`vault-gui`; this is the one rule for what a draft may do to the database.
+
 ## The recycle bin, and putting things back
 
 `SPEC.md` says a deletion goes to the recycle bin when the database keeps one

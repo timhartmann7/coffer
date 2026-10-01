@@ -15,6 +15,7 @@ use vault_core::{Attached, LockPolicy, MasterKey, Recipe, Rescue, SecretValue, V
 use zeroize::Zeroizing;
 
 use crate::autolock::Reason;
+use crate::drafts::{Drafts, Over, Typed};
 use crate::error::Failure;
 use crate::recent;
 
@@ -36,6 +37,11 @@ struct Held {
     /// it anywhere at all. There is no file to point the reader at, which is why
     /// this is a flag and not a path. Cleared with `locked_by`.
     lost: bool,
+    /// Whether the last lock found text the reader was still typing, wrote it
+    /// into the vault and saved it where the reader believes it is. A flag and
+    /// nothing more: after a lock nothing of the vault may be left to name the
+    /// entry it went into. Cleared with `locked_by`.
+    typed: bool,
     /// The key file the next unlock will use alongside the password, when the
     /// database asks for one.
     ///
@@ -68,16 +74,18 @@ struct Held {
     generation: u64,
 }
 
-/// An open vault, and the file the reader chose for one of its entries while
-/// they are asked about a name that entry already gives another.
+/// An open vault, the file the reader chose for one of its entries while they
+/// are asked about a name that entry already gives another, and what they are
+/// typing into its entries and have not finished.
 ///
-/// One value rather than two fields, so that nothing can take the vault away
-/// and leave the file behind. A lock, another database chosen, an unlock over
-/// the top: every way the vault goes, the file goes with it, wiped, and no
-/// path through here has to remember to say so.
+/// One value rather than three fields, so that nothing can take the vault away
+/// and leave the file or the typing behind. A lock, another database chosen, an
+/// unlock over the top: every way the vault goes, the rest goes with it, wiped,
+/// and no path through here has to remember to say so.
 struct Open {
     vault: Vault,
     offered: Option<Offered>,
+    drafts: Drafts,
 }
 
 impl Open {
@@ -85,7 +93,22 @@ impl Open {
         Open {
             vault,
             offered: None,
+            drafts: Drafts::default(),
         }
+    }
+
+    /// Writes what the reader was typing into the vault, the way leaving each
+    /// field would have, and says whether any of it changed an entry.
+    ///
+    /// A draft the vault will not take - its entry gone, its field removed, a
+    /// vault Coffer does not write back - is let go, and the rest are still
+    /// written: nothing here may stop a lock.
+    fn finish_typing(&mut self) -> bool {
+        let mut changed = false;
+        for (entry, field, value) in self.drafts.take() {
+            changed |= self.vault.set_typed(entry, &field, value).unwrap_or(false);
+        }
+        changed
     }
 }
 
@@ -128,6 +151,7 @@ impl Session {
                 database,
                 locked_by: None,
                 lost: false,
+                typed: false,
                 key_file: None,
                 making: None,
                 measured: None,
@@ -173,6 +197,7 @@ impl Session {
         // A flag about the vault that was open says nothing about the one being
         // chosen, for the same reason the key file does not carry over.
         held.lost = false;
+        held.typed = false;
         held.generation += 1;
     }
 
@@ -279,6 +304,7 @@ impl Session {
             held.making = None;
             held.locked_by = None;
             held.lost = false;
+            held.typed = false;
             opened
         };
 
@@ -306,20 +332,35 @@ impl Session {
         // Written out before it is taken. Taking it is what destroys the only
         // copy of anything that never reached the file, and a vault is dirty
         // exactly when saving is the thing that failed - so a wipe on its own
-        // is a session's work ended by a timer nobody was watching.
-        let rescue = held.open.as_mut().map(|open| open.vault.rescue());
+        // is a session's work ended by a timer nobody was watching. What the
+        // reader was typing goes in first, so that it is written out with the
+        // rest, or kept beside the vault with the rest when the file will not
+        // take it.
+        let ended = held.open.as_mut().map(|open| {
+            let typed = open.finish_typing();
+            (typed, open.vault.rescue())
+        });
         held.open = None;
         held.generation += 1;
 
-        let Some(rescue) = rescue else { return false };
+        let Some((typed, rescue)) = ended else {
+            return false;
+        };
         held.locked_by = Some(reason);
         held.lost = rescue == Rescue::Lost;
+        held.typed = typed && rescue == Rescue::Saved;
         true
     }
 
     /// Whether the last lock in this run had to give something up.
     pub fn lost(&self) -> bool {
         self.held().lost
+    }
+
+    /// Whether the last lock in this run wrote what the reader was typing into
+    /// the vault, and saved it there.
+    pub fn typed(&self) -> bool {
+        self.held().typed
     }
 
     /// Why the window is asking for a password again, when there is something
@@ -444,6 +485,44 @@ impl Session {
         let mut held = self.held();
         let open = held.open.as_mut().ok_or_else(Failure::no_vault)?;
         Ok(change(&mut open.vault))
+    }
+
+    /// Borrows the open vault to change it, the way [`Session::with_mut`]
+    /// does, and lets go of the typing the change leaves nothing more to say
+    /// about - under the same lock, so that no lock can land between the two
+    /// and write that typing over the change.
+    ///
+    /// `sequence` is the window's number for the change. Typing it said before
+    /// is let go whether or not the change goes through: a value refused is put
+    /// back in the window, and an entry that could not be deleted or a file
+    /// that could not be read again is still something the reader chose to
+    /// leave behind.
+    pub fn overtaking<T>(
+        &self,
+        over: Over<'_>,
+        sequence: u64,
+        change: impl FnOnce(&mut Vault) -> T,
+    ) -> Result<T, Failure> {
+        let mut held = self.held();
+        let open = held.open.as_mut().ok_or_else(Failure::no_vault)?;
+        open.drafts.over(over, sequence);
+        Ok(change(&mut open.vault))
+    }
+
+    /// Holds the window's latest word about a field the reader is typing into:
+    /// what is in it, or nothing when that was taken back. The next lock writes
+    /// it; see [`crate::drafts`].
+    pub fn draft(
+        &self,
+        entry: EntryId,
+        field: &str,
+        typed: Option<Typed>,
+        sequence: u64,
+    ) -> Result<(), Failure> {
+        let mut held = self.held();
+        let open = held.open.as_mut().ok_or_else(Failure::no_vault)?;
+        open.drafts.hear(entry, field, typed, sequence);
+        Ok(())
     }
 
     /// Offers a file to an entry, and holds on to it when the entry already
@@ -1644,6 +1723,597 @@ mod tests {
         assert!(printed.contains("[redacted]"), "{printed}");
         assert!(!printed.contains("passport"), "{printed}");
         assert!(!printed.contains("OPENSSH"), "{printed}");
+    }
+
+    /// Text the reader typed and never left, as the window says it.
+    fn words(text: &str, protect: bool) -> Option<Typed> {
+        Some(Typed {
+            value: Zeroizing::new(text.to_owned()),
+            protect,
+        })
+    }
+
+    /// The database as the next launch would find it: from the file, with
+    /// nothing of the session that wrote it.
+    fn reopened(database: &Path) -> Vault {
+        Vault::open(
+            database,
+            MasterKey::from_password(password(SECRET)),
+            LockPolicy::Respect,
+        )
+        .expect("the database opens again")
+    }
+
+    /// One field's value, whether or not the file protects it.
+    fn value_of(vault: &Vault, id: EntryId, field: &str) -> Option<String> {
+        vault
+            .reveal(id, field)
+            .and_then(|secret| secret.expose_str().map(str::to_owned))
+    }
+
+    /// A session holding a copy of the fixture, and where that copy is.
+    fn holding(name: &str) -> (tempfile::TempDir, PathBuf, Session) {
+        let (directory, database) = scratch(name);
+        let session = Session::new(Some(database.clone()), None);
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the database opens");
+        (directory, database, session)
+    }
+
+    /// The defect this exists for: a note half written when the lid closed was
+    /// in the window and nowhere else, and the lock that destroyed the window
+    /// took it along. It is in the file now, as an edit like any other - the
+    /// entry's previous state kept as a version - and the unlock screen is told
+    /// that it was saved.
+    #[test]
+    fn a_lock_writes_what_the_reader_was_typing_and_saves_it() {
+        let (_directory, database, session) = holding(RICH);
+        let basic = entry_titled(&session, "basic");
+
+        session
+            .draft(
+                basic.id,
+                fields::URL,
+                words("https://half.example/pa", false),
+                1,
+            )
+            .expect("the draft is heard");
+
+        assert!(session.lock(Reason::Sleeping));
+        assert!(
+            !session.lock(Reason::Quitting),
+            "a second lock found a vault"
+        );
+        assert!(session.typed(), "the unlock screen is not told");
+        assert!(!session.lost());
+
+        let file = reopened(&database);
+        assert_eq!(
+            value_of(&file, basic.id, fields::URL).as_deref(),
+            Some("https://half.example/pa")
+        );
+        assert_eq!(
+            file.versions(basic.id).len(),
+            basic.versions + 1,
+            "the draft went in without keeping what it replaced"
+        );
+    }
+
+    /// A draft still on its way when its field was written arrives after the
+    /// write, and after a restore that came later still. It is older than both
+    /// and must not be what the lock writes over them.
+    #[test]
+    fn a_draft_overtaken_by_a_write_never_comes_back() {
+        let (_directory, database, session) = holding(RICH);
+        let basic = entry_titled(&session, "basic");
+
+        session
+            .draft(basic.id, fields::URL, words("https://half.ex", false), 1)
+            .expect("the draft is heard");
+        session
+            .overtaking(Over::Field(basic.id, fields::URL), 2, |vault| {
+                vault.set_field(
+                    basic.id,
+                    fields::URL,
+                    vault_core::NewValue::Open("https://whole.example".to_owned()),
+                )
+            })
+            .expect("the vault is open")
+            .expect("the address is written");
+        let newest = session
+            .with(|vault| vault.versions(basic.id))
+            .expect("the vault is open")
+            .last()
+            .expect("the write kept a version")
+            .index;
+        session
+            .with_mut(|vault| vault.restore_version(basic.id, newest))
+            .expect("the vault is open")
+            .expect("the version is restored");
+
+        // The draft sent first, arriving last, twice over.
+        for late in [1, 2] {
+            session
+                .draft(basic.id, fields::URL, words("https://half.ex", false), late)
+                .expect("the draft is heard");
+        }
+
+        assert!(session.lock(Reason::Idle));
+        assert!(!session.typed(), "a draft nobody stood behind was written");
+        assert_eq!(
+            value_of(&reopened(&database), basic.id, fields::URL).as_deref(),
+            Some("https://example.com/login?a=1&b=2"),
+            "the restore did not stand"
+        );
+    }
+
+    /// Escape, Cancel and Discard take typing back, and what was taken back is
+    /// not written - nor is there anything for the lock to save.
+    #[test]
+    fn typing_taken_back_is_not_written() {
+        let (_directory, database, session) = holding(RICH);
+        let basic = entry_titled(&session, "basic");
+
+        session
+            .draft(basic.id, fields::USERNAME, words("mallory", false), 1)
+            .expect("the draft is heard");
+        session
+            .draft(basic.id, fields::USERNAME, None, 2)
+            .expect("the draft is taken back");
+        // A second copy of the first word, arriving after the second.
+        session
+            .draft(basic.id, fields::USERNAME, words("mallory", false), 1)
+            .expect("the draft is heard");
+
+        assert!(session.lock(Reason::ByHand));
+        assert!(!session.typed());
+        let snapshot =
+            vault_core::storage::snapshot::slot(&database, 1).expect("a slot has a name");
+        assert!(!snapshot.exists(), "a lock with nothing to write wrote");
+        assert_eq!(
+            value_of(&reopened(&database), basic.id, fields::USERNAME).as_deref(),
+            Some("alice")
+        );
+    }
+
+    /// Text that is what the field already holds is not an edit, and a lock
+    /// that heard only that has nothing to save and nothing to say.
+    #[test]
+    fn typing_that_came_back_to_where_it_started_writes_nothing() {
+        let (_directory, database, session) = holding(RICH);
+        let basic = entry_titled(&session, "basic");
+
+        session
+            .draft(basic.id, fields::USERNAME, words("alice", false), 1)
+            .expect("the draft is heard");
+        session
+            .draft(
+                basic.id,
+                fields::PASSWORD,
+                words("correct horse battery staple", true),
+                2,
+            )
+            .expect("the draft is heard");
+        // A standard field the entry does not have, left empty. Every entry is
+        // drawn with one, and one Coffer did not make may well lack it.
+        let made = session
+            .with_mut(|vault| {
+                let made = vault.create_entry(vault.tree().id)?;
+                vault.remove_field(made, fields::NOTES)?;
+                vault.save()?;
+                Ok::<_, VaultError>(made)
+            })
+            .expect("the vault is open")
+            .expect("an entry without notes is made and saved");
+        session
+            .draft(made, fields::NOTES, words("", false), 3)
+            .expect("the draft is heard");
+
+        assert!(session.lock(Reason::Idle));
+        assert!(!session.typed());
+        assert_eq!(
+            reopened(&database).versions(basic.id).len(),
+            basic.versions,
+            "an edit that changed nothing kept a version"
+        );
+    }
+
+    /// The entry went, the field was removed, or the entry was never there: a
+    /// draft of any of them is let go, and the lock goes on to write the rest.
+    /// A field of the reader's own that was removed is not made again by its
+    /// own late draft.
+    #[test]
+    fn drafts_of_what_has_gone_are_let_go_and_the_rest_are_written() {
+        let (_directory, database, session) = holding(RICH);
+        let basic = entry_titled(&session, "basic");
+        let binned = entry_titled(&session, "deleted entry");
+
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    basic.id,
+                    "PIN",
+                    vault_core::NewValue::Protected(Zeroizing::new("1234".to_owned())),
+                )?;
+                vault.remove_field(basic.id, "PIN")?;
+                // Out of the bin, and so out of the file.
+                vault.delete_entry(binned.id)
+            })
+            .expect("the vault is open")
+            .expect("the changes are made");
+
+        let nobody = EntryId::from_uuid(uuid::Uuid::nil());
+        for (sequence, (entry, field)) in [
+            (binned.id, fields::NOTES),
+            (basic.id, "PIN"),
+            (nobody, fields::TITLE),
+            (basic.id, "a name nothing ever had"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            session
+                .draft(entry, field, words("lost cause", true), sequence as u64 + 1)
+                .expect("the draft is heard");
+        }
+        // Text a KeePass file cannot hold is refused the way a commit of it
+        // would be, and the drafts after it are still written.
+        session
+            .draft(basic.id, fields::USERNAME, words("null\0byte", false), 8)
+            .expect("the draft is heard");
+        session
+            .draft(
+                basic.id,
+                fields::URL,
+                words("https://kept.example", false),
+                9,
+            )
+            .expect("the draft is heard");
+
+        assert!(session.lock(Reason::ScreenLocked));
+        assert!(session.typed());
+
+        let file = reopened(&database);
+        assert!(file.entry(binned.id).is_none(), "an erased entry came back");
+        let entry = file.entry(basic.id).expect("the entry is there");
+        assert!(entry.field("PIN").is_none(), "a removed field came back");
+        assert!(entry.field("a name nothing ever had").is_none());
+        assert_eq!(
+            value_of(&file, basic.id, fields::URL).as_deref(),
+            Some("https://kept.example")
+        );
+        assert_eq!(
+            value_of(&file, basic.id, fields::USERNAME).as_deref(),
+            Some("alice")
+        );
+    }
+
+    /// A deletion and a reading of the file again each overtake what was typed
+    /// before them, and a draft of that time arriving afterwards stays gone -
+    /// the entry put back from the bin included.
+    #[test]
+    fn a_deletion_or_a_reload_overtakes_what_was_typed_before_it() {
+        let (_directory, database, session) = holding(RICH);
+        let basic = entry_titled(&session, "basic");
+
+        session
+            .draft(
+                basic.id,
+                fields::USERNAME,
+                words("before the bin", false),
+                1,
+            )
+            .expect("the draft is heard");
+        session
+            .overtaking(Over::Entry(basic.id), 2, |vault| {
+                vault.delete_entry(basic.id)
+            })
+            .expect("the vault is open")
+            .expect("the entry goes to the bin");
+        session
+            .draft(
+                basic.id,
+                fields::USERNAME,
+                words("before the bin", false),
+                1,
+            )
+            .expect("the draft is heard");
+        session
+            .with_mut(|vault| vault.put_back_entry(basic.id))
+            .expect("the vault is open")
+            .expect("the entry comes back");
+        session.with_mut(Vault::save).expect("open").expect("saved");
+
+        session
+            .draft(
+                basic.id,
+                fields::URL,
+                words("https://before.reload", false),
+                3,
+            )
+            .expect("the draft is heard");
+        session
+            .overtaking(Over::Everything, 4, Vault::reload)
+            .expect("the vault is open")
+            .expect("the file is read again");
+        session
+            .draft(
+                basic.id,
+                fields::URL,
+                words("https://before.reload", false),
+                3,
+            )
+            .expect("the draft is heard");
+
+        assert!(session.lock(Reason::Idle));
+        assert!(!session.typed());
+        let file = reopened(&database);
+        assert_eq!(
+            value_of(&file, basic.id, fields::USERNAME).as_deref(),
+            Some("alice")
+        );
+        assert_eq!(
+            value_of(&file, basic.id, fields::URL).as_deref(),
+            Some("https://example.com/login?a=1&b=2")
+        );
+    }
+
+    /// A value the database protects goes back protected: a draft is written
+    /// under the protection the window read, a password and a field of the
+    /// reader's own alike.
+    #[test]
+    fn a_protected_fields_draft_is_written_protected() {
+        let (_directory, database, session) = holding(RICH);
+        let basic = entry_titled(&session, "basic");
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    basic.id,
+                    "Passport",
+                    vault_core::NewValue::Protected(Zeroizing::new(String::new())),
+                )
+            })
+            .expect("the vault is open")
+            .expect("the field is made");
+
+        session
+            .draft(
+                basic.id,
+                fields::PASSWORD,
+                words("a new one, half", true),
+                1,
+            )
+            .expect("the draft is heard");
+        session
+            .draft(basic.id, "Passport", words("C01X00T4", true), 2)
+            .expect("the draft is heard");
+        assert!(session.lock(Reason::Sleeping));
+
+        let file = reopened(&database);
+        let entry = file.entry(basic.id).expect("the entry is there");
+        for (name, wanted) in [
+            (fields::PASSWORD, "a new one, half"),
+            ("Passport", "C01X00T4"),
+        ] {
+            let field = entry.field(name).expect("the field is there");
+            assert!(
+                field.value.open().is_none(),
+                "{name} was written in the open"
+            );
+            assert_eq!(value_of(&file, basic.id, name).as_deref(), Some(wanted));
+        }
+    }
+
+    /// Everything the reader was in the middle of, across many entries and
+    /// many fields of one entry, is written by one lock.
+    #[test]
+    fn many_drafts_are_all_written() {
+        let (_directory, database, session) = holding(RICH);
+        let basic = entry_titled(&session, "basic");
+        let root = session.tree().expect("the tree comes back").id;
+        let made: Vec<EntryId> = (0..50)
+            .map(|_| {
+                session
+                    .with_mut(|vault| vault.create_entry(root))
+                    .expect("the vault is open")
+                    .expect("an entry is made")
+            })
+            .collect();
+        session
+            .with_mut(|vault| {
+                (0..200).try_for_each(|n| {
+                    vault.set_field(
+                        basic.id,
+                        &format!("field {n}"),
+                        vault_core::NewValue::Open(String::new()),
+                    )
+                })
+            })
+            .expect("the vault is open")
+            .expect("the fields are made");
+
+        let mut sequence = 0;
+        for (n, id) in made.iter().enumerate() {
+            sequence += 1;
+            session
+                .draft(
+                    *id,
+                    fields::TITLE,
+                    words(&format!("entry {n}"), false),
+                    sequence,
+                )
+                .expect("the draft is heard");
+        }
+        let megabyte = "a line of a long note\n".repeat(50_000);
+        sequence += 1;
+        session
+            .draft(made[0], fields::NOTES, words(&megabyte, false), sequence)
+            .expect("the draft is heard");
+        for n in 0..200 {
+            sequence += 1;
+            session
+                .draft(
+                    basic.id,
+                    &format!("field {n}"),
+                    words(&format!("value {n}"), false),
+                    sequence,
+                )
+                .expect("the draft is heard");
+        }
+
+        assert!(session.lock(Reason::Idle));
+        assert!(session.typed());
+        let file = reopened(&database);
+        for (n, id) in made.iter().enumerate() {
+            assert_eq!(
+                value_of(&file, *id, fields::TITLE),
+                Some(format!("entry {n}"))
+            );
+        }
+        for n in 0..200 {
+            assert_eq!(
+                value_of(&file, basic.id, &format!("field {n}")),
+                Some(format!("value {n}"))
+            );
+        }
+        assert_eq!(value_of(&file, made[0], fields::NOTES), Some(megabyte));
+    }
+
+    /// A draft of a vault that will not take a change - a snapshot opened from
+    /// the unlock screen - is let go, and the lock still locks.
+    #[test]
+    fn a_read_only_vault_writes_no_draft_and_still_locks() {
+        let (_directory, database, session) = holding(RICH);
+        session.with_mut(Vault::save).expect("open").expect("saved");
+        session.lock(Reason::ByHand);
+
+        let snapshot =
+            vault_core::storage::snapshot::slot(&database, 1).expect("a slot has a name");
+        let before = std::fs::read(&snapshot).expect("the snapshot is there");
+        session.choose_sibling(snapshot.clone());
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the snapshot opens");
+        assert!(
+            session
+                .with(Vault::is_read_only)
+                .expect("the vault is open")
+        );
+
+        let basic = entry_titled(&session, "basic");
+        session
+            .draft(
+                basic.id,
+                fields::URL,
+                words("https://nowhere.example", false),
+                1,
+            )
+            .expect("the draft is heard");
+
+        assert!(session.lock(Reason::Idle));
+        assert!(!session.typed());
+        assert!(!session.lost(), "nothing was there to lose");
+        assert_eq!(
+            std::fs::read(&snapshot).expect("the snapshot is there"),
+            before,
+            "a snapshot was written"
+        );
+    }
+
+    /// Somebody else wrote the file, so the save on the way out is refused. The
+    /// typing goes where the rest of the work goes, which is the copy beside
+    /// the vault, and the unlock screen's line about it is the copy's rather
+    /// than the one that says it was saved.
+    #[test]
+    fn typing_the_file_will_not_take_lands_in_the_copy_beside_it() {
+        let (_directory, database, session) = holding(RICH);
+        let basic = entry_titled(&session, "basic");
+        session
+            .draft(
+                basic.id,
+                fields::URL,
+                words("https://rescued.example", false),
+                1,
+            )
+            .expect("the draft is heard");
+
+        {
+            let mut theirs = Vault::open(
+                &database,
+                MasterKey::from_password(password(SECRET)),
+                LockPolicy::TakeOver,
+            )
+            .expect("the other client opens it");
+            theirs
+                .set_field(
+                    basic.id,
+                    fields::USERNAME,
+                    vault_core::NewValue::Open("theirs".to_owned()),
+                )
+                .expect("their change is applied");
+            theirs.save().expect("their save goes through");
+        }
+
+        assert!(session.lock(Reason::Sleeping));
+        assert!(!session.typed(), "the typing was said to be in the vault");
+        assert!(!session.lost());
+
+        let kept = vault_core::storage::unsaved::beside(&database).expect("a sibling path");
+        assert_eq!(
+            value_of(&reopened(&kept), basic.id, fields::URL).as_deref(),
+            Some("https://rescued.example")
+        );
+    }
+
+    /// Nothing of the typing outlives the lock: a draft that arrives after it
+    /// finds no vault, and the next session has nothing to write - so its lock
+    /// saves nothing and says nothing, and the line about the last one is gone
+    /// once the vault is open again.
+    #[test]
+    fn nothing_typed_outlives_the_lock() {
+        let (_directory, database, session) = holding(RICH);
+        let basic = entry_titled(&session, "basic");
+        session
+            .draft(
+                basic.id,
+                fields::URL,
+                words("https://once.example", false),
+                1,
+            )
+            .expect("the draft is heard");
+        assert!(session.lock(Reason::Idle));
+        assert!(session.typed());
+
+        let late = session
+            .draft(
+                basic.id,
+                fields::URL,
+                words("https://twice.example", false),
+                2,
+            )
+            .expect_err("a draft with no vault is refused");
+        assert_eq!(code_of(&late), "noVault");
+
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the database opens again");
+        assert!(!session.typed(), "an unlock kept the last lock's line");
+
+        assert!(session.lock(Reason::Idle));
+        assert!(
+            !session.typed(),
+            "the last session's typing was written again"
+        );
+        let second = vault_core::storage::snapshot::slot(&database, 2).expect("a slot has a name");
+        assert!(
+            !second.exists(),
+            "a lock with nothing typed saved the vault again"
+        );
+        assert_eq!(
+            value_of(&reopened(&database), basic.id, fields::URL).as_deref(),
+            Some("https://once.example")
+        );
     }
 
     /// A database whose owner chose a key file in KeePassXC. `vault-core` has

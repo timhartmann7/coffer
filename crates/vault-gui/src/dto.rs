@@ -172,6 +172,10 @@ pub struct Status {
     /// could not put it anywhere at all. There is no file to point at, which is
     /// why this is a flag and not a path.
     pub lost: bool,
+    /// Whether the last lock found text the reader was still typing and saved
+    /// it into the vault with everything else. Which entry is not said: after a
+    /// lock nothing of the vault is left to say it with.
+    pub typed: bool,
     /// Why the vault that was open is not open any more, when it is worth
     /// saying. A lock the reader asked for has nothing to explain.
     pub locked_by: Option<&'static str>,

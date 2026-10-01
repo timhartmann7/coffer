@@ -4,6 +4,7 @@
 	import Titlebar from '$lib/components/Titlebar.svelte';
 	import Unlock from '$lib/components/Unlock.svelte';
 	import Vault from '$lib/components/Vault.svelte';
+	import { flush } from '$lib/drafts';
 	import {
 		chooseDatabase,
 		lock as lockVault,
@@ -32,6 +33,8 @@
 	let rescue = $state<Rescued | null>(null);
 	/** Whether the last lock had work to write and nowhere at all to put it. */
 	let lost = $state(false);
+	/** Whether the last lock found what the reader was typing and saved it. */
+	let typed = $state(false);
 
 	/** The throttle on telling Rust that somebody is at the machine. */
 	const presence = new Presence();
@@ -53,6 +56,7 @@
 				reason = opening.lockedBy;
 				rescue = opening.rescue;
 				lost = opening.lost;
+				typed = opening.typed;
 				chosen = await loadSettings();
 				if (opening.unlocked) await opened();
 			} finally {
@@ -80,18 +84,29 @@
 		reason = null;
 		rescue = now.rescue;
 		lost = now.lost;
+		typed = now.typed;
 	}
 
 	/**
 	 * Locking destroys this window, so nothing after the call is guaranteed to
-	 * run. The state is cleared first for the case where it does: a window that
-	 * outlived its own lock would go on drawing a tree that is no longer in
-	 * memory.
+	 * run.
+	 *
+	 * What the reader was typing is handed to Rust before the lock is asked
+	 * for, and every write already on its way is waited for, so that the lock
+	 * finds all of it. The screen is cleared after the lock rather than before:
+	 * clearing it tears down the fields the typing is in, and a field that goes
+	 * with typing in it tells Rust to let go of it - which, sent ahead of the
+	 * lock, would be the lock losing it. A window that outlives its own lock
+	 * still stops drawing a tree that is no longer in memory.
 	 */
 	async function lock() {
-		root = null;
-		showing = 'vault';
-		await lockVault();
+		await flush();
+		try {
+			await lockVault();
+		} finally {
+			root = null;
+			showing = 'vault';
+		}
 	}
 
 	/** The way in to the settings is the way back out of them, wherever it is
@@ -139,6 +154,7 @@
 		const now = await status().catch(() => null);
 		rescue = now?.rescue ?? null;
 		lost = now?.lost ?? false;
+		typed = now?.typed ?? false;
 	}
 </script>
 
@@ -212,6 +228,7 @@
 			{reason}
 			{rescue}
 			{lost}
+			{typed}
 			onChoose={(picked) => {
 				database = picked;
 				void chosen_elsewhere();

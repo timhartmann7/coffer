@@ -9,10 +9,12 @@
 //! synchronously, because destroying a window is a message to the event loop
 //! and a Mac going to sleep will not wait for it.
 //!
-//! The tree is also written out first, inside [`Session::lock`]. A vault is
-//! dirty exactly when saving is the thing that failed - somebody else wrote the
-//! file, the volume went, the folder turned read only - so a wipe on its own is
-//! a session's work ended by a timer nobody was watching. What the file will not
+//! The tree is also written out first, inside [`Session::lock`], with what the
+//! reader was typing and had not finished written into it before that (see
+//! [`crate::drafts`]). A vault is dirty exactly when saving is the thing that
+//! failed - somebody else wrote the file, the volume went, the folder turned
+//! read only - so a wipe on its own is a session's work ended by a timer nobody
+//! was watching. What the file will not
 //! take goes into a copy beside it. What cannot be written anywhere is wiped all
 //! the same: a vault left unlocked because it had unsaved work would be the
 //! whole of the locking gone.

@@ -54,6 +54,10 @@ export interface Status {
 	 * could not put it anywhere at all. There is no file to point at, which is
 	 * why this is a flag and not a path. */
 	lost: boolean;
+	/** Whether the last lock found text the reader was still typing and saved
+	 * it into the vault with everything else. It does not say which entry: after
+	 * a lock nothing of the vault is left to say it with. */
+	typed: boolean;
 	/** Why the vault that was open is not open any more, when it is worth
 	 * saying. A lock the reader asked for has nothing to explain. */
 	lockedBy: 'idle' | 'sleeping' | 'screenLocked' | 'sessionSwitched' | null;

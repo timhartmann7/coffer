@@ -35,6 +35,7 @@ use vault_core::{LockPolicy, NewValue, Vault};
 
 use crate::autolock::timer::Timer;
 use crate::autolock::{Event, Reason};
+use crate::drafts::{Over, Typed};
 use crate::dto::{
     self, Database, Entry, Group, Made, Revealed, Rival, Snapshot, Status, Target, Version,
 };
@@ -84,6 +85,7 @@ pub fn status(app: AppHandle, session: Held<'_>) -> Status {
             .as_ref()
             .map(dto::Rescued::of),
         lost: session.lost(),
+        typed: session.typed(),
         database: database.as_deref().map(Database::of),
         key_file: session.key_file().as_deref().map(Database::of),
         unlocked: session.is_unlocked(),
@@ -696,10 +698,12 @@ pub fn create_entry(group: String, session: Held<'_>) -> Result<Made, Failure> {
     })
 }
 
+/// Deletes an entry, and lets go of anything typed into it that the window
+/// said before it asked: the pane it was typed in goes with the entry.
 #[tauri::command(async)]
-pub fn delete_entry(entry: String, session: Held<'_>) -> Result<Group, Failure> {
+pub fn delete_entry(entry: String, sequence: u64, session: Held<'_>) -> Result<Group, Failure> {
     let id = dto::entry_id(&entry)?;
-    session.with_mut(|vault| vault.delete_entry(id))??;
+    session.overtaking(Over::Entry(id), sequence, |vault| vault.delete_entry(id))??;
     tree_of(&session)
 }
 
@@ -754,12 +758,17 @@ pub fn empty_recycle_bin(session: Held<'_>) -> Result<Group, Failure> {
 /// `protect` is what the screen read off the field it is editing, so a value
 /// the database keeps protected goes back protected. Getting that wrong would
 /// write a password into the file as plain text inside the encrypted body.
+///
+/// `sequence` is the window's number for the write, from the count its drafts
+/// carry (see [`draft`]). A draft of this field said before it is finished by
+/// it, and is let go under the same lock.
 #[tauri::command(async)]
 pub fn set_field(
     entry: String,
     field: String,
     value: String,
     protect: bool,
+    sequence: u64,
     session: Held<'_>,
 ) -> Result<Entry, Failure> {
     let id = dto::entry_id(&entry)?;
@@ -769,8 +778,42 @@ pub fn set_field(
         NewValue::Open(value)
     };
 
-    session.with_mut(|vault| vault.set_field(id, &field, written))??;
+    session.overtaking(Over::Field(id, &field), sequence, |vault| {
+        vault.set_field(id, &field, written)
+    })??;
     entry_of(&session, &entry)
+}
+
+/// Holds what the reader is typing into a field and has not finished, so that
+/// a lock can write it.
+///
+/// A value is written when its field is left, and until then it was only in
+/// the window, which a lock destroys - on triggers that arrive on the thread
+/// the window is drawn on and cannot wait for the page to answer. So the window
+/// sends what is in the field a moment after the last key, and at once when it
+/// loses focus, and the lock writes the last of it into the vault through the
+/// same edit a commit makes. `value` is nothing when the typing was taken back:
+/// Escape, Cancel, Discard, or a field left as it was.
+///
+/// The text travels the way `set_field`'s does and is wrapped the moment it
+/// arrives. `sequence` only goes up in any one window; a word about a field
+/// that is not newer than the last one heard about the field, its entry or
+/// the whole vault is dropped, because Tauri runs these side by side and a
+/// draft sent before a commit can arrive after it.
+#[tauri::command(async)]
+pub fn draft(
+    entry: String,
+    field: String,
+    value: Option<String>,
+    protect: bool,
+    sequence: u64,
+    session: Held<'_>,
+) -> Result<(), Failure> {
+    let typed = value.map(|value| Typed {
+        value: Zeroizing::new(value),
+        protect,
+    });
+    session.draft(dto::entry_id(&entry)?, &field, typed, sequence)
 }
 
 #[tauri::command(async)]
@@ -1121,12 +1164,13 @@ pub async fn save_copy(app: AppHandle, session: Held<'_>) -> Result<Option<Datab
     Ok(Some(Database::of(&path)))
 }
 
-/// Throws away what is in the window and reads the file again.
+/// Throws away what is in the window and reads the file again, typing that
+/// was never finished included.
 #[tauri::command]
-pub async fn reload(session: Held<'_>) -> Result<Group, Failure> {
+pub async fn reload(sequence: u64, session: Held<'_>) -> Result<Group, Failure> {
     let reading = Arc::clone(&session);
     tauri::async_runtime::spawn_blocking(move || -> Result<(), Failure> {
-        reading.with_mut(Vault::reload)??;
+        reading.overtaking(Over::Everything, sequence, Vault::reload)??;
         Ok(())
     })
     .await

@@ -202,6 +202,7 @@
 			label="New password"
 			placeholder="New password"
 			what="password"
+			draft={{ entry, field, protect }}
 			onSave={commit}
 			onClose={() => (changing = false)}
 			{onFailure}

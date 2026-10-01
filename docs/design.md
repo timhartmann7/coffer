@@ -129,6 +129,21 @@ generator's own toggle pill - hairline, `meta` mono, the check in `txt2` and
 format has no such flag, so it decides only the first field the value is written
 in: a text area four lines tall, where Return starts a line.
 
+**A field holding typing that is not written yet carries a dot.** There is no
+save button, and a value is written when its field is left, so a note half
+written has nothing to say that it is not in the vault yet. From the first key
+until the field is left, put back with Escape, or its Change answered, a dot
+sits at the end of the field, inside its box: the `1.5` step of the spacing
+scale, `rounded-full`, in `warn` - the colour the status bar says "Not saved"
+in - with "Not saved yet" under the pointer and for anything that reads the
+screen aloud. It is centred on a value on one line and level with the first
+line of a value in lines. The mockup draws a finished entry and so no such
+state; nothing here is a value it does not contain. What the dot marks is also
+what a lock writes before it wipes the window, so the unlock screen after one
+says "What you were typing was saved before locking." in the place and the type
+of the line about work a lock could not write - `small`, centred, `mt-6` - in
+`txt2` rather than `danger`, and names no entry.
+
 **A value of the reader's own in lines is written in lines.** Any value with a
 line break is edited in a text area that grows with it, up to twenty lines and
 then scrolling, where Return starts a line and Cmd+Return finishes. A field of

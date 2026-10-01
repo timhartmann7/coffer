@@ -1,6 +1,8 @@
 <script lang="ts">
+	import { drop, typed as said, unfinished, type Place } from '$lib/drafts';
 	import { finishes, lines } from '$lib/lines';
 	import Field from './Field.svelte';
+	import Unsaved from './Unsaved.svelte';
 
 	/**
 	 * A value the reader changes where it stands.
@@ -26,6 +28,11 @@
 	 * and Option+Return adds one. After a real edit the text area's reading is
 	 * what is written, line feeds included, which is also what the reader was
 	 * looking at.
+	 *
+	 * Until the field is left, what is typed is told to Rust as it goes
+	 * (`drafts.ts`), so that a lock arriving first - a lid closed mid-sentence -
+	 * writes it rather than wiping it, and a mark beside the field says it is
+	 * not saved yet.
 	 */
 	let {
 		value,
@@ -37,6 +44,7 @@
 		classes = 'text-body text-txt',
 		readonly = false,
 		bare = false,
+		draft,
 		onCommit
 	}: {
 		value: string;
@@ -59,6 +67,10 @@
 		 * rather than as a field. The entry's title is the only one: a hairline
 		 * around a nineteen-pixel name is a box around the name of the screen. */
 		bare?: boolean;
+		/** Where what is typed would be written: the entry, the field, and whether
+		 * the database protects it. Given, what is typed is told to Rust before the
+		 * field is left; `onCommit` is what writes it. */
+		draft?: Place;
 		/** Answers whether the value was taken. A value that was refused is put
 		 * back, so that the screen never shows something the vault does not have.
 		 */
@@ -83,12 +95,26 @@
 		if (!node) return;
 		edited = true;
 		written = lines(node.value);
+		// The element rather than `node`, which a field that has gone no longer
+		// has: a draft read from nothing would be an empty one, and a lock would
+		// write it over what the field held.
+		const element = node;
+		if (draft) said(draft, () => element.value);
+	}
+
+	/** What was typed is not going to be written, so Rust is told to let go of
+	 * it too. */
+	function unwritten() {
+		if (draft) drop(draft);
 	}
 
 	async function commit() {
 		if (!node || !edited) return;
 		edited = false;
-		if (node.value === value) return;
+		if (node.value === value) {
+			unwritten();
+			return;
+		}
 		const taken = await onCommit(node.value);
 		// A refusal leaves the vault as it was, so the field goes back to what
 		// the vault has rather than standing there showing something else.
@@ -104,6 +130,7 @@
 			node.value = value;
 			edited = false;
 			written = lines(value);
+			unwritten();
 			node.blur();
 			return;
 		}
@@ -144,6 +171,7 @@
 			class="min-w-0 flex-1 resize-none bg-transparent outline-none placeholder:text-txt4 {classes} {mono
 				? 'font-mono'
 				: ''} {lined ? 'overflow-x-hidden overflow-y-auto' : 'overflow-hidden'}"></textarea>
+		{@render mark('mt-2 self-start')}
 	{:else}
 		<input
 			bind:this={node}
@@ -160,12 +188,21 @@
 				? 'font-mono'
 				: ''}"
 		/>
+		{@render mark('')}
+	{/if}
+{/snippet}
+
+<!-- Beside the first line of a value in lines, and in the middle of one that is
+     a line. -->
+{#snippet mark(at: string)}
+	{#if draft && unfinished(draft)}
+		<Unsaved class={at} />
 	{/if}
 {/snippet}
 
 {#if bare}
 	<span
-		class="flex min-w-0 flex-1 items-center rounded-sm border border-transparent px-2 py-1 transition focus-within:border-accent focus-within:bg-surface2 focus-within:ring-4 focus-within:ring-accent/15 hover:border-hairline"
+		class="flex min-w-0 flex-1 items-center gap-2 rounded-sm border border-transparent px-2 py-1 transition focus-within:border-accent focus-within:bg-surface2 focus-within:ring-4 focus-within:ring-accent/15 hover:border-hairline"
 	>
 		{@render control()}
 	</span>

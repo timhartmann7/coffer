@@ -224,8 +224,10 @@ export function createEntry(group: string): Promise<Made> {
 	return invoke('create_entry', { group });
 }
 
-export function deleteEntry(entry: string): Promise<Group> {
-	return invoke('delete_entry', { entry });
+/** Deletes an entry. `sequence` is the number `drafts.release` gave for it:
+ * whatever was typed into the entry and said before it is let go. */
+export function deleteEntry(entry: string, sequence: number): Promise<Group> {
+	return invoke('delete_entry', { entry, sequence });
 }
 
 export function createGroup(parent: string, name: string): Promise<Group> {
@@ -265,15 +267,33 @@ export function emptyRecycleBin(): Promise<Group> {
  *
  * `protect` is what the screen read off the field it is editing. Sending it
  * back is what keeps a value the database protects from being written into the
- * file as plain text.
+ * file as plain text. `sequence` is the write's place in the count the drafts
+ * of the field carry (`drafts.ts`), so that a draft sent before it and arriving
+ * after it is known for what it is.
  */
 export function setField(
 	entry: string,
 	field: string,
 	value: string,
-	protect: boolean
+	protect: boolean,
+	sequence: number
 ): Promise<Entry> {
-	return invoke('set_field', { entry, field, value, protect });
+	return invoke('set_field', { entry, field, value, protect, sequence });
+}
+
+/**
+ * Tells Rust what is in a field the reader is typing into and has not left, so
+ * that a lock can write it: `value` is the field's text, or `null` when what
+ * was typed was taken back. Only `drafts.ts` calls this.
+ */
+export function draft(
+	entry: string,
+	field: string,
+	value: string | null,
+	protect: boolean,
+	sequence: number
+): Promise<void> {
+	return invoke('draft', { entry, field, value, protect, sequence });
 }
 
 export function removeField(entry: string, field: string): Promise<Entry> {
@@ -413,9 +433,10 @@ export function saveCopy(): Promise<Database | null> {
 	return invoke('save_copy');
 }
 
-/** Throws away what is in the window and reads the file again. */
-export function reload(): Promise<Group> {
-	return invoke('reload');
+/** Throws away what is in the window and reads the file again, typing that was
+ * never finished included. `sequence` is the number `drafts.release` gave. */
+export function reload(sequence: number): Promise<Group> {
+	return invoke('reload', { sequence });
 }
 
 /** What the file on disk holds. Reading it means decrypting it, so it is asked

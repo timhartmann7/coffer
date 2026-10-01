@@ -7,6 +7,7 @@ const ipc = vi.hoisted(() => ({
 	entry: vi.fn(),
 	tree: vi.fn(),
 	setField: vi.fn(),
+	draft: vi.fn(),
 	copy: vi.fn(),
 	copyVersion: vi.fn(),
 	createEntry: vi.fn(),
@@ -72,6 +73,7 @@ beforeEach(() => {
 	ipc.versions.mockResolvedValue([]);
 	ipc.save.mockResolvedValue(undefined);
 	ipc.tree.mockResolvedValue(root);
+	ipc.draft.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -550,6 +552,9 @@ it('takes the version on disk when that is what the reader chose', async () => {
 		?.click();
 	await vi.waitFor(() => expect(ipc.reload).toHaveBeenCalledTimes(1));
 	flushSync();
+	// With a number, so that a draft of anything typed before it and arriving
+	// after it is dropped rather than written over the file just read.
+	expect(ipc.reload).toHaveBeenCalledWith(expect.any(Number));
 
 	expect(host.textContent).not.toContain('The file changed');
 	expect(onTree).toHaveBeenCalledWith(root);
@@ -1775,7 +1780,7 @@ it('moves the open entry to the bin and offers it back', async () => {
 		pressed('Move to Recycle Bin');
 		await settled();
 
-		expect(ipc.deleteEntry).toHaveBeenCalledWith(bank.id);
+		expect(ipc.deleteEntry).toHaveBeenCalledWith(bank.id, expect.any(Number));
 		expect(ipc.save).toHaveBeenCalledTimes(1);
 		expect(onTree).toHaveBeenLastCalledWith(after);
 		expect(host.querySelector('h1'), 'the pane stayed open on a deleted entry').toBeNull();
@@ -1945,7 +1950,7 @@ it('puts an entry back from the bin, or deletes it for good after asking', async
 		pressed('Delete forever', host.querySelector('[data-confirm]') ?? host);
 		await settled();
 
-		expect(ipc.deleteEntry).toHaveBeenCalledWith(vault.mail.id);
+		expect(ipc.deleteEntry).toHaveBeenCalledWith(vault.mail.id, expect.any(Number));
 		expect(toast()?.textContent).toContain('Deleted “Old mail” forever');
 		expect(undo()).toBeNull();
 	} finally {
@@ -2182,6 +2187,83 @@ it('moves an entry to the bin once however quickly the button is pressed again',
 
 		expect(ipc.deleteEntry).toHaveBeenCalledTimes(1);
 		expect(toast()?.textContent).toContain('Moved “node-3” to the Recycle Bin');
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * The window going behind another may be the reader reaching for the lid, and
+ * a lid closed inside the pause after the last key would lose that word. So
+ * what is typed is told to Rust the moment the window loses focus - still
+ * without leaving the field, which has written nothing yet.
+ */
+it('tells Rust what is being typed the moment the window loses focus', async () => {
+	ipc.entry.mockResolvedValue(
+		entry({
+			id: kept.id,
+			group: root.id,
+			fields: [field({ name: 'Notes', kind: 'notes', value: '', empty: true })]
+		})
+	);
+	const component = open();
+	try {
+		flushSync();
+		[...host.querySelectorAll('button')]
+			.find((each) => each.textContent?.includes('node-3'))
+			?.click();
+		await vi.waitFor(() => expect(host.querySelector('[aria-label="Notes"]')).not.toBeNull());
+		flushSync();
+
+		const notes = host.querySelector('[aria-label="Notes"]') as HTMLTextAreaElement;
+		notes.value = 'Wi-Fi: the long one on the router';
+		notes.dispatchEvent(new Event('input', { bubbles: true }));
+		expect(ipc.draft).not.toHaveBeenCalled();
+
+		window.dispatchEvent(new Event('blur'));
+		expect(ipc.draft).toHaveBeenCalledWith(
+			kept.id,
+			'Notes',
+			'Wi-Fi: the long one on the router',
+			false,
+			expect.any(Number)
+		);
+		expect(ipc.setField, 'the window going behind wrote the note').not.toHaveBeenCalled();
+	} finally {
+		await unmount(component);
+	}
+});
+
+/** An entry deleted with something typed into it takes the typing with it, and
+ * the deletion carries a number newer than the draft, so the draft is not
+ * written into the entry if it is put back. */
+it('deletes an entry with a number newer than anything typed into it', async () => {
+	const bank = row({ title: 'node-3' });
+	const before = group({
+		name: 'Root',
+		entries: [bank],
+		sections: [group({ name: 'Recycle Bin', isRecycleBin: true, deletion: 'forever' })]
+	});
+	ipc.entry.mockResolvedValue(titled(bank.id, 'node-3'));
+	ipc.deleteEntry.mockResolvedValue(before);
+	ipc.save.mockResolvedValue(undefined);
+
+	const { component } = mounted(before);
+	try {
+		pressed('node-3');
+		await settled();
+		const title = host.querySelector('h1 input') as HTMLInputElement;
+		title.value = 'node-3, renamed half';
+		title.dispatchEvent(new Event('input', { bubbles: true }));
+		window.dispatchEvent(new Event('blur'));
+		const drafted = ipc.draft.mock.lastCall?.[4] as number;
+
+		pressed('Move to Recycle Bin');
+		await settled();
+
+		expect(ipc.deleteEntry).toHaveBeenCalledWith(bank.id, expect.any(Number));
+		expect(ipc.deleteEntry.mock.lastCall?.[1]).toBeGreaterThan(drafted);
 	} finally {
 		await unmount(component);
 		vi.useRealTimers();

@@ -26,6 +26,7 @@ mod autolock;
 mod buttons;
 mod clipboard;
 mod commands;
+mod drafts;
 mod dto;
 mod error;
 mod home;
@@ -122,6 +123,7 @@ pub fn run() {
             commands::put_back_group,
             commands::empty_recycle_bin,
             commands::set_field,
+            commands::draft,
             commands::remove_field,
             commands::set_tags,
             commands::add_attachment,

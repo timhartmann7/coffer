@@ -10,6 +10,7 @@ const ipc = vi.hoisted(() => ({
 	reveal: vi.fn(),
 	openUrl: vi.fn(),
 	setField: vi.fn(),
+	draft: vi.fn(),
 	removeField: vi.fn(),
 	setTags: vi.fn(),
 	addAttachment: vi.fn(),
@@ -46,6 +47,7 @@ beforeEach(() => {
 	ipc.reveal.mockResolvedValue(SECRET);
 	ipc.openUrl.mockResolvedValue(undefined);
 	ipc.withdrawAttachment.mockResolvedValue(undefined);
+	ipc.draft.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -343,7 +345,8 @@ it('writes a new password on Save or Return, and nothing on Cancel or Escape', a
 				expect.any(String),
 				'Password',
 				'a different one',
-				true
+				true,
+				expect.any(Number)
 			)
 		);
 		await vi.waitFor(() => expect(host.querySelector('[aria-label="New password"]')).toBeNull());
@@ -363,7 +366,8 @@ it('writes a new password on Save or Return, and nothing on Cancel or Escape', a
 				expect.any(String),
 				'Password',
 				'a third one',
-				true
+				true,
+				expect.any(Number)
 			)
 		);
 		expect(ipc.setField).toHaveBeenCalledTimes(2);
@@ -428,7 +432,8 @@ it('asks about a new password left half way, and does what the answer says', asy
 			expect.any(String),
 			'Password',
 			'the whole new one',
-			true
+			true,
+			expect.any(Number)
 		)
 	);
 
@@ -527,7 +532,8 @@ it('puts a made password straight in and leaves no field open behind it', async 
 			expect.any(String),
 			'Password',
 			'Made-Password-123',
-			true
+			true,
+			expect.any(Number)
 		)
 	);
 	expect(ipc.setField).toHaveBeenCalledTimes(1);
@@ -843,7 +849,13 @@ it('writes a field back with the protection it arrived with', () => {
 	enter(login, 'bob');
 	login.dispatchEvent(new Event('blur'));
 
-	expect(ipc.setField).toHaveBeenCalledWith(expect.any(String), 'UserName', 'bob', false);
+	expect(ipc.setField).toHaveBeenCalledWith(
+		expect.any(String),
+		'UserName',
+		'bob',
+		false,
+		expect.any(Number)
+	);
 
 	return unmount(component);
 });
@@ -922,12 +934,24 @@ it('writes a custom field back with the protection it arrived with', () => {
 	const plain = host.querySelector('[aria-label="Region"]') as HTMLTextAreaElement;
 	enter(plain, 'eu-west');
 	plain.dispatchEvent(new Event('blur'));
-	expect(ipc.setField).toHaveBeenCalledWith(expect.any(String), 'Region', 'eu-west', false);
+	expect(ipc.setField).toHaveBeenCalledWith(
+		expect.any(String),
+		'Region',
+		'eu-west',
+		false,
+		expect.any(Number)
+	);
 
 	const kept = host.querySelector('[aria-label="API token"]') as HTMLTextAreaElement;
 	enter(kept, 'a new token');
 	kept.dispatchEvent(new Event('blur'));
-	expect(ipc.setField).toHaveBeenCalledWith(expect.any(String), 'API token', 'a new token', true);
+	expect(ipc.setField).toHaveBeenCalledWith(
+		expect.any(String),
+		'API token',
+		'a new token',
+		true,
+		expect.any(Number)
+	);
 
 	return unmount(component);
 });
@@ -969,12 +993,24 @@ it("keeps the lines of a field of the reader's own through a click, an edit and 
 	const fixed = codes.replace('2222-bbbb', '2222-bbbc');
 	enter(lined, fixed);
 	lined.dispatchEvent(new FocusEvent('blur'));
-	expect(ipc.setField).toHaveBeenCalledWith(expect.any(String), 'Recovery codes', fixed, false);
+	expect(ipc.setField).toHaveBeenCalledWith(
+		expect.any(String),
+		'Recovery codes',
+		fixed,
+		false,
+		expect.any(Number)
+	);
 
 	const single = host.querySelector('[aria-label="Backup"]') as HTMLTextAreaElement;
 	enter(single, codes);
 	single.dispatchEvent(new FocusEvent('blur'));
-	expect(ipc.setField).toHaveBeenLastCalledWith(expect.any(String), 'Backup', codes, false);
+	expect(ipc.setField).toHaveBeenLastCalledWith(
+		expect.any(String),
+		'Backup',
+		codes,
+		false,
+		expect.any(Number)
+	);
 
 	return unmount(component);
 });
@@ -1235,7 +1271,8 @@ it('keeps a new password being typed when the old one hides', async () => {
 			expect.any(String),
 			'Password',
 			'a password of my own',
-			true
+			true,
+			expect.any(Number)
 		);
 
 		await unmount(component);
@@ -1948,7 +1985,8 @@ it('changes a protected own field only through its own Change', async () => {
 		expect.any(String),
 		'API token',
 		'sk-live-rotated',
-		true
+		true,
+		expect.any(Number)
 	);
 
 	return unmount(component);
@@ -2168,7 +2206,7 @@ it('names a new field to be written in lines', async () => {
 
 	name.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
 	flushSync();
-	expect(ipc.setField).toHaveBeenCalledWith(props.entry.id, named, '', true);
+	expect(ipc.setField).toHaveBeenCalledWith(props.entry.id, named, '', true, expect.any(Number));
 
 	props.entry = { ...made, id: props.entry.id };
 	flushSync();
@@ -2696,4 +2734,198 @@ it('offers no way out of the bin on a database it cannot write', () => {
 	expect(host.textContent).not.toContain('Delete forever');
 
 	return unmount(component);
+});
+
+/** Every word Rust was told about typing, as (field, value, protected, number). */
+function drafted(): [string, string | null, boolean, number][] {
+	return ipc.draft.mock.calls.map((call) => [call[1], call[2], call[3], call[4]]);
+}
+
+/** The number the last value written carried. */
+function lastWritten(): number {
+	const call = ipc.setField.mock.lastCall;
+	if (!call) throw new Error('nothing was written');
+	return call[4] as number;
+}
+
+/** The mark inside the field an element is typed into, if it is drawn. */
+function markOf(typed: HTMLElement): HTMLElement | null {
+	return typed.parentElement?.querySelector<HTMLElement>('[data-unsaved]') ?? null;
+}
+
+/**
+ * A lid closed half way through a login used to take the login with it: the
+ * value reached Rust when the field was left, and a lock destroys the window
+ * first. What is typed is told to Rust a moment after the last key, the field
+ * says it is not saved yet, and leaving it writes it with a number newer than
+ * any draft of it - so a draft still on its way can never be written over it.
+ */
+it('tells Rust what is typed before the field is left, and finishes it when it is', () => {
+	vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+	ipc.setField.mockResolvedValue(entry());
+	const component = show({
+		fields: [
+			field({ name: 'UserName', kind: 'username', value: 'alice', empty: false, protected: false })
+		]
+	});
+	try {
+		flushSync();
+		const login = host.querySelector('[aria-label="Login"]') as HTMLInputElement;
+		expect(markOf(login)).toBeNull();
+
+		enter(login, 'bo');
+		expect(markOf(login)?.textContent).toContain('Not saved yet');
+		expect(markOf(login)?.className).toContain('bg-warn');
+		expect(ipc.draft, 'every key was a message').not.toHaveBeenCalled();
+
+		vi.advanceTimersByTime(250);
+		expect(drafted()).toEqual([['UserName', 'bo', false, expect.any(Number)]]);
+
+		enter(login, 'bob');
+		vi.advanceTimersByTime(100);
+		login.dispatchEvent(new Event('blur'));
+		flushSync();
+
+		expect(ipc.setField).toHaveBeenCalledWith(
+			expect.any(String),
+			'UserName',
+			'bob',
+			false,
+			expect.any(Number)
+		);
+		const [[, , , drafts]] = drafted();
+		expect(lastWritten(), 'the value is older than its own draft').toBeGreaterThan(drafts);
+		expect(markOf(login), 'a written field still says it is not saved').toBeNull();
+
+		vi.advanceTimersByTime(10_000);
+		expect(ipc.draft, 'a draft followed the value that finished it').toHaveBeenCalledTimes(1);
+	} finally {
+		vi.useRealTimers();
+		unmount(component);
+	}
+});
+
+/** Escape puts the value back, and a field typed in and put back as it was
+ * is left with nothing written: either way Rust is told to let go of the
+ * draft it holds, in a word newer than the draft. */
+it('lets go of what was typed on Escape, and of typing that came back to where it started', () => {
+	vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+	const component = show({
+		fields: [
+			field({ name: 'UserName', kind: 'username', value: 'alice', empty: false, protected: false }),
+			field({ name: 'URL', kind: 'url', value: 'https://a.example', empty: false })
+		]
+	});
+	try {
+		flushSync();
+		const login = host.querySelector('[aria-label="Login"]') as HTMLInputElement;
+		enter(login, 'mallory');
+		vi.advanceTimersByTime(250);
+		login.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+		flushSync();
+
+		expect(login.value).toBe('alice');
+		expect(markOf(login)).toBeNull();
+		const [[, typed, , told], [field, back, , after]] = drafted();
+		expect(typed).toBe('mallory');
+		expect([field, back]).toEqual(['UserName', null]);
+		expect(after).toBeGreaterThan(told);
+
+		const address = host.querySelector('[aria-label="Address"]') as HTMLInputElement;
+		enter(address, 'https://b.example');
+		vi.advanceTimersByTime(250);
+		enter(address, 'https://a.example');
+		address.dispatchEvent(new Event('blur'));
+		flushSync();
+
+		expect(drafted().at(-1)?.slice(0, 2)).toEqual(['URL', null]);
+		expect(markOf(address)).toBeNull();
+		expect(ipc.setField, 'a value put back as it was was written').not.toHaveBeenCalled();
+	} finally {
+		vi.useRealTimers();
+		unmount(component);
+	}
+});
+
+/**
+ * A new password half typed is the reader's too, and a lock that comes before
+ * Save writes it rather than wiping it. It is told to Rust protected, and
+ * Discard, Cancel and Save each end it: the first two with a word that takes
+ * it back, Save with a write newer than it.
+ */
+it('tells Rust a new password as it is typed, and ends it on Discard, Cancel and Save', async () => {
+	vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+	ipc.setField.mockResolvedValue(entry());
+	const { component } = pane({
+		fields: [
+			field({ name: 'Password', kind: 'password', value: null, empty: false, protected: true })
+		]
+	});
+	try {
+		button('Change').click();
+		flushSync();
+		enter(changer('New password'), 'half a pass');
+		expect(markOf(changer('New password'))).not.toBeNull();
+		vi.advanceTimersByTime(250);
+		expect(drafted()).toEqual([['Password', 'half a pass', true, expect.any(Number)]]);
+
+		leave(changer('New password'));
+		button('Discard').click();
+		flushSync();
+		expect(drafted().at(-1)?.slice(0, 2)).toEqual(['Password', null]);
+
+		button('Change').click();
+		flushSync();
+		enter(changer('New password'), 'another');
+		vi.advanceTimersByTime(250);
+		button('Cancel').click();
+		flushSync();
+		expect(drafted().at(-1)?.slice(0, 2)).toEqual(['Password', null]);
+
+		button('Change').click();
+		flushSync();
+		enter(changer('New password'), 'the whole new one');
+		vi.advanceTimersByTime(250);
+		const [, , , sent] = drafted().at(-1) ?? [];
+		button('Save').click();
+		await vi.waitFor(() => expect(ipc.setField).toHaveBeenCalledTimes(1));
+		expect(lastWritten()).toBeGreaterThan(sent as number);
+
+		const numbers = drafted().map(([, , , number]) => number);
+		expect(numbers, 'the numbers went backwards').toEqual([...numbers].sort((a, b) => a - b));
+		vi.advanceTimersByTime(10_000);
+		expect(drafted().at(-1)?.[1], 'a draft followed the saved password').toBe('the whole new one');
+	} finally {
+		vi.useRealTimers();
+		unmount(component);
+	}
+});
+
+/** A new password half typed for an entry the pane no longer shows is reported
+ * as not saved, and it is not left in Rust for a later lock to write into an
+ * entry the reader has moved away from. */
+it('lets go of a new password half typed when its entry goes', () => {
+	vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+	const { component, props } = deleting({
+		fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+	});
+	try {
+		const left = props.entry.id;
+		button('Change').click();
+		flushSync();
+		enter(changer('New password'), 'half');
+		vi.advanceTimersByTime(250);
+
+		props.entry = entry({
+			fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+		});
+		flushSync();
+
+		expect(ipc.draft).toHaveBeenLastCalledWith(left, 'Password', null, false, expect.any(Number));
+		vi.advanceTimersByTime(10_000);
+		expect(ipc.draft).toHaveBeenCalledTimes(2);
+	} finally {
+		vi.useRealTimers();
+		unmount(component);
+	}
 });

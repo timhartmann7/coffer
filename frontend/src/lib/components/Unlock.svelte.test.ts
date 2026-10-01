@@ -503,6 +503,40 @@ it('says so when a lock could not write the changes anywhere', () => {
 	unmount(component);
 });
 
+/**
+ * A lock that found something being typed and saved it says so - in one
+ * sentence that names nothing. After a lock no title is left in memory, and
+ * this screen is not going to be what keeps one: the flag is all it is given.
+ * A lock that found nothing, or whose save went beside the vault instead,
+ * says nothing here; the rescue line speaks for that one.
+ */
+it('says what was being typed was saved, and names nothing', () => {
+	for (const [typed, reason] of [
+		[true, 'sleeping'],
+		[true, null],
+		[false, 'idle']
+	] as const) {
+		const component = mount(Unlock, {
+			target: host,
+			props: {
+				database,
+				typed,
+				reason,
+				onChoose: vi.fn(),
+				onKeyFile: vi.fn(),
+				onCreate: vi.fn(),
+				onUnlocked: vi.fn()
+			}
+		});
+		flushSync();
+
+		const said = host.textContent ?? '';
+		expect(said.includes('What you were typing was saved before locking.'), `${typed}`).toBe(typed);
+		expect(said).not.toContain('could not write them anywhere');
+		unmount(component);
+	}
+});
+
 /** The first-run screen, with nothing remembered and whatever Rust found. */
 function firstRun(found: { name: string; folder: string } | null, onChoose = vi.fn()) {
 	const component = mount(Unlock, {

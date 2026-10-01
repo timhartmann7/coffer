@@ -25,6 +25,7 @@
 		versions as loadVersions
 	} from '$lib/ipc';
 	import { deleted as deletedLine } from '$lib/bin';
+	import { flush, release } from '$lib/drafts';
 	import { named as howLong } from '$lib/duration';
 	import { called } from '$lib/format';
 	import { copying, typing } from '$lib/keys';
@@ -322,7 +323,7 @@
 		const name = called(opened);
 		let tree: Group;
 		try {
-			tree = await deleteEntry(id);
+			tree = await deleteEntry(id, release(id));
 		} catch (thrown) {
 			failed(thrown);
 			return;
@@ -510,7 +511,7 @@
 	async function takeTheirs() {
 		try {
 			saving = true;
-			const tree = await reload();
+			const tree = await reload(release(null));
 			onTree(tree);
 			opened = null;
 			versions = [];
@@ -803,7 +804,9 @@
 	}
 </script>
 
-<svelte:window onkeydown={shortcut} />
+<!-- The window losing focus may be the reader reaching for the lid, so what
+     they were typing is told to Rust then rather than a moment later. -->
+<svelte:window onkeydown={shortcut} onblur={() => void flush()} />
 
 {#snippet deletedFolders()}
 	<BinFolders {folders} {root} {now} compact={opened !== null} onOpen={select} />
