@@ -82,8 +82,9 @@
 		onPutBack: () => void;
 		/** One of the reader's own fields came off, and the change has been
 		 * handed to the window like any other. The window is what can offer it
-		 * back, because it is what knows whether the change reached the file. */
-		onFieldRemoved: (entry: string, field: string) => void;
+		 * back, because it is what knows whether the change reached the file.
+		 * `forever` is a removal the reader agreed nothing could take back. */
+		onFieldRemoved: (entry: string, field: string, forever: boolean) => void;
 		onFailure: (thrown: unknown) => void;
 	} = $props();
 
@@ -162,6 +163,15 @@
 	 * own row, and offers the export on the way.
 	 */
 	let asking = $state<string | null>(null);
+	/**
+	 * The field of the reader's own whose removal is being asked about.
+	 *
+	 * A removal is taken back from the version it writes, and a vault whose
+	 * limits keep no such version (none kept at all, or a size it does not fit)
+	 * loses the field at the next save. Rust refuses that removal until the
+	 * reader has said so, and this is the question, in the field's own row.
+	 */
+	let dropping = $state<string | null>(null);
 
 	/**
 	 * Which entry the pane is showing.
@@ -207,6 +217,7 @@
 			longhand = null;
 			changing.clear();
 			asking = null;
+			dropping = null;
 			erasing = false;
 		};
 	});
@@ -369,10 +380,27 @@
 		}
 	}
 
-	/** Takes one of the reader's own fields off, and lets the window say so. */
-	async function dropField(name: string) {
+	/**
+	 * Takes one of the reader's own fields off, and lets the window say so.
+	 *
+	 * The first press never takes one for good: Rust answers `forGood` when
+	 * nothing would bring the field back, and the row asks. `forever` is the
+	 * answer to that question.
+	 */
+	async function dropField(name: string, forever = false) {
 		const id = entry.id;
-		if (await change(() => removeField(id, name))) onFieldRemoved(id, name);
+		dropping = null;
+		try {
+			await onChanged(await removeField(id, name, forever));
+		} catch (thrown) {
+			if (asFailure(thrown).code !== 'forGood') onFailure(thrown);
+			// A question for a pane that has moved on is one nobody would see,
+			// and the field is still there: nothing happened to say anything
+			// about.
+			else if (standing === id) dropping = name;
+			return;
+		}
+		onFieldRemoved(id, name, forever);
 	}
 
 	/** The name a standard field carries in the file. An entry that arrived
@@ -708,7 +736,7 @@
 								onCommit={(value) => write(at.field, value, at.protect)}
 							/>
 						{/if}
-						{#if !locked}
+						{#if !locked && dropping !== field.name}
 							<button
 								type="button"
 								onclick={() => void dropField(field.name)}
@@ -721,6 +749,15 @@
 					</div>
 					{#if masked}
 						{@render changer(field, 'ml-27')}
+					{/if}
+					{#if dropping === field.name}
+						<Confirm
+							class="mt-3 bg-surface2"
+							question="Remove “{field.name}”? This vault keeps no version to bring it back from, so this can’t be undone."
+							act="Remove"
+							onKeep={() => (dropping = null)}
+							onAct={() => void dropField(field.name, true)}
+						/>
 					{/if}
 				</div>
 			{/each}

@@ -221,11 +221,24 @@ has gone - its own trash is the way the sentence points to - the box says so and
 offers "Add it" in the same place. The banner that used to answer a refusal
 ended in a button called "Right you are", with the chosen file already gone.
 
+**A field whose removal nothing could take back is asked about in its row.**
+A field's trash takes it at once, and the notice offers it back - except in a
+vault whose limits keep no version for the undo to restore, where Rust refuses
+the press. The question then opens under the field's row in the same box as
+the others, the trash gone from the row while it is open: "Remove “PIN”? This
+vault keeps no version to bring it back from, so this can’t be undone.", with
+"Keep it" where the focus lands and "Remove" last in `danger`. After it the
+notice reads "Field “PIN” removed forever", without the button, the way an
+entry deleted for good does.
+
 **A notice that can be taken back** is the mockup's toast with one thing added:
 the trash in `txt3` where the copy icon is, and a button at the end, "Undo" in
 the accent with `⌘Z` in the search field's own key cap beside it. The button is
-the only part of the notice that takes a press, and the notice stays eight
-seconds rather than five or six, because it is asking for one.
+the only part of the notice that takes a press, and the press does not move the
+focus, so a field holding typing keeps it. The notice stays eight seconds
+rather than five or six, because it is asking for one, and it stays when the
+reader opens another entry: the undo is about the thing it names, not about the
+pane.
 
 **A destructive icon gets room.** The mockup's icons are sixteen pixels with
 nothing around them, and a trash twelve pixels from an export or a copy is the

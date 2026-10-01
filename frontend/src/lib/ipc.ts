@@ -318,8 +318,27 @@ export function draft(
 	return invoke('draft', { entry, field, value, protect, sequence });
 }
 
-export function removeField(entry: string, field: string): Promise<Entry> {
-	return invoke('remove_field', { entry, field });
+/**
+ * Takes a field of the reader's own off an entry.
+ *
+ * Rejects with `forGood`, and does nothing, when the vault's limits leave no
+ * version to bring the field back from: the removal would be for good, and
+ * `forever` is the reader having said that is what they want.
+ */
+export function removeField(entry: string, field: string, forever: boolean): Promise<Entry> {
+	return invoke('remove_field', { entry, field, forever });
+}
+
+/**
+ * Puts back a field that just came off, by the version its removal wrote.
+ *
+ * Rust decides which version that is, under the same lock the restore runs in,
+ * and rejects with `superseded`, doing nothing, when the removal is no longer
+ * the last thing that happened to the entry: restoring whatever is newest then
+ * would take back more than the field.
+ */
+export function undoRemoval(entry: string, field: string): Promise<Entry> {
+	return invoke('undo_removal', { entry, field });
 }
 
 export function setTags(entry: string, tags: string[]): Promise<Entry> {
@@ -418,16 +437,6 @@ export function copyVersion(
 
 export function restoreVersion(entry: string, at: Position): Promise<Entry> {
 	return invoke('restore_version', { entry, index: at.index, revision: at.revision });
-}
-
-/**
- * Which version puts back a field the entry has just lost, or `null` when no
- * version does that and only that - because the save pruned it, or because the
- * entry changed again since. Restoring this position is the undo of the
- * removal, and restoring any other would take back more than the field.
- */
-export function beforeRemoval(entry: string, field: string): Promise<Position | null> {
-	return invoke('before_removal', { entry, field });
 }
 
 export function deleteVersion(entry: string, at: Position): Promise<History> {

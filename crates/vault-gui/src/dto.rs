@@ -361,13 +361,6 @@ impl Versions {
     }
 }
 
-/// One version's position, with the revision of the vault it was read at.
-#[derive(Serialize)]
-pub struct Position {
-    pub index: usize,
-    pub revision: u64,
-}
-
 /// What a command that changed the shape of the vault hands back: the tree as
 /// it is now, and the entry the change was about.
 #[derive(Serialize)]

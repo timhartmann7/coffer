@@ -740,7 +740,19 @@ impl Vault {
     }
 
     /// Takes a field off an entry.
-    pub fn remove_field(&mut self, id: EntryId, field: &str) -> Result<(), VaultError> {
+    ///
+    /// The version the removal writes is the only way the field comes back
+    /// (see [`Vault::undo_removal`]). When the database's own limits would drop
+    /// that version at the next save - no versions kept at all, or a size limit
+    /// it does not fit - the removal is for good, and it is refused with
+    /// [`VaultError::RemovalForGood`] unless `forever` says the reader agreed
+    /// to that. Which it is comes from the rule the save prunes by.
+    pub fn remove_field(
+        &mut self,
+        id: EntryId,
+        field: &str,
+        forever: bool,
+    ) -> Result<(), VaultError> {
         self.writable()?;
         if !self
             .database
@@ -750,6 +762,9 @@ impl Vault {
             .contains_key(field)
         {
             return Err(VaultError::NoSuchField);
+        }
+        if !forever && !history::outlasts_save(&self.database, id) {
+            return Err(VaultError::RemovalForGood);
         }
 
         let field = field.to_owned();
@@ -1105,16 +1120,25 @@ impl Vault {
         Ok(())
     }
 
-    /// Which previous version puts back a field that was just taken off the
-    /// entry, when taking it off is the last thing that happened to it.
+    /// Takes back the removal of a field: restores the version the removal
+    /// wrote, which puts back that field and nothing else.
     ///
-    /// This is what makes a removal something that can be taken back:
-    /// [`Vault::restore_version`] with this answer is the undo, and with any
-    /// other position it is a restore of something older. It is asked after the
-    /// save that follows the removal, because that save is what may drop the
-    /// version, and asked again at the moment the removal is taken back.
-    pub fn before_removal(&self, id: EntryId, field: &str) -> Option<usize> {
-        history::before_removal(&self.database, id, field)
+    /// Only while the removal is the last thing that happened to the entry.
+    /// Otherwise - a change made since, a save that pruned the version, a
+    /// version another client dated later - whatever is newest would take back
+    /// more than the field, and the undo is refused with
+    /// [`VaultError::RemovalSuperseded`] and does nothing. The question and the
+    /// restore are one call, so that nothing can land between them.
+    pub fn undo_removal(&mut self, id: EntryId, field: &str) -> Result<(), VaultError> {
+        self.writable()?;
+        if self.database.entry(id).is_none() {
+            return Err(VaultError::NoSuchEntry);
+        }
+        let index = history::before_removal(&self.database, id, field)
+            .ok_or(VaultError::RemovalSuperseded)?;
+        history::restore(&mut self.database, id, index)?;
+        self.changed = true;
+        Ok(())
     }
 
     /// Drops one previous version.

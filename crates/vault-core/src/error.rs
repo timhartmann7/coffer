@@ -135,6 +135,19 @@ pub enum VaultError {
     #[error("that entry has no such field")]
     NoSuchField,
 
+    /// Taking the field off would be for good. The version the removal writes
+    /// is the only way back, and the database's own limits drop it at the next
+    /// save, so the removal waits until the reader has said that is what they
+    /// want.
+    #[error("this vault keeps no version to bring that field back from")]
+    RemovalForGood,
+
+    /// The removal asked to be taken back is no longer the last thing that
+    /// happened to its entry, and restoring what is newest now would take back
+    /// more than the field.
+    #[error("the entry has changed since that field came off")]
+    RemovalSuperseded,
+
     /// Part of a value was asked for that the value does not have: an empty
     /// or backwards range, an end past the last character, or an end between
     /// the two halves of a character outside the basic plane.

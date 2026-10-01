@@ -23,7 +23,7 @@ const ipc = vi.hoisted(() => ({
 	version: vi.fn(),
 	revealVersion: vi.fn(),
 	restoreVersion: vi.fn(),
-	beforeRemoval: vi.fn(),
+	undoRemoval: vi.fn(),
 	deleteVersion: vi.fn(),
 	clearHistory: vi.fn(),
 	reveal: vi.fn(),
@@ -1199,15 +1199,25 @@ async function settled() {
 	flushSync();
 }
 
-/** Where Rust says the version a removal wrote sits, in the undo tests. */
-const WROTE = { index: 3, revision: 9 };
+/** What Rust answers an undo whose removal is no longer the last thing that
+ * happened to its entry. */
+const SUPERSEDED = {
+	code: 'superseded',
+	message: 'the entry has changed since that field came off'
+};
 
-/**
- * Opens node-3, takes its PIN off, and waits for whatever the window then says.
- * `answer` is what Rust says about the version the removal wrote.
- */
-async function removePin(answer: typeof WROTE | null) {
+/** Opens node-3 and waits until Rust has read it. */
+async function openKept() {
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('node-3'))
+		?.click();
+	await settled();
+}
+
+/** Opens node-3, takes its PIN off, and waits for whatever the window then says. */
+async function removePin() {
 	ipc.entry.mockImplementation((id: string) => Promise.resolve(withPin(id)));
+	ipc.removeField.mockReset();
 	ipc.removeField.mockResolvedValue(
 		entry({
 			id: kept.id,
@@ -1215,16 +1225,12 @@ async function removePin(answer: typeof WROTE | null) {
 			fields: withPin(kept.id).fields.filter((each) => each.name !== 'PIN')
 		})
 	);
-	ipc.restoreVersion.mockResolvedValue(withPin(kept.id));
-	ipc.beforeRemoval.mockReset();
-	ipc.beforeRemoval.mockResolvedValue(answer);
+	ipc.undoRemoval.mockReset();
+	ipc.undoRemoval.mockResolvedValue(withPin(kept.id));
 
 	const component = open();
 	flushSync();
-	[...host.querySelectorAll('button')]
-		.find((each) => each.textContent?.includes('node-3'))
-		?.click();
-	await settled();
+	await openKept();
 
 	host.querySelector<HTMLButtonElement>('[aria-label="Remove the field PIN"]')?.click();
 	await settled();
@@ -1234,24 +1240,20 @@ async function removePin(answer: typeof WROTE | null) {
 /**
  * A field of the reader's own used to go on one press with nothing said, and the
  * way back was a version nobody was told about. The notice says what went and
- * offers it back, and taking it back is a restore of exactly the version Rust
- * names - asked once the save is done, because the save is what can prune it,
- * and asked again at the press, because a position is only an answer for the
- * history as it stood.
+ * offers it back once the removal is in the file, and taking it back is one
+ * call to Rust with the entry and the field's name: which version puts it back
+ * is decided there, under the lock the restore runs in, so nothing can land
+ * between the question and the restore.
  */
-it('offers a removed field back and restores the version the removal wrote', async () => {
+it('offers a removed field back and takes it back in one call to Rust', async () => {
 	vi.useFakeTimers();
 	try {
-		const component = await removePin(WROTE);
+		const component = await removePin();
 
+		expect(ipc.removeField).toHaveBeenCalledWith(kept.id, 'PIN', false);
 		expect(toast()?.textContent).toContain('Field “PIN” removed');
 		expect(undo()?.textContent).toContain('Undo');
 		expect(ipc.save).toHaveBeenCalledTimes(1);
-		expect(ipc.beforeRemoval).toHaveBeenCalledWith(kept.id, 'PIN');
-		expect(
-			ipc.save.mock.invocationCallOrder[0],
-			'Rust was asked before the save that can prune the version'
-		).toBeLessThan(ipc.beforeRemoval.mock.invocationCallOrder[0]);
 
 		// Heard as well as seen, in a region that was there before the words.
 		const region = host.querySelector('[role="status"]');
@@ -1261,9 +1263,9 @@ it('offers a removed field back and restores the version the removal wrote', asy
 		undo()?.click();
 		await settled();
 
-		expect(ipc.beforeRemoval).toHaveBeenCalledTimes(2);
-		expect(ipc.restoreVersion).toHaveBeenCalledTimes(1);
-		expect(ipc.restoreVersion).toHaveBeenCalledWith(kept.id, WROTE);
+		expect(ipc.undoRemoval).toHaveBeenCalledTimes(1);
+		expect(ipc.undoRemoval).toHaveBeenCalledWith(kept.id, 'PIN');
+		expect(ipc.restoreVersion, 'the undo named a position of its own').not.toHaveBeenCalled();
 		// The undo is a change like any other, and reaches the file.
 		expect(ipc.save).toHaveBeenCalledTimes(2);
 
@@ -1282,7 +1284,7 @@ it('offers a removed field back and restores the version the removal wrote', asy
 it('withdraws the offer once its eight seconds are up', async () => {
 	vi.useFakeTimers();
 	try {
-		const component = await removePin(WROTE);
+		const component = await removePin();
 
 		await vi.advanceTimersByTimeAsync(7_900);
 		flushSync();
@@ -1292,7 +1294,7 @@ it('withdraws the offer once its eight seconds are up', async () => {
 		flushSync();
 		expect(press('z').defaultPrevented).toBe(false);
 		await settled();
-		expect(ipc.restoreVersion).not.toHaveBeenCalled();
+		expect(ipc.undoRemoval).not.toHaveBeenCalled();
 
 		await vi.advanceTimersByTimeAsync(1_000);
 		flushSync();
@@ -1312,21 +1314,21 @@ it('withdraws the offer once its eight seconds are up', async () => {
 it('takes the removal back on Cmd+Z, except in a field being written', async () => {
 	vi.useFakeTimers();
 	try {
-		const component = await removePin(WROTE);
+		const component = await removePin();
 
 		const typed = press('z', search());
 		await settled();
 		expect(typed.defaultPrevented, 'the search field lost its own undo').toBe(false);
-		expect(ipc.restoreVersion).not.toHaveBeenCalled();
+		expect(ipc.undoRemoval).not.toHaveBeenCalled();
 
 		// Redo is not undo.
 		press('z', window, true);
 		await settled();
-		expect(ipc.restoreVersion).not.toHaveBeenCalled();
+		expect(ipc.undoRemoval).not.toHaveBeenCalled();
 
 		expect(press('z').defaultPrevented).toBe(true);
 		await settled();
-		expect(ipc.restoreVersion).toHaveBeenCalledWith(kept.id, WROTE);
+		expect(ipc.undoRemoval).toHaveBeenCalledWith(kept.id, 'PIN');
 
 		await unmount(component);
 	} finally {
@@ -1335,11 +1337,11 @@ it('takes the removal back on Cmd+Z, except in a field being written', async () 
 });
 
 /** The button and the key, and the button twice, are one undo. A second would
- * restore the version the first one just wrote. */
+ * be refused by Rust at best, and said to have failed. */
 it('runs an undo once however many ways it is asked for', async () => {
 	vi.useFakeTimers();
 	try {
-		const component = await removePin(WROTE);
+		const component = await removePin();
 
 		const button = undo();
 		button?.click();
@@ -1349,7 +1351,7 @@ it('runs an undo once however many ways it is asked for', async () => {
 		press('z');
 		await settled();
 
-		expect(ipc.restoreVersion).toHaveBeenCalledTimes(1);
+		expect(ipc.undoRemoval).toHaveBeenCalledTimes(1);
 
 		await unmount(component);
 	} finally {
@@ -1358,23 +1360,35 @@ it('runs an undo once however many ways it is asked for', async () => {
 });
 
 /**
- * With no versions kept, or a size limit the version does not fit, the save
- * after the removal prunes the version it wrote. Whatever is newest after that
- * is older, and restoring it would take back more than the field. The removal
- * is still reported; nothing is offered.
+ * Pressing Undo with the focus in a field that holds typing used to leave the
+ * field on the way to the button: its typing was written, that write withdrew
+ * the offer, and the click that followed did nothing while the notice went as
+ * though it had worked. The press does not take the focus now. The field keeps
+ * its typing, unwritten, and the removal is taken back.
  */
-it('offers nothing back when the save pruned the version', async () => {
+it('takes a removal back while a field holds typing, and leaves the typing where it is', async () => {
 	vi.useFakeTimers();
 	try {
-		const component = await removePin(null);
+		const component = await removePin();
+		const title = titleField();
+		if (!title) throw new Error('node-3 never opened');
+		title.focus();
+		title.value = 'node-4';
+		title.dispatchEvent(new Event('input', { bubbles: true }));
 
-		expect(toast()?.textContent).toContain('Field “PIN” removed');
-		expect(undo()).toBeNull();
-
-		expect(press('z').defaultPrevented).toBe(false);
+		const button = undo();
+		const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+		button?.dispatchEvent(down);
+		expect(down.defaultPrevented, 'the press would take the focus from the title').toBe(true);
+		// What a browser does with a press nobody stopped.
+		if (!down.defaultPrevented) title.blur();
+		button?.click();
 		await settled();
-		expect(ipc.restoreVersion).not.toHaveBeenCalled();
-		expect(ipc.beforeRemoval).toHaveBeenCalledTimes(1);
+
+		expect(ipc.undoRemoval).toHaveBeenCalledWith(kept.id, 'PIN');
+		expect(ipc.setField, 'the typing was written in the middle of the undo').not.toHaveBeenCalled();
+		expect(document.activeElement).toBe(titleField());
+		expect(titleField()?.value).toBe('node-4');
 
 		await unmount(component);
 	} finally {
@@ -1382,25 +1396,80 @@ it('offers nothing back when the save pruned the version', async () => {
 	}
 });
 
-/** An undo is of something on the screen. Another entry in the pane is a
- * reader who has moved on, and Cmd+Z there would reach back into one they left. */
-it('withdraws the offer when another entry is opened', async () => {
+/**
+ * A vault that keeps no versions, or a size limit the version does not fit,
+ * loses the field at the next save. Rust refuses the first press, the row asks,
+ * and once the reader has said so the notice says the field went forever and
+ * offers nothing.
+ */
+it('asks before a removal nothing could take back, and says it went forever', async () => {
 	vi.useFakeTimers();
 	try {
-		const component = await removePin(WROTE);
+		ipc.entry.mockImplementation((id: string) => Promise.resolve(withPin(id)));
+		ipc.removeField.mockReset();
+		ipc.removeField
+			.mockRejectedValueOnce({
+				code: 'forGood',
+				message: 'this vault keeps no version to bring that field back from'
+			})
+			.mockResolvedValue(
+				entry({
+					id: kept.id,
+					group: root.id,
+					fields: withPin(kept.id).fields.filter((each) => each.name !== 'PIN')
+				})
+			);
+		const component = open();
+		flushSync();
+		await openKept();
+
+		host.querySelector<HTMLButtonElement>('[aria-label="Remove the field PIN"]')?.click();
+		await settled();
+		expect(pane()?.querySelector('[data-confirm]')?.textContent).toContain('can’t be undone');
+		expect(toast(), 'the question was reported as a failure').toBeNull();
+		expect(ipc.save).not.toHaveBeenCalled();
+
+		pressed('Remove', pane() ?? host);
+		await settled();
+
+		expect(ipc.removeField).toHaveBeenLastCalledWith(kept.id, 'PIN', true);
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+		expect(toast()?.textContent).toContain('Field “PIN” removed forever');
+		expect(undo()).toBeNull();
+		expect(press('z').defaultPrevented).toBe(false);
+		await settled();
+		expect(ipc.undoRemoval).not.toHaveBeenCalled();
+
+		await unmount(component);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * An undo acts on the entry it is about, by its id, whatever the pane shows by
+ * the time it is pressed. Opening another entry is not taking anything back,
+ * so the offer stays for its eight seconds, and the undo restores node-3 and
+ * leaves the pane on the entry the reader chose.
+ */
+it('keeps the offer when another entry is opened, and takes back the entry it is about', async () => {
+	vi.useFakeTimers();
+	try {
+		const component = await removePin();
 
 		[...host.querySelectorAll('button')]
 			.find((each) => each.textContent?.includes('Postgres'))
 			?.click();
 		await settled();
 		expect(ipc.entry).toHaveBeenLastCalledWith(other.id);
+		expect(undo()).not.toBeNull();
+		ipc.entry.mockClear();
 
-		await vi.advanceTimersByTimeAsync(1_000);
-		flushSync();
-		expect(toast()).toBeNull();
-		press('z');
+		expect(press('z').defaultPrevented).toBe(true);
 		await settled();
-		expect(ipc.restoreVersion).not.toHaveBeenCalled();
+		expect(ipc.undoRemoval).toHaveBeenCalledWith(kept.id, 'PIN');
+		expect(ipc.save).toHaveBeenCalledTimes(2);
+		expect(ipc.entry, 'the undo took the pane from Postgres').not.toHaveBeenCalledWith(kept.id);
 
 		await unmount(component);
 	} finally {
@@ -1408,17 +1477,21 @@ it('withdraws the offer when another entry is opened', async () => {
 	}
 });
 
-/** Putting the pane away is moving on as well. */
-it('withdraws the offer when the entry is put away', async () => {
+/** Putting the pane away is not taking anything back either, and the undo does
+ * not open the entry again. */
+it('keeps the offer when the entry is put away', async () => {
 	vi.useFakeTimers();
 	try {
-		const component = await removePin(WROTE);
+		const component = await removePin();
 
 		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
 		await settled();
+		expect(pane()).toBeNull();
+
 		press('z');
 		await settled();
-		expect(ipc.restoreVersion).not.toHaveBeenCalled();
+		expect(ipc.undoRemoval).toHaveBeenCalledWith(kept.id, 'PIN');
+		expect(pane(), 'the undo opened the entry again').toBeNull();
 
 		await unmount(component);
 	} finally {
@@ -1431,7 +1504,7 @@ it('withdraws the offer when the entry is put away', async () => {
 it('withdraws the offer when a newer notice takes its place', async () => {
 	vi.useFakeTimers();
 	try {
-		const component = await removePin(WROTE);
+		const component = await removePin();
 
 		press('c');
 		await settled();
@@ -1440,7 +1513,7 @@ it('withdraws the offer when a newer notice takes its place', async () => {
 
 		press('z');
 		await settled();
-		expect(ipc.restoreVersion).not.toHaveBeenCalled();
+		expect(ipc.undoRemoval).not.toHaveBeenCalled();
 
 		await unmount(component);
 	} finally {
@@ -1448,22 +1521,34 @@ it('withdraws the offer when a newer notice takes its place', async () => {
 	}
 });
 
-/** Another change that reaches the file is newer than the removal. Restoring
- * the removal's version after it would take that change back as well. */
-it('withdraws the offer when another change reaches the file', async () => {
+/**
+ * Another change to the entry reaches the file after the removal, and the
+ * offer is still up. It is Rust that decides, at the press, that the removal is
+ * no longer the last thing that happened: it restores nothing, and the reader
+ * is told the removal can no longer be undone. The change stays, and nothing
+ * more is written.
+ */
+it('leaves an undo overtaken by another change to Rust, which refuses it', async () => {
 	vi.useFakeTimers();
 	try {
-		const component = await removePin(WROTE);
+		const component = await removePin();
 		ipc.setField.mockResolvedValue(withPin(kept.id));
+		ipc.undoRemoval.mockRejectedValue(SUPERSEDED);
 
-		const title = host.querySelector('h1 input') as HTMLInputElement;
-		write(title, 'node-4');
+		write(titleField() as HTMLInputElement, 'node-4');
 		await settled();
 		expect(ipc.save).toHaveBeenCalledTimes(2);
+		expect(undo(), 'another change withdrew the offer').not.toBeNull();
 
-		press('z');
+		undo()?.click();
 		await settled();
-		expect(ipc.restoreVersion).not.toHaveBeenCalled();
+
+		expect(ipc.undoRemoval).toHaveBeenCalledTimes(1);
+		expect(toast()?.textContent).toContain(
+			'The entry has changed since, so that can no longer be undone.'
+		);
+		expect(undo()).toBeNull();
+		expect(ipc.save, 'a refusal is not a change').toHaveBeenCalledTimes(2);
 
 		await unmount(component);
 	} finally {
@@ -1480,11 +1565,10 @@ it('offers nothing over a save that failed', async () => {
 	vi.useFakeTimers();
 	try {
 		ipc.save.mockRejectedValue({ code: 'other', message: 'No space left on device' });
-		const component = await removePin(WROTE);
+		const component = await removePin();
 
 		expect(toast()?.textContent).toContain('No space left on device');
 		expect(undo()).toBeNull();
-		expect(ipc.beforeRemoval).not.toHaveBeenCalled();
 		expect(reads()).toContain('Not saved');
 
 		await unmount(component);
@@ -1493,19 +1577,22 @@ it('offers nothing over a save that failed', async () => {
 	}
 });
 
-/** Rust is asked again at the press. A history that moved in between gets a
- * sentence, and no restore of whatever now sits at the old position. */
-it('restores nothing when the history moved before the undo reached it', async () => {
+/** Any other refusal at the press is said in its own words, and nothing is
+ * written. */
+it('says why an undo Rust would not do failed', async () => {
 	vi.useFakeTimers();
 	try {
-		const component = await removePin(WROTE);
-		ipc.beforeRemoval.mockResolvedValue(null);
+		const component = await removePin();
+		ipc.undoRemoval.mockRejectedValue({
+			code: 'noSuchEntry',
+			message: 'there is no such entry in this database'
+		});
 
 		undo()?.click();
 		await settled();
 
-		expect(ipc.restoreVersion).not.toHaveBeenCalled();
-		expect(toast()?.textContent).toContain('can no longer be undone');
+		expect(toast()?.textContent).toContain('there is no such entry in this database');
+		expect(ipc.save).toHaveBeenCalledTimes(1);
 
 		await unmount(component);
 	} finally {
@@ -1517,12 +1604,12 @@ it('restores nothing when the history moved before the undo reached it', async (
 it('leaves nothing to undo once the window is gone', async () => {
 	vi.useFakeTimers();
 	try {
-		const component = await removePin(WROTE);
+		const component = await removePin();
 		await unmount(component);
 
 		press('z');
 		await vi.advanceTimersByTimeAsync(10_000);
-		expect(ipc.restoreVersion).not.toHaveBeenCalled();
+		expect(ipc.undoRemoval).not.toHaveBeenCalled();
 		expect(vi.getTimerCount(), 'a notice clock outlived the window').toBe(0);
 	} finally {
 		vi.useRealTimers();
@@ -2626,11 +2713,11 @@ it('saves an edit answered after the reader moved on, and leaves the pane where 
 
 /**
  * A move to the bin answered after the reader opened another entry. The pane
- * stays on the entry they chose, and the move is said without an Undo: its
- * undo opens the entry that went, and would take the pane from the one they
- * are reading.
+ * stays on the entry they chose, and the move is still offered back: its undo
+ * puts the entry back by its id, and opens it only into an empty pane, so the
+ * one they are reading stays where it is.
  */
-it('offers no undo for an entry moved to the bin once another is open', async () => {
+it('offers an entry moved to the bin back once another is open, and leaves that one open', async () => {
 	const { gmail, drive, tree } = twoLogins();
 	const bin = group({
 		name: 'Recycle Bin',
@@ -2660,10 +2747,17 @@ it('offers no undo for an entry moved to the bin once another is open', async ()
 		expect(ipc.save).toHaveBeenCalledTimes(1);
 		expect(titleField()?.value).toBe('Google Drive');
 		expect(toast()?.textContent).toContain('Moved “Gmail” to the Recycle Bin');
-		expect(undo(), 'an undo that would take the pane from Google Drive').toBeNull();
-		expect(press('z').defaultPrevented).toBe(false);
+		expect(undo()).not.toBeNull();
+
+		ipc.putBackEntry.mockResolvedValue(tree);
+		ipc.entry.mockClear();
+		expect(press('z').defaultPrevented).toBe(true);
 		await settled();
-		expect(ipc.putBackEntry).not.toHaveBeenCalled();
+		expect(ipc.putBackEntry).toHaveBeenCalledWith(gmail.id);
+		expect(ipc.save).toHaveBeenCalledTimes(2);
+		expect(ipc.entry, 'the undo took the pane from Google Drive').not.toHaveBeenCalledWith(
+			gmail.id
+		);
 		expect(titleField()?.value).toBe('Google Drive');
 	} finally {
 		await unmount(component);
@@ -2749,13 +2843,14 @@ it('leaves the pane on an entry chosen while a new one was being made', async ()
 	}
 });
 
-/** Rust names the version that puts a removed field back only after the save,
- * and a reader may have opened another entry by then. Nothing is offered back
- * into an entry they have left. */
-it('offers a removed field back only while its entry is still open', async () => {
+/** A field removal is offered back once its save is done, and a reader may
+ * have opened another entry by then. It is offered all the same: the undo is
+ * about node-3 by its id, and it leaves the pane on the entry they chose. */
+it('offers a removed field back after its save even when another entry is open', async () => {
 	vi.useFakeTimers();
 	try {
 		ipc.entry.mockImplementation((id: string) => Promise.resolve(withPin(id)));
+		ipc.removeField.mockReset();
 		ipc.removeField.mockResolvedValue(
 			entry({
 				id: kept.id,
@@ -2763,30 +2858,30 @@ it('offers a removed field back only while its entry is still open', async () =>
 				fields: withPin(kept.id).fields.filter((each) => each.name !== 'PIN')
 			})
 		);
-		const naming = Promise.withResolvers<typeof WROTE | null>();
-		ipc.beforeRemoval.mockReturnValueOnce(naming.promise);
+		ipc.undoRemoval.mockReset();
+		ipc.undoRemoval.mockResolvedValue(withPin(kept.id));
+		const saving = Promise.withResolvers<void>();
+		ipc.save.mockReturnValueOnce(saving.promise);
 
 		const component = open();
 		flushSync();
-		[...host.querySelectorAll('button')]
-			.find((each) => each.textContent?.includes('node-3'))
-			?.click();
-		await settled();
+		await openKept();
 		host.querySelector<HTMLButtonElement>('[aria-label="Remove the field PIN"]')?.click();
 		await settled();
-		expect(ipc.beforeRemoval).toHaveBeenCalledWith(kept.id, 'PIN');
 
 		[...host.querySelectorAll('button')]
 			.find((each) => each.textContent?.includes('Postgres'))
 			?.click();
 		await settled();
-		naming.resolve(WROTE);
+		saving.resolve();
 		await settled();
 
-		expect(undo()).toBeNull();
-		press('z');
+		expect(toast()?.textContent).toContain('Field “PIN” removed');
+		ipc.entry.mockClear();
+		undo()?.click();
 		await settled();
-		expect(ipc.restoreVersion).not.toHaveBeenCalled();
+		expect(ipc.undoRemoval).toHaveBeenCalledWith(kept.id, 'PIN');
+		expect(ipc.entry, 'the undo took the pane from Postgres').not.toHaveBeenCalledWith(kept.id);
 
 		await unmount(component);
 	} finally {
@@ -2993,32 +3088,6 @@ it('reads the versions again and says why when Rust finds the list out of date',
 		});
 	} finally {
 		await unmount(component);
-		vi.useRealTimers();
-	}
-});
-
-/** Anything that reaches Rust between the undo's two answers moves the vault
- * on, and Rust refuses the position rather than restore whatever sits there
- * now. The removal is no longer the last thing that happened to the entry, and
- * the reader is told so. */
-it('says a removal can no longer be undone when Rust finds its position out of date', async () => {
-	vi.useFakeTimers();
-	try {
-		const component = await removePin(WROTE);
-		ipc.restoreVersion.mockRejectedValue({
-			code: 'versionsChanged',
-			message: 'the versions changed after they were listed'
-		});
-
-		undo()?.click();
-		await settled();
-
-		expect(ipc.restoreVersion).toHaveBeenCalledTimes(1);
-		expect(toast()?.textContent).toContain('can no longer be undone');
-		expect(ipc.save).toHaveBeenCalledTimes(1);
-
-		await unmount(component);
-	} finally {
 		vi.useRealTimers();
 	}
 });

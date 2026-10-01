@@ -350,6 +350,8 @@ export interface Failure {
 		| 'externalChange'
 		| 'attachmentInHistory'
 		| 'versionsChanged'
+		| 'forGood'
+		| 'superseded'
 		| 'taken'
 		| 'readOnly'
 		| 'gone'

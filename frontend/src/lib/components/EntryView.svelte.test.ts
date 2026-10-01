@@ -2445,11 +2445,111 @@ it('tells the window which field came off, once the change is in', async () => {
 
 	icon('Remove the field PIN').click();
 	await vi.waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
-	expect(ipc.removeField).toHaveBeenCalledWith(props.entry.id, 'PIN');
+	expect(ipc.removeField).toHaveBeenCalledWith(props.entry.id, 'PIN', false);
 	expect(props.onFieldRemoved, 'the window heard before the save was done').not.toHaveBeenCalled();
 
 	settle();
-	await vi.waitFor(() => expect(props.onFieldRemoved).toHaveBeenCalledWith(props.entry.id, 'PIN'));
+	await vi.waitFor(() =>
+		expect(props.onFieldRemoved).toHaveBeenCalledWith(props.entry.id, 'PIN', false)
+	);
+	expect(host.querySelector('[data-confirm]'), 'a removal that can be undone asked').toBeNull();
+
+	return unmount(component);
+});
+
+/** What Rust answers a removal the vault keeps no version of. */
+const FOR_GOOD = {
+	code: 'forGood',
+	message: 'this vault keeps no version to bring that field back from'
+};
+
+/**
+ * A vault that keeps no versions, or a size limit the one a removal writes does
+ * not fit, loses the field at the next save and leaves nothing to undo it
+ * with. The first press takes nothing: Rust refuses it, and the row asks in
+ * words, with the way out where the focus is. The field goes only on the red
+ * answer, and the window is told it went for good.
+ */
+it('asks before a removal nothing could take back, and removes only on the red answer', async () => {
+	ipc.removeField.mockReset();
+	ipc.removeField.mockRejectedValueOnce(FOR_GOOD).mockResolvedValue(entry());
+	const {
+		component,
+		entry: shown,
+		onChanged,
+		onFieldRemoved,
+		onFailure
+	} = pane({
+		fields: [field({ name: 'PIN', kind: 'custom', protected: true, value: null, empty: false })]
+	});
+
+	icon('Remove the field PIN').click();
+	await vi.waitFor(() => expect(question()).not.toBe(''));
+	flushSync();
+	expect(question()).toContain(
+		'Remove “PIN”? This vault keeps no version to bring it back from, so this can’t be undone.'
+	);
+	expect(ipc.removeField).toHaveBeenCalledWith(shown.id, 'PIN', false);
+	expect(onChanged).not.toHaveBeenCalled();
+	expect(onFailure, 'a question was reported as a failure').not.toHaveBeenCalled();
+	expect(onFieldRemoved).not.toHaveBeenCalled();
+	expect(document.activeElement).toBe(button('Keep it'));
+	expect(host.querySelector('[aria-label="Remove the field PIN"]')).toBeNull();
+
+	button('Keep it').click();
+	flushSync();
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+	expect(ipc.removeField).toHaveBeenCalledTimes(1);
+
+	ipc.removeField.mockRejectedValueOnce(FOR_GOOD);
+	icon('Remove the field PIN').click();
+	await vi.waitFor(() => expect(question()).not.toBe(''));
+	flushSync();
+	button('Remove').click();
+	await vi.waitFor(() => expect(onFieldRemoved).toHaveBeenCalledWith(shown.id, 'PIN', true));
+	expect(ipc.removeField).toHaveBeenLastCalledWith(shown.id, 'PIN', true);
+	expect(onChanged).toHaveBeenCalledTimes(1);
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+
+	return unmount(component);
+});
+
+/** The question is about the entry the press was on. An answer that arrives
+ * once the pane shows another entry asks nobody, and nothing came off. */
+it('asks nothing in an entry the pane has left', async () => {
+	const refusing = Promise.withResolvers<never>();
+	ipc.removeField.mockReset();
+	ipc.removeField.mockReturnValueOnce(refusing.promise);
+	const pin = field({ name: 'PIN', kind: 'custom', protected: true, value: null, empty: false });
+	const props = reactive({
+		entry: entry({ fields: [pin] }),
+		root: group({ name: 'Root' }),
+		path: [group({ name: 'Work' })],
+		history: null,
+		now: new Date('2026-08-29T14:30:00Z'),
+		readOnly: false,
+		onCopy: vi.fn(),
+		onChanged: vi.fn(),
+		onVersions: vi.fn(),
+		onClose: vi.fn(),
+		onDelete: vi.fn(),
+		onPutBack: vi.fn(),
+		onFieldRemoved: vi.fn(),
+		onFailure: vi.fn()
+	});
+	const component = mount(EntryView, { target: host, props });
+	flushSync();
+
+	icon('Remove the field PIN').click();
+	props.entry = entry({ fields: [pin] });
+	flushSync();
+	refusing.reject(FOR_GOOD);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	flushSync();
+
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+	expect(props.onFailure).not.toHaveBeenCalled();
+	expect(props.onFieldRemoved).not.toHaveBeenCalled();
 
 	return unmount(component);
 });

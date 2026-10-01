@@ -3,7 +3,6 @@
 	import { SvelteSet } from 'svelte/reactivity';
 	import {
 		asFailure,
-		beforeRemoval,
 		copy as copyToClipboard,
 		copyVersion,
 		createEntry,
@@ -16,12 +15,12 @@
 		putBackGroup,
 		reload,
 		renameGroup,
-		restoreVersion,
 		rival,
 		save,
 		saveCopy,
 		saveOver,
 		tree as loadTree,
+		undoRemoval,
 		versions as loadVersions
 	} from '$lib/ipc';
 	import { deleted as deletedLine } from '$lib/bin';
@@ -161,35 +160,28 @@
 		undo?: () => void;
 	};
 
-	/** Something the reader just did, and the way to take it back. */
-	type Offer = {
-		run: () => Promise<void>;
-		/** The entry in the pane the offer belongs to, or `null` for none. */
-		entry: string | null;
-	};
-
 	/**
-	 * How long a change can be taken back from the notice that reports it.
+	 * How long a notice stays up: one that reports, one that says what was
+	 * copied, and one that offers to take a change back.
 	 *
-	 * Longer than a notice that only reports, because this one asks for a
-	 * decision, and the pointer has the width of the window to cross to reach
-	 * it.
+	 * The last is the longest because it asks for a decision, and the pointer
+	 * has the width of the window to cross to reach it.
 	 */
+	const REPORTED = 6000;
+	const COPIED = 5000;
 	const UNDOABLE = 8000;
 
 	let notice = $state<Notice | null>(null);
 	/**
-	 * What the notice on the screen offers to take back, while it still can.
+	 * The way to take back what the notice on the screen reports, while it
+	 * still can be.
 	 *
 	 * Nothing is drawn from it, so it is not state: it is the answer to whether
 	 * the offer still stands, asked by the notice's button, by Cmd+Z and by
 	 * everything that withdraws it. An undo clears it before its first wait, so
 	 * the button and the key pressed together run it once.
 	 */
-	let offered: Offer | null = null;
-	/** The toast's own clock, counting the seconds the clipboard still holds a
-	 * copied value. Not the vault's: that one is Rust's and arrives as a prop. */
-	let ticking: ReturnType<typeof setInterval> | null = null;
+	let offered: (() => Promise<void>) | null = null;
 	let fading: ReturnType<typeof setTimeout> | null = null;
 	/** Whether the notice on the screen is on its way out. Nothing animates an
 	 * element that has already gone, so it says so first and goes after. */
@@ -334,10 +326,6 @@
 	 * the application able to put it anywhere.
 	 */
 	async function persist() {
-		// Any change that reaches the file is a newer thing than whatever the
-		// notice offers to take back, and an undo from before it would take that
-		// back too.
-		retire();
 		saving = true;
 		try {
 			await save();
@@ -456,9 +444,9 @@
 	 *
 	 * Rust may answer a second later, behind a save, and a reader who opened
 	 * another entry in that second is reading it: the pane is put away only if
-	 * it is still on the entry that went, and the move is offered back only to
-	 * a pane that is still empty. Its undo would open the entry again, over
-	 * whatever the reader chose instead.
+	 * it is still on the entry that went. The move is offered back either way.
+	 * Its undo puts the entry back by its id, and opens it again only into a
+	 * pane that is still empty, never over whatever the reader chose instead.
 	 */
 	async function removeEntry() {
 		if (!opened) return;
@@ -476,21 +464,17 @@
 		if (unsaved) return;
 
 		if (!entriesOf(tree).some((row) => row.id === id)) {
-			tell({ message: `Deleted ${name} forever`, kind: 'removed' }, 6000);
+			erased(name);
 			return;
 		}
-		offer(
-			`Moved ${name} to the Recycle Bin`,
-			async () => {
-				const back = await putBackEntry(id);
-				await reshaped(back);
-				const row = rowOf(back, id);
-				// The save takes a second, and an entry opened in it is the
-				// reader's later choice.
-				if (row && showing === null) await open(row);
-			},
-			null
-		);
+		offer(moved(name), async () => {
+			const back = await putBackEntry(id);
+			await reshaped(back);
+			const row = rowOf(back, id);
+			// An entry the reader opened since, or during the save, is their
+			// later choice.
+			if (row && showing === null) await open(row);
+		});
 	}
 
 	/** Takes the entry in the pane out of the bin. The pane stays on it and
@@ -555,10 +539,10 @@
 			await reshaped(tree);
 			if (unsaved) return;
 			if (find(tree, id) === null) {
-				tell({ message: `Deleted ${name} forever`, kind: 'removed' }, 6000);
+				erased(name);
 				return;
 			}
-			offer(`Moved ${name} to the Recycle Bin`, async () => {
+			offer(moved(name), async () => {
 				await reshaped(await putBackGroup(id));
 			});
 		} catch (thrown) {
@@ -599,7 +583,7 @@
 			const tree = await deleteGroup(id);
 			select(above);
 			await reshaped(tree);
-			if (!unsaved) tell({ message: `Deleted ${name} forever`, kind: 'removed' }, 6000);
+			if (!unsaved) erased(name);
 		} catch (thrown) {
 			failed(thrown);
 		}
@@ -671,7 +655,7 @@
 			const beside = await saveCopy();
 			if (!beside) return;
 			conflict = null;
-			tell({ message: `Kept as ${beside.name}`, kind: 'copied' }, 6000);
+			tell({ message: `Kept as ${beside.name}`, kind: 'copied' });
 			// Only where there is a file to take instead. When the vault itself
 			// is gone there is nothing to read back, and the window goes on
 			// holding the version the copy was made from - which is still the
@@ -731,11 +715,14 @@
 	 * corner for a whole minute.
 	 */
 	function announce(seconds: number) {
-		tell({ message: `Copied. The clipboard clears in ${howLong(seconds)}.`, kind: 'copied' }, 5000);
+		tell(
+			{ message: `Copied. The clipboard clears in ${howLong(seconds)}.`, kind: 'copied' },
+			COPIED
+		);
 	}
 
 	function warn(message: string) {
-		tell({ message, kind: 'failed' }, 6000);
+		tell({ message, kind: 'failed' });
 	}
 
 	function failed(thrown: unknown) {
@@ -771,7 +758,7 @@
 	 * to take back goes with it, because an undo belongs to the sentence that
 	 * says what it undoes.
 	 */
-	function tell(next: Notice, after: number) {
+	function tell(next: Notice, after = REPORTED) {
 		clear();
 		told += 1;
 		notice = next;
@@ -781,50 +768,43 @@
 	/**
 	 * Says what was just done and offers to take it back, for eight seconds.
 	 *
-	 * The offer is withdrawn by whatever makes it stale: the notice going, a
-	 * newer notice, another change reaching the file, and the pane showing
-	 * another entry or none - an undo is of something the reader can still see,
-	 * and Cmd+Z in another entry would reach back into one they have left. A
-	 * lock takes the whole window down, and the offer with it.
-	 *
-	 * `at` is the pane the change left behind it, for an undo that would put
-	 * something back into the pane: a change is written a second before it can
-	 * be offered back, and a reader who moved the pane in that second has left
-	 * what the undo is about. They are told what was done, and offered nothing.
-	 * Left out, the offer belongs to whatever the pane shows when it is made.
+	 * The offer is withdrawn by the notice going and by a newer notice, because
+	 * an undo belongs to the sentence that says what it undoes. A lock takes the
+	 * whole window down, and the offer with it. Nothing else withdraws it: every
+	 * undo acts on what it is about by its id, whichever entry the pane shows by
+	 * then, and never opens anything over the reader's later choice, and one the
+	 * vault has moved on from is refused by Rust at the press and said to be.
 	 */
-	function offer(message: string, undo: () => Promise<void>, at: string | null = showing) {
-		if (showing !== at) {
-			tell({ message, kind: 'removed' }, 6000);
-			return;
-		}
-		const made: Offer = { run: undo, entry: at };
-		tell({ message, kind: 'removed', undo: () => void takeBack(made) }, UNDOABLE);
-		offered = made;
+	function offer(message: string, undo: () => Promise<void>) {
+		tell({ message, kind: 'removed', undo: () => void takeBack(undo) }, UNDOABLE);
+		offered = undo;
 	}
 
-	/** Runs an undo once, and only while it is still the one on offer. */
-	async function takeBack(which: Offer) {
-		if (offered !== which) return;
-		retire();
+	/**
+	 * Runs an undo once, and only while it is still the one on offer.
+	 *
+	 * The notice starts going as the undo starts: its one question has been
+	 * answered, and whatever the undo has to say next is a notice of its own.
+	 */
+	async function takeBack(undo: () => Promise<void>) {
+		if (offered !== undo) return;
+		clear();
+		go();
 		try {
-			await which.run();
+			await undo();
 		} catch (thrown) {
 			failed(thrown);
 		}
 	}
 
-	/**
-	 * Withdraws the offer, and the notice making it.
-	 *
-	 * The notice goes too rather than staying without its button: a sentence
-	 * that ended in "Undo" a moment ago and no longer does reads as though the
-	 * press had been taken.
-	 */
-	function retire() {
-		if (offered === null) return;
-		clear();
-		go();
+	/** Says that something went out of the file, where nothing can put it back. */
+	function erased(name: string) {
+		tell({ message: `Deleted ${name} forever`, kind: 'removed' });
+	}
+
+	/** What a move into the bin says, for an entry and for a folder alike. */
+	function moved(name: string): string {
+		return `Moved ${name} to the Recycle Bin`;
 	}
 
 	/**
@@ -854,10 +834,6 @@
 
 	function clear() {
 		offered = null;
-		if (ticking !== null) {
-			clearInterval(ticking);
-			ticking = null;
-		}
 		if (fading !== null) {
 			clearTimeout(fading);
 			fading = null;
@@ -869,57 +845,33 @@
 
 	$effect(() => () => clear());
 
-	// The entry in the pane is read before anything else, whether or not an
-	// offer stands: an effect only runs again for what it read, and one that
-	// looked at the offer first and found none would never look at the pane.
-	$effect(() => {
-		const here = showing;
-		if (offered !== null && offered.entry !== here) retire();
-	});
-
 	/**
-	 * A field of the reader's own came off the open entry.
+	 * A field of the reader's own came off an entry.
 	 *
-	 * It is offered back only once the removal is in the file, and only when
-	 * Rust names the version that holds it: the save may have pruned that
-	 * version, and whatever is newest after that is older, and its restore
-	 * would take back more than the field. A removal the save refused has a
-	 * notice of its own already, and the standing "Not saved" beside it, and an
-	 * offer over that notice would push the one sentence that matters off the
-	 * screen.
+	 * It is offered back only once the removal is in the file. A removal the
+	 * save refused has a notice of its own already, and the standing "Not
+	 * saved" beside it, and an offer over that notice would push the one
+	 * sentence that matters off the screen. One the reader agreed was for good,
+	 * because the vault keeps no version to bring it back from, is said to be,
+	 * the way an entry deleted forever is, and offered back to nobody.
 	 *
-	 * The undo asks Rust again rather than keeping the answer: a position is an
-	 * answer about the history as it stood when it was given.
+	 * The undo is one question to Rust: which version puts the field back, and
+	 * its restore, under one lock. Rust refuses when the removal is no longer
+	 * the last thing that happened to the entry, and nothing is restored.
 	 */
-	async function fieldRemoved(entry: string, name: string) {
+	function fieldRemoved(entry: string, name: string, forever: boolean) {
 		if (unsaved) return;
 		const said = `Field “${name}” removed`;
-		let holding: Position | null;
-		try {
-			holding = await beforeRemoval(entry, name);
-		} catch (thrown) {
-			failed(thrown);
-			return;
-		}
-		if (showing !== entry) return;
-		if (holding === null) {
-			tell({ message: said, kind: 'removed' }, 6000);
+		if (forever) {
+			tell({ message: `${said} forever`, kind: 'removed' });
 			return;
 		}
 		offer(said, async () => {
-			const still = await beforeRemoval(entry, name);
-			// Something that reaches Rust between the two answers moves the
-			// vault on, and the restore is refused rather than acting on
-			// whatever sits at that position now. Either way the removal is no
-			// longer the last thing that happened to the entry.
-			const restored =
-				still === null
-					? null
-					: await restoreVersion(entry, still).catch((thrown: unknown) => {
-							if (asFailure(thrown).code === 'versionsChanged') return null;
-							throw thrown;
-						});
-			if (restored === null) {
+			let restored: Entry;
+			try {
+				restored = await undoRemoval(entry, name);
+			} catch (thrown) {
+				if (asFailure(thrown).code !== 'superseded') throw thrown;
 				warn('The entry has changed since, so that can no longer be undone.');
 				return;
 			}
@@ -1366,7 +1318,7 @@
 							onClose={() => (pane = null)}
 							onDelete={() => void once(removeEntry)}
 							onPutBack={() => void once(putBack)}
-							onFieldRemoved={(entry, name) => void fieldRemoved(entry, name)}
+							onFieldRemoved={fieldRemoved}
 							onFailure={failed}
 						/>
 					{:else}

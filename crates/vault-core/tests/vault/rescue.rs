@@ -439,7 +439,9 @@ fn typing_into_what_has_gone_is_refused_and_changes_nothing() {
     let mut vault = open(&database, BUILT_PASSWORD);
     let id = vault.tree().entries[0].id;
 
-    vault.remove_field(id, "PIN").expect("the field is removed");
+    vault
+        .remove_field(id, "PIN", false)
+        .expect("the field is removed");
     let versions = vault.versions(id).len();
     let stranger = open(
         &vault_with_an_entry(scratch.path(), "other.kdbx"),

@@ -56,6 +56,14 @@ enum Code {
     /// changed, where it may name another version now. Nothing was done, and
     /// the screen reads the list again rather than showing a failure.
     VersionsChanged,
+    /// Removing the field would be for good: the vault keeps no version to
+    /// bring it back from. Nothing was done, and the screen asks the reader
+    /// whether they mean it.
+    ForGood,
+    /// A removal the reader asked to take back is no longer the last thing
+    /// that happened to its entry. Nothing was done, and the screen says the
+    /// removal can no longer be undone.
+    Superseded,
     Io,
     Other,
 }
@@ -176,6 +184,8 @@ impl From<VaultError> for Failure {
             | VaultError::NotACopy
             | VaultError::NothingToGenerateFrom
             | VaultError::RandomnessUnavailable => Code::Refused,
+            VaultError::RemovalForGood => Code::ForGood,
+            VaultError::RemovalSuperseded => Code::Superseded,
             VaultError::Io(_) => Code::Io,
             _ => Code::Other,
         };
@@ -238,6 +248,8 @@ mod tests {
             (VaultError::NoSuchPart, "refused"),
             (VaultError::NotACopy, "refused"),
             (VaultError::NothingToGenerateFrom, "refused"),
+            (VaultError::RemovalForGood, "forGood"),
+            (VaultError::RemovalSuperseded, "superseded"),
             (VaultError::Io(io::Error::other("a disk")), "io"),
         ] {
             let message = error.to_string();

@@ -53,8 +53,12 @@
 		     megabyte long, so the sentence that names one is bounded. -->
 		<span class="line-clamp-3 min-w-0 flex-1 text-small break-words text-txt">{message}</span>
 		{#if onUndo}
+			<!-- The press does not take the focus. A field holding typing would
+			     otherwise be left, and write what it holds, on the way to the
+			     button - a change of its own, landing in the middle of the undo. -->
 			<button
 				type="button"
+				onmousedown={(event) => event.preventDefault()}
 				onclick={onUndo}
 				aria-keyshortcuts="Meta+Z"
 				class="pointer-events-auto -my-1 flex h-7 shrink-0 items-center gap-2 rounded-full px-2.5 text-small text-accent transition-colors hover:text-accenthi"

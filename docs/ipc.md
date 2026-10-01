@@ -67,7 +67,8 @@ Everything slice 3 added:
 | `put_back_group` | `group` | the tree |
 | `empty_recycle_bin` | | the tree |
 | `set_field` | `entry`, `field`, `value`, `protect`, `sequence` | the entry |
-| `remove_field` | `entry`, `field` | the entry |
+| `remove_field` | `entry`, `field`, `forever` | the entry |
+| `undo_removal` | `entry`, `field` | the entry |
 | `set_tags` | `entry`, `tags` | the entry |
 | `add_attachment` | `entry` | the entry, or what already has the file's name, or nothing if the panel was closed |
 | `keep_both_attachments` | `entry` | the entry |
@@ -81,7 +82,6 @@ Everything slice 3 added:
 | `reveal_version` | `entry`, `index`, `revision`, `field` | the value of that field in that version |
 | `copy_version` | `entry`, `index`, `revision`, `field`, `range` | the seconds until Coffer clears the pasteboard |
 | `restore_version` | `entry`, `index`, `revision` | the entry |
-| `before_removal` | `entry`, `field` | the position and revision of the version that puts back a field the entry just lost, or nothing |
 | `delete_version` | `entry`, `index`, `revision` | the versions that are left, and their revision |
 | `clear_history` | `entry` | the versions that are left, which is none, and their revision |
 | `generate_password` | `length`, `alphabets`, `similar` | a password |
@@ -245,7 +245,7 @@ command at a time and a save holds it for a key derivation, so a press made
 while a save is running reaches the vault after the save has moved the
 positions. A drop pressed in that second dropped the neighbour of the version
 on its row, for good; a second Restore put another version over the one chosen.
-So `versions`, `delete_version`, `clear_history` and `before_removal` answer with
+So `versions`, `delete_version` and `clear_history` answer with
 a `revision`, a number the session moves every time the open vault is handed
 out to be changed - every edit, drop, restore, save, reload and move, and a
 vault that opens - and not for a draft or anything that only reads. Every
@@ -272,27 +272,42 @@ the pane draws the row at once, and an entry, a list of versions or a failure
 that arrives for an entry the pane has since left is dropped. An edit answered
 that late is still saved and the tree still redrawn, because the change is in
 the vault either way; only the pane is left alone. The same goes for a move to
-the bin answered after another entry was opened, which is then said without an
-Undo, because undoing it opens the entry that went.
+the bin answered after another entry was opened: it is still offered back, and
+its undo puts the entry back without opening it over the one being read.
 
-**A removed field is offered back by the version Rust names.** Removing a field
-writes a version, and restoring it is the undo - but the save that follows may
-prune that version, and whatever is newest after it is older and takes back more
-than the field. So once the removal is written the window asks
-`before_removal`, and offers Undo only on an answer; `null` means no version puts
-back that field and only that field, and the notice then only reports. The undo
-asks again at the press and restores what that second answer names through
-`restore_version`, because a position is an answer about the history as it
-stood when it was given. Anything that reaches Rust between the two answers
-moves the revision, the restore is refused with `versionsChanged`, and the
-reader is told the removal can no longer be undone. Nothing crosses but the
-field's name, a position and its revision.
+**A removed field is taken back by Rust, in one call.** Removing a field
+writes a version, and restoring that version is the undo - but only while the
+removal is the last thing that happened to the entry. Any change since writes a
+newer version, the save after the removal may prune it, and a version another
+client dated later stands in front of it; restoring whatever is newest then
+would take back more than the field. So `undo_removal` takes the entry and the
+field's name and nothing else, and Rust decides which version puts the field
+back and restores it under one lock, so nothing can land between the question
+and the restore. When the removal is no longer the last thing that happened, it
+refuses with `superseded`, restores nothing, and the window says the removal
+can no longer be undone.
+
+**A removal nothing could take back is asked about first.** A database whose
+`HistoryMaxItems` is 0, or whose `HistoryMaxSize` the removal's version does not
+fit, drops that version at the very next save. `remove_field` works that out
+with the rule the save prunes by (`history::keep` in `vault-core`), and refuses
+with `forGood`, doing nothing, unless `forever` is true. The window sends
+`false` first; `forGood` opens a question in the field's row, and its red answer
+sends the removal again with `true`. The question and the removal are one call,
+so what the reader was asked about is what the vault held when the answer
+arrived. After such a removal the notice says the field went forever and offers
+nothing.
 
 The offer lasts eight seconds, on the notice's own button and on Cmd+Z when the
-key is not aimed at a text field. It is withdrawn by the notice going, by a
-newer notice, by any other change reaching the file, and by the pane showing
-another entry or none, and it runs once however it is asked for. A removal whose
-save failed is not offered back at all: the failure has a notice of its own.
+key is not aimed at a text field, and it runs once however it is asked for. The
+button does not take the focus when it is pressed, so a field holding typing is
+not left, and does not write that typing, on the way to it. The offer is
+withdrawn by the notice going and by a newer notice, and a lock takes it down
+with the window. Nothing else withdraws it - not another entry opened, the pane
+put away, or another change written: both kinds of undo act by id and never open
+anything over the reader's later choice, and one the vault has moved on from is
+refused by Rust at the press. A removal whose save failed is not offered back at
+all: the failure has a notice of its own.
 
 **What a deletion will do is said before it happens.** Every entry and every
 group carries `deletion`, `bin` or `forever`: whether deleting it moves it to the
@@ -402,12 +417,16 @@ a secret and never says which half of a credential was wrong. The code is what
 the screen branches on: `wrongCredentials`, `notADatabase`, `unsupportedFormat`,
 `damaged`, `heldByAnother`, `externalChange`, `readOnly`, `gone`, `tooLarge`,
 `noVault`, `noSuchEntry`, `refused`, `taken`, `attachmentInHistory`,
-`versionsChanged`, `io`, `other`.
+`versionsChanged`, `forGood`, `superseded`, `io`, `other`.
 
 `versionsChanged` is a position read at a revision the vault has moved on from
 (see above). Nothing was done, so it is not shown as a failure: the window
 reads the list again and says the versions changed while the reader was
 choosing.
+
+`forGood` and `superseded` are about a removed field (see above), and neither
+did anything. `forGood` is answered with a question, and `superseded` with the
+sentence that the removal can no longer be undone.
 
 `taken` is `create_database` finding a file where the new vault would go. The
 creation screen says so in its own sentence, which names the place and the way

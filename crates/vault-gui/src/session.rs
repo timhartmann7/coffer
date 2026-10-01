@@ -2294,7 +2294,7 @@ mod tests {
         let made = session
             .with_mut(|vault| {
                 let made = vault.create_entry(vault.tree().id)?;
-                vault.remove_field(made, fields::NOTES)?;
+                vault.remove_field(made, fields::NOTES, false)?;
                 vault.save()?;
                 Ok::<_, VaultError>(made)
             })
@@ -2330,7 +2330,7 @@ mod tests {
                     "PIN",
                     vault_core::NewValue::Protected(Zeroizing::new("1234".to_owned())),
                 )?;
-                vault.remove_field(basic.id, "PIN")?;
+                vault.remove_field(basic.id, "PIN", false)?;
                 // Out of the bin, and so out of the file.
                 vault.delete_entry(binned.id)
             })

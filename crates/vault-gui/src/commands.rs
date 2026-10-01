@@ -37,8 +37,7 @@ use crate::autolock::timer::Timer;
 use crate::autolock::{Event, Reason};
 use crate::drafts::{Over, Typed};
 use crate::dto::{
-    self, Database, Entry, Group, Made, Position, Revealed, Rival, Snapshot, Status, Target,
-    Versions,
+    self, Database, Entry, Group, Made, Revealed, Rival, Snapshot, Status, Target, Versions,
 };
 use crate::error::Failure;
 use crate::session::Session;
@@ -885,10 +884,34 @@ pub fn draft(
     session.draft(dto::entry_id(&entry)?, &field, typed, sequence)
 }
 
+/// Takes a field of the reader's own off an entry.
+///
+/// Refused with `forGood` when the vault's limits leave no version to bring
+/// the field back from, until the window sends `forever` to say the reader
+/// agreed: see [`vault_core::Vault::remove_field`]. The question and the
+/// removal are one call, so the answer the reader gave is about the entry the
+/// removal acts on.
 #[tauri::command(async)]
-pub fn remove_field(entry: String, field: String, session: Held<'_>) -> Result<Entry, Failure> {
+pub fn remove_field(
+    entry: String,
+    field: String,
+    forever: bool,
+    session: Held<'_>,
+) -> Result<Entry, Failure> {
     let id = dto::entry_id(&entry)?;
-    session.with_mut(|vault| vault.remove_field(id, &field))??;
+    session.with_mut(|vault| vault.remove_field(id, &field, forever))??;
+    entry_of(&session, &entry)
+}
+
+/// Puts back a field that just came off, when its removal is still the last
+/// thing that happened to the entry, and refuses with `superseded` when it is
+/// not. The window sends the field's name and nothing else: which version puts
+/// it back is decided under the same lock the restore runs in. See
+/// [`vault_core::Vault::undo_removal`].
+#[tauri::command(async)]
+pub fn undo_removal(entry: String, field: String, session: Held<'_>) -> Result<Entry, Failure> {
+    let id = dto::entry_id(&entry)?;
+    session.with_mut(|vault| vault.undo_removal(id, &field))??;
     entry_of(&session, &entry)
 }
 
@@ -1115,26 +1138,6 @@ pub fn restore_version(
     let id = dto::entry_id(&entry)?;
     session.at_mut(revision, |vault| vault.restore_version(id, index))??;
     entry_of(&session, &entry)
-}
-
-/// The version that puts back a field the entry has just lost, or nothing when
-/// no version does that and only that.
-///
-/// The window asks once the removal has been written, to know whether it may
-/// offer to take the removal back, and again when the reader does, so that the
-/// restore it then asks for is of this version and of no older one. The
-/// position comes with the revision it was read at, so a change that reaches
-/// the vault between this answer and the restore has the restore refused. See
-/// [`vault_core::Vault::before_removal`].
-#[tauri::command(async)]
-pub fn before_removal(
-    entry: String,
-    field: String,
-    session: Held<'_>,
-) -> Result<Option<Position>, Failure> {
-    let id = dto::entry_id(&entry)?;
-    let (revision, found) = session.listing(|vault| vault.before_removal(id, &field))?;
-    Ok(found.map(|index| Position { index, revision }))
 }
 
 #[tauri::command(async)]

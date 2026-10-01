@@ -1360,12 +1360,12 @@ fn a_field_can_be_taken_off_an_entry() {
     let id = only_entry(&vault, "many custom fields");
 
     assert!(matches!(
-        vault.remove_field(id, "no such field"),
+        vault.remove_field(id, "no such field", false),
         Err(VaultError::NoSuchField)
     ));
 
     vault
-        .remove_field(id, "custom-001")
+        .remove_field(id, "custom-001", false)
         .expect("the field is removed");
     assert!(
         vault

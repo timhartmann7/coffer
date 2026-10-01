@@ -80,14 +80,22 @@ by it, so none of them can call a different version the newest.
 
 **Taking a removal back is a restore, and only of one version.** Removing a
 field writes a version like any other edit, and restoring that version is the
-undo. But the save after the removal prunes, and a database that keeps no
-versions, or a size limit the version does not fit, drops it there and then.
-What is newest after that is something older, and restoring it would take back
-every change since as well. `Vault::before_removal` answers which version puts
-back exactly the field and nothing else: the newest, and only when it is the
-entry as it stands with that field put back. Anything else - a pruned version,
-an undated one a prune kept, a change made since - is `None`, never the position
-of some other version that happens to hold a field of that name.
+undo. But the save after the removal prunes, and what is newest after a prune,
+a change made since, or a version another client dated later is something else,
+whose restore would take back every change since as well. `Vault::undo_removal`
+restores the newest version only when it is the entry as it stands with that
+field put back, and refuses with `RemovalSuperseded` otherwise - never the
+position of some other version that happens to hold a field of that name. The
+question and the restore are one call.
+
+**A removal whose version the save would drop asks first.** A database that
+keeps no versions, or a size limit the removal's version does not fit, drops
+that version at the very next save, and the field is gone for good.
+`Vault::remove_field` refuses that removal with `RemovalForGood` unless it is
+told the reader agreed. It decides by putting the version the removal would
+write through `history::keep`, the rule the save prunes by, beside the versions
+the entry already has - so the question and the save cannot disagree about
+which versions a save keeps.
 
 **Key derivation runs on unauthenticated parameters.** `format/kdbx4/parse.rs`
 derives the key from the KDF dictionary in the outer header before it checks the
