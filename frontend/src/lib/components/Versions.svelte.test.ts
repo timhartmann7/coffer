@@ -1,6 +1,7 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { entry, field, version } from '$lib/fixtures';
+import type { Version } from '$lib/model';
 import { reactive } from '$lib/props.svelte';
 import Versions from './Versions.svelte';
 
@@ -37,12 +38,17 @@ const listed = [
 	version({ index: 2, modified: '2023-06-04T12:00:00Z' })
 ];
 
+/** A list of versions the way the window holds one: with the entry it is of. */
+function of(versions: Version[], entry = 'an-entry') {
+	return { entry, versions };
+}
+
 function show(props: Record<string, unknown> = {}) {
 	return mount(Versions, {
 		target: host,
 		props: {
 			entry: 'an-entry',
-			versions: listed,
+			history: of(listed),
 			now: new Date('2026-08-29T14:30:00Z'),
 			readOnly: false,
 			onCopy: vi.fn(),
@@ -98,7 +104,7 @@ it('lists the newest version first', () => {
 });
 
 it('says so rather than drawing an empty list', () => {
-	const component = show({ versions: [] });
+	const component = show({ history: of([]) });
 	open();
 
 	expect(host.textContent).toContain('Nothing yet');
@@ -113,7 +119,7 @@ it('views, restores and deletes a version by its position', async () => {
 	const onVersions = vi.fn();
 	ipc.version.mockResolvedValue(entry({ fields: [field({ name: 'Title', value: 'was' })] }));
 	ipc.restoreVersion.mockResolvedValue(entry());
-	ipc.deleteVersion.mockResolvedValue([]);
+	ipc.deleteVersion.mockResolvedValue(of([]));
 
 	const component = show({ onChanged, onVersions });
 	open();
@@ -134,7 +140,7 @@ it('views, restores and deletes a version by its position', async () => {
 	flushSync();
 	button('Drop it').click();
 	await vi.waitFor(() => expect(ipc.deleteVersion).toHaveBeenCalledWith('an-entry', 0));
-	expect(onVersions).toHaveBeenCalledWith([]);
+	expect(onVersions).toHaveBeenCalledWith(of([]));
 
 	return unmount(component);
 });
@@ -168,7 +174,7 @@ it("asks for a version's protected value one field at a time", async () => {
  * asks first and the destructive half is the red one. */
 it('asks before it drops every version', async () => {
 	const onVersions = vi.fn();
-	ipc.clearHistory.mockResolvedValue([]);
+	ipc.clearHistory.mockResolvedValue(of([]));
 
 	const component = show({ onVersions });
 	open();
@@ -186,7 +192,7 @@ it('asks before it drops every version', async () => {
 	flushSync();
 	button('Clear the history').click();
 	await vi.waitFor(() => expect(ipc.clearHistory).toHaveBeenCalledWith('an-entry'));
-	expect(onVersions).toHaveBeenCalledWith([]);
+	expect(onVersions).toHaveBeenCalledWith(of([]));
 
 	return unmount(component);
 });
@@ -288,7 +294,7 @@ it("copies a version's value through Rust, whole or the part selected", async ()
  */
 it('closes an open version when the list underneath it changes', async () => {
 	ipc.version.mockResolvedValue(entry({ fields: [field({ name: 'Title', value: 'was' })] }));
-	ipc.deleteVersion.mockResolvedValue([listed[0], listed[1]]);
+	ipc.deleteVersion.mockResolvedValue(of([listed[0], listed[1]]));
 
 	const component = show();
 	open();
@@ -330,7 +336,7 @@ it('offers nothing but a look on a database it cannot write', () => {
  */
 it('asks before it drops one version', async () => {
 	const onVersions = vi.fn();
-	ipc.deleteVersion.mockResolvedValue([listed[0], listed[2]]);
+	ipc.deleteVersion.mockResolvedValue(of([listed[0], listed[2]]));
 
 	const component = show({ onVersions });
 	open();
@@ -354,7 +360,7 @@ it('asks before it drops one version', async () => {
 	button('Drop it').click();
 	await vi.waitFor(() => expect(ipc.deleteVersion).toHaveBeenCalledWith('an-entry', 1));
 	expect(ipc.deleteVersion).toHaveBeenCalledTimes(1);
-	expect(onVersions).toHaveBeenCalledWith([listed[0], listed[2]]);
+	expect(onVersions).toHaveBeenCalledWith(of([listed[0], listed[2]]));
 
 	return unmount(component);
 });
@@ -367,7 +373,7 @@ it('asks before it drops one version', async () => {
 it('takes a question about a version away when the list underneath it changes', () => {
 	const props = reactive({
 		entry: 'an-entry',
-		versions: listed,
+		history: of(listed),
 		now: new Date('2026-08-29T14:30:00Z'),
 		readOnly: false,
 		onCopy: vi.fn(),
@@ -382,10 +388,87 @@ it('takes a question about a version away when the list underneath it changes', 
 	flushSync();
 	expect(host.textContent).toContain('Drop this version?');
 
-	props.versions = [listed[1], listed[2]];
+	props.history = of([listed[1], listed[2]]);
 	flushSync();
 	expect(host.querySelector('[data-confirm]')).toBeNull();
 	expect(ipc.deleteVersion).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/**
+ * A position means something only in the history of the entry it was read
+ * from. The window once left one entry's list under the next entry's name, and
+ * Restore and Delete went to the entry on the screen with a position from the
+ * list that was not its own. A list of another entry's is not drawn at all, so
+ * there is nothing on the screen to press.
+ */
+it("draws no list that is not its entry's, so nothing can act on one", async () => {
+	ipc.restoreVersion.mockResolvedValue(entry());
+	const props = reactive({
+		entry: 'the next entry',
+		history: of(listed, 'the last entry'),
+		now: new Date('2026-08-29T14:30:00Z'),
+		readOnly: false,
+		onCopy: vi.fn(),
+		onVersions: vi.fn(),
+		onChanged: vi.fn(),
+		onFailure: vi.fn()
+	});
+	const component = mount(Versions, { target: host, props });
+	open();
+
+	expect(host.textContent).not.toMatch(/\d/);
+	expect(host.textContent).not.toContain('Nothing yet');
+	const named = [...host.querySelectorAll('button')].map((each) => each.textContent?.trim());
+	expect(named).toEqual(['Versions']);
+
+	// Its own list arrives, and every action on it names its own entry.
+	props.history = of([listed[0]], 'the next entry');
+	flushSync();
+	expect(host.textContent).toContain('2021');
+	expect(host.textContent).not.toContain('2023');
+	button('Restore').click();
+	await vi.waitFor(() => expect(ipc.restoreVersion).toHaveBeenCalledWith('the next entry', 0));
+	expect(ipc.restoreVersion).toHaveBeenCalledTimes(1);
+
+	return unmount(component);
+});
+
+/**
+ * Reading a version waits its turn in Rust, behind a save that may prune the
+ * history it was read from. A version that arrives after the list changed was
+ * read at a position that may name another version now, and drawn it would
+ * show one version's fields and copy another's values.
+ */
+it('drops a version that arrives after the list under it changed', async () => {
+	const reading = Promise.withResolvers<ReturnType<typeof entry>>();
+	ipc.version.mockReturnValue(reading.promise);
+	const props = reactive({
+		entry: 'an-entry',
+		history: of(listed),
+		now: new Date('2026-08-29T14:30:00Z'),
+		readOnly: false,
+		onCopy: vi.fn(),
+		onVersions: vi.fn(),
+		onChanged: vi.fn(),
+		onFailure: vi.fn()
+	});
+	const component = mount(Versions, { target: host, props });
+	open();
+
+	button('View').click();
+	await vi.waitFor(() => expect(ipc.version).toHaveBeenCalledWith('an-entry', 2));
+	props.history = of([listed[1], listed[2]]);
+	flushSync();
+
+	reading.resolve(entry({ fields: [field({ name: 'Title', value: 'what version 2 held' })] }));
+	await reading.promise;
+	await Promise.resolve();
+	flushSync();
+
+	expect(host.textContent).not.toContain('what version 2 held');
+	expect(host.textContent).not.toContain('A version is read only');
 
 	return unmount(component);
 });

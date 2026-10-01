@@ -237,6 +237,18 @@ longer there. The window reads the list back after the save rather than before
 it, which is why every change is `save` and then `versions` and never the other
 way round.
 
+**A position is an answer about one entry.** The commands that list versions
+answer with the list alone, so `ipc.ts` hands each list on paired with the entry
+it asked about (`History` in `model.ts`), and the window draws a list only under
+that entry. Rust answers one command at a time and a save holds it for a whole
+key derivation, so an entry chosen right after an edit is read after the save:
+the pane draws the row at once, and an entry, a list of versions or a failure
+that arrives for an entry the pane has since left is dropped. An edit answered
+that late is still saved and the tree still redrawn, because the change is in
+the vault either way; only the pane is left alone. The same goes for a move to
+the bin answered after another entry was opened, which is then said without an
+Undo, because undoing it opens the entry that went.
+
 **A removed field is offered back by the version Rust names.** Removing a field
 writes a version, and restoring it is the undo - but the save that follows may
 prune that version, and whatever is newest after it is older and takes back more

@@ -16,10 +16,11 @@
 		setTags,
 		withdrawAttachment
 	} from '$lib/ipc';
-	import type { Clash, Entry, Field, Group, Span, Version } from '$lib/model';
+	import type { Clash, Entry, Field, Group, History, Span } from '$lib/model';
 	import Change from './Change.svelte';
 	import Confirm from './Confirm.svelte';
 	import Editable from './Editable.svelte';
+	import Heading from './Heading.svelte';
 	import Icon from './Icon.svelte';
 	import InBin from './InBin.svelte';
 	import Mask from './Mask.svelte';
@@ -40,7 +41,7 @@
 		entry,
 		root,
 		path,
-		versions,
+		history,
 		now,
 		readOnly,
 		onCopy,
@@ -59,7 +60,9 @@
 		/** The folders from the vault down to this entry, for the line above the
 		 * title. */
 		path: Group[];
-		versions: Version[];
+		/** The entry's previous versions, once Rust has listed them. A list of
+		 * another entry's is not this entry's history and is never drawn. */
+		history: History | null;
 		now: Date;
 		/** A database Coffer will not write back. Nothing here offers a change
 		 * that would only be refused. */
@@ -68,7 +71,7 @@
 		 * versions, whole or the part of it the reader selected. */
 		onCopy: (entry: string, field: string, range?: Span | null, version?: number) => void;
 		onChanged: (entry: Entry) => Promise<void>;
-		onVersions: (versions: Version[]) => void;
+		onVersions: (history: History) => void;
 		/** Puts the pane away. Escape does the same, and so does a press on the
 		 * empty part of either pane to the left of this one. */
 		onClose: () => void;
@@ -169,15 +172,28 @@
 	 */
 	const showing = $derived(entry.id);
 
+	/**
+	 * The entry this pane stands on while it is on the screen, and `null` once
+	 * it has gone or moved to another.
+	 *
+	 * What an answer that arrives late asks before it is given to anybody. The
+	 * entry itself cannot say: a pane the window has taken down still holds the
+	 * last entry it was given, and a question drawn there is one nobody will
+	 * ever see. Nothing is drawn from it, so it is not state.
+	 */
+	let standing: string | null = null;
+
 	// Another entry is another set of answers. A banner about a file on the
 	// entry that was open would otherwise still be on the screen under the next
 	// one, offering to clear the wrong entry's history.
 	$effect(() => {
 		const id = showing;
+		standing = id;
 		// Cleared on the way out rather than on the way in: a write inside the
 		// body of an effect is a read of what was there, and an effect that
 		// reads what it writes runs again the moment anything sets it.
 		return () => {
+			standing = null;
 			// A question nobody can see any more is not one anybody will answer,
 			// and the file it was about is the reader's, waiting in Rust. It goes
 			// with the question, and Rust lets go of it only for this entry, so a
@@ -234,10 +250,10 @@
 				await onChanged(answer.entry);
 				return;
 			}
-			// The pane moved on while the panel was open, so there is nobody
-			// left to ask. The file is let go rather than kept for a question
-			// that is never drawn.
-			if (entry.id !== id) {
+			// The pane moved on or went while the panel was open, so there is
+			// nobody left to ask. The file is let go rather than kept for a
+			// question that is never drawn.
+			if (standing !== id) {
 				letGo(id);
 				return;
 			}
@@ -272,7 +288,7 @@
 		try {
 			await onChanged(await replaceAttachment(id));
 		} catch (thrown) {
-			if (asFailure(thrown).code === 'attachmentInHistory' && entry.id === id) {
+			if (asFailure(thrown).code === 'attachmentInHistory' && standing === id) {
 				clash = asked;
 				held = true;
 				return;
@@ -456,53 +472,28 @@
 	{/if}
 {/snippet}
 
-<section class="flex h-full animate-fade flex-col overflow-hidden bg-surface">
-	<header class="shrink-0 border-b border-hairline px-6 py-5">
-		<!--
-			The folders down to this entry, and only when there are any. An entry at
-			the top of a vault has none, and the empty line it used to leave was
-			what pushed the title below the two buttons beside it.
-		-->
-		{#if path.length > 0}
-			<div class="mb-1.5 truncate font-mono text-label tracking-label text-txt4 uppercase">
-				{path.map((group) => group.name).join(' · ')}
-			</div>
+<section class="flex h-full flex-col overflow-hidden bg-surface">
+	<Heading {path} {onClose}>
+		{#if title && title.value === null}
+			<h1 class="min-w-0 flex-1 truncate text-title font-medium tracking-tight text-txt">
+				<Mask />
+			</h1>
+		{:else}
+			{@const at = place(title, 'Title')}
+			<h1 class="-ml-2 flex min-w-0 flex-1">
+				<Editable
+					value={title?.value ?? ''}
+					label="Title"
+					placeholder="Untitled"
+					classes="text-title font-medium tracking-tight text-txt"
+					readonly={locked}
+					bare
+					draft={at}
+					onCommit={(value) => write(at.field, value, at.protect)}
+				/>
+			</h1>
 		{/if}
-
-		<!-- The name and the way out, on one line and centred against each other.
-		     The trash used to stand sixteen pixels from the close at the same size,
-		     and a press meant for one took the other; deleting is now a labelled
-		     action at the foot of the pane. -->
-		<div class="flex items-center gap-4">
-			{#if title && title.value === null}
-				<h1 class="min-w-0 flex-1 truncate text-title font-medium tracking-tight text-txt">
-					<Mask />
-				</h1>
-			{:else}
-				{@const at = place(title, 'Title')}
-				<h1 class="-ml-2 flex min-w-0 flex-1">
-					<Editable
-						value={title?.value ?? ''}
-						label="Title"
-						placeholder="Untitled"
-						classes="text-title font-medium tracking-tight text-txt"
-						readonly={locked}
-						bare
-						draft={at}
-						onCommit={(value) => write(at.field, value, at.protect)}
-					/>
-				</h1>
-			{/if}
-			<button
-				type="button"
-				onclick={onClose}
-				class="shrink-0 text-txt4 transition-colors hover:text-txt2"
-				aria-label="Close this entry"
-			>
-				<Icon name="x" class="h-4 w-4" />
-			</button>
-		</div>
-	</header>
+	</Heading>
 
 	<div class="flex-1 overflow-y-auto px-6 py-5">
 		{#if entry.binned}
@@ -874,7 +865,7 @@
 
 		<Versions
 			entry={entry.id}
-			{versions}
+			{history}
 			{now}
 			readOnly={locked}
 			onCopy={(index, name, range) => onCopy(entry.id, name, range, index)}

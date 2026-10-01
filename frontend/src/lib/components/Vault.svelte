@@ -30,9 +30,18 @@
 	import { called } from '$lib/format';
 	import { copying, typing } from '$lib/keys';
 	import { RISE, span } from '$lib/motion';
-	import type { Database, Entry, EntryRow, Group, Rival, Span, Version } from '$lib/model';
+	import type { Database, Entry, EntryRow, Group, History, Rival, Span } from '$lib/model';
 	import { index, search } from '$lib/search';
-	import { entriesOf, find, inBin, liveEntries, pathTo, recycleBin, shownEntries } from '$lib/tree';
+	import {
+		entriesOf,
+		find,
+		inBin,
+		liveEntries,
+		pathTo,
+		recycleBin,
+		rowOf,
+		shownEntries
+	} from '$lib/tree';
 	import BinFolders from './BinFolders.svelte';
 	import Confirm from './Confirm.svelte';
 	import Conflict from './Conflict.svelte';
@@ -42,6 +51,7 @@
 	import EntryView from './EntryView.svelte';
 	import Icon from './Icon.svelte';
 	import InBin from './InBin.svelte';
+	import Opening from './Opening.svelte';
 	import Toast from './Toast.svelte';
 	import Tree from './Tree.svelte';
 
@@ -77,8 +87,41 @@
 	let group = $state<string | null>(null);
 	let expanded = new SvelteSet<string>();
 	let query = $state('');
-	let opened = $state<Entry | null>(null);
-	let versions = $state<Version[]>([]);
+
+	/**
+	 * The entry in the pane, from the moment its row is pressed.
+	 *
+	 * Rust answers one command at a time, and a save holds it for a whole key
+	 * derivation and the encryption of the vault. An entry chosen in that second
+	 * is read once the save is done, and one that waited with the previous entry
+	 * still in the pane - and its versions set by whichever answer came last -
+	 * showed one entry's history under another's name, with Restore and Delete
+	 * aimed at positions in the wrong list.
+	 *
+	 * So the pane is the entry's id first, drawn from the row that was pressed,
+	 * and the entry and its versions arrive into it. Every answer about an entry
+	 * goes through `land` or `listed`, which put it into the pane only while the
+	 * pane is still on that entry; choosing another makes a new pane, so nothing
+	 * the last one held can be drawn under the next. Replaced whole rather than
+	 * changed in place, so it is not watched field by field.
+	 */
+	type Pane = {
+		id: string;
+		/** The row the entry was chosen from, which is what is drawn while the
+		 * entry is being read. */
+		row: EntryRow;
+		/** The entry as Rust last answered, or `null` until it has. */
+		entry: Entry | null;
+		/** Its previous versions, once Rust has listed them. */
+		history: History | null;
+	};
+
+	let pane = $state.raw<Pane | null>(null);
+	/** Which entry the pane is on, read or not. */
+	const showing = $derived(pane?.id ?? null);
+	/** The entry in the pane, once Rust has read it. Nothing is offered on an
+	 * entry before that: nothing of it but its row is known. */
+	const opened = $derived(pane?.entry ?? null);
 	let field = $state<HTMLInputElement>();
 	let naming = $state(false);
 	let named = $state<HTMLInputElement>();
@@ -112,7 +155,7 @@
 	/** Something the reader just did, and the way to take it back. */
 	type Offer = {
 		run: () => Promise<void>;
-		/** The entry in the pane when the offer was made, or `null` for none. */
+		/** The entry in the pane the offer belongs to, or `null` for none. */
 		entry: string | null;
 	};
 
@@ -159,7 +202,7 @@
 	const indexed = $derived(index(rows));
 	const found = $derived(search(indexed, query));
 	const bin = $derived(recycleBin(root));
-	const path = $derived(opened ? (pathTo(root, opened.group) ?? []).slice(1) : []);
+	const path = $derived(pane ? (pathTo(root, (pane.entry ?? pane.row).group) ?? []).slice(1) : []);
 	/** Where a new folder or entry goes: the folder being shown, or the top of
 	 * the vault when the list is showing everything. */
 	const inside = $derived(group === null ? root.id : shown.id);
@@ -176,7 +219,7 @@
 
 	function select(id: string | null) {
 		group = id;
-		opened = null;
+		pane = null;
 		query = '';
 		naming = false;
 		renaming = false;
@@ -184,13 +227,58 @@
 		deleting = false;
 	}
 
-	async function open(id: string) {
+	/**
+	 * Puts an entry in the pane at once, and reads it.
+	 *
+	 * The row is on the screen before Rust has answered, and whatever the pane
+	 * was showing goes with it: the versions under the name are only ever this
+	 * entry's, because there are none until Rust lists them. The row of the
+	 * entry already in the pane reads it again where it stands, with nothing
+	 * taken off the screen in the meantime.
+	 */
+	async function open(row: EntryRow) {
+		if (showing !== row.id) pane = { id: row.id, row, entry: null, history: null };
+		await read(row.id);
+		await list(row.id);
+	}
+
+	/**
+	 * Reads the entry in the pane from Rust.
+	 *
+	 * An entry that cannot be read - gone from the vault while it was waiting
+	 * its turn - takes the pane with it, and the reader is told why. An answer
+	 * about an entry the pane has left is nobody's, whatever it says.
+	 */
+	async function read(id: string) {
+		if (showing !== id) return;
 		try {
-			opened = await loadEntry(id);
-			versions = await loadVersions(id);
+			land(await loadEntry(id));
 		} catch (thrown) {
+			if (showing !== id) return;
+			pane = null;
 			failed(thrown);
 		}
+	}
+
+	/** Lists the versions of the entry in the pane, while it is still there. */
+	async function list(id: string) {
+		if (showing !== id) return;
+		try {
+			listed(await loadVersions(id));
+		} catch (thrown) {
+			if (showing === id) failed(thrown);
+		}
+	}
+
+	/** Puts an entry Rust answered with into the pane, if the pane is on it. */
+	function land(entry: Entry) {
+		if (pane?.id === entry.id) pane = { ...pane, entry };
+	}
+
+	/** Puts a list of versions under the entry it is the list of, if the pane is
+	 * on that entry. */
+	function listed(history: History) {
+		if (pane?.id === history.entry) pane = { ...pane, history };
 	}
 
 	/**
@@ -237,7 +325,7 @@
 	 * filtering and searching on a value that is no longer in the file.
 	 */
 	async function changed(entry: Entry) {
-		opened = entry;
+		land(entry);
 		changedAt = new Date();
 		await persist();
 		await redraw(entry.id);
@@ -249,23 +337,28 @@
 	 * After the save, not before it: a save brings every entry's history inside
 	 * the database's limits, and a version is addressed by its position, so the
 	 * list read before a save can name versions that are no longer there.
+	 *
+	 * The versions only while the pane is still on the entry, and the tree in
+	 * any case. The tree is the whole vault's rather than the entry's, and a
+	 * reader who moved on during the save still has the entry's row in the list,
+	 * which has to say what the file now says.
 	 */
 	async function redraw(id: string) {
+		await list(id);
 		try {
-			versions = await loadVersions(id);
 			onTree(await loadTree());
 		} catch (thrown) {
 			failed(thrown);
 		}
 	}
 
-	/** The versions of the open entry came back changed, which is a change to
-	 * the file like any other. */
-	async function versionsChanged(found: Version[]) {
-		versions = found;
+	/** The versions of an entry came back changed, which is a change to the
+	 * file like any other. */
+	async function versionsChanged(history: History) {
+		listed(history);
 		changedAt = new Date();
 		await persist();
-		if (opened) await redraw(opened.id);
+		await redraw(history.entry);
 	}
 
 	/** The tree came back changed. */
@@ -275,12 +368,21 @@
 		await persist();
 	}
 
+	/**
+	 * Makes an entry and opens it.
+	 *
+	 * Opened only when the pane is where it was when the button was pressed: an
+	 * entry the reader chose while Rust was making this one is the later choice,
+	 * and the new entry waits in the list rather than taking the pane from it.
+	 */
 	async function addEntry() {
+		const at = showing;
 		try {
 			const made = await createEntry(inside);
 			onTree(made.tree);
 			changedAt = new Date();
-			await open(made.entry);
+			const row = rowOf(made.tree, made.entry);
+			if (row && showing === at) await open(row);
 			await persist();
 		} catch (thrown) {
 			failed(thrown);
@@ -316,6 +418,12 @@
 	 * back, and one that is not went for good. A move whose save failed has a
 	 * notice of its own already, and an offer over it would push the one
 	 * sentence that matters off the screen.
+	 *
+	 * Rust may answer a second later, behind a save, and a reader who opened
+	 * another entry in that second is reading it: the pane is put away only if
+	 * it is still on the entry that went, and the move is offered back only to
+	 * a pane that is still empty. Its undo would open the entry again, over
+	 * whatever the reader chose instead.
 	 */
 	async function removeEntry() {
 		if (!opened) return;
@@ -328,8 +436,7 @@
 			failed(thrown);
 			return;
 		}
-		opened = null;
-		versions = [];
+		if (showing === id) pane = null;
 		await reshaped(tree);
 		if (unsaved) return;
 
@@ -337,10 +444,18 @@
 			tell({ message: `Deleted ${name} forever`, kind: 'removed' }, 6000);
 			return;
 		}
-		offer(`Moved ${name} to the Recycle Bin`, async () => {
-			await reshaped(await putBackEntry(id));
-			await open(id);
-		});
+		offer(
+			`Moved ${name} to the Recycle Bin`,
+			async () => {
+				const back = await putBackEntry(id);
+				await reshaped(back);
+				const row = rowOf(back, id);
+				// The save takes a second, and an entry opened in it is the
+				// reader's later choice.
+				if (row && showing === null) await open(row);
+			},
+			null
+		);
 	}
 
 	/** Takes the entry in the pane out of the bin. The pane stays on it and
@@ -351,30 +466,8 @@
 		const id = opened.id;
 		try {
 			await reshaped(await putBackEntry(id));
-			await reread();
+			await read(id);
 		} catch (thrown) {
-			failed(thrown);
-		}
-	}
-
-	/**
-	 * Reads the entry in the pane again after a change that moved it without
-	 * touching it.
-	 *
-	 * A folder put back takes the entries in it along, and an entry that was
-	 * open inside it would otherwise go on being drawn read only, with a banner
-	 * offering to put it back from a bin it has left.
-	 */
-	async function reread() {
-		if (!opened) return;
-		const id = opened.id;
-		try {
-			const fresh = await loadEntry(id);
-			// The save before this takes a second, and a reader who opened
-			// another entry in it is looking at that one now.
-			if (opened?.id === id) opened = fresh;
-		} catch (thrown) {
-			if (opened?.id === id) opened = null;
 			failed(thrown);
 		}
 	}
@@ -445,11 +538,14 @@
 	async function putBackFolder() {
 		if (group === null) return;
 		const id = group;
+		// An entry open inside the folder went back with it, and is drawn read
+		// only with a banner about a bin it has left until it is read again.
+		const reading = showing;
 		try {
 			const tree = await putBackGroup(id);
 			for (const step of pathTo(tree, id)?.slice(0, -1) ?? []) expanded.add(step.id);
 			await reshaped(tree);
-			await reread();
+			if (reading !== null) await read(reading);
 		} catch (thrown) {
 			failed(thrown);
 		}
@@ -489,7 +585,7 @@
 		emptying = false;
 		try {
 			const tree = await emptyRecycleBin();
-			opened = null;
+			pane = null;
 			await reshaped(tree);
 		} catch (thrown) {
 			if (asFailure(thrown).code === 'attachmentInHistory') {
@@ -499,7 +595,7 @@
 				// written like any other change - a screen that only reported the
 				// refusal drew a bin that was emptier than the file, and lost the
 				// erasures at the next lock.
-				opened = null;
+				pane = null;
 				await reshaped(await loadTree().catch(() => root));
 				warn('Some of it stayed: open what is left in the bin and remove its file first.');
 			} else {
@@ -513,8 +609,7 @@
 			saving = true;
 			const tree = await reload(release(null));
 			onTree(tree);
-			opened = null;
-			versions = [];
+			pane = null;
 			changedAt = null;
 			conflict = null;
 			missing = false;
@@ -627,9 +722,19 @@
 	 * another entry or none - an undo is of something the reader can still see,
 	 * and Cmd+Z in another entry would reach back into one they have left. A
 	 * lock takes the whole window down, and the offer with it.
+	 *
+	 * `at` is the pane the change left behind it, for an undo that would put
+	 * something back into the pane: a change is written a second before it can
+	 * be offered back, and a reader who moved the pane in that second has left
+	 * what the undo is about. They are told what was done, and offered nothing.
+	 * Left out, the offer belongs to whatever the pane shows when it is made.
 	 */
-	function offer(message: string, undo: () => Promise<void>) {
-		const made: Offer = { run: undo, entry: opened?.id ?? null };
+	function offer(message: string, undo: () => Promise<void>, at: string | null = showing) {
+		if (showing !== at) {
+			tell({ message, kind: 'removed' }, 6000);
+			return;
+		}
+		const made: Offer = { run: undo, entry: at };
 		tell({ message, kind: 'removed', undo: () => void takeBack(made) }, UNDOABLE);
 		offered = made;
 	}
@@ -700,14 +805,12 @@
 
 	$effect(() => () => clear());
 
-	const showing = $derived(opened?.id ?? null);
-
 	// The entry in the pane is read before anything else, whether or not an
 	// offer stands: an effect only runs again for what it read, and one that
 	// looked at the offer first and found none would never look at the pane.
 	$effect(() => {
-		const pane = showing;
-		if (offered !== null && offered.entry !== pane) retire();
+		const here = showing;
+		if (offered !== null && offered.entry !== here) retire();
 	});
 
 	/**
@@ -734,7 +837,7 @@
 			failed(thrown);
 			return;
 		}
-		if (opened?.id !== entry) return;
+		if (showing !== entry) return;
 		if (holding === null) {
 			tell({ message: said, kind: 'removed' }, 6000);
 			return;
@@ -763,7 +866,7 @@
 		if (!event.metaKey) {
 			if (event.key === 'Escape') {
 				if (query !== '') query = '';
-				else opened = null;
+				else pane = null;
 			}
 			return;
 		}
@@ -809,7 +912,7 @@
 <svelte:window onkeydown={shortcut} onblur={() => void flush()} />
 
 {#snippet deletedFolders()}
-	<BinFolders {folders} {root} {now} compact={opened !== null} onOpen={select} />
+	<BinFolders {folders} {root} {now} compact={pane !== null} onOpen={select} />
 {/snippet}
 
 <div class="relative flex flex-1 animate-fade flex-col overflow-hidden">
@@ -840,7 +943,7 @@
 		asked for on its way in.
 	-->
 	<div
-		class="grid flex-1 overflow-hidden transition-[grid-template-columns] duration-200 ease-out {opened
+		class="grid flex-1 overflow-hidden transition-[grid-template-columns] duration-200 ease-out {pane
 			? 'grid-cols-[200px_minmax(230px,1fr)_384px]'
 			: 'grid-cols-[228px_minmax(230px,1fr)_0px]'}"
 		inert={settings !== undefined}
@@ -944,7 +1047,7 @@
 		-->
 			<div
 				role="presentation"
-				onclick={(event) => event.target === event.currentTarget && (opened = null)}
+				onclick={(event) => event.target === event.currentTarget && (pane = null)}
 				class="flex-1 overflow-y-auto px-2 pb-2 text-body"
 			>
 				<button
@@ -1024,7 +1127,7 @@
 			{/if}
 		</aside>
 
-		<div class="flex flex-col overflow-hidden {opened ? 'border-r border-hairline' : ''}">
+		<div class="flex flex-col overflow-hidden {pane ? 'border-r border-hairline' : ''}">
 			<div class="flex shrink-0 items-center gap-3 border-b border-hairline px-5 py-3">
 				<span
 					class="flex flex-1 items-center gap-2 rounded-sm border border-hairline bg-surface2 px-3 py-2 transition focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/15"
@@ -1139,14 +1242,14 @@
 						{/if}
 					{/snippet}
 				</Empty>
-			{:else if opened}
+			{:else if pane}
 				<EntryListCompact
 					rows={found}
-					open={opened.id}
+					open={pane.id}
 					note={whence}
 					before={folders.length > 0 ? deletedFolders : undefined}
 					onOpen={open}
-					onDismiss={() => (opened = null)}
+					onDismiss={() => (pane = null)}
 				/>
 			{:else}
 				<EntryList
@@ -1161,24 +1264,39 @@
 		</div>
 
 		<div class="overflow-hidden">
-			{#if opened}
-				<div class="h-full w-[384px]">
-					<EntryView
-						entry={opened}
-						{root}
-						{path}
-						{versions}
-						{now}
-						{readOnly}
-						onCopy={copy}
-						onChanged={changed}
-						onVersions={versionsChanged}
-						onClose={() => (opened = null)}
-						onDelete={() => void once(removeEntry)}
-						onPutBack={() => void once(putBack)}
-						onFieldRemoved={(entry, name) => void fieldRemoved(entry, name)}
-						onFailure={failed}
-					/>
+			{#if pane}
+				<!--
+					The pane fades in when it opens, and not again when it moves from
+					one entry to the next or from the row to the entry it was waiting
+					for: the name and the login are already on the screen by then, and
+					only what was missing arrives.
+
+					Another entry is a pane with nothing read, so the entry that was
+					drawn gives way to the row at once, and its questions, its revealed
+					values and its versions go with it rather than waiting for the next
+					entry to be read.
+				-->
+				<div class="h-full w-[384px] animate-fade">
+					{#if pane.entry}
+						<EntryView
+							entry={pane.entry}
+							{root}
+							{path}
+							history={pane.history}
+							{now}
+							{readOnly}
+							onCopy={copy}
+							onChanged={changed}
+							onVersions={versionsChanged}
+							onClose={() => (pane = null)}
+							onDelete={() => void once(removeEntry)}
+							onPutBack={() => void once(putBack)}
+							onFieldRemoved={(entry, name) => void fieldRemoved(entry, name)}
+							onFailure={failed}
+						/>
+					{:else}
+						<Opening row={pane.row} {path} onClose={() => (pane = null)} />
+					{/if}
 				</div>
 			{/if}
 		</div>

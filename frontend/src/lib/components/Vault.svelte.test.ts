@@ -1,6 +1,7 @@
 import { createRawSnippet, flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { entry, field, group, row, version } from '$lib/fixtures';
+import type { EntryRow, Version } from '$lib/model';
 import Vault from './Vault.svelte';
 
 const ipc = vi.hoisted(() => ({
@@ -49,6 +50,12 @@ vi.mock('$lib/ipc', () => ipc);
 
 const database = { path: '/Users/someone/personal.kdbx', name: 'personal' };
 
+/** What the commands that list versions answer, paired with the entry they were
+ * asked about the way `ipc.ts` pairs them. */
+function listing(versions: Version[] = []) {
+	return (entry: string) => Promise.resolve({ entry, versions });
+}
+
 const kept = row({ title: 'node-3', username: 'deploy', tags: ['prod'] });
 const other = row({ title: 'Postgres', username: 'svc_app' });
 const deleted = row({ title: 'thrown away' });
@@ -70,7 +77,7 @@ beforeEach(() => {
 	host = document.createElement('div');
 	document.body.appendChild(host);
 	ipc.copy.mockResolvedValue(60);
-	ipc.versions.mockResolvedValue([]);
+	ipc.versions.mockImplementation(listing());
 	ipc.save.mockResolvedValue(undefined);
 	ipc.tree.mockResolvedValue(root);
 	ipc.draft.mockResolvedValue(undefined);
@@ -371,7 +378,9 @@ it('hands the part of a revealed value the reader selected to Rust, and says so'
 /** A previous version's value goes through a command of its own, which finds
  * the value by the version's position, and gets the same notice. */
 it('copies a value out of a previous version through Rust', async () => {
-	ipc.versions.mockResolvedValue([version({ index: 0, modified: '2025-06-02T12:00:00Z' })]);
+	ipc.versions.mockImplementation(
+		listing([version({ index: 0, modified: '2025-06-02T12:00:00Z' })])
+	);
 	ipc.version.mockResolvedValue(
 		entry({ fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })] })
 	);
@@ -434,7 +443,7 @@ it('says a copy failed without dressing it as one that worked', async () => {
 		// A copy that works while the failure is still up gets its own message
 		// and its own five seconds: the failure's timer must not take it away.
 		ipc.copy.mockResolvedValue(60);
-		ipc.versions.mockResolvedValue([]);
+		ipc.versions.mockImplementation(listing());
 		ipc.save.mockResolvedValue(undefined);
 		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', metaKey: true }));
 		await vi.advanceTimersByTimeAsync(0);
@@ -530,7 +539,7 @@ it('takes the version on disk when that is what the reader chose', async () => {
 	ipc.reload.mockResolvedValue(root);
 	ipc.createEntry.mockResolvedValue({ tree: root, entry: kept.id });
 	ipc.entry.mockResolvedValue(entry({ id: kept.id, group: root.id }));
-	ipc.versions.mockResolvedValue([]);
+	ipc.versions.mockImplementation(listing());
 
 	const onTree = vi.fn();
 	const component = open({ onTree });
@@ -679,8 +688,8 @@ it('offers no change at all on a database it cannot write', () => {
  */
 it('writes the file after a version is dropped', async () => {
 	ipc.entry.mockResolvedValue(entry({ id: kept.id, group: root.id }));
-	ipc.versions.mockResolvedValue([{ index: 0, modified: '2021-06-02T12:00:00Z' }]);
-	ipc.deleteVersion.mockResolvedValue([]);
+	ipc.versions.mockImplementation(listing([{ index: 0, modified: '2021-06-02T12:00:00Z' }]));
+	ipc.deleteVersion.mockImplementation(listing());
 
 	const component = open();
 	flushSync();
@@ -2266,6 +2275,507 @@ it('deletes an entry with a number newer than anything typed into it', async () 
 		expect(ipc.deleteEntry.mock.lastCall?.[1]).toBeGreaterThan(drafted);
 	} finally {
 		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * Two logins a reader updates one after the other. Rust answers one command at
+ * a time and a save holds it for a whole key derivation, so an entry chosen
+ * right after an edit is read a second later, behind that save.
+ */
+function twoLogins() {
+	const gmail = row({ title: 'Gmail', username: 'me@example.com' });
+	const drive = row({ title: 'Google Drive', username: 'drive@example.com' });
+	const tree = group({
+		name: 'Root',
+		entries: [gmail, drive],
+		sections: [group({ name: 'Recycle Bin', isRecycleBin: true, deletion: 'forever' })]
+	});
+	return { gmail, drive, tree };
+}
+
+/** The entry Rust reads for a row, with the title given. */
+function readOf(from: EntryRow, title = from.title ?? '') {
+	return entry({
+		id: from.id,
+		group: from.group,
+		fields: [
+			field({ name: 'Title', kind: 'title', value: title, empty: false }),
+			field({ name: 'UserName', kind: 'username', value: from.username, empty: false })
+		]
+	});
+}
+
+/** The entry pane, whichever of its two states it is in. */
+const pane = () => host.querySelector<HTMLElement>('section');
+const paneReads = () => (pane()?.textContent ?? '').replace(/\s+/g, ' ').trim();
+/** The title of an entry Rust has read, which is a field. */
+const titleField = () => host.querySelector<HTMLInputElement>('section h1 input');
+
+it('opens the chosen entry at once while the save before it holds Rust', async () => {
+	const { gmail, drive, tree } = twoLogins();
+	for (const each of [gmail, drive]) each.group = tree.id;
+	const reading = Promise.withResolvers<ReturnType<typeof entry>>();
+	ipc.entry.mockImplementation((id: string) =>
+		id === drive.id ? reading.promise : Promise.resolve(readOf(gmail))
+	);
+	ipc.setField.mockResolvedValue(readOf(gmail, 'Gmail, personal'));
+
+	const { component } = mounted(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		const title = titleField();
+		if (!title) throw new Error('Gmail never opened');
+
+		const saving = Promise.withResolvers<void>();
+		ipc.save.mockReturnValueOnce(saving.promise);
+		write(title, 'Gmail, personal');
+		await settled();
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+		expect(reads()).toContain('Saving…');
+
+		pressed('Google Drive');
+		flushSync();
+
+		// The row is on the screen before Rust has said a word about the entry.
+		expect(paneReads()).toContain('Google Drive');
+		expect(paneReads()).toContain('drive@example.com');
+		expect(paneReads()).toContain('Opening…');
+		expect(paneReads()).not.toContain('Gmail');
+		expect(pane()?.getAttribute('aria-busy')).toBe('true');
+		expect(titleField(), 'something in an unread entry can be written into').toBeNull();
+		expect(pane()?.querySelector('input, textarea')).toBeNull();
+		expect(paneReads(), 'the last entry’s versions are still on the screen').not.toContain(
+			'Versions'
+		);
+
+		saving.resolve();
+		await settled();
+		expect(paneReads()).toContain('Opening…');
+
+		reading.resolve(readOf(drive));
+		await settled();
+		expect(titleField()?.value).toBe('Google Drive');
+		expect(paneReads()).not.toContain('Opening…');
+		expect(pane()?.hasAttribute('aria-busy')).toBe(false);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * The race the audit caught: the versions of the entry that was open answered
+ * after the next entry had been read, and stayed under its name. They are
+ * dropped on arrival, however late they come.
+ */
+it('never draws the versions of the entry that was left under the next one', async () => {
+	const { gmail, drive, tree } = twoLogins();
+	ipc.entry.mockImplementation((id: string) =>
+		Promise.resolve(readOf(id === gmail.id ? gmail : drive))
+	);
+	const gmails = Promise.withResolvers<{ entry: string; versions: Version[] }>();
+	ipc.versions.mockImplementation((id: string) =>
+		id === gmail.id
+			? gmails.promise
+			: listing([version({ index: 0, modified: '2024-06-02T12:00:00Z' })])(id)
+	);
+
+	const { component } = mounted(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		expect(ipc.versions).toHaveBeenCalledWith(gmail.id);
+
+		pressed('Google Drive');
+		await settled();
+		gmails.resolve({
+			entry: gmail.id,
+			versions: [
+				version({ index: 0, modified: '2021-06-02T12:00:00Z' }),
+				version({ index: 1, modified: '2022-06-02T12:00:00Z' })
+			]
+		});
+		await settled();
+
+		expect(titleField()?.value).toBe('Google Drive');
+		pressed('Versions');
+		flushSync();
+		expect(paneReads()).toContain('2024');
+		expect(paneReads()).not.toContain('2021');
+		expect(paneReads()).not.toContain('2022');
+		expect(pane()?.querySelectorAll('[aria-label="Delete this version"]')).toHaveLength(1);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Restore and Delete send the entry on the screen and a position in its own
+ * list, never a position from the list of the entry that was left. */
+it('restores and deletes from the list of the entry on the screen', async () => {
+	const { gmail, drive, tree } = twoLogins();
+	ipc.entry.mockImplementation((id: string) =>
+		Promise.resolve(readOf(id === gmail.id ? gmail : drive))
+	);
+	const gmails = Promise.withResolvers<{ entry: string; versions: Version[] }>();
+	ipc.versions.mockImplementation((id: string) =>
+		id === gmail.id
+			? gmails.promise
+			: listing([version({ index: 0, modified: '2024-06-02T12:00:00Z' })])(id)
+	);
+	ipc.restoreVersion.mockResolvedValue(readOf(drive));
+	ipc.deleteVersion.mockImplementation(listing());
+
+	const { component } = mounted(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		pressed('Google Drive');
+		await settled();
+		gmails.resolve({
+			entry: gmail.id,
+			versions: [0, 1, 2].map((index) =>
+				version({ index, modified: `202${index}-06-02T12:00:00Z` })
+			)
+		});
+		await settled();
+
+		pressed('Versions');
+		flushSync();
+		pressed('Restore', pane() ?? host);
+		await settled();
+		expect(ipc.restoreVersion).toHaveBeenCalledTimes(1);
+		expect(ipc.restoreVersion).toHaveBeenCalledWith(drive.id, 0);
+
+		host.querySelector<HTMLButtonElement>('[aria-label="Delete this version"]')?.click();
+		flushSync();
+		pressed('Drop it');
+		await settled();
+		expect(ipc.deleteVersion).toHaveBeenCalledTimes(1);
+		expect(ipc.deleteVersion).toHaveBeenCalledWith(drive.id, 0);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A to B and back to A before Rust has answered for either: B's answer
+ * arrives into a pane that has left it, and is nobody's. */
+it('lands only the entry chosen last when the reader goes to and fro', async () => {
+	const { gmail, drive, tree } = twoLogins();
+	const first = Promise.withResolvers<ReturnType<typeof entry>>();
+	const second = Promise.withResolvers<ReturnType<typeof entry>>();
+	const again = Promise.withResolvers<ReturnType<typeof entry>>();
+	ipc.entry
+		.mockReturnValueOnce(first.promise)
+		.mockReturnValueOnce(second.promise)
+		.mockReturnValueOnce(again.promise);
+
+	const { component } = mounted(tree);
+	try {
+		pressed('Gmail');
+		flushSync();
+		pressed('Google Drive');
+		flushSync();
+		pressed('Gmail');
+		flushSync();
+		expect(ipc.entry.mock.calls).toEqual([[gmail.id], [drive.id], [gmail.id]]);
+		expect(paneReads()).toContain('Gmail');
+		expect(paneReads()).toContain('Opening…');
+
+		first.resolve(readOf(gmail));
+		second.resolve(readOf(drive));
+		await settled();
+		expect(titleField()?.value).toBe('Gmail');
+		expect(paneReads()).not.toContain('Google Drive');
+
+		again.resolve(readOf(gmail));
+		await settled();
+		expect(titleField()?.value).toBe('Gmail');
+		expect(paneReads()).not.toContain('drive@example.com');
+		// Nothing was listed for the entry the pane had left.
+		expect(ipc.versions).not.toHaveBeenCalledWith(drive.id);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** An entry that is not in the vault any more by the time Rust reads it takes
+ * the pane with it, and says why, rather than leaving "Opening…" up for
+ * good. */
+it('puts the pane away when the entry is gone by the time Rust reads it', async () => {
+	const { drive, tree } = twoLogins();
+	const reading = Promise.withResolvers<ReturnType<typeof entry>>();
+	ipc.entry.mockReturnValueOnce(reading.promise);
+
+	const { component } = mounted(tree);
+	try {
+		pressed('Google Drive');
+		flushSync();
+		expect(paneReads()).toContain('Opening…');
+
+		reading.reject({ code: 'noSuchEntry', message: 'there is no such entry in this database' });
+		await settled();
+
+		expect(pane()).toBeNull();
+		expect(toast()?.textContent).toContain('there is no such entry in this database');
+		expect(ipc.versions).not.toHaveBeenCalledWith(drive.id);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** The folder an entry was opening in went to the bin before Rust read the
+ * entry. Its answer arrives after the pane was put away, and does not bring it
+ * back. */
+it('keeps the pane away when the entry’s folder goes while it is opening', async () => {
+	const inside = row({ title: 'VPN' });
+	const work = group({ name: 'Work', entries: [inside] });
+	const bin = group({ name: 'Recycle Bin', isRecycleBin: true, deletion: 'forever' });
+	const tree = group({ name: 'Root', sections: [work, bin] });
+	const reading = Promise.withResolvers<ReturnType<typeof entry>>();
+	ipc.entry.mockReturnValueOnce(reading.promise);
+	ipc.deleteGroup.mockResolvedValue(
+		group({ ...tree, sections: [{ ...bin, sections: [{ ...work, binned: null }] }] })
+	);
+
+	const { component } = mounted(tree);
+	try {
+		pressed('Work');
+		flushSync();
+		pressed('VPN');
+		flushSync();
+		expect(paneReads()).toContain('Opening…');
+
+		host.querySelector<HTMLButtonElement>('[aria-label="Delete this folder"]')?.click();
+		flushSync();
+		pressed('Move to Recycle Bin', host.querySelector('[data-confirm]') ?? host);
+		await settled();
+		expect(ipc.deleteGroup).toHaveBeenCalledWith(work.id);
+		expect(pane()).toBeNull();
+
+		reading.resolve(readOf(inside));
+		await settled();
+		expect(pane(), 'a late answer opened an entry nobody chose').toBeNull();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * An edit to the entry that was open reaches Rust after the reader chose the
+ * next one. The change is the file's - it is saved and the list is redrawn -
+ * but the entry it came back as is not put over the entry now in the pane.
+ */
+it('saves an edit answered after the reader moved on, and leaves the pane where it is', async () => {
+	const { gmail, drive, tree } = twoLogins();
+	ipc.entry.mockImplementation((id: string) =>
+		Promise.resolve(readOf(id === gmail.id ? gmail : drive))
+	);
+	const writing = Promise.withResolvers<ReturnType<typeof entry>>();
+	ipc.setField.mockReturnValueOnce(writing.promise);
+
+	const { component, onTree } = mounted(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		const title = titleField();
+		if (!title) throw new Error('Gmail never opened');
+		write(title, 'Gmail, personal');
+		pressed('Google Drive');
+		await settled();
+		expect(titleField()?.value).toBe('Google Drive');
+		ipc.versions.mockClear();
+
+		writing.resolve(readOf(gmail, 'Gmail, personal'));
+		await settled();
+
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+		expect(onTree).toHaveBeenCalled();
+		expect(titleField()?.value).toBe('Google Drive');
+		expect(paneReads()).not.toContain('Gmail');
+		expect(
+			ipc.versions,
+			'the versions of an entry nobody is looking at were read'
+		).not.toHaveBeenCalledWith(gmail.id);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * A move to the bin answered after the reader opened another entry. The pane
+ * stays on the entry they chose, and the move is said without an Undo: its
+ * undo opens the entry that went, and would take the pane from the one they
+ * are reading.
+ */
+it('offers no undo for an entry moved to the bin once another is open', async () => {
+	const { gmail, drive, tree } = twoLogins();
+	const bin = group({
+		name: 'Recycle Bin',
+		isRecycleBin: true,
+		deletion: 'forever',
+		entries: [{ ...gmail, binned: { since: null, from: tree.id } }]
+	});
+	const after = group({ ...tree, entries: [drive], sections: [bin] });
+	ipc.entry.mockImplementation((id: string) =>
+		Promise.resolve(readOf(id === gmail.id ? gmail : drive))
+	);
+	const moving = Promise.withResolvers<typeof after>();
+	ipc.deleteEntry.mockReturnValueOnce(moving.promise);
+
+	const { component } = mounted(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		pressed('Move to Recycle Bin');
+		flushSync();
+		pressed('Google Drive');
+		await settled();
+
+		moving.resolve(after);
+		await settled();
+
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+		expect(titleField()?.value).toBe('Google Drive');
+		expect(toast()?.textContent).toContain('Moved “Gmail” to the Recycle Bin');
+		expect(undo(), 'an undo that would take the pane from Google Drive').toBeNull();
+		expect(press('z').defaultPrevented).toBe(false);
+		await settled();
+		expect(ipc.putBackEntry).not.toHaveBeenCalled();
+		expect(titleField()?.value).toBe('Google Drive');
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** An undo pressed with the pane empty, and an entry chosen during the second
+ * its save takes: the entry that came back is put back, and not opened over the
+ * one the reader chose. */
+it('puts an entry back without taking the pane from the one chosen meanwhile', async () => {
+	const { gmail, drive, tree } = twoLogins();
+	const bin = group({
+		name: 'Recycle Bin',
+		isRecycleBin: true,
+		deletion: 'forever',
+		entries: [{ ...gmail, binned: { since: null, from: tree.id } }]
+	});
+	ipc.entry.mockImplementation((id: string) =>
+		Promise.resolve(readOf(id === gmail.id ? gmail : drive))
+	);
+	ipc.deleteEntry.mockResolvedValue(group({ ...tree, entries: [drive], sections: [bin] }));
+	ipc.putBackEntry.mockResolvedValue(tree);
+
+	const { component } = mounted(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		pressed('Move to Recycle Bin');
+		await settled();
+		expect(pane()).toBeNull();
+		expect(undo()).not.toBeNull();
+
+		const saving = Promise.withResolvers<void>();
+		ipc.save.mockReturnValueOnce(saving.promise);
+		undo()?.click();
+		await settled();
+		expect(ipc.putBackEntry).toHaveBeenCalledWith(gmail.id);
+
+		pressed('Google Drive');
+		await settled();
+		ipc.entry.mockClear();
+		saving.resolve();
+		await settled();
+
+		expect(titleField()?.value).toBe('Google Drive');
+		expect(ipc.entry).not.toHaveBeenCalledWith(gmail.id);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A new entry made while the reader chose another: the new one is in the list
+ * and in the file, and the pane stays with the later choice. */
+it('leaves the pane on an entry chosen while a new one was being made', async () => {
+	const { gmail, drive, tree } = twoLogins();
+	const made = row({ title: '', username: '' });
+	const grown = group({ ...tree, entries: [gmail, drive, made] });
+	ipc.entry.mockImplementation((id: string) =>
+		Promise.resolve(readOf(id === gmail.id ? gmail : drive))
+	);
+	const making = Promise.withResolvers<{ tree: typeof grown; entry: string }>();
+	ipc.createEntry.mockReturnValueOnce(making.promise);
+
+	const { component, onTree } = mounted(tree);
+	try {
+		pressed('Entry');
+		flushSync();
+		pressed('Google Drive');
+		await settled();
+
+		making.resolve({ tree: grown, entry: made.id });
+		await settled();
+
+		expect(onTree).toHaveBeenCalledWith(grown);
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+		expect(titleField()?.value).toBe('Google Drive');
+		expect(ipc.entry).not.toHaveBeenCalledWith(made.id);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Rust names the version that puts a removed field back only after the save,
+ * and a reader may have opened another entry by then. Nothing is offered back
+ * into an entry they have left. */
+it('offers a removed field back only while its entry is still open', async () => {
+	vi.useFakeTimers();
+	try {
+		ipc.entry.mockImplementation((id: string) => Promise.resolve(withPin(id)));
+		ipc.removeField.mockResolvedValue(
+			entry({
+				id: kept.id,
+				group: root.id,
+				fields: withPin(kept.id).fields.filter((each) => each.name !== 'PIN')
+			})
+		);
+		const naming = Promise.withResolvers<number | null>();
+		ipc.beforeRemoval.mockReturnValueOnce(naming.promise);
+
+		const component = open();
+		flushSync();
+		[...host.querySelectorAll('button')]
+			.find((each) => each.textContent?.includes('node-3'))
+			?.click();
+		await settled();
+		host.querySelector<HTMLButtonElement>('[aria-label="Remove the field PIN"]')?.click();
+		await settled();
+		expect(ipc.beforeRemoval).toHaveBeenCalledWith(kept.id, 'PIN');
+
+		[...host.querySelectorAll('button')]
+			.find((each) => each.textContent?.includes('Postgres'))
+			?.click();
+		await settled();
+		naming.resolve(3);
+		await settled();
+
+		expect(undo()).toBeNull();
+		press('z');
+		await settled();
+		expect(ipc.restoreVersion).not.toHaveBeenCalled();
+
+		await unmount(component);
+	} finally {
 		vi.useRealTimers();
 	}
 });

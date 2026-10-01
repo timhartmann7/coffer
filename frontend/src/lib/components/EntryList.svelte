@@ -22,7 +22,9 @@
 		note?: (row: EntryRow) => string;
 		/** Rows of another kind at the top of the list, scrolled with it. */
 		before?: Snippet;
-		onOpen: (id: string) => void;
+		/** Opens the entry, handed the row that was pressed: it is what the pane
+		 * is drawn from until Rust has read the entry. */
+		onOpen: (row: EntryRow) => void;
 		onCopy: (row: EntryRow, field: 'UserName' | 'Password') => void;
 	} = $props();
 
@@ -57,7 +59,7 @@
 		<div class="relative border-b border-line transition-colors hover:bg-raised/50">
 			<button
 				type="button"
-				onclick={() => onOpen(row.id)}
+				onclick={() => onOpen(row)}
 				class="grid w-full grid-cols-[1.5fr_0.85fr_0.85fr_78px_66px] items-center gap-4 px-5 py-[11px] text-left"
 			>
 				<span class="block min-w-0">

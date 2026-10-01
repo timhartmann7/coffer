@@ -161,6 +161,22 @@ taking `dangerwash` and `danger` under the pointer the way every trash in the
 window does. A deletion that would be final - a vault that keeps no bin - reads
 "Delete forever…" and asks first.
 
+**An entry is in the pane the moment its row is pressed.** Rust answers one
+command at a time, and a save holds it for the second a key derivation takes, so
+an entry chosen right after an edit is read only after that save. The mockup
+draws no entry that is on its way, and the pane used to go on showing the last
+one, versions and all, for that second. Now the heading and the login's box are
+drawn at once from the row that was pressed - the name in the title's own type,
+the login in the mockup's field, a protected one as the mask - and under them
+"Opening…" in `fine` and `txt4`, the colour of something that is not there yet.
+It arrives on the fade, so an entry Rust answers for within the frame replaces
+it before it is seen; nothing pulses or spins, because a loop is none of the
+window's three movements. Nothing in it can be pressed but the close. The rest
+of the entry fills in under the name and the login when it comes, and the pane
+fades in only when it opens from nothing, not when it moves from one entry to
+the next. The Versions block counts only a list of its own entry's, and has no
+number while that list is being read.
+
 ## Asking before, and taking back after
 
 The mockup draws one choice, the conflict dialog, and states its rule beside it:

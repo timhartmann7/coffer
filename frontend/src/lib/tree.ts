@@ -71,6 +71,12 @@ export function find(root: Group, id: string): Group | null {
 	return null;
 }
 
+/** The row of the entry with this id, wherever it sits, the recycle bin
+ * included, or `null` when the tree does not hold it. */
+export function rowOf(root: Group, id: string): EntryRow | null {
+	return entriesOf(root).find((row) => row.id === id) ?? null;
+}
+
 /** The groups from the root down to `id`, or `null` when there is no such
  * group. The entry screen writes the tail of it above the title. */
 export function pathTo(root: Group, id: string): Group[] | null {

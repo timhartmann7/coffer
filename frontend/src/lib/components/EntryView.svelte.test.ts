@@ -66,7 +66,7 @@ function show(entryOver: Parameters<typeof entry>[0]) {
 			entry: entry(entryOver),
 			root: group({ name: 'Root' }),
 			path: [group({ name: 'Work' })],
-			versions: [],
+			history: null,
 			now: new Date('2026-08-29T14:30:00Z'),
 			readOnly: false,
 			onCopy: vi.fn(),
@@ -799,7 +799,7 @@ it('shows a file under the name the database holds and exports it under a safe o
 			}),
 			root: group({ name: 'Root' }),
 			path: [group({ name: 'Work' })],
-			versions: [],
+			history: null,
 			now: new Date('2026-08-29T14:30:00Z'),
 			readOnly: false,
 			onCopy: vi.fn(),
@@ -1039,7 +1039,7 @@ it('offers to clear the versions that are holding a file back', async () => {
 			entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
 			root: group({ name: 'Root' }),
 			path: [group({ name: 'Work' })],
-			versions: [],
+			history: null,
 			now: new Date('2026-08-29T14:30:00Z'),
 			readOnly: false,
 			onCopy: vi.fn(),
@@ -1096,7 +1096,7 @@ it('refuses a new field named after one the entry already has', async () => {
 			}),
 			root: group({ name: 'Root' }),
 			path: [group({ name: 'Work' })],
-			versions: [],
+			history: null,
 			now: new Date('2026-08-29T14:30:00Z'),
 			readOnly: false,
 			onCopy: vi.fn(),
@@ -1147,7 +1147,7 @@ it('says nothing about the entry that was open once another one is', async () =>
 		entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
 		root: group({ name: 'Root' }),
 		path: [group({ name: 'Work' })],
-		versions: [],
+		history: null,
 		now: new Date('2026-08-29T14:30:00Z'),
 		readOnly: false,
 		onCopy: vi.fn(),
@@ -1192,7 +1192,7 @@ it('offers no change on a database it cannot write', () => {
 			}),
 			root: group({ name: 'Root' }),
 			path: [group({ name: 'Work' })],
-			versions: [],
+			history: null,
 			now: new Date('2026-08-29T14:30:00Z'),
 			readOnly: true,
 			onCopy: vi.fn(),
@@ -1374,7 +1374,7 @@ it('offers a way out of the entry, and it is not the way to delete one', () => {
 			entry: entry({ fields: [field({ name: 'Title', kind: 'title', value: 'node-3' })] }),
 			root: group({ name: 'Root' }),
 			path: [group({ name: 'Work' })],
-			versions: [],
+			history: null,
 			now: new Date('2026-08-29T14:30:00Z'),
 			readOnly: false,
 			onCopy: vi.fn(),
@@ -1420,7 +1420,7 @@ it('still offers the way out when there is nothing else in the header', () => {
 			entry: entry({ fields: [field({ name: 'Title', kind: 'title', value: 'node-3' })] }),
 			root: group({ name: 'Root' }),
 			path: [group({ name: 'Work' })],
-			versions: [],
+			history: null,
 			now: new Date('2026-08-29T14:30:00Z'),
 			readOnly: true,
 			onCopy: vi.fn(),
@@ -1459,7 +1459,7 @@ it('does not report a change when the file panel was closed without one', async 
 			entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
 			root: group({ name: 'Root' }),
 			path: [group({ name: 'Work' })],
-			versions: [],
+			history: null,
 			now: new Date('2026-08-29T14:30:00Z'),
 			readOnly: false,
 			onCopy: vi.fn(),
@@ -1667,7 +1667,7 @@ it('offers the name itself once the file there has gone', async () => {
 		entry: first,
 		root: group({ name: 'Root' }),
 		path: [group({ name: 'Work' })],
-		versions: [],
+		history: null,
 		now: new Date('2026-08-29T14:30:00Z'),
 		readOnly: false,
 		onCopy: vi.fn(),
@@ -1739,7 +1739,7 @@ it('lets the file go when the pane shows another entry or none', async () => {
 		entry: first,
 		root: group({ name: 'Root' }),
 		path: [group({ name: 'Work' })],
-		versions: [],
+		history: null,
 		now: new Date('2026-08-29T14:30:00Z'),
 		readOnly: false,
 		onCopy: vi.fn(),
@@ -1789,7 +1789,7 @@ it('keeps the question while the entry it is about changes', async () => {
 		entry: first,
 		root: group({ name: 'Root' }),
 		path: [group({ name: 'Work' })],
-		versions: [],
+		history: null,
 		now: new Date('2026-08-29T14:30:00Z'),
 		readOnly: false,
 		onCopy: vi.fn(),
@@ -1827,7 +1827,7 @@ it('asks nothing when the pane has moved on by the time the answer comes', async
 		entry: first,
 		root: group({ name: 'Root' }),
 		path: [group({ name: 'Work' })],
-		versions: [],
+		history: null,
 		now: new Date('2026-08-29T14:30:00Z'),
 		readOnly: false,
 		onCopy: vi.fn(),
@@ -1852,6 +1852,26 @@ it('asks nothing when the pane has moved on by the time the answer comes', async
 	expect(host.querySelector('[data-confirm]')).toBeNull();
 
 	return unmount(component);
+});
+
+/** The window takes the pane down when another entry is chosen, and a panel
+ * still open then answers a pane that is gone. It still holds the entry it was
+ * last given, and a question drawn there is one nobody will ever see, so the
+ * file waiting in Rust for its answer is let go. */
+it('lets the chosen file go when the pane is gone by the time the answer comes', async () => {
+	const answer = Promise.withResolvers<Attached>();
+	ipc.addAttachment.mockReset();
+	ipc.addAttachment.mockReturnValue(answer.promise);
+	const first = entry({ attachments: [attachment({ name: SCAN })] });
+	const component = show(first);
+	flushSync();
+
+	icon('Add a file').click();
+	await unmount(component);
+	answer.resolve(taken());
+
+	await vi.waitFor(() => expect(ipc.withdrawAttachment).toHaveBeenCalledWith(first.id));
+	expect(ipc.withdrawAttachment).toHaveBeenCalledTimes(1);
 });
 
 /** A file whose name is free is simply on the entry, and the entry that comes
@@ -1919,7 +1939,7 @@ it('copies a protected own field through rust rather than off the screen', async
 			}),
 			root: group({ name: 'Root' }),
 			path: [group({ name: 'Work' })],
-			versions: [],
+			history: null,
 			now: new Date('2026-08-29T14:30:00Z'),
 			readOnly: false,
 			onCopy,
@@ -2226,7 +2246,7 @@ function pane(over: Parameters<typeof entry>[0], readOnly = false) {
 		entry: entry(over),
 		root: group({ name: 'Root' }),
 		path: [group({ name: 'Work' })],
-		versions: [],
+		history: null,
 		now: new Date('2026-08-29T14:30:00Z'),
 		readOnly,
 		onCopy: vi.fn(),
@@ -2347,7 +2367,7 @@ it('asks nothing about a file once another entry is open', () => {
 		entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
 		root: group({ name: 'Root' }),
 		path: [group({ name: 'Work' })],
-		versions: [],
+		history: null,
 		now: new Date('2026-08-29T14:30:00Z'),
 		readOnly: false,
 		onCopy: vi.fn(),
@@ -2408,7 +2428,7 @@ it('tells the window which field came off, once the change is in', async () => {
 		}),
 		root: group({ name: 'Root' }),
 		path: [group({ name: 'Work' })],
-		versions: [],
+		history: null,
 		now: new Date('2026-08-29T14:30:00Z'),
 		readOnly: false,
 		onCopy: vi.fn(),
@@ -2490,7 +2510,7 @@ function deleting(over: Parameters<typeof entry>[0], readOnly = false, root = gr
 		entry: entry(over),
 		root,
 		path: [group({ name: 'Work' })],
-		versions: [],
+		history: null,
 		now: new Date('2026-08-29T14:30:00Z'),
 		readOnly,
 		onCopy: vi.fn(),

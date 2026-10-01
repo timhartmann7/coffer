@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { asFailure, unlock } from './ipc';
+import { asFailure, clearHistory, deleteVersion, unlock, versions } from './ipc';
 
 describe('the master password on its way to Rust', () => {
 	it('is wiped once the call has finished with it', async () => {
@@ -54,5 +54,35 @@ describe('what a rejected command comes back as', () => {
 			expect(failure.code).toBe('other');
 			expect(failure.message).toBe('Coffer could not finish that.');
 		}
+	});
+});
+
+describe('a list of versions on its way to the window', () => {
+	/** The commands answer with the list alone, and a position means nothing
+	 * without the entry it is a position in. Every list comes back holding the
+	 * entry it was asked about, whichever of the three asked. */
+	it('carries the entry it was asked about', async () => {
+		const asked: [string, unknown][] = [];
+		const listed = [{ index: 0, modified: null }];
+		vi.stubGlobal('window', {
+			__TAURI_INTERNALS__: {
+				invoke: async (command: string, payload: unknown) => {
+					asked.push([command, payload]);
+					return listed;
+				}
+			}
+		});
+
+		expect(await versions('Gmail')).toEqual({ entry: 'Gmail', versions: listed });
+		expect(await deleteVersion('Google Drive', 2)).toEqual({
+			entry: 'Google Drive',
+			versions: listed
+		});
+		expect(await clearHistory('Bank')).toEqual({ entry: 'Bank', versions: listed });
+		expect(asked).toEqual([
+			['versions', { entry: 'Gmail' }],
+			['delete_version', { entry: 'Google Drive', index: 2 }],
+			['clear_history', { entry: 'Bank' }]
+		]);
 	});
 });

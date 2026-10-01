@@ -18,7 +18,7 @@ afterEach(() => {
 function draw(
 	rows: EntryRow[],
 	handlers: {
-		onOpen?: (id: string) => void;
+		onOpen?: (row: EntryRow) => void;
 		onCopy?: (row: EntryRow, field: 'UserName' | 'Password') => void;
 	}
 ) {
@@ -129,7 +129,7 @@ it('makes the whole row the way in, not the name in it', () => {
 	}
 
 	opener.click();
-	expect(onOpen).toHaveBeenCalledWith(only.id);
+	expect(onOpen).toHaveBeenCalledWith(only);
 
 	return unmount(component);
 });
@@ -147,7 +147,7 @@ it('opens an entry that has no title at all', () => {
 	opener.click();
 	flushSync();
 
-	expect(onOpen).toHaveBeenCalledWith(untitled.id);
+	expect(onOpen).toHaveBeenCalledWith(untitled);
 
 	return unmount(component);
 });

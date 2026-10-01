@@ -8,6 +8,7 @@ import {
 	pathTo,
 	projects,
 	recycleBin,
+	rowOf,
 	shownEntries,
 	visible
 } from './tree';
@@ -94,6 +95,24 @@ describe('walking the tree', () => {
 		expect(find(tree, deep.id)).toBe(deep);
 		expect(find(tree, tree.id)).toBe(tree);
 		expect(find(tree, 'not a group')).toBeNull();
+	});
+
+	/** A row is what the pane draws an entry from until Rust has read it, and
+	 * an entry put back or just made can be anywhere, the bin included. */
+	it('finds the row of an entry wherever it sits, and nothing for one that has gone', () => {
+		const binned = row({ title: 'thrown away' });
+		const deep = row({ title: 'node-3' });
+		const tree = group({
+			sections: [
+				group({ sections: [group({ entries: [deep] })] }),
+				group({ isRecycleBin: true, entries: [binned] })
+			]
+		});
+
+		expect(rowOf(tree, deep.id)).toBe(deep);
+		expect(rowOf(tree, binned.id)).toBe(binned);
+		expect(rowOf(tree, 'not an entry')).toBeNull();
+		expect(rowOf(group(), deep.id)).toBeNull();
 	});
 
 	it('finds the recycle bin wherever the file puts it', () => {

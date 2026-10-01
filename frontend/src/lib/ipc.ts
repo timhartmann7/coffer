@@ -15,6 +15,7 @@ import type {
 	Entry,
 	Failure,
 	Group,
+	History,
 	Made,
 	Rival,
 	Settings,
@@ -354,8 +355,17 @@ export function removeAttachmentAndVersions(entry: string, name: string): Promis
 	return invoke('remove_attachment_and_versions', { entry, name });
 }
 
-export function versions(entry: string): Promise<Version[]> {
-	return invoke('versions', { entry });
+/**
+ * Pairs a list of versions with the entry it was asked about, which the answer
+ * does not say. This is the one place that holds both, so a list never exists
+ * in the window without its entry (see `History`).
+ */
+async function history(entry: string, answer: Promise<Version[]>): Promise<History> {
+	return { entry, versions: await answer };
+}
+
+export function versions(entry: string): Promise<History> {
+	return history(entry, invoke('versions', { entry }));
 }
 
 /** One previous version, read the way an entry is read. */
@@ -393,12 +403,12 @@ export function beforeRemoval(entry: string, field: string): Promise<number | nu
 	return invoke('before_removal', { entry, field });
 }
 
-export function deleteVersion(entry: string, index: number): Promise<Version[]> {
-	return invoke('delete_version', { entry, index });
+export function deleteVersion(entry: string, index: number): Promise<History> {
+	return history(entry, invoke('delete_version', { entry, index }));
 }
 
-export function clearHistory(entry: string): Promise<Version[]> {
-	return invoke('clear_history', { entry });
+export function clearHistory(entry: string): Promise<History> {
+	return history(entry, invoke('clear_history', { entry }));
 }
 
 /**

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { fully } from '$lib/format';
 	import { clearHistory, deleteVersion, restoreVersion, revealVersion, version } from '$lib/ipc';
-	import type { Entry, Span, Version } from '$lib/model';
+	import type { Entry, History, Span } from '$lib/model';
 	import Confirm from './Confirm.svelte';
 	import Icon from './Icon.svelte';
 	import ProtectedValue from './ProtectedValue.svelte';
@@ -19,7 +19,7 @@
 	 */
 	let {
 		entry,
-		versions,
+		history,
 		now,
 		readOnly,
 		onCopy,
@@ -28,7 +28,13 @@
 		onFailure
 	}: {
 		entry: string;
-		versions: Version[];
+		/**
+		 * The versions Rust listed, with the entry it listed them for, or `null`
+		 * while they are being read. A list of any other entry's is not drawn,
+		 * so nothing here can act on it: a position is a position in one
+		 * entry's history, and in another's it names a version nobody saw.
+		 */
+		history: History | null;
 		now: Date;
 		/** A database Coffer will not write back: a version can be read and not
 		 * restored, dropped or cleared. */
@@ -37,10 +43,14 @@
 		 * reader selected. A value read here is as much a secret as the one in
 		 * the entry, and goes to the clipboard the same way. */
 		onCopy: (index: number, field: string, range: Span | null) => void;
-		onVersions: (versions: Version[]) => void;
+		onVersions: (history: History) => void;
 		onChanged: (entry: Entry) => Promise<void>;
 		onFailure: (thrown: unknown) => void;
 	} = $props();
+
+	/** This entry's versions, oldest first, or `null` while there is no list of
+	 * this entry's to draw. */
+	const versions = $derived(history !== null && history.entry === entry ? history.versions : null);
 
 	let open = $state(false);
 	let showing = $state<{ index: number; entry: Entry } | null>(null);
@@ -71,15 +81,20 @@
 	});
 
 	/** Newest first: what a reader looks for is what changed last. */
-	const listed = $derived([...versions].reverse());
+	const listed = $derived(versions === null ? [] : [...versions].reverse());
 
 	async function view(index: number) {
 		if (showing?.index === index) {
 			showing = null;
 			return;
 		}
+		const from = versions;
 		try {
-			showing = { index, entry: await version(entry, index) };
+			const read = await version(entry, index);
+			// The list changed while the version was being read - a version
+			// dropped, a save that pruned, another entry - and the position it
+			// was read at may name another version now, or none of this entry's.
+			if (versions === from) showing = { index, entry: read };
 		} catch (thrown) {
 			onFailure(thrown);
 		}
@@ -123,10 +138,12 @@
 	>
 		<Icon name={open ? 'chev-d' : 'chev-r'} class="h-4 w-4 text-txt4" />
 		<span>Versions</span>
-		<span class="text-txt4">{versions.length}</span>
+		{#if versions !== null}
+			<span class="text-txt4">{versions.length}</span>
+		{/if}
 	</button>
 
-	{#if open}
+	{#if open && versions !== null}
 		{#if versions.length === 0}
 			<p class="mt-3 animate-rise text-fine leading-relaxed text-txt4">
 				Nothing yet. Every change to this entry keeps what was there before, so this fills up as the

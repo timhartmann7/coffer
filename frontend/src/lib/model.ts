@@ -211,6 +211,22 @@ export interface Version {
 }
 
 /**
+ * An entry's previous versions, with the entry they are the versions of.
+ *
+ * The commands answer with the list alone, and a position means nothing
+ * without the entry it is a position in: a list that landed under the entry
+ * opened after the one it was asked about sent that entry's Restore and Delete
+ * to a version the reader never saw. So `ipc.ts` pairs each answer with the
+ * entry it asked about before anything else holds it, and nothing draws or
+ * acts on a list under any other entry.
+ */
+export interface History {
+	entry: string;
+	/** Oldest first, as Rust keeps them. */
+	versions: Version[];
+}
+
+/**
  * The part of a revealed value a reader selected, from one position to another,
  * counted the way the text node showing it counts: in UTF-16 code units. Two
  * numbers and nothing of the value, and Rust decides whether they name a part
