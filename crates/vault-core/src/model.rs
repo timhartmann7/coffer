@@ -106,9 +106,14 @@ pub struct Binned {
     /// When it went in. A folder takes everything in it along, so what sits
     /// inside a deleted folder went in when the folder did.
     pub since: Option<NaiveDateTime>,
-    /// The folder it was in before, which is where putting it back takes it.
-    /// Nothing when that is not known, is not there any more, or is in the bin
-    /// itself, and putting it back takes it to the top of the vault instead.
+    /// The deleted folder it went in with, the one the bin holds, or nothing
+    /// for something deleted on its own.
+    pub within: Option<GroupId>,
+    /// Where putting it back takes it: the folder it was deleted from, or for
+    /// something that went in with a folder, the one that folder was deleted
+    /// from. Nothing when that is not known, is not there any more, or is in
+    /// the bin itself, and putting it back takes it to the top of the vault
+    /// instead.
     pub from: Option<GroupId>,
 }
 

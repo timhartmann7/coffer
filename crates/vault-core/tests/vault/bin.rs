@@ -37,6 +37,27 @@ fn made(vault: &mut Vault, group: GroupId, title: &str) -> EntryId {
     id
 }
 
+/// Puts an entry back, and says which folder it is in afterwards.
+fn put_back(vault: &mut Vault, id: EntryId) -> GroupId {
+    vault.put_back_entry(id).expect("it is put back");
+    vault.entry(id).expect("it is still in the file").group
+}
+
+/// Puts a folder back, and says which folder holds it afterwards.
+fn put_back_folder(vault: &mut Vault, id: GroupId) -> GroupId {
+    fn holder(group: &Project, id: GroupId) -> Option<GroupId> {
+        if group.sections.iter().any(|section| section.id == id) {
+            return Some(group.id);
+        }
+        group
+            .sections
+            .iter()
+            .find_map(|section| holder(section, id))
+    }
+    vault.put_back_group(id).expect("it is put back");
+    holder(&vault.tree(), id).expect("it is still in the file")
+}
+
 fn cheap(name: &str) -> (tempfile::TempDir, PathBuf) {
     let scratch = tempfile::tempdir().expect("a scratch directory");
     let path = built(scratch.path(), name, |_| {});
@@ -84,10 +105,7 @@ fn an_entry_put_back_goes_home_to_the_folder_it_was_deleted_from() {
         "the folder it came from did not survive the file"
     );
 
-    assert_eq!(
-        vault.put_back_entry(bank).expect("it is put back"),
-        personal
-    );
+    assert_eq!(put_back(&mut vault, bank), personal);
     let back = vault.entry(bank).expect("it is there");
     assert_eq!(back.group, personal);
     assert_eq!(back.binned, None);
@@ -142,10 +160,7 @@ fn an_entry_keepassxc_deleted_goes_back_where_keepassxc_says_it_came_from() {
     let binned = deleted.binned.expect("it is in the bin");
     assert_eq!(binned.from, Some(work));
 
-    assert_eq!(
-        vault.put_back_entry(deleted.id).expect("it is put back"),
-        work
-    );
+    assert_eq!(put_back(&mut vault, deleted.id), work);
     assert_eq!(vault.entry(deleted.id).map(|entry| entry.group), Some(work));
 }
 
@@ -251,7 +266,13 @@ fn a_deleted_folder_stays_a_folder_in_the_bin_and_comes_back_whole() {
 
     let within = inner.binned.expect("a folder inside it is in the bin too");
     assert_eq!(within.since, went.since, "it went in when its folder did");
-    assert_eq!(within.from, None, "it never left its folder");
+    assert_eq!(within.within, Some(banking), "it went in with its folder");
+    assert_eq!(went.within, None, "the folder went in on its own");
+    assert_eq!(
+        within.from,
+        Some(personal),
+        "it goes where its folder came from"
+    );
     assert_eq!(inner.deletion, Deletion::Forever);
     for row in gone.entries.iter().chain(&inner.entries) {
         assert_eq!(row.binned.map(|binned| binned.since), Some(went.since));
@@ -261,10 +282,7 @@ fn a_deleted_folder_stays_a_folder_in_the_bin_and_comes_back_whole() {
         Some(Deletion::Forever)
     );
 
-    assert_eq!(
-        vault.put_back_group(banking).expect("it is put back"),
-        personal
-    );
+    assert_eq!(put_back_folder(&mut vault, banking), personal);
     let tree = vault.tree();
     let home = folder(&tree, personal).expect("the folder it went back to");
     let back = folder(home, banking).expect("the folder is back where it was");
@@ -281,9 +299,102 @@ fn a_deleted_folder_stays_a_folder_in_the_bin_and_comes_back_whole() {
     );
 }
 
+/// What went into the bin with a deleted folder goes back where that folder
+/// came from, and says it went in with it.
+///
+/// Not where its own `PreviousParentGroup` points. KeePass and KeePassXC write
+/// one on every drag between folders, so an entry filed from Personal into
+/// Banking last year carries Personal, and deleting Banking does not move it.
+/// Read as "deleted from", that sent it back into a folder it left long ago,
+/// and a reader with no way to move an entry had no way to put it right.
+#[test]
+fn what_went_in_with_a_folder_goes_back_where_the_folder_came_from() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let mut ids = None;
+    let path = built(scratch.path(), "filed.kdbx", |database| {
+        let mut root = database.root_mut();
+        let mut add = |name: &str| {
+            let mut group = root.add_group();
+            group.name = name.to_owned();
+            group.id()
+        };
+        let (personal, home, cards) = (add("Personal"), add("Home"), add("Cards"));
+        let banking = {
+            let mut home = database.group_mut(home).expect("the folder is there");
+            let mut banking = home.add_group();
+            banking.name = "Banking".to_owned();
+            banking.id()
+        };
+        let mut personal_group = database.group_mut(personal).expect("the folder is there");
+        let mut filed = |title: &str| {
+            let mut entry = personal_group.add_entry();
+            entry.edit(|entry| entry.set_unprotected(fields::TITLE, title));
+            entry.id()
+        };
+        let (chase, visa) = (filed("Chase"), filed("Visa"));
+        for entry in [chase, visa] {
+            database
+                .entry_mut(entry)
+                .expect("the entry is there")
+                .move_to(banking)
+                .expect("the folder is there");
+        }
+        database
+            .group_mut(cards)
+            .expect("the folder is there")
+            .move_to(banking)
+            .expect("the folder is there");
+        ids = Some((personal, home, banking, cards, chase, visa));
+    });
+    let (personal, home, banking, cards, chase, visa) = ids.expect("the vault is built");
+
+    let mut vault = open(&path, BUILT_PASSWORD);
+    let root = vault.tree().id;
+    vault.delete_group(banking).expect("it goes to the bin");
+    vault.save().expect("the database saves");
+    drop(vault);
+
+    let mut vault = open(&path, BUILT_PASSWORD);
+    let went = vault
+        .entry(chase)
+        .and_then(|entry| entry.binned)
+        .expect("it is in the bin");
+    assert_eq!(went.within, Some(banking));
+    assert_eq!(
+        went.from,
+        Some(home),
+        "it claims to come from a folder it left before the deletion"
+    );
+    assert_ne!(went.from, Some(personal));
+    let tree = vault.tree();
+    let deleted = folder(&tree, banking).and_then(|found| found.binned);
+    assert_eq!(
+        deleted.map(|binned| (binned.within, binned.from)),
+        Some((None, Some(home)))
+    );
+    let inner = folder(&tree, cards).and_then(|found| found.binned);
+    assert_eq!(
+        inner.map(|binned| (binned.within, binned.from)),
+        Some((Some(banking), Some(home)))
+    );
+
+    assert_eq!(put_back(&mut vault, chase), home);
+    assert_eq!(put_back_folder(&mut vault, cards), home);
+
+    // The folder it would go back with goes in after it: there is nowhere left
+    // to take it but the top.
+    vault.delete_group(home).expect("it goes to the bin");
+    let stayed = vault
+        .entry(visa)
+        .and_then(|entry| entry.binned)
+        .expect("it is still in the bin");
+    assert_eq!((stayed.within, stayed.from), (Some(banking), None));
+    assert_eq!(put_back(&mut vault, visa), root);
+}
+
 /// A hundred folders deep is a hundred folders that all know they are in the
-/// bin, and one of them put back on its own goes to the top of the vault: it
-/// never left the folder above it, so there is nowhere else it came from.
+/// bin, and one of them put back on its own goes where the folder they all
+/// went in with came from, which is the top of the vault.
 #[test]
 fn a_hundred_folders_deep_in_the_bin_all_know_it() {
     let (_scratch, path) = cheap("deep.kdbx");
@@ -313,7 +424,7 @@ fn a_hundred_folders_deep_in_the_bin_all_know_it() {
         assert_eq!(found.deletion, Deletion::Forever);
     }
 
-    assert_eq!(vault.put_back_group(middle).expect("it is put back"), root);
+    assert_eq!(put_back_folder(&mut vault, middle), root);
     let tree = vault.tree();
     for (depth, id) in chain.iter().enumerate() {
         let found = folder(&tree, *id).expect("every folder is still there");
@@ -348,7 +459,7 @@ fn an_entry_whose_folder_is_in_the_bin_or_gone_goes_back_to_the_top() {
         Some(None),
         "an entry offered to go back into a folder in the bin"
     );
-    assert_eq!(vault.put_back_entry(bank).expect("it is put back"), root);
+    assert_eq!(put_back(&mut vault, bank), root);
 
     let old = vault.create_group(root, "Old").expect("the folder is made");
     let mail = made(&mut vault, old, "Mail");
@@ -366,7 +477,7 @@ fn an_entry_whose_folder_is_in_the_bin_or_gone_goes_back_to_the_top() {
             .map(|binned| binned.from),
         Some(None)
     );
-    assert_eq!(vault.put_back_entry(mail).expect("it is put back"), root);
+    assert_eq!(put_back(&mut vault, mail), root);
     assert_eq!(vault.entry(mail).map(|entry| entry.group), Some(root));
 }
 
@@ -387,7 +498,7 @@ fn an_entry_deleted_from_the_top_of_the_vault_goes_back_there() {
             .and_then(|binned| binned.from),
         Some(root)
     );
-    assert_eq!(vault.put_back_entry(note).expect("it is put back"), root);
+    assert_eq!(put_back(&mut vault, note), root);
 }
 
 /// Another client can put an entry or a folder in the bin without writing
@@ -417,11 +528,8 @@ fn what_another_client_binned_without_saying_where_from_goes_to_the_top() {
     assert_eq!(stray.binned.map(|binned| binned.from), Some(None));
     let loose = only_group(&vault, "stray folder");
 
-    assert_eq!(
-        vault.put_back_entry(stray.id).expect("it is put back"),
-        root
-    );
-    assert_eq!(vault.put_back_group(loose).expect("it is put back"), root);
+    assert_eq!(put_back(&mut vault, stray.id), root);
+    assert_eq!(put_back_folder(&mut vault, loose), root);
     assert!(bin_of(&vault.tree()).sections.is_empty());
 }
 
@@ -483,7 +591,7 @@ fn nothing_outside_the_bin_can_be_put_back() {
     // The same entry put back twice: the second press finds nothing to do and
     // leaves it where the first one put it.
     let gone = entry_titled(&vault, "Gone").id;
-    assert_eq!(vault.put_back_entry(gone).expect("it is put back"), root);
+    assert_eq!(put_back(&mut vault, gone), root);
     assert!(matches!(
         vault.put_back_entry(gone),
         Err(VaultError::NotInRecycleBin)

@@ -381,6 +381,17 @@ an entry whose folder followed it into the bin goes to the top of the vault
 rather than into a deleted folder. The top of the vault is a folder like any
 other to come from.
 
+**What went in with a folder goes back where the folder came from.** Deleting a
+folder moves the folder and nothing inside it, so what is inside keeps the
+`PreviousParentGroup` of its own last move, which KeePass and KeePassXC write on
+every drag between folders. Read as "deleted from", that sent an entry filed
+into Banking a year ago back into the folder it was filed out of. So `Binned`
+names the folder it went in with (`within`, the one the bin holds), and `from`
+is that folder's own way back: where it would be had the folder been put back
+whole, or the top of the vault when that is gone or in the bin too.
+`put_back_entry` and `put_back_group` return nothing; where a thing went is
+read off the tree like everything else.
+
 **When something went in is the date its folder went in.** A folder takes what
 is in it along, and nothing inside it is moved, so its own `LocationChanged` is
 the date of some older move. What sits inside a deleted folder reports the

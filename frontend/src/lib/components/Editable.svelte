@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { drop, typed as said, unfinished, type Place } from '$lib/drafts';
 	import { composing, finishes, lines } from '$lib/lines';
+	import Bare from './Bare.svelte';
 	import Field from './Field.svelte';
 	import Unsaved from './Unsaved.svelte';
 
@@ -63,9 +64,10 @@
 		/** A database Coffer will not write back is one nothing here may offer to
 		 * change. */
 		readonly?: boolean;
-		/** Drawn without {@link Field}'s box, for a value that reads as a heading
-		 * rather than as a field. The entry's title is the only one: a hairline
-		 * around a nineteen-pixel name is a box around the name of the screen. */
+		/** Drawn in {@link Bare}'s box rather than {@link Field}'s, for a value
+		 * that reads as a heading rather than as a field. The entry's title is the
+		 * only one: a hairline around a nineteen-pixel name is a box around the
+		 * name of the screen. */
 		bare?: boolean;
 		/** Where what is typed would be written: the entry, the field, and whether
 		 * the database protects it. What is typed is told to Rust before the field
@@ -196,11 +198,9 @@
 {/snippet}
 
 {#if bare}
-	<span
-		class="flex min-w-0 flex-1 items-center gap-2 rounded-sm border border-transparent px-2 py-1 transition focus-within:border-accent focus-within:bg-surface2 focus-within:ring-4 focus-within:ring-accent/15 hover:border-hairline"
-	>
+	<Bare live={!readonly}>
 		{@render control()}
-	</span>
+	</Bare>
 {:else}
 	<Field>
 		{@render control()}

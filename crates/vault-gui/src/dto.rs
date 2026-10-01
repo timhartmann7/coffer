@@ -457,9 +457,13 @@ impl Deletion {
 pub struct Binned {
     /// When it went in: its own move, or that of the folder it went in with.
     pub since: Option<String>,
-    /// The folder it was in, which is where putting it back takes it: `null`
-    /// when that is not known, has gone, or is in the bin too, and putting it
-    /// back takes it to the top of the vault.
+    /// The deleted folder it went in with, or `null` for something deleted on
+    /// its own.
+    pub within: Option<String>,
+    /// Where putting it back takes it: the folder it was deleted from, or the
+    /// one the folder it went in with was deleted from. `null` when that is not
+    /// known, has gone, or is in the bin too, and putting it back takes it to
+    /// the top of the vault.
     pub from: Option<String>,
 }
 
@@ -467,6 +471,7 @@ impl Binned {
     fn of(binned: model::Binned) -> Binned {
         Binned {
             since: stamp(binned.since),
+            within: binned.within.map(|group| group.to_string()),
             from: binned.from.map(|group| group.to_string()),
         }
     }
@@ -996,16 +1001,19 @@ mod tests {
         );
     }
 
-    /// A row in the bin says when it went in and where it goes back, and the
-    /// folder crosses as its id: the name is the tree's to give, so a folder
+    /// A row in the bin says when it went in, the deleted folder it went in
+    /// with, and where it goes back, and each folder crosses as its id: the
+    /// name is the tree's to give, so a folder
     /// renamed since is called what it is called now. Nothing known crosses as
     /// `null` rather than as a guess, and the screen says the top of the vault.
     #[test]
     fn an_entry_in_the_bin_crosses_with_when_it_went_and_where_it_goes_back() {
         let from = GroupId::from_uuid(uuid::Uuid::from_u128(7));
+        let within = GroupId::from_uuid(uuid::Uuid::from_u128(8));
         let mut entry = entry_of(vec![open(fields::TITLE, "Bank")]);
         entry.binned = Some(model::Binned {
             since: NaiveDate::from_ymd_opt(2026, 9, 27).and_then(|day| day.and_hms_opt(12, 0, 0)),
+            within: Some(within),
             from: Some(from),
         });
         entry.deletion = model::Deletion::Forever;
@@ -1013,7 +1021,11 @@ mod tests {
         let whole = serde_json::to_value(Entry::of(&entry)).expect("the entry serialises");
         assert_eq!(
             whole["binned"],
-            serde_json::json!({ "since": "2026-09-27T12:00:00Z", "from": from.to_string() })
+            serde_json::json!({
+                "since": "2026-09-27T12:00:00Z",
+                "within": within.to_string(),
+                "from": from.to_string(),
+            })
         );
         assert_eq!(whole["deletion"], "forever");
 
@@ -1022,12 +1034,13 @@ mod tests {
 
         entry.binned = Some(model::Binned {
             since: None,
+            within: None,
             from: None,
         });
         let unknown = serde_json::to_value(Entry::of(&entry)).expect("the entry serialises");
         assert_eq!(
             unknown["binned"],
-            serde_json::json!({ "since": null, "from": null })
+            serde_json::json!({ "since": null, "within": null, "from": null })
         );
 
         entry.binned = None;

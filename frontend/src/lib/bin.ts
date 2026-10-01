@@ -1,4 +1,5 @@
-/** What the recycle bin says about what is in it, in the words the window uses. */
+/** What the recycle bin says about what is in it, and what a deletion asks
+ * before it, in the words the window uses. */
 
 import { ago, day } from './format';
 import type { Binned, Group } from './model';
@@ -12,6 +13,13 @@ import { find } from './tree';
  */
 const TOP = 'the top of the vault';
 
+/** A folder of the tree as a sentence names it, or `null` when the tree does
+ * not hold it. */
+function named(root: Group, id: string): string | null {
+	const folder = find(root, id);
+	return folder ? `“${folder.name}”` : null;
+}
+
 /**
  * The folder something goes back to, as a sentence names it, or `null` when
  * nothing says where it came from.
@@ -22,8 +30,19 @@ const TOP = 'the top of the vault';
 function whence(binned: Binned, root: Group): string | null {
 	if (binned.from === null) return null;
 	if (binned.from === root.id) return TOP;
-	const folder = find(root, binned.from);
-	return folder ? `“${folder.name}”` : null;
+	return named(root, binned.from);
+}
+
+/**
+ * The deleted folder something went into the bin with, as a sentence names
+ * it, or `null` for something deleted on its own.
+ *
+ * Said instead of where it came from. The deletion moved the folder and not
+ * what was in it, so the folder is the one thing the reader deleted, and the
+ * place it goes back to is the folder's.
+ */
+function companion(binned: Binned, root: Group): string | null {
+	return binned.within === null ? null : named(root, binned.within);
 }
 
 /**
@@ -32,21 +51,37 @@ function whence(binned: Binned, root: Group): string | null {
  *
  * "Was in" only when the bin knows. A thing another client binned without
  * saying where from, or whose folder has gone or is in the bin too, is not
- * given a past it did not have: the sentence says where it is going instead.
+ * given a past it did not have: the sentence says where it is going instead,
+ * and so does one that went in with a folder, which was in that folder.
  */
 export function standing(binned: Binned, root: Group, now: Date): string {
 	const since = day(binned.since, now);
 	const went = since === '' ? 'In the Recycle Bin' : `In the Recycle Bin since ${since}`;
 	const from = whence(binned, root);
-	if (from === null) return `${went} · goes back to ${TOP}`;
+	const goes = `goes back to ${from ?? TOP}`;
+	const along = companion(binned, root);
+	if (along !== null) return `${went} · deleted with ${along} · ${goes}`;
+	if (from === null) return `${went} · ${goes}`;
 	return `${went} · was ${from === TOP ? 'at' : 'in'} ${from}`;
 }
 
-/** The line under a row in the bin: when it was deleted, and where from when
- * that is known. */
+/** The line under a row in the bin: when it was deleted, and with which folder
+ * or from where, when that is known. */
 export function deleted(binned: Binned, root: Group, now: Date): string {
 	const when = ago(binned.since, now);
+	const along = companion(binned, root);
 	const from = whence(binned, root);
-	if (when === '') return from === null ? 'Deleted' : `Deleted from ${from}`;
-	return from === null ? `Deleted ${when}` : `Deleted ${when} · from ${from}`;
+	const tail = along !== null ? `with ${along}` : from !== null ? `from ${from}` : null;
+	if (when === '') return tail === null ? 'Deleted' : `Deleted ${tail}`;
+	return tail === null ? `Deleted ${when}` : `Deleted ${when} · ${tail}`;
+}
+
+/**
+ * The question before something goes out of the file for good: an entry, a
+ * folder, or a folder in the bin, asked from wherever it was pressed. `name` is
+ * what a sentence calls it, quotes included. A folder takes what is in it along,
+ * and says so.
+ */
+export function eraseQuestion(name: string, folder = false): string {
+	return `Delete ${name}${folder ? ' and everything in it' : ''} forever? This can’t be undone.`;
 }

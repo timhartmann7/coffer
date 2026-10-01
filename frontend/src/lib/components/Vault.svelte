@@ -23,7 +23,7 @@
 		undoRemoval,
 		versions as loadVersions
 	} from '$lib/ipc';
-	import { deleted as deletedLine } from '$lib/bin';
+	import { deleted as deletedLine, eraseQuestion } from '$lib/bin';
 	import { flush, release } from '$lib/drafts';
 	import { named as howLong } from '$lib/duration';
 	import { called } from '$lib/format';
@@ -51,6 +51,7 @@
 		pathTo,
 		recycleBin,
 		rowOf,
+		searchedEntries,
 		shownEntries
 	} from '$lib/tree';
 	import BinFolders from './BinFolders.svelte';
@@ -202,7 +203,9 @@
 	// Walked once. The tree is the whole vault, and three walks of fifty
 	// thousand entries to draw one screen is three too many.
 	const live = $derived(liveEntries(root));
-	const rows = $derived(group === null ? live : shownEntries(shown));
+	const rows = $derived(
+		group === null ? live : query === '' ? shownEntries(shown) : searchedEntries(shown)
+	);
 	const indexed = $derived(index(rows));
 	const found = $derived(search(indexed, query));
 	const bin = $derived(recycleBin(root));
@@ -216,7 +219,9 @@
 	/** The folders drawn above the entries in the bin. A search is for entries,
 	 * and a folder row among its answers would be one it did not look inside. */
 	const folders = $derived(binned && query === '' ? shown.sections : []);
-	/** The line under a row in the bin: when it went in, and where from. */
+	/** The line under a row in the bin: when it went in, and where from or with
+	 * which deleted folder, which is what a row a search found further down
+	 * says about where it is. */
 	const whence = $derived(
 		binned ? (row: EntryRow) => (row.binned ? deletedLine(row.binned, root, now) : '') : undefined
 	);
@@ -445,23 +450,29 @@
 	}
 
 	/**
-	 * Whether a move into the bin, out of it or out of the file is on its way.
+	 * The entries and folders a move into the bin, out of it or out of the file
+	 * has been asked for and Rust has not yet answered about.
 	 *
-	 * The button that asked for it stays on the screen until Rust answers, and
-	 * a second press of "Move to Recycle Bin" in that second would find the
-	 * entry already in the bin and take it out of the file. Nothing is drawn
-	 * from it, so it is not state.
+	 * The button that asked stays on the screen until Rust answers, and a
+	 * second press of "Move to Recycle Bin" in that time would find the entry
+	 * already in the bin and take it out of the file. So a press is dropped
+	 * while the same thing is on its way, and only then: one on another entry or
+	 * folder is a choice of its own, and Rust takes it after the first. The
+	 * save that follows a move is not part of it - by then the screen has moved
+	 * on from the button that asked. Nothing is drawn from it; it is a
+	 * SvelteSet only because the linter allows no other kind in a component.
 	 */
-	let moving = false;
+	const moving = new SvelteSet<string>();
 
-	/** Runs one move at a time, and drops a press that arrives during one. */
-	async function once(move: () => Promise<void>) {
-		if (moving) return;
-		moving = true;
+	/** Sends one move for `id`, or nothing while one for it is on its way:
+	 * `null` is a press that was dropped. */
+	async function once(id: string, move: () => Promise<Group>): Promise<Group | null> {
+		if (moving.has(id)) return null;
+		moving.add(id);
 		try {
-			await move();
+			return await move();
 		} finally {
-			moving = false;
+			moving.delete(id);
 		}
 	}
 
@@ -482,20 +493,25 @@
 	 */
 	async function removeEntry() {
 		if (!opened || held()) return;
+		// An entry whose folder is on its way to the bin goes with it. Its own
+		// move would reach Rust after the folder's, find it in the bin already
+		// and take it out of the file.
+		if (pathTo(root, opened.group)?.some((step) => moving.has(step.id))) return;
 		const id = opened.id;
 		const name = called(opened);
-		let tree: Group;
+		let tree: Group | null;
 		try {
-			tree = await deleteEntry(id, release(id));
+			tree = await once(id, () => deleteEntry(id, release(id)));
 		} catch (thrown) {
 			failed(thrown);
 			return;
 		}
+		if (tree === null) return;
 		if (showing === id) pane = null;
 		await reshaped(tree);
 		if (unsaved) return;
 
-		if (!entriesOf(tree).some((row) => row.id === id)) {
+		if (rowOf(tree, id) === null) {
 			erased(name);
 			return;
 		}
@@ -509,17 +525,24 @@
 		});
 	}
 
-	/** Takes the entry in the pane out of the bin. The pane stays on it and
+	/**
+	 * Takes the entry in the pane out of the bin. The pane stays on it and
 	 * reads it again: back out of the bin it is an entry like any other, and the
-	 * line above its title says where it went. */
+	 * line above its title says where it went.
+	 *
+	 * Read again before the save rather than after it, so the pane does not go
+	 * on offering Put back, and a deletion for good, on an entry that has
+	 * already left the bin for the length of the save.
+	 */
 	async function putBack() {
 		if (!opened) return;
 		const id = opened.id;
 		try {
-			const tree = await putBackEntry(id);
+			const tree = await once(id, () => putBackEntry(id));
+			if (tree === null) return;
 			unread(id);
-			await reshaped(tree);
 			await read(id);
+			await reshaped(tree);
 		} catch (thrown) {
 			failed(thrown);
 		}
@@ -567,7 +590,8 @@
 		const id = group;
 		const name = `“${shown.name}”`;
 		try {
-			const tree = await deleteGroup(id);
+			const tree = await once(id, () => deleteGroup(id));
+			if (tree === null) return;
 			select(null);
 			await reshaped(tree);
 			if (unsaved) return;
@@ -596,10 +620,11 @@
 		// only with a banner about a bin it has left until it is read again.
 		const reading = showing;
 		try {
-			const tree = await putBackGroup(id);
+			const tree = await once(id, () => putBackGroup(id));
+			if (tree === null) return;
 			for (const step of pathTo(tree, id)?.slice(0, -1) ?? []) expanded.add(step.id);
-			await reshaped(tree);
 			if (reading !== null) await read(reading);
+			await reshaped(tree);
 		} catch (thrown) {
 			failed(thrown);
 		}
@@ -613,7 +638,8 @@
 		const name = `“${shown.name}”`;
 		const above = pathTo(root, id)?.at(-2)?.id ?? null;
 		try {
-			const tree = await deleteGroup(id);
+			const tree = await once(id, () => deleteGroup(id));
+			if (tree === null) return;
 			select(above);
 			await reshaped(tree);
 			if (!unsaved) erased(name);
@@ -1026,14 +1052,6 @@
 						>
 							<Icon name="check" class="h-4 w-4" />
 						</button>
-						<button
-							type="button"
-							onclick={() => (deleting = true)}
-							class="text-txt4 transition-colors hover:text-danger"
-							aria-label="Delete this folder"
-						>
-							<Icon name="trash" class="h-4 w-4" />
-						</button>
 					{/if}
 					<button
 						type="button"
@@ -1044,6 +1062,21 @@
 					>
 						<Icon name="plus" class="h-4 w-4" />
 					</button>
+					{#if group !== null}
+						<!-- Last, in a box of its own and a step further off, like every
+						     other trash: it used to sit four pixels between Rename and New
+						     folder at the size of each. The box is drawn into the row's
+						     padding, so the header is no taller and the icon no further
+						     in. -->
+						<button
+							type="button"
+							onclick={() => (deleting = true)}
+							class="-my-1.5 -mr-1.5 ml-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-sm text-txt4 transition-colors hover:bg-dangerwash hover:text-danger"
+							aria-label="Delete this folder"
+						>
+							<Icon name="trash" class="h-4 w-4" />
+						</button>
+					{/if}
 				{/if}
 			</div>
 
@@ -1094,10 +1127,10 @@
 					class="mx-2 mb-2 shrink-0 bg-surface"
 					question={shown.deletion === 'bin'
 						? `Move “${shown.name}” and everything in it to the Recycle Bin?`
-						: `Delete “${shown.name}” and everything in it forever? This can’t be undone.`}
+						: eraseQuestion(`“${shown.name}”`, true)}
 					act={shown.deletion === 'bin' ? 'Move to Recycle Bin' : 'Delete forever'}
 					onKeep={() => (deleting = false)}
-					onAct={() => void once(removeFolder)}
+					onAct={() => void removeFolder()}
 				/>
 			{/if}
 
@@ -1229,10 +1262,12 @@
 						{root}
 						{now}
 						name={shown.name}
-						question="Delete “{shown.name}” and everything in it forever? This can’t be undone."
 						{readOnly}
-						onPutBack={() => void once(putBackFolder)}
-						onDelete={() => void once(eraseFolder)}
+						ways={{
+							question: eraseQuestion(`“${shown.name}”`, true),
+							onPutBack: () => void putBackFolder(),
+							onDelete: () => void eraseFolder()
+						}}
 					/>
 				{/key}
 			{/if}
@@ -1350,13 +1385,13 @@
 							onChanged={changed}
 							onVersions={versionsChanged}
 							onClose={dismiss}
-							onDelete={() => void once(removeEntry)}
-							onPutBack={() => void once(putBack)}
+							onDelete={() => void removeEntry()}
+							onPutBack={() => void putBack()}
 							onFieldRemoved={fieldRemoved}
 							onFailure={failed}
 						/>
 					{:else}
-						<Opening row={pane.row} {path} onClose={dismiss} />
+						<Opening row={pane.row} {root} {path} {now} {readOnly} onClose={dismiss} />
 					{/if}
 				</div>
 			{/if}

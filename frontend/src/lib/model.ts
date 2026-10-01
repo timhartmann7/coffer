@@ -152,10 +152,14 @@ type Deletion = 'bin' | 'forever';
 export interface Binned {
 	/** When it went in: its own move, or that of the folder it went in with. */
 	since: string | null;
+	/** The id of the deleted folder it went in with, or `null` for something
+	 * deleted on its own. */
+	within: string | null;
 	/**
-	 * The id of the folder it was in, which is where putting it back takes it.
-	 * `null` when that is not known, has gone, or is in the bin too, and
-	 * putting it back takes it to the top of the vault instead.
+	 * The id of the folder putting it back takes it to: the one it was deleted
+	 * from, or the one the folder it went in with was deleted from. `null` when
+	 * that is not known, has gone, or is in the bin too, and putting it back
+	 * takes it to the top of the vault instead.
 	 */
 	from: string | null;
 }

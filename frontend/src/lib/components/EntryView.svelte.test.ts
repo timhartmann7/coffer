@@ -2753,7 +2753,7 @@ it('drops the question about deleting an entry when another is shown', () => {
 /** The same for the card over an entry in the bin: its question belongs to the
  * entry it was asked about. */
 it('drops the question about deleting an entry in the bin when another is shown', () => {
-	const binned = { since: null, from: null };
+	const binned = { since: null, within: null, from: null };
 	const { component, props } = deleting({ fields: titled('Bank'), binned, deletion: 'forever' });
 	button('Delete forever…').click();
 	flushSync();
@@ -2787,7 +2787,7 @@ it('shows an entry in the bin read only, with the way back out on top', () => {
 			],
 			tags: ['money'],
 			attachments: [attachment({ name: 'statement.pdf', fileName: 'statement.pdf' })],
-			binned: { since: '2026-08-27T10:00:00Z', from: personal.id },
+			binned: { since: '2026-08-27T10:00:00Z', within: null, from: personal.id },
 			deletion: 'forever'
 		},
 		false,
@@ -2841,7 +2841,7 @@ it('says where an entry goes back to, and does not invent where it came from', (
 		const { component } = deleting(
 			{
 				fields: titled('Bank'),
-				binned: { since: '2026-08-27T10:00:00Z', from },
+				binned: { since: '2026-08-27T10:00:00Z', within: null, from },
 				deletion: 'forever'
 			},
 			false,
@@ -2859,7 +2859,7 @@ it('writes the name of the folder an entry came from as text', () => {
 	const { component } = deleting(
 		{
 			fields: titled('Bank'),
-			binned: { since: null, from: hostile.id },
+			binned: { since: null, within: null, from: hostile.id },
 			deletion: 'forever'
 		},
 		false,
@@ -2880,7 +2880,7 @@ it('offers no way out of the bin on a database it cannot write', () => {
 	const { component } = deleting(
 		{
 			fields: titled('Bank'),
-			binned: { since: '2026-08-27T10:00:00Z', from: personal.id },
+			binned: { since: '2026-08-27T10:00:00Z', within: null, from: personal.id },
 			deletion: 'forever'
 		},
 		true,

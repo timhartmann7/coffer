@@ -884,32 +884,31 @@ impl Vault {
         }
     }
 
-    /// Takes an entry out of the recycle bin and puts it back where it was,
-    /// and says where that is.
+    /// Takes an entry out of the recycle bin and puts it back where it was.
     ///
     /// Back into the folder it was deleted from, when that folder is still
     /// somewhere to go. One that has gone, one that is in the bin itself, and
     /// an entry another client put in the bin without saying where from all
     /// send it to the top of the vault instead: put back somewhere is better
-    /// than left behind.
+    /// than left behind. An entry that went in with a deleted folder goes
+    /// where that folder came from ([`Binned::from`]).
     ///
     /// Moving is not an edit, so no version is written, and the folder it
     /// leaves becomes its `PreviousParentGroup` the way every move makes it.
-    pub fn put_back_entry(&mut self, id: EntryId) -> Result<GroupId, VaultError> {
+    pub fn put_back_entry(&mut self, id: EntryId) -> Result<(), VaultError> {
         self.writable()?;
         let into = {
             let entry = self.database.entry(id).ok_or(VaultError::NoSuchEntry)?;
             let (binned, _) = self.placed(&entry, entry.parent().id());
             self.back(binned)?
         };
-        self.move_entry(id, into)?;
-        Ok(into)
+        self.move_entry(id, into)
     }
 
     /// Takes a folder out of the recycle bin with everything in it, on the
     /// same terms as [`Vault::put_back_entry`]. The bin itself is not in the
     /// bin, and cannot be put back.
-    pub fn put_back_group(&mut self, id: GroupId) -> Result<GroupId, VaultError> {
+    pub fn put_back_group(&mut self, id: GroupId) -> Result<(), VaultError> {
         self.writable()?;
         let into = {
             let group = self.database.group(id).ok_or(VaultError::NoSuchGroup)?;
@@ -924,8 +923,7 @@ impl Vault {
                 group.previous_parent().map(|previous| previous.id()),
             ))?
         };
-        self.move_group(id, into)?;
-        Ok(into)
+        self.move_group(id, into)
     }
 
     /// Where putting something back takes it: the folder it came from, or the

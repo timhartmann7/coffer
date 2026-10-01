@@ -356,15 +356,23 @@ offers Undo only for something still in it.
 **The bin says when and where from.** Anything inside the bin - an entry row,
 an entry, a group - carries `binned`, `null` everywhere else and for the bin
 itself. `since` is when it went in: its own `LocationChanged`, or that of the
-folder it went in with. `from` is the id of the folder it was in, which is the
-format's `PreviousParentGroup`, and only when that folder is still somewhere to
-go: `null` when nothing was written down, when the folder has gone, and when it
-is in the bin too. The folder crosses as an id and the window names it from the
-tree, so a folder renamed since is called what it is called now.
+folder it went in with. `within` is the id of that folder - the deleted one the
+bin holds, however deep this sits inside it - and `null` for something deleted
+on its own. `from` is where putting it back takes it, and only when that is
+still somewhere to go: `null` when nothing was written down, when the folder
+has gone, and when it is in the bin too. For something deleted on its own it is
+the folder it was in, the format's `PreviousParentGroup`. For something that
+went in with a folder it is where that folder came from, never its own
+`PreviousParentGroup`: KeePass and KeePassXC write one on every move between
+folders, and the deletion did not move it, so its own points at some older
+folder it was not in when it was deleted. The window says "Deleted with
+“Banking”" for such a thing rather than naming a folder it came from. Folders
+cross as ids and the window names them from the tree, so a folder renamed since
+is called what it is called now.
 
 **`put_back_entry` and `put_back_group` take something out of the bin** and
 answer with the tree. It goes back into `from`, or to the top of the vault when
-`from` is `null`. A folder goes with everything in it. Both refuse with
+`from` is `null`, and the window reads where it went off the tree. A folder goes with everything in it. Both refuse with
 `refused` for anything not in the bin - the bin itself, the top of the vault, an
 entry already put back - so an undo that arrives after the thing came back
 moves nothing, and with `readOnly` on a database Coffer will not write back.

@@ -1627,7 +1627,11 @@ it('asks before a folder goes, and keeps it on the way out', async () => {
 	const binned = group({
 		...root.sections[1],
 		sections: [
-			{ ...work, binned: { since: '2026-08-29T14:00:00Z', from: root.id }, deletion: 'forever' }
+			{
+				...work,
+				binned: { since: '2026-08-29T14:00:00Z', within: null, from: root.id },
+				deletion: 'forever'
+			}
 		]
 	});
 	ipc.deleteGroup.mockResolvedValue(group({ ...root, sections: [binned] }));
@@ -1639,6 +1643,14 @@ it('asks before a folder goes, and keeps it on the way out', async () => {
 	flushSync();
 
 	const trash = () => host.querySelector<HTMLButtonElement>('[aria-label="Delete this folder"]');
+	// The trash has room, like every other: a box of its own, last in the row
+	// and a step off the safe icons, where a press meant for one of them used
+	// to land on it.
+	expect(trash()?.className).toMatch(/\bh-7\b.*\bw-7\b/);
+	expect(trash()?.className).toContain('hover:bg-dangerwash');
+	expect(trash()?.className).toContain('ml-2');
+	expect(trash()?.nextElementSibling).toBeNull();
+	expect(trash()?.previousElementSibling?.getAttribute('aria-label')).toBe('New folder');
 	trash()?.click();
 	flushSync();
 	expect(host.querySelector('[data-confirm]')?.textContent).toContain(
@@ -1706,19 +1718,19 @@ it('keeps the bin as it is when the reader keeps it', () => {
 function binnedVault() {
 	const personal = group({ name: 'Personal', entries: [row({ title: 'Bank' })] });
 	const work = group({ name: 'Work' });
+	const deleted = group({
+		name: 'Banking',
+		binned: { since: '2026-08-26T09:00:00Z', within: null, from: personal.id },
+		deletion: 'forever'
+	});
 	const card = row({
 		title: 'Visa',
-		binned: { since: '2026-08-26T09:00:00Z', from: null }
+		binned: { since: '2026-08-26T09:00:00Z', within: deleted.id, from: personal.id }
 	});
-	const banking = group({
-		name: 'Banking',
-		binned: { since: '2026-08-26T09:00:00Z', from: personal.id },
-		deletion: 'forever',
-		entries: [card]
-	});
+	const banking = { ...deleted, entries: [card] };
 	const mail = row({
 		title: 'Old mail',
-		binned: { since: '2026-08-28T10:00:00Z', from: work.id }
+		binned: { since: '2026-08-28T10:00:00Z', within: null, from: work.id }
 	});
 	const bin = group({
 		name: 'Recycle Bin',
@@ -1824,11 +1836,42 @@ it('shows a deleted folder as a folder in the bin, saying when and where from', 
 			'In the Recycle Bin since 26 Aug · was in “Personal”'
 		);
 		expect(reads()).toContain('Visa');
-		expect(reads()).toContain('Deleted 3 days ago');
+		expect(reads()).toContain('Deleted 3 days ago · with “Banking”');
 		expect(reads(), 'emptying is for the whole bin, not a folder in it').not.toContain(
 			'Empty the bin'
 		);
 		expect(host.querySelector('[aria-label="Delete this folder"]')).toBeNull();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * A search in the bin looks inside the folders that went into it. The reader
+ * looking for a deleted entry does not know which folder it went in with, and
+ * a search that stopped at the bin's own entries said nothing matched while
+ * the entry sat one folder down. The row it finds says which folder that was,
+ * and the folder rows come back with the empty query.
+ */
+it('searches the folders in the bin too, and says which one a row went in with', async () => {
+	const vault = binnedVault();
+	const { component } = mounted(vault.tree);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		expect(reads(), 'the folder was poured out into the bin').not.toContain('Visa');
+
+		type('visa');
+		expect(reads()).not.toContain('Nothing matches');
+		expect(reads()).toContain('Visa');
+		expect(reads()).toContain('Deleted 3 days ago · with “Banking”');
+		expect(reads(), 'a search answered with the mail it did not match').not.toContain('Old mail');
+		expect(host.querySelector('[data-folder]')).toBeNull();
+
+		type('');
+		expect(reads()).not.toContain('Visa');
+		expect(host.querySelector('[data-folder]')).not.toBeNull();
 	} finally {
 		await unmount(component);
 		vi.useRealTimers();
@@ -1871,7 +1914,9 @@ it('moves the open entry to the bin and offers it back', async () => {
 				name: 'Recycle Bin',
 				isRecycleBin: true,
 				deletion: 'forever',
-				entries: [{ ...bank, binned: { since: '2026-08-29T14:30:00Z', from: before.id } }]
+				entries: [
+					{ ...bank, binned: { since: '2026-08-29T14:30:00Z', within: null, from: before.id } }
+				]
 			})
 		]
 	});
@@ -1921,7 +1966,7 @@ it('withdraws the offer of a moved entry once its eight seconds are up', async (
 		name: 'Recycle Bin',
 		isRecycleBin: true,
 		deletion: 'forever',
-		entries: [{ ...bank, binned: { since: null, from: before.id } }]
+		entries: [{ ...bank, binned: { since: null, within: null, from: before.id } }]
 	});
 	ipc.entry.mockResolvedValue(titled(bank.id, 'node-3'));
 	ipc.deleteEntry.mockResolvedValue(group({ ...before, entries: [], sections: [bin] }));
@@ -1983,7 +2028,7 @@ it('offers nothing back over a move whose save failed', async () => {
 		name: 'Recycle Bin',
 		isRecycleBin: true,
 		deletion: 'forever',
-		entries: [{ ...bank, binned: { since: null, from: before.id } }]
+		entries: [{ ...bank, binned: { since: null, within: null, from: before.id } }]
 	});
 	ipc.entry.mockResolvedValue(titled(bank.id, 'node-3'));
 	ipc.deleteEntry.mockResolvedValue(group({ ...before, entries: [], sections: [bin] }));
@@ -2241,7 +2286,7 @@ it('writes the names of folders in the bin as text', async () => {
 	const from = group({ name: hostile });
 	const gone = group({
 		name: hostile,
-		binned: { since: null, from: from.id },
+		binned: { since: null, within: null, from: from.id },
 		deletion: 'forever'
 	});
 	const tree = group({
@@ -2278,7 +2323,7 @@ it('moves an entry to the bin once however quickly the button is pressed again',
 		name: 'Recycle Bin',
 		isRecycleBin: true,
 		deletion: 'forever',
-		entries: [{ ...bank, binned: { since: null, from: before.id } }]
+		entries: [{ ...bank, binned: { since: null, within: null, from: before.id } }]
 	});
 	ipc.entry.mockResolvedValue(titled(bank.id, 'node-3'));
 	ipc.deleteEntry.mockResolvedValue(group({ ...before, entries: [], sections: [bin] }));
@@ -2413,6 +2458,102 @@ const pane = () => host.querySelector<HTMLElement>('section');
 const paneReads = () => (pane()?.textContent ?? '').replace(/\s+/g, ' ').trim();
 /** The title of an entry Rust has read, which is a field. */
 const titleField = () => host.querySelector<HTMLInputElement>('section h1 input');
+
+/**
+ * An entry opened in the bin is drawn with the bin's card above its login,
+ * and the row already says it is in the bin. So the card stands there while the
+ * entry is read, with its buttons drawn and not yet pressable, and the login
+ * does not drop by the card's height when the entry arrives.
+ */
+it('keeps the place of the bin’s card while an entry in the bin is read', async () => {
+	const vault = binnedVault();
+	const reading = Promise.withResolvers<ReturnType<typeof entry>>();
+	ipc.entry.mockReturnValueOnce(reading.promise);
+
+	const { component } = mounted(vault.tree);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		pressed('Old mail');
+		flushSync();
+
+		expect(paneReads()).toContain('Opening…');
+		const waiting = entryCard();
+		expect(waiting?.textContent).toContain('In the Recycle Bin since 28 Aug · was in “Work”');
+		const login = [...(pane()?.querySelectorAll('span') ?? [])].find(
+			(each) => each.textContent === 'Login'
+		);
+		expect(
+			waiting && login && waiting.compareDocumentPosition(login),
+			'the card is not above the login'
+		).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+		const buttons = [...(waiting?.querySelectorAll('button') ?? [])];
+		expect(buttons.map((each) => each.textContent?.trim())).toEqual([
+			'Put back',
+			'Delete forever…'
+		]);
+		expect(buttons.every((each) => each.disabled)).toBe(true);
+		buttons[0].click();
+		buttons[1].click();
+		await settled();
+		expect(ipc.putBackEntry).not.toHaveBeenCalled();
+		expect(host.querySelector('[data-confirm]')).toBeNull();
+
+		reading.resolve(
+			titled(vault.mail.id, 'Old mail', { binned: vault.mail.binned, deletion: 'forever' })
+		);
+		await settled();
+		expect(paneReads()).not.toContain('Opening…');
+		expect(entryCard()?.textContent).toContain('In the Recycle Bin since 28 Aug · was in “Work”');
+		expect([...(entryCard()?.querySelectorAll('button') ?? [])].some((each) => each.disabled)).toBe(
+			false
+		);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** An entry with no title and no login says so in the same words before and
+ * after Rust has read it. */
+it('says Untitled and No login in the same words while the entry is read', async () => {
+	const bare = row({ title: '', username: '' });
+	const tree = group({ name: 'Root', entries: [bare] });
+	const reading = Promise.withResolvers<ReturnType<typeof entry>>();
+	ipc.entry.mockReturnValueOnce(reading.promise);
+
+	const { component } = mounted(tree);
+	try {
+		// The row has no words of its own to find it by.
+		[...host.querySelectorAll('button')]
+			.find((each) => each.className.includes('grid-cols-'))
+			?.click();
+		flushSync();
+		expect(paneReads()).toContain('Opening…');
+		const before = pane()?.querySelector('h1')?.textContent?.trim();
+		expect(paneReads()).toContain('No login');
+
+		reading.resolve(
+			entry({
+				id: bare.id,
+				group: tree.id,
+				fields: [
+					field({ name: 'Title', kind: 'title', value: '', empty: true }),
+					field({ name: 'UserName', kind: 'username', value: '', empty: true })
+				]
+			})
+		);
+		await settled();
+		expect(paneReads()).not.toContain('Opening…');
+		expect(titleField()?.placeholder).toBe(before);
+		expect(pane()?.querySelector<HTMLInputElement>('[aria-label="Login"]')?.placeholder).toBe(
+			'No login'
+		);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
 
 it('opens the chosen entry at once while the save before it holds Rust', async () => {
 	const { gmail, drive, tree } = twoLogins();
@@ -2725,7 +2866,7 @@ it('offers an entry moved to the bin back once another is open, and leaves that 
 		name: 'Recycle Bin',
 		isRecycleBin: true,
 		deletion: 'forever',
-		entries: [{ ...gmail, binned: { since: null, from: tree.id } }]
+		entries: [{ ...gmail, binned: { since: null, within: null, from: tree.id } }]
 	});
 	const after = group({ ...tree, entries: [drive], sections: [bin] });
 	ipc.entry.mockImplementation((id: string) =>
@@ -2767,6 +2908,155 @@ it('offers an entry moved to the bin back once another is open, and leaves that 
 	}
 });
 
+/**
+ * Only a press on the entry already on its way waits. The guard used to hold
+ * through the save after a move, so the reader who moved one entry, opened the
+ * next and moved that one too in the second the save took saw nothing happen,
+ * and the second entry stayed where it was with no word about it.
+ */
+it('moves another entry to the bin while the save of the first holds Rust', async () => {
+	const { gmail, drive, tree } = twoLogins();
+	const binned = (rows: EntryRow[]) =>
+		group({
+			name: 'Recycle Bin',
+			isRecycleBin: true,
+			deletion: 'forever',
+			entries: rows.map((each) => ({
+				...each,
+				binned: { since: null, within: null, from: tree.id }
+			}))
+		});
+	ipc.entry.mockImplementation((id: string) =>
+		Promise.resolve(readOf(id === gmail.id ? gmail : drive))
+	);
+	ipc.deleteEntry
+		.mockResolvedValueOnce(group({ ...tree, entries: [drive], sections: [binned([gmail])] }))
+		.mockResolvedValueOnce(group({ ...tree, entries: [], sections: [binned([gmail, drive])] }));
+	const saving = Promise.withResolvers<void>();
+	ipc.save.mockReturnValueOnce(saving.promise);
+
+	const { component } = mounted(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		pressed('Move to Recycle Bin');
+		await settled();
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+
+		pressed('Google Drive');
+		await settled();
+		pressed('Move to Recycle Bin', pane() ?? host);
+		await settled();
+		expect(
+			ipc.deleteEntry,
+			'the second move was dropped behind the first save'
+		).toHaveBeenCalledTimes(2);
+		expect(ipc.deleteEntry).toHaveBeenLastCalledWith(drive.id, expect.any(Number));
+		expect(pane()).toBeNull();
+
+		saving.resolve();
+		await settled();
+		expect(ipc.save).toHaveBeenCalledTimes(2);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * The one press the narrower guard must still hold back: the open entry's own
+ * move while its folder's move to the bin is on its way. Rust takes the folder
+ * first, and the entry's move would then find it in the bin and erase it.
+ */
+it('does not move an entry on its own while its folder is on its way to the bin', async () => {
+	const bank = row({ title: 'Bank' });
+	const work = group({ name: 'Work', entries: [bank] });
+	bank.group = work.id;
+	const bin = group({ name: 'Recycle Bin', isRecycleBin: true, deletion: 'forever' });
+	const tree = group({ name: 'Root', sections: [work, bin] });
+	const gone = group({
+		...tree,
+		sections: [
+			{
+				...bin,
+				sections: [
+					{
+						...work,
+						binned: { since: null, within: null, from: tree.id },
+						deletion: 'forever'
+					}
+				]
+			}
+		]
+	});
+	ipc.entry.mockResolvedValue(titled(bank.id, 'Bank', { group: work.id }));
+	const moving = Promise.withResolvers<typeof gone>();
+	ipc.deleteGroup.mockReturnValueOnce(moving.promise);
+
+	const { component } = mounted(tree);
+	try {
+		pressed('Work');
+		flushSync();
+		pressed('Bank');
+		await settled();
+		host.querySelector<HTMLButtonElement>('[aria-label="Delete this folder"]')?.click();
+		flushSync();
+		pressed('Move to Recycle Bin', host.querySelector('[data-confirm]') ?? host);
+		flushSync();
+		expect(ipc.deleteGroup).toHaveBeenCalledWith(work.id);
+
+		pressed('Move to Recycle Bin', pane() ?? host);
+		await settled();
+		expect(ipc.deleteEntry, 'the entry went after its folder, and for good').not.toHaveBeenCalled();
+
+		moving.resolve(gone);
+		await settled();
+		expect(pane()).toBeNull();
+		expect(toast()?.textContent).toContain('Moved “Work” to the Recycle Bin');
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * An entry put back is read again before the save rather than after it. The
+ * pane used to go on offering Put back and Delete forever on an entry that had
+ * already left the bin for the whole second the save took, and a press there
+ * was a refusal or a move nobody asked for.
+ */
+it('stops offering Put back on an entry as soon as Rust has put it back', async () => {
+	const vault = binnedVault();
+	ipc.entry.mockResolvedValue(
+		titled(vault.mail.id, 'Old mail', { binned: vault.mail.binned, deletion: 'forever' })
+	);
+	ipc.putBackEntry.mockResolvedValue(vault.tree);
+	const saving = Promise.withResolvers<void>();
+	ipc.save.mockReturnValueOnce(saving.promise);
+
+	const { component } = mounted(vault.tree);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		pressed('Old mail');
+		await settled();
+		expect(entryCard()).not.toBeNull();
+
+		ipc.entry.mockResolvedValue(titled(vault.mail.id, 'Old mail', { group: vault.work.id }));
+		pressed('Put back', entryCard() ?? host);
+		await settled();
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+		expect(entryCard(), 'the save is still running and the pane offers Put back').toBeNull();
+
+		saving.resolve();
+		await settled();
+		expect(ipc.putBackEntry).toHaveBeenCalledTimes(1);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
 /** An undo pressed with the pane empty, and an entry chosen during the second
  * its save takes: the entry that came back is put back, and not opened over the
  * one the reader chose. */
@@ -2776,7 +3066,7 @@ it('puts an entry back without taking the pane from the one chosen meanwhile', a
 		name: 'Recycle Bin',
 		isRecycleBin: true,
 		deletion: 'forever',
-		entries: [{ ...gmail, binned: { since: null, from: tree.id } }]
+		entries: [{ ...gmail, binned: { since: null, within: null, from: tree.id } }]
 	});
 	ipc.entry.mockImplementation((id: string) =>
 		Promise.resolve(readOf(id === gmail.id ? gmail : drive))

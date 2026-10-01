@@ -9,9 +9,11 @@ import {
 	projects,
 	recycleBin,
 	rowOf,
+	searchedEntries,
 	shownEntries,
 	visible
 } from './tree';
+import type { EntryRow } from './model';
 
 describe('walking the tree', () => {
 	it('gathers the entries of a group and of everything under it', () => {
@@ -63,7 +65,7 @@ describe('walking the tree', () => {
 	 * together.
 	 */
 	it('shows a folder in the bin as a folder rather than pouring it out', () => {
-		const went = { since: '2026-08-26T09:00:00Z', from: null };
+		const went = { since: '2026-08-26T09:00:00Z', within: null, from: null };
 		const inner = group({ name: 'Cards', binned: went, entries: [row({ title: 'Visa' })] });
 		const banking = group({
 			name: 'Banking',
@@ -86,6 +88,36 @@ describe('walking the tree', () => {
 		expect(inBin(tree)).toBe(false);
 		expect(liveEntries(tree).map((entry) => entry.title)).toEqual(['kept']);
 		expect(entriesOf(bin)).toHaveLength(3);
+	});
+
+	/**
+	 * A search in the bin looks inside the deleted folders too. One that stopped
+	 * at the folder being shown said nothing matched "visa" while Visa sat one
+	 * folder down. Outside the bin a search still leaves the bin out, wherever a
+	 * client put it.
+	 */
+	it('searches everything below a folder in the bin, and nothing of the bin outside it', () => {
+		const went = { since: '2026-08-26T09:00:00Z', within: null, from: null };
+		const inner = group({ name: 'Cards', binned: went, entries: [row({ title: 'Visa' })] });
+		const banking = group({
+			name: 'Banking',
+			binned: went,
+			entries: [row({ title: 'Bank' })],
+			sections: [inner]
+		});
+		const bin = group({
+			name: 'Recycle Bin',
+			isRecycleBin: true,
+			entries: [row({ title: 'Mail' })],
+			sections: [banking]
+		});
+		const project = group({ entries: [row({ title: 'kept' })], sections: [bin] });
+
+		const titles = (rows: EntryRow[]) => rows.map((entry) => entry.title);
+		expect(titles(searchedEntries(bin))).toEqual(['Mail', 'Bank', 'Visa']);
+		expect(titles(searchedEntries(banking))).toEqual(['Bank', 'Visa']);
+		expect(titles(searchedEntries(inner))).toEqual(['Visa']);
+		expect(titles(searchedEntries(project))).toEqual(['kept']);
 	});
 
 	it('finds a group wherever it sits, and nothing for one that is not there', () => {

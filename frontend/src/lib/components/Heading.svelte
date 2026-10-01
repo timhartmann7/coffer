@@ -2,6 +2,7 @@
 	import type { Snippet } from 'svelte';
 	import type { Group } from '$lib/model';
 	import Icon from './Icon.svelte';
+	import Mask from './Mask.svelte';
 
 	/**
 	 * The top of the entry pane: the folders down to the entry, its name, and
@@ -13,15 +14,18 @@
 	 */
 	let {
 		path,
+		masked,
 		onClose,
 		children
 	}: {
 		/** The folders from the vault down to the entry, for the line above
 		 * the name. */
 		path: Group[];
+		/** The database protects the name, and it is drawn as a secret is. */
+		masked: boolean;
 		/** Puts the pane away. */
 		onClose: () => void;
-		/** The name. */
+		/** The name, in the heading's type. */
 		children: Snippet;
 	} = $props();
 </script>
@@ -43,7 +47,21 @@
 	     and a press meant for one took the other; deleting is now a labelled
 	     action at the foot of the pane. -->
 	<div class="flex items-center gap-4">
-		{@render children()}
+		<!-- The type is the heading's, and the name inside inherits it: the one
+		     place that says how big an entry's name is, whether it is a field, a
+		     name still being read, or a secret. A name in its box sits the box's
+		     padding to the left, so it lines up with the folders above. -->
+		<h1
+			class="min-w-0 flex-1 text-title font-medium tracking-tight {masked
+				? 'truncate text-txt'
+				: '-ml-2 flex'}"
+		>
+			{#if masked}
+				<Mask />
+			{:else}
+				{@render children()}
+			{/if}
+		</h1>
 		<button
 			type="button"
 			onclick={onClose}

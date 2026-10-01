@@ -1,8 +1,9 @@
 <script lang="ts">
 	import type { Attachment } from 'svelte/attachments';
 	import { SvelteSet } from 'svelte/reactivity';
+	import { eraseQuestion } from '$lib/bin';
 	import { settle, type Place } from '$lib/drafts';
-	import { called, fully, size } from '$lib/format';
+	import { called, fully, NO_LOGIN, size, UNTITLED } from '$lib/format';
 	import {
 		addAttachment,
 		asFailure,
@@ -25,7 +26,6 @@
 	import Heading from './Heading.svelte';
 	import Icon from './Icon.svelte';
 	import InBin from './InBin.svelte';
-	import Mask from './Mask.svelte';
 	import PasswordField from './PasswordField.svelte';
 	import ProtectedValue from './ProtectedValue.svelte';
 	import Tags from './Tags.svelte';
@@ -102,7 +102,7 @@
 	/** Whether the reader has asked to delete the entry for good and not yet
 	 * answered the question that asks whether they mean it. */
 	let erasing = $state(false);
-	const forever = $derived(`Delete ${called(entry)} forever? This can’t be undone.`);
+	const forever = $derived(eraseQuestion(called(entry)));
 
 	const title = $derived(of('title'));
 	const username = $derived(of('username'));
@@ -545,26 +545,18 @@
 {/snippet}
 
 <section class="flex h-full flex-col overflow-hidden bg-surface">
-	<Heading {path} {onClose}>
-		{#if title && title.value === null}
-			<h1 class="min-w-0 flex-1 truncate text-title font-medium tracking-tight text-txt">
-				<Mask />
-			</h1>
-		{:else}
-			{@const at = place(title, 'Title')}
-			<h1 class="-ml-2 flex min-w-0 flex-1">
-				<Editable
-					value={title?.value ?? ''}
-					label="Title"
-					placeholder="Untitled"
-					classes="text-title font-medium tracking-tight text-txt"
-					readonly={locked}
-					bare
-					draft={at}
-					onCommit={(value) => write(at.field, value, at.protect)}
-				/>
-			</h1>
-		{/if}
+	<Heading {path} masked={title !== undefined && title.value === null} {onClose}>
+		{@const at = place(title, 'Title')}
+		<Editable
+			value={title?.value ?? ''}
+			label="Title"
+			placeholder={UNTITLED}
+			classes="text-txt"
+			readonly={locked}
+			bare
+			draft={at}
+			onCommit={(value) => write(at.field, value, at.protect)}
+		/>
 	</Heading>
 
 	<div class="flex-1 overflow-y-auto px-6 py-5">
@@ -577,10 +569,8 @@
 					binned={entry.binned}
 					{root}
 					{now}
-					question={forever}
 					{readOnly}
-					{onPutBack}
-					{onDelete}
+					ways={{ question: forever, onPutBack, onDelete }}
 				/>
 			{/key}
 		{/if}
@@ -605,7 +595,7 @@
 					<Editable
 						value={username?.value ?? ''}
 						label="Login"
-						placeholder="No login"
+						placeholder={NO_LOGIN}
 						mono
 						readonly={locked}
 						draft={at}

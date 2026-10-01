@@ -77,6 +77,14 @@ export function ago(stamp: string | null, now: Date): string {
 }
 
 /**
+ * What the entry pane writes where an entry has no title, and where it has no
+ * login. The same words for an entry Rust has read and one it is still
+ * reading, so nothing changes on the screen when it arrives.
+ */
+export const UNTITLED = 'Untitled';
+export const NO_LOGIN = 'No login';
+
+/**
  * What a sentence calls an entry: its title in quotes, or "this entry" when
  * it has none to show - left empty, or kept protected by the database, which
  * no notice is a reason to reveal.

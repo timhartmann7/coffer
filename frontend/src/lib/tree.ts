@@ -52,6 +52,19 @@ export function shownEntries(group: Group): EntryRow[] {
 	return inBin(group) ? group.entries : liveEntries(group);
 }
 
+/**
+ * The entries a search of a folder looks through.
+ *
+ * Everything below it, the bin included: a reader looking in the bin for a
+ * deleted entry does not know which deleted folder it went in with, and a
+ * search that stopped at the folder being shown answered that nothing
+ * matched. Outside the bin that is what the folder shows anyway. The folder by
+ * folder view is for reading the bin, not for finding something in it.
+ */
+export function searchedEntries(group: Group): EntryRow[] {
+	return inBin(group) ? entriesOf(group) : liveEntries(group);
+}
+
 export function recycleBin(root: Group): Group | null {
 	if (root.isRecycleBin) return root;
 	for (const section of root.sections) {

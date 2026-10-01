@@ -15,17 +15,17 @@
 	 * one in the question.
 	 *
 	 * A database Coffer will not write back gets the sentence and no buttons.
+	 * An entry still being read gets the buttons, so the card is the height it
+	 * will be, and none of them can be pressed yet.
 	 */
 	let {
 		binned,
 		root,
 		now,
 		name,
-		question,
 		readOnly,
 		class: classes = '',
-		onPutBack,
-		onDelete
+		ways
 	}: {
 		binned: Binned;
 		/** The tree, which is where the folder it came from gets its name. */
@@ -33,12 +33,12 @@
 		now: Date;
 		/** A heading, for a folder: an entry's pane has its own title above. */
 		name?: string;
-		/** What deleting it forever asks, naming what goes. */
-		question: string;
 		readOnly: boolean;
 		class?: string;
-		onPutBack: () => void;
-		onDelete: () => void;
+		/** The two ways out, and what deleting it forever asks, naming what
+		 * goes. Absent while the entry is still being read: there is nothing yet
+		 * to put back or delete. */
+		ways?: { question: string; onPutBack: () => void; onDelete: () => void };
 	} = $props();
 
 	let asking = $state(false);
@@ -60,7 +60,8 @@
 	</div>
 
 	{#if !readOnly}
-		{#if asking}
+		{#if asking && ways}
+			{@const { question, onDelete } = ways}
 			<Confirm
 				bare
 				class="mt-3 border-t border-hairline pt-3"
@@ -76,15 +77,17 @@
 			<div class="mt-3 flex flex-wrap gap-2">
 				<button
 					type="button"
-					onclick={onPutBack}
-					class="h-9 rounded-full bg-accent px-4 text-small font-medium text-canvas transition-colors hover:bg-accenthi active:bg-accenthi"
+					onclick={ways?.onPutBack}
+					disabled={!ways}
+					class="h-9 rounded-full bg-accent px-4 text-small font-medium text-canvas transition-colors hover:bg-accenthi active:bg-accenthi disabled:cursor-not-allowed disabled:hover:bg-accent"
 				>
 					Put back
 				</button>
 				<button
 					type="button"
 					onclick={() => (asking = true)}
-					class="h-9 rounded-full px-3 text-small text-txt3 transition-colors hover:bg-dangerwash hover:text-danger"
+					disabled={!ways}
+					class="h-9 rounded-full px-3 text-small text-txt3 transition-colors hover:bg-dangerwash hover:text-danger disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-txt3"
 				>
 					Delete forever…
 				</button>

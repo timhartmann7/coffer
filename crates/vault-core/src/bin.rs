@@ -32,8 +32,12 @@ pub(crate) enum Standing {
     /// The bin itself. What it holds directly went in on its own.
     Bin,
     /// Inside a folder that went into the bin, and so in the bin since that
-    /// folder went in.
-    Within { since: Option<NaiveDateTime> },
+    /// folder went in. `folder` is the one the bin holds: the folder that was
+    /// deleted, whatever depth this is below it.
+    Within {
+        since: Option<NaiveDateTime>,
+        folder: GroupId,
+    },
 }
 
 impl Standing {
@@ -68,6 +72,7 @@ impl Bin {
             Standing::Outside => Standing::Outside,
             Standing::Bin => Standing::Within {
                 since: times.location_changed,
+                folder: group,
             },
             within @ Standing::Within { .. } => within,
         }
@@ -116,9 +121,17 @@ impl Bin {
     /// nothing when that folder is outside the bin.
     ///
     /// `previous` is the folder the thing was in before its last move, which
-    /// is what the format keeps as `PreviousParentGroup`. It is where putting
-    /// the thing back takes it, as long as it is still somewhere to go: a
-    /// folder in the bin is not, and neither is one that has gone.
+    /// is what the format keeps as `PreviousParentGroup`. For something that
+    /// went into the bin on its own it is where putting it back takes it, as
+    /// long as it is still somewhere to go: a folder in the bin is not, and
+    /// neither is one that has gone.
+    ///
+    /// Something that went in with a deleted folder was not moved by the
+    /// deletion, so its own `PreviousParentGroup` is about some older move -
+    /// KeePass and KeePassXC write one on every drag between folders - and it
+    /// was never in that folder when it was deleted. It goes back where the
+    /// folder that took it in came from, which is where it would be had the
+    /// folder been put back whole.
     pub(crate) fn binned(
         &self,
         database: &Database,
@@ -126,15 +139,25 @@ impl Bin {
         times: &Times,
         previous: Option<GroupId>,
     ) -> Option<Binned> {
-        let since = match holder {
+        let (since, within, previous) = match holder {
             Standing::Outside => return None,
-            Standing::Bin => times.location_changed,
-            Standing::Within { since } => since,
+            Standing::Bin => (times.location_changed, None, previous),
+            Standing::Within { since, folder } => (
+                since,
+                Some(folder),
+                database
+                    .group(folder)
+                    .and_then(|deleted| deleted.previous_parent().map(|parent| parent.id())),
+            ),
         };
         let from = previous.filter(|group| {
             database.group(*group).is_some() && !self.standing(database, *group).binned()
         });
-        Some(Binned { since, from })
+        Some(Binned {
+            since,
+            within,
+            from,
+        })
     }
 }
 

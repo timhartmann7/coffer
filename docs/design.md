@@ -199,6 +199,11 @@ one, versions and all, for that second. Now the heading and the login's box are
 drawn at once from the row that was pressed - the name in the title's own type,
 the login in the mockup's field, a protected one as the mask - and under them
 "Opening…" in `fine` and `txt4`, the colour of something that is not there yet.
+The name sits in the title field's own box and the empty ones say "Untitled" and
+"No login", the same component and the same words the entry is drawn with. A
+row in the bin already says so, and the bin's card stands above the login at
+once with its buttons drawn and disabled, so the login does not drop by the
+card's height when the entry arrives.
 It arrives on the fade, so an entry Rust answers for within the frame replaces
 it before it is seen; nothing pulses or spins, because a loop is none of the
 window's three movements. Nothing in it can be pressed but the close. The rest
@@ -285,7 +290,11 @@ nothing around them, and a trash twelve pixels from an export or a copy is the
 one a press meant for its neighbour lands on. Every trash that removes something
 at once - a file's, a field's, a version's - sits in a 28-pixel box (`h-7`),
 with `dangerwash` behind it on hover and a step more gap than the icons beside
-it; the export next to a file gets the same box with `raised` behind it. A
+it; the export next to a file gets the same box with `raised` behind it. The
+folder's trash in the header of the folders pane only asks, and gets the same
+box all the same: it is the last icon there, a step further from Rename and New
+folder, and its box is drawn into the header's padding so the header is no
+taller. A
 version's is drawn into its row's padding, so the row is no taller. A field's
 trash is the last thing in the row and is drawn only while the row is under the
 pointer or holds the focus, so a row that is being read or copied from carries
@@ -322,7 +331,13 @@ folders pane stays lit while anything inside the bin is shown, since nothing
 else there is.
 
 **A row in the bin says when and where from** - "Deleted 3 days ago · from
-“Banking”" - on a second line in `sub` mono `txt4`. Beside an open entry that
+“Banking”" - on a second line in `sub` mono `txt4`. Something that went in
+with a deleted folder names that folder instead - "Deleted 3 days ago · with
+“Banking”" - and its card reads "… · deleted with “Banking” · goes back to
+“Personal”", the folder's way back, since its own last move says nothing about
+the deletion. A search in the bin looks inside the deleted folders as well, and
+that line is how a row it found further down says where it is; the folders'
+own rows come back with the empty query. Beside an open entry that
 line takes the place of the login and the address. In the wide list it sits
 under the name in the first column, which makes those rows taller than the
 mockup's rows; nowhere else in the list is.
