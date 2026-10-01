@@ -57,6 +57,11 @@ struct Held {
     /// usually nothing at this path yet, and pointing the unlock screen at it
     /// would be offering to open a file that does not exist.
     making: Option<PathBuf>,
+    /// The vault in Coffer's own folder the first-run screen was last told
+    /// about. Kept for the same reason `making` is: pressing the offer sends
+    /// nothing, and what it opens has to be the file the screen named rather
+    /// than whatever a second search turns up.
+    found: Option<PathBuf>,
     /// What a one-second unlock costs on this machine.
     ///
     /// A property of the Mac and not of the file, which is why it is here and
@@ -226,6 +231,7 @@ impl Session {
                 typed: false,
                 key_file: None,
                 making: None,
+                found: None,
                 measured: None,
                 open: None,
                 generation: 0,
@@ -275,6 +281,7 @@ impl Session {
         held.typed = false;
         held.shown = None;
         held.returning = false;
+        held.found = None;
         held.generation += 1;
     }
 
@@ -548,6 +555,17 @@ impl Session {
     /// Where a new vault would go, once somewhere has been settled.
     pub fn target(&self) -> Option<PathBuf> {
         self.held().making.clone()
+    }
+
+    /// Keeps the vault in Coffer's own folder that the first-run screen is
+    /// about to be told about, or that there is none.
+    pub fn finding(&self, found: Option<PathBuf>) {
+        self.held().found = found;
+    }
+
+    /// The vault in Coffer's own folder the screen was last told about.
+    pub fn found(&self) -> Option<PathBuf> {
+        self.held().found.clone()
     }
 
     /// What a one-second unlock costs on this machine, remembered for the

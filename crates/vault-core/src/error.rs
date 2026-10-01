@@ -219,6 +219,13 @@ pub enum VaultError {
     #[error("that name belongs to a file Coffer keeps beside a vault")]
     ReservedName,
 
+    /// The copy a lock left of a vault by the new vault's name is beside it.
+    /// It opens with that vault's password, not the new one's, and would be
+    /// offered as the new vault's unsaved work and written over by its next
+    /// lock that had something to keep.
+    #[error("the copy a lock left of a vault by that name is beside it")]
+    CopyBeside,
+
     /// The master password bytes are not UTF-8, and KeePass hashes passwords as
     /// UTF-8 text.
     #[error("the master password is not valid text")]

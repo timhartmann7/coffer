@@ -25,22 +25,23 @@ pub struct Database {
     pub name: String,
 }
 
-/// Where a new vault would go, as the creation screen draws it.
+/// Where a new vault would go, as the creation screen draws it. Only what it
+/// draws: the place itself stays in the session, and nothing the window sends
+/// names it.
 #[derive(Serialize)]
 pub struct Target {
-    #[serde(flatten)]
-    pub place: Database,
     /// The path the way its owner would write it: under the home folder it
     /// starts with `~`. What the screen shows, and never what anything opens.
     pub shown: String,
-    /// Whether something is already at the name. Nothing is ever made over
-    /// one, so the screen says so before anybody types a password rather than
-    /// after.
-    pub taken: bool,
+    /// What is already at the name. Nothing is ever made over anything, so
+    /// the screen says so before anybody types a password rather than after,
+    /// and says what it is, because only a vault can be opened instead.
+    pub standing: crate::home::Standing,
 }
 
 /// A vault sitting in Coffer's own folder, offered on a launch that remembers
-/// none. The path does not cross: opening it asks Rust to find it again.
+/// none. The path does not cross: the session keeps the one it named, and
+/// opening it opens that file or answers `gone`.
 #[derive(Serialize)]
 pub struct Found {
     /// The file name, which is what the offer to open it says.

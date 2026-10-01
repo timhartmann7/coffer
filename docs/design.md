@@ -391,6 +391,14 @@ pill, with the sentence in `small` rather than `lead`, because the row above it 
 the thing it is about. The make button goes to its disabled look until the place
 is free.
 
+The sentence says what is there, in the same box. A vault, or the copy a lock
+left of one whose file has gone, gets the "Open it" pill. An empty file a killed
+creation left, a folder or a link to nothing gets a sentence that names it and
+points at "Somewhere else" in the row above, and no pill: there is nothing there
+to open. A press that finds the place changed redraws the box from what is there
+now, with the refusal in `danger` at the foot of the form where every other one
+on this screen goes.
+
 **The place is written from the tilde.** The creation screen's row shows
 `~/Coffer/vault.kdbx` rather than the whole path, which is how the mockup draws
 a place (`~/Vault`), and the sentence about a taken place names it the same way.

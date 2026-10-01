@@ -26,7 +26,7 @@ use std::sync::Arc;
 use tauri::ipc::{InvokeBody, Request};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
-use vault_core::storage::{self, atomic, snapshot, unsaved};
+use vault_core::storage::{self, snapshot, unsaved};
 use zeroize::Zeroizing;
 
 use vault_core::generate::{Alphabet, Recipe};
@@ -40,6 +40,7 @@ use crate::dto::{
     self, Database, Entry, Group, Made, Revealed, Rival, Snapshot, Status, Target, Versions,
 };
 use crate::error::Failure;
+use crate::home::Standing;
 use crate::session::Session;
 use crate::{clipboard, home, lock, opener, settings, window};
 
@@ -66,13 +67,7 @@ pub fn status(app: AppHandle, session: Held<'_>) -> Status {
     let database = session.database();
 
     Status {
-        // Looked for only when nothing is remembered, which is the launch that
-        // would otherwise greet somebody with a vault as somebody with none.
-        found: database
-            .is_none()
-            .then(|| home_of(&app).ok())
-            .flatten()
-            .and_then(|home| home::found(&home))
+        found: looked_home(&session, home_of(&app).ok().as_deref())
             .as_deref()
             .map(dto::Found::of),
         // Asked of the filesystem rather than remembered, so that a copy left
@@ -110,6 +105,22 @@ pub fn status(app: AppHandle, session: Held<'_>) -> Status {
     }
 }
 
+/// The vault in Coffer's own folder, for the first-run screen to offer, kept
+/// in the session so that the offer opens that file and no other.
+///
+/// Looked for only when nothing is remembered, which is the launch that would
+/// otherwise greet somebody with a vault as somebody with none.
+fn looked_home(session: &Session, home: Option<&Path>) -> Option<PathBuf> {
+    let found = session
+        .database()
+        .is_none()
+        .then_some(home)
+        .flatten()
+        .and_then(home::found);
+    session.finding(found.clone());
+    found
+}
+
 /// Asks for a database with the system's own file dialog.
 ///
 /// The path never comes from the webview: the webview asks for a picker, the
@@ -129,7 +140,8 @@ pub async fn choose_database(
         .set_title("Open a vault")
         .add_filter(KDBX, &["kdbx"]);
 
-    if let Some(directory) = session.database().as_deref().and_then(Path::parent) {
+    let home = home_of(&app).ok();
+    if let Some(directory) = home::opening_in(session.database().as_deref(), home.as_deref()) {
         picker = picker.set_directory(directory);
     }
 
@@ -151,36 +163,51 @@ pub async fn choose_database(
 
 /// Points the session at the vault found in Coffer's own folder.
 ///
-/// Nothing is sent: the folder is searched again here, so no message from the
-/// window can name a file, and a vault that went away after the screen was
-/// drawn is reported as gone rather than opened as something else.
+/// Nothing is sent: the file is the one `status` last named, which the session
+/// is holding, so no message from the window can name a file. It is asked
+/// again by the rule the search used, and one that went away or stopped being
+/// a vault after the screen was drawn is answered with `gone` rather than
+/// opened, or swapped for another file the folder holds.
 #[tauri::command(async)]
-pub fn choose_found(app: AppHandle, session: Held<'_>) -> Result<Database, Failure> {
+pub fn choose_found(session: Held<'_>) -> Result<Database, Failure> {
+    found_chosen(&session)
+}
+
+fn found_chosen(session: &Session) -> Result<Database, Failure> {
     if session.is_unlocked() {
         return Err(Failure::lock_first());
     }
 
-    let path = home::found(&home_of(&app)?).ok_or_else(Failure::gone)?;
-    Ok(chosen_now(&session, path))
+    let path = session
+        .found()
+        .filter(|path| home::offered(path))
+        .ok_or_else(Failure::gone)?;
+    Ok(chosen_now(session, path))
 }
 
 /// Points the session at whatever already sits where the new vault would go,
 /// for a reader who meant to open it rather than make another.
 ///
 /// Nothing is sent here either. The place is the one `default_new_database` or
-/// `choose_new_database` settled, which the session is still holding.
+/// `choose_new_database` settled, which the session is still holding. Only a
+/// vault, or the copy a lock left of one whose file has gone, is opened: the
+/// unlock screen for that name is where such a copy is put back. Anything else
+/// is answered with `gone`, and the screen reads the place again with `target`.
 #[tauri::command(async)]
 pub fn choose_existing(session: Held<'_>) -> Result<Database, Failure> {
+    existing_chosen(&session)
+}
+
+fn existing_chosen(session: &Session) -> Result<Database, Failure> {
     if session.is_unlocked() {
         return Err(Failure::lock_first());
     }
 
     let target = session.target().ok_or_else(Failure::nowhere_chosen)?;
-    if !target.is_file() {
-        return Err(Failure::gone());
+    match home::standing(&target) {
+        Standing::Vault | Standing::Copy => Ok(chosen_now(session, target)),
+        Standing::Free | Standing::Empty | Standing::Other => Err(Failure::gone()),
     }
-
-    Ok(chosen_now(&session, target))
 }
 
 /// Points the session at a file Rust found for itself, and answers with what
@@ -329,7 +356,16 @@ pub fn default_new_database(app: AppHandle, session: Held<'_>) -> Result<Target,
     let path = home::first(&home);
 
     session.making(path.clone());
-    Ok(target(&path, Some(&home)))
+    Ok(target_of(&path, Some(&home)))
+}
+
+/// What is at the place a new vault would go, read again: after the offer to
+/// open what was there found something else, and after a creation found the
+/// place taken. The place stays the one the session holds.
+#[tauri::command(async)]
+pub fn target(app: AppHandle, session: Held<'_>) -> Result<Target, Failure> {
+    let path = session.target().ok_or_else(Failure::nowhere_chosen)?;
+    Ok(target_of(&path, home_of(&app).ok().as_deref()))
 }
 
 /// The reader's home folder, which only the account can lack.
@@ -340,11 +376,10 @@ fn home_of(app: &AppHandle) -> Result<PathBuf, Failure> {
 }
 
 /// A place for a new vault, as the creation screen draws it.
-fn target(path: &Path, home: Option<&Path>) -> Target {
+fn target_of(path: &Path, home: Option<&Path>) -> Target {
     Target {
-        place: Database::of(path),
         shown: home::shown(path, home),
-        taken: atomic::taken(path),
+        standing: home::standing(path),
     }
 }
 
@@ -384,7 +419,7 @@ pub async fn choose_new_database(
     // there would be gone. The screen is told now rather than after the
     // password.
     session.making(path.clone());
-    Ok(Some(target(&path, home_of(&app).ok().as_deref())))
+    Ok(Some(target_of(&path, home_of(&app).ok().as_deref())))
 }
 
 /// Measures how many Argon2id passes this machine needs for a one-second
@@ -1304,6 +1339,8 @@ pub async fn rival(session: Held<'_>) -> Result<Rival, Failure> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::symlink;
+
     use super::*;
     use crate::source::{functions, shipped};
 
@@ -1504,6 +1541,227 @@ mod tests {
                 .is_some_and(|body| body.contains("fn unlock_over")),
             "something other than the reader's own press takes a lock over"
         );
+    }
+
+    /// A home folder with Coffer's folder in it, empty.
+    fn home() -> (tempfile::TempDir, PathBuf) {
+        let home = tempfile::tempdir().expect("a scratch directory");
+        let folder = home.path().join(home::FOLDER);
+        std::fs::create_dir(&folder).expect("the folder is made");
+        (home, folder)
+    }
+
+    /// A file that is a vault by the folder's rule: something in it.
+    fn vault(at: &Path) {
+        std::fs::write(at, b"not empty").expect("the file is written");
+    }
+
+    fn code_of(failure: Failure) -> String {
+        serde_json::to_value(failure).expect("a failure serialises")["code"]
+            .as_str()
+            .expect("a code")
+            .to_owned()
+    }
+
+    /// A session with a vault open, made with the cheapest key derivation.
+    fn unlocked(at: &Path) -> Session {
+        let session = Session::new(None, None);
+        session.making(at.to_path_buf());
+        session.measured(kdf::Work::at(1));
+        session
+            .create(Zeroizing::new(b"coffer-test".to_vec()))
+            .expect("the vault is made");
+        session
+    }
+
+    /// The card named `vault.kdbx`, and the reader moved it away before
+    /// pressing. A second search would find `old.kdbx` and open that under a
+    /// card that named another file: the reader would type their password into
+    /// a stale vault.
+    #[test]
+    fn the_offer_opens_the_file_the_card_named_or_nothing() {
+        let (home, folder) = home();
+        vault(&folder.join("vault.kdbx"));
+        vault(&folder.join("old.kdbx"));
+        let session = Session::new(None, None);
+
+        assert_eq!(
+            looked_home(&session, Some(home.path())),
+            Some(folder.join("vault.kdbx"))
+        );
+        std::fs::rename(folder.join("vault.kdbx"), home.path().join("moved.kdbx"))
+            .expect("the vault is moved away");
+
+        let refused = found_chosen(&session)
+            .err()
+            .expect("the named file is gone");
+        assert_eq!(code_of(refused), "gone");
+        assert_eq!(session.database(), None, "something else was chosen");
+
+        // What the screen reads next names what is there now.
+        assert_eq!(
+            looked_home(&session, Some(home.path())),
+            Some(folder.join("old.kdbx"))
+        );
+        let chosen = found_chosen(&session).expect("the file now named opens");
+        assert_eq!(
+            Some(PathBuf::from(chosen.path)),
+            folder.join("old.kdbx").canonicalize().ok()
+        );
+    }
+
+    /// The file the card named stopped being a vault between the screen and
+    /// the press. Each is answered `gone` and nothing is chosen. A vault put at
+    /// the same name is the file the card named, and is what opens.
+    #[test]
+    fn an_offer_whose_file_became_something_else_is_gone() {
+        type Replace = fn(&Path);
+        let replacements: [(&str, Replace); 4] = [
+            ("a folder", |at| {
+                std::fs::create_dir(at).expect("the folder is made")
+            }),
+            ("a link to nothing", |at| {
+                symlink(at.with_file_name("nowhere.kdbx"), at).expect("a link")
+            }),
+            ("an empty file", |at| {
+                std::fs::write(at, b"").expect("the file is written")
+            }),
+            ("nothing at all", |_| {}),
+        ];
+
+        for (what, replace) in replacements {
+            let (home, folder) = home();
+            let named = folder.join("vault.kdbx");
+            vault(&named);
+            let session = Session::new(None, None);
+            assert_eq!(
+                looked_home(&session, Some(home.path())),
+                Some(named.clone())
+            );
+
+            std::fs::remove_file(&named).expect("the vault goes");
+            replace(&named);
+
+            let refused = found_chosen(&session).err();
+            assert_eq!(refused.map(code_of).as_deref(), Some("gone"), "{what}");
+            assert_eq!(session.database(), None, "{what} was chosen");
+        }
+
+        let (home, folder) = home();
+        let named = folder.join("vault.kdbx");
+        vault(&named);
+        let session = Session::new(None, None);
+        looked_home(&session, Some(home.path()));
+        std::fs::write(&named, b"written again since").expect("the file is replaced");
+
+        assert!(found_chosen(&session).is_ok());
+        assert_eq!(session.database(), named.canonicalize().ok());
+    }
+
+    /// A launch that remembers a vault offers nothing from the folder, and a
+    /// press that arrives anyway opens nothing.
+    #[test]
+    fn nothing_is_offered_over_a_remembered_vault() {
+        let (home, folder) = home();
+        vault(&folder.join("vault.kdbx"));
+        let remembered = home.path().join("old.kdbx");
+        vault(&remembered);
+        let session = Session::new(Some(remembered.clone()), None);
+
+        assert_eq!(looked_home(&session, Some(home.path())), None);
+        assert_eq!(
+            found_chosen(&session).err().map(code_of).as_deref(),
+            Some("gone")
+        );
+        assert_eq!(session.database(), Some(remembered));
+    }
+
+    /// Only a copy a lock left is in the folder: its vault's file went while it
+    /// was open. The offer opens the vault's name, whose unlock screen puts the
+    /// copy back.
+    #[test]
+    fn a_copy_whose_vault_has_gone_is_offered_under_the_vault_s_name() {
+        let (home, folder) = home();
+        vault(&folder.join("vault.kdbx.unsaved.kdbx"));
+        let session = Session::new(None, None);
+
+        let named = folder.join("vault.kdbx");
+        assert_eq!(
+            looked_home(&session, Some(home.path())),
+            Some(named.clone())
+        );
+        assert!(found_chosen(&session).is_ok());
+        assert_eq!(session.database(), Some(named));
+    }
+
+    /// Choosing either way would lock the open vault, and a press on a screen
+    /// that should not be showing is not the reader asking for that.
+    #[test]
+    fn neither_offer_opens_anything_while_a_vault_is_open() {
+        let (home, folder) = home();
+        let open = home.path().join("open.kdbx");
+        let session = unlocked(&open);
+        vault(&folder.join("vault.kdbx"));
+        session.finding(Some(folder.join("vault.kdbx")));
+        session.making(folder.join("vault.kdbx"));
+
+        assert_eq!(
+            found_chosen(&session).err().map(code_of).as_deref(),
+            Some("refused")
+        );
+        assert_eq!(
+            existing_chosen(&session).err().map(code_of).as_deref(),
+            Some("refused")
+        );
+        assert!(session.is_unlocked(), "the open vault was locked");
+        assert_eq!(session.database(), open.canonicalize().ok());
+    }
+
+    /// What sits where the new vault would go is opened only when it is a
+    /// vault, or the copy a lock left of one whose file has gone. Anything
+    /// else is answered `gone`, and nothing is chosen.
+    #[test]
+    fn only_a_vault_is_opened_instead_of_making_one() {
+        let (home, folder) = home();
+        let at = |name: &str| folder.join(name);
+
+        let session = Session::new(None, None);
+        assert_eq!(
+            existing_chosen(&session).err().map(code_of).as_deref(),
+            Some("refused"),
+            "nothing was settled, and something was chosen"
+        );
+
+        std::fs::create_dir(at("folder.kdbx")).expect("the folder is made");
+        symlink(at("nowhere.kdbx"), at("dangling.kdbx")).expect("a link");
+        std::fs::write(at("empty.kdbx"), b"").expect("the file is written");
+        vault(&at("vanished.kdbx"));
+        std::fs::remove_file(at("vanished.kdbx")).expect("the file goes");
+
+        for name in [
+            "folder.kdbx",
+            "dangling.kdbx",
+            "empty.kdbx",
+            "vanished.kdbx",
+        ] {
+            session.making(at(name));
+            let refused = existing_chosen(&session).err();
+            assert_eq!(refused.map(code_of).as_deref(), Some("gone"), "{name}");
+            assert_eq!(session.database(), None, "{name} was chosen");
+        }
+
+        // A link to a vault is followed to the file, which is what opens.
+        let kept = home.path().join("kept.kdbx");
+        vault(&kept);
+        symlink(&kept, at("linked.kdbx")).expect("a link");
+        session.making(at("linked.kdbx"));
+        let chosen = existing_chosen(&session).expect("the vault is chosen");
+        assert_eq!(Some(PathBuf::from(chosen.path)), kept.canonicalize().ok());
+
+        vault(&at("gone.kdbx.unsaved.kdbx"));
+        session.making(at("gone.kdbx"));
+        assert!(existing_chosen(&session).is_ok());
+        assert_eq!(session.database(), Some(at("gone.kdbx")));
     }
 
     #[test]

@@ -33,6 +33,7 @@
 		onChoose,
 		onKeyFile,
 		onCreate,
+		onGone,
 		onUnlocked
 	}: {
 		database: Database | null;
@@ -84,6 +85,9 @@
 		onKeyFile: (chosen: Database | null) => void;
 		/** Offered on the first run, where there is nothing to open yet. */
 		onCreate: () => void;
+		/** The vault Rust found was not a vault any more when it was pressed.
+		 * The status is read again, so that the card says what is there now. */
+		onGone: () => void;
 		onUnlocked: () => Promise<void>;
 	} = $props();
 
@@ -241,14 +245,19 @@
 		}
 	}
 
-	/** Opens the vault Rust found. Nothing is sent: Rust looks again, so this
-	 * window never names a file. */
+	/** Opens the vault Rust found. Nothing is sent: Rust opens the file it
+	 * named, so this window never names one. A file that has gone since takes
+	 * the card with it. */
 	async function openFound() {
 		if (busy) return;
+		busy = true;
 		try {
 			chose(await chooseFound());
 		} catch (thrown) {
 			failure = asFailure(thrown);
+			if (failure.code === 'gone') onGone();
+		} finally {
+			busy = false;
 		}
 	}
 
@@ -704,6 +713,7 @@
 					<button
 						type="button"
 						onclick={openFound}
+						disabled={busy}
 						class="mt-4 h-9 rounded-full border border-hairline px-4 text-small text-txt transition-colors hover:border-txt3 active:bg-surface2"
 					>
 						Open it

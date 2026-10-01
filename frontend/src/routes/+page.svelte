@@ -200,6 +200,14 @@
 	async function chosen_elsewhere() {
 		heard(await status().catch(() => null));
 	}
+
+	/** Reads again what Rust found in Coffer's own folder, after the file it
+	 * named was not a vault any more when the reader pressed it. */
+	async function foundAgain() {
+		const now = await status().catch(() => null);
+		found = now?.found ?? null;
+		heard(now);
+	}
 </script>
 
 <!--
@@ -284,6 +292,7 @@
 			}}
 			onKeyFile={(chosen) => (keyFile = chosen)}
 			onCreate={() => (showing = 'create')}
+			onGone={() => void foundAgain()}
 			onUnlocked={opened}
 		/>
 	{/if}

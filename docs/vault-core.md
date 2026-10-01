@@ -620,8 +620,9 @@ same act: the target is created empty and exclusively, and the caller owns it
 from then on and takes it back off the disk however the creation ends. The lock
 file beside it is taken before any contents are written, so a creation that
 cannot have the database never wrote one. `atomic::taken` asks the same question
-without taking the name, for a screen that wants to say a place is taken before
-anybody types a password; its answer is advice, and the reservation is still what
+without taking the name, for a move that wants to refuse before it reads a large
+copy; the creation screen asks the window's own reading of the place, which also
+says what is there. Either answer is advice, and the reservation is still what
 decides.
 
 A name Coffer gives a file of its own beside a database is refused outright: a
@@ -630,6 +631,12 @@ good, and a rescue copy's would be written over by the next lock that had
 something to keep. `storage::reserved` is the one rule for both, and the window
 asks it too, so that neither is ever remembered or offered as the vault. A master
 password with nothing in it is refused outright as well.
+
+So is a name with a rescue copy beside it, as `CopyBeside`. The copy is what is
+left of a vault whose file went while it was open, and it is put back from that
+name's unlock screen. A vault made at the name would be offered the copy as its
+own unsaved work, under a password that does not open it, and its next lock with
+something to keep would write over the only copy there is.
 
 **A new database is written down in full.** Every `Meta` field is skipped when
 it has no value, so a bare new database writes a `<Meta>` carrying a generator

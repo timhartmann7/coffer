@@ -310,6 +310,35 @@ fn a_name_belonging_to_an_unsaved_copy_is_refused() {
     assert!(matches!(refused, VaultError::ReservedName));
 }
 
+/// The vault's file went while it was open and the lock wrote its work beside
+/// the name. A vault made at that name would be offered the copy as its own
+/// unsaved work - under a password that does not open it - and its next lock
+/// with something to keep would write over the only copy there is.
+#[test]
+fn a_vault_is_not_made_where_a_copy_a_lock_left_stands_for_one() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let name = scratch.path().join("vault.kdbx");
+    let copy = unsaved::beside(&name).expect("a sibling path");
+    std::fs::write(&copy, b"the only copy there is").expect("the copy is written");
+
+    let refused = vault_core::Vault::create(
+        &name,
+        password("a different password"),
+        &vault_core::Recipe {
+            name: "Fresh",
+            work: vault_core::kdf::Work::at(1),
+        },
+    )
+    .expect_err("the name is refused");
+
+    assert!(matches!(refused, VaultError::CopyBeside), "{refused:?}");
+    assert!(!name.exists(), "a creation that was refused left a file");
+    assert_eq!(
+        std::fs::read(&copy).expect("the copy is still there"),
+        b"the only copy there is"
+    );
+}
+
 /// One entry with a field of the reader's own beside the five, protected the
 /// way Coffer makes one, and no notes at all.
 fn vault_for_typing(directory: &std::path::Path) -> std::path::PathBuf {

@@ -36,14 +36,16 @@ export function chooseDatabase(): Promise<Database | null> {
 }
 
 /** Points the session at the vault Rust found in Coffer's own folder. It takes
- * nothing: Rust looks again, so nothing this window sends can name a file. */
+ * nothing: Rust opens the file the last status named, or answers `gone` when it
+ * is no longer a vault, so nothing this window sends can name a file. */
 export function chooseFound(): Promise<Database> {
 	return invoke('choose_found');
 }
 
 /** Points the session at what already sits where the new vault would go, for a
  * reader who meant to open it. The place is the one Rust settled, so nothing is
- * sent. */
+ * sent. Anything there but a vault, or the copy a lock left of one, is answered
+ * `gone`. */
 export function chooseExisting(): Promise<Database> {
 	return invoke('choose_existing');
 }
@@ -100,6 +102,12 @@ export function defaultNewDatabase(): Promise<Target> {
  * `null` when they closed it. */
 export function chooseNewDatabase(): Promise<Target | null> {
 	return invoke('choose_new_database');
+}
+
+/** What is at the place Rust is holding for the new vault now, read again
+ * after the disk turned out to differ from what the screen said. */
+export function target(): Promise<Target> {
+	return invoke('target');
 }
 
 /**

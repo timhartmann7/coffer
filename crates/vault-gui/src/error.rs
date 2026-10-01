@@ -50,9 +50,11 @@ enum Code {
     /// A code of its own, because the screen has something to offer here that
     /// it has nowhere else: clearing those versions.
     AttachmentInHistory,
-    /// Something already sits where a new vault would go. A code of its own
-    /// for the same reason: the screen offers to open that file instead, and
-    /// keeps the passwords the reader typed for somewhere else.
+    /// Something already sits where a new vault would go, or the copy a lock
+    /// left of a vault by that name sits beside it. A code of its own for the
+    /// same reason: the screen says what is there, offers to open it when it
+    /// can be opened, and keeps the passwords the reader typed for somewhere
+    /// else.
     Taken,
     /// A previous version was named by a position read before the vault last
     /// changed, where it may name another version now. Nothing was done, and
@@ -160,7 +162,7 @@ impl From<VaultError> for Failure {
             }
             VaultError::Locked(_) => Code::HeldByAnother,
             VaultError::AttachmentInHistory => Code::AttachmentInHistory,
-            VaultError::DatabaseExists => Code::Taken,
+            VaultError::DatabaseExists | VaultError::CopyBeside => Code::Taken,
             VaultError::ExternalChange | VaultError::VaultFileChanged => Code::ExternalChange,
             VaultError::NoExclusiveMove => Code::NeedsOpening,
             VaultError::ReadOnlyKdb
@@ -236,6 +238,7 @@ mod tests {
             (VaultError::UnwritableText, "refused"),
             (VaultError::EmptyMasterPassword, "refused"),
             (VaultError::DatabaseExists, "taken"),
+            (VaultError::CopyBeside, "taken"),
             (VaultError::ReservedName, "refused"),
             (VaultError::RandomnessUnavailable, "refused"),
             (VaultError::PasswordNotUtf8, "refused"),

@@ -324,6 +324,12 @@ impl Vault {
         if !parent.is_dir() {
             return Err(VaultError::DatabaseGone);
         }
+        // A copy a lock left at this name is all there is of the vault it was
+        // taken from, and it is put back from that name's unlock screen. A
+        // vault made over its name would adopt it as its own unsaved work.
+        if unsaved::found(path)?.is_some() {
+            return Err(VaultError::CopyBeside);
+        }
 
         // The name is taken rather than asked about. Asking and then writing
         // leaves the whole of key derivation between the two, and a database

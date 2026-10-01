@@ -14,18 +14,31 @@ export interface Database {
 	name: string;
 }
 
-/** Where a new vault would go, as the creation screen draws it. */
-export interface Target extends Database {
+/**
+ * What is at the name where a new vault would go. Nothing is ever made over
+ * anything, so the screen says so before anybody types a password, and says
+ * what it is, because only a vault can be opened instead:
+ * - `free`: nothing, so a vault can go here;
+ * - `vault`: a file with something in it;
+ * - `copy`: nothing, but the copy a lock left of a vault by this name is
+ *   beside it, and that name's unlock screen puts it back;
+ * - `empty`: an empty file, which is what a creation killed half way leaves;
+ * - `other`: a folder, or a link to one or to nothing.
+ */
+type Standing = 'free' | 'vault' | 'copy' | 'empty' | 'other';
+
+/** Where a new vault would go, as the creation screen draws it. The place
+ * itself stays in Rust. */
+export interface Target {
 	/** The path the way its owner would write it: under the home folder it
 	 * starts with `~`. For showing, never for opening. */
 	shown: string;
-	/** Whether something already sits at the name. Nothing is ever made over
-	 * one, so the screen says so before anybody types a password. */
-	taken: boolean;
+	standing: Standing;
 }
 
 /** A vault sitting in Coffer's own folder, offered when nothing is remembered.
- * The path does not cross: opening it asks Rust to find it again. */
+ * The path does not cross: Rust keeps the one it named, and opening it asks
+ * Rust whether that file is still a vault. */
 export interface Found {
 	/** The file name, which is what the offer says. */
 	name: string;

@@ -42,6 +42,7 @@ function open(onUnlocked = vi.fn().mockResolvedValue(undefined)) {
 			onChoose: vi.fn(),
 			onKeyFile: vi.fn(),
 			onCreate: vi.fn(),
+			onGone: vi.fn(),
 			onUnlocked
 		}
 	});
@@ -208,6 +209,7 @@ it('says why the vault locked, when there is something to say', () => {
 				onChoose: vi.fn(),
 				onKeyFile: vi.fn(),
 				onCreate: vi.fn(),
+				onGone: vi.fn(),
 				onUnlocked: vi.fn()
 			}
 		});
@@ -246,6 +248,7 @@ it('has something to say about a reason it does not know', () => {
 			onChoose: vi.fn(),
 			onKeyFile: vi.fn(),
 			onCreate: vi.fn(),
+			onGone: vi.fn(),
 			onUnlocked: vi.fn()
 		}
 	});
@@ -320,6 +323,7 @@ it('asks for a key file and shows the one that was chosen', async () => {
 			onChoose: vi.fn(),
 			onKeyFile,
 			onCreate: vi.fn(),
+			onGone: vi.fn(),
 			onUnlocked: vi.fn()
 		}
 	});
@@ -345,6 +349,7 @@ it('takes a key file back off when the reader picked the wrong one', async () =>
 			onChoose: vi.fn(),
 			onKeyFile,
 			onCreate: vi.fn(),
+			onGone: vi.fn(),
 			onUnlocked: vi.fn()
 		}
 	});
@@ -385,6 +390,7 @@ it('keeps the key file when the reader opens a snapshot of the same vault', asyn
 			onChoose: vi.fn(),
 			onKeyFile,
 			onCreate: vi.fn(),
+			onGone: vi.fn(),
 			onUnlocked: vi.fn()
 		}
 	});
@@ -417,6 +423,7 @@ it('forgets the key file when another database is chosen', async () => {
 			onChoose: vi.fn(),
 			onKeyFile,
 			onCreate: vi.fn(),
+			onGone: vi.fn(),
 			onUnlocked: vi.fn()
 		}
 	});
@@ -450,6 +457,7 @@ it('offers the file a lock left behind, and never names it itself', async () => 
 			onChoose,
 			onKeyFile: vi.fn(),
 			onCreate: vi.fn(),
+			onGone: vi.fn(),
 			onUnlocked: vi.fn()
 		}
 	});
@@ -481,6 +489,7 @@ it('takes the file away only when the reader says so, twice', async () => {
 			onChoose: vi.fn(),
 			onKeyFile: vi.fn(),
 			onCreate: vi.fn(),
+			onGone: vi.fn(),
 			onUnlocked: vi.fn()
 		}
 	});
@@ -531,6 +540,7 @@ function standingIn(onChoose = vi.fn()) {
 			onChoose,
 			onKeyFile: vi.fn(),
 			onCreate: vi.fn(),
+			onGone: vi.fn(),
 			onUnlocked: vi.fn()
 		}
 	});
@@ -653,6 +663,7 @@ it('offers to look at the copy when the vault is still there', () => {
 			onChoose: vi.fn(),
 			onKeyFile: vi.fn(),
 			onCreate: vi.fn(),
+			onGone: vi.fn(),
 			onUnlocked: vi.fn()
 		}
 	});
@@ -694,6 +705,7 @@ it('takes the reader from a copy back to the vault it was taken from', async () 
 			onChoose,
 			onKeyFile,
 			onCreate: vi.fn(),
+			onGone: vi.fn(),
 			onUnlocked: vi.fn()
 		}
 	});
@@ -730,6 +742,7 @@ it('says so when a lock could not write the changes anywhere, and what survived'
 				onChoose: vi.fn(),
 				onKeyFile: vi.fn(),
 				onCreate: vi.fn(),
+				onGone: vi.fn(),
 				onUnlocked: vi.fn()
 			}
 		});
@@ -769,6 +782,7 @@ it('says what survived of the copy when the lost lock was of a copy', () => {
 				onChoose: vi.fn(),
 				onKeyFile: vi.fn(),
 				onCreate: vi.fn(),
+				onGone: vi.fn(),
 				onUnlocked: vi.fn()
 			}
 		});
@@ -803,6 +817,7 @@ it('says what was being typed was saved, and names nothing', () => {
 				onChoose: vi.fn(),
 				onKeyFile: vi.fn(),
 				onCreate: vi.fn(),
+				onGone: vi.fn(),
 				onUnlocked: vi.fn()
 			}
 		});
@@ -816,7 +831,11 @@ it('says what was being typed was saved, and names nothing', () => {
 });
 
 /** The first-run screen, with nothing remembered and whatever Rust found. */
-function firstRun(found: { name: string; folder: string } | null, onChoose = vi.fn()) {
+function firstRun(
+	found: { name: string; folder: string } | null,
+	onChoose = vi.fn(),
+	onGone = vi.fn()
+) {
 	const component = mount(Unlock, {
 		target: host,
 		props: {
@@ -825,6 +844,7 @@ function firstRun(found: { name: string; folder: string } | null, onChoose = vi.
 			onChoose,
 			onKeyFile: vi.fn(),
 			onCreate: vi.fn(),
+			onGone,
 			onUnlocked: vi.fn()
 		}
 	});
@@ -851,7 +871,7 @@ it("offers a vault found in Coffer's folder above the offer to make one", async 
 		?.click();
 
 	await vi.waitFor(() => expect(onChoose).toHaveBeenCalledWith(opened));
-	// Rust looks again: nothing this window sends names a file.
+	// Rust opens the file it named: nothing this window sends names one.
 	expect(ipc.chooseFound).toHaveBeenCalledWith();
 
 	unmount(component);
@@ -871,18 +891,64 @@ it('says nothing about a vault when none was found', () => {
 
 /** A vault that went away between the screen being drawn and the press is
  * reported, and the screen is still the one that can make a vault. */
-it('says so when the vault it found has gone', async () => {
+it('says so when the vault it found has gone, and has the status read again', async () => {
 	const onChoose = vi.fn();
+	const onGone = vi.fn();
 	ipc.chooseFound.mockRejectedValue({ code: 'gone', message: 'the database file is gone' });
-	const component = firstRun({ name: 'vault.kdbx', folder: 'Coffer' }, onChoose);
+	const component = firstRun({ name: 'vault.kdbx', folder: 'Coffer' }, onChoose, onGone);
 
 	[...host.querySelectorAll('button')]
 		.find((each) => each.textContent?.trim() === 'Open it')
 		?.click();
 
 	await vi.waitFor(() => expect(reads()).toContain('the database file is gone'));
+	// The card is the page's, read from the status: it goes when that says so.
+	expect(onGone).toHaveBeenCalledTimes(1);
 	expect(onChoose).not.toHaveBeenCalled();
 	expect(reads()).toContain('Make a vault');
+
+	unmount(component);
+});
+
+/** A refusal that is not about the file leaves the card as it was. */
+it('keeps the card when opening it was refused for another reason', async () => {
+	const onGone = vi.fn();
+	ipc.chooseFound.mockRejectedValue({
+		code: 'refused',
+		message: 'lock the vault before opening another'
+	});
+	const component = firstRun({ name: 'vault.kdbx', folder: 'Coffer' }, vi.fn(), onGone);
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Open it')
+		?.click();
+
+	await vi.waitFor(() => expect(reads()).toContain('lock the vault before opening another'));
+	expect(onGone).not.toHaveBeenCalled();
+
+	unmount(component);
+});
+
+/** Presses that land while the first is on its way choose the vault once. */
+it('opens the vault it found once, however often it is pressed', async () => {
+	const onChoose = vi.fn();
+	let answer: (database: unknown) => void = () => {};
+	ipc.chooseFound.mockReturnValue(new Promise((settle) => (answer = settle)));
+	const component = firstRun({ name: 'vault.kdbx', folder: 'Coffer' }, onChoose);
+	const open = () =>
+		[...host.querySelectorAll('button')].find((each) => each.textContent?.trim() === 'Open it');
+
+	open()?.click();
+	flushSync();
+	open()?.click();
+	open()?.dispatchEvent(new MouseEvent('click'));
+
+	const opened = { path: '/Users/someone/Coffer/vault.kdbx', name: 'vault' };
+	answer(opened);
+
+	await vi.waitFor(() => expect(onChoose).toHaveBeenCalledWith(opened));
+	expect(ipc.chooseFound).toHaveBeenCalledTimes(1);
+	expect(onChoose).toHaveBeenCalledTimes(1);
 
 	unmount(component);
 });
@@ -898,6 +964,7 @@ it('offers nothing found when there is a vault to unlock', () => {
 			onChoose: vi.fn(),
 			onKeyFile: vi.fn(),
 			onCreate: vi.fn(),
+			onGone: vi.fn(),
 			onUnlocked: vi.fn()
 		}
 	});

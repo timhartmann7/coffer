@@ -45,7 +45,7 @@ the first over all ten. Rust reads it off the value in
 |---|---|---|
 | `status` | | the chosen database, whether it is open, how many entries, whether it can be written, why it locked, whether that lock saved something being typed, the unsaved copy sitting beside it, the chosen file as it stands on disk, the vault it was copied from when it is a lock's copy, and - when nothing is remembered - a vault found in Coffer's own folder |
 | `choose_database` | | the database the user picked, or nothing if they closed the dialog |
-| `choose_found` | | the vault found in Coffer's own folder, now chosen |
+| `choose_found` | | the vault the last `status` found in Coffer's own folder, now chosen |
 | `unlock` | the master password, as the raw body | nothing |
 | `lock` | | nothing |
 | `tree` | | the root group, its sections and their entry rows |
@@ -106,8 +106,9 @@ Everything slice 4 added:
 | `set_settings` | `settings` | what was actually stored, which is not always what was sent |
 | `stirred` | | the seconds the open vault has left, or nothing when none is open |
 | `draft` | `entry`, `field`, `value`, `protect`, `beside`, `sequence` | nothing |
-| `default_new_database` | | where a first vault goes when nobody has said, and whether something is already there |
+| `default_new_database` | | where a first vault goes when nobody has said, and what is already there |
 | `choose_new_database` | | where the reader wants the new vault instead, on the same terms |
+| `target` | | the place the new vault would go, read again, on the same terms |
 | `choose_existing` | | what already sits where the new vault would go, now chosen |
 | `calibrate` | | how many Argon2id passes a one-second unlock costs here, and what that measured |
 | `create_database` | the master password, as the raw body | nothing |
@@ -129,15 +130,28 @@ picker is reachable from a screen a vault can be open behind. The folder and the
 name are written down once, in [`home.rs`](../crates/vault-gui/src/home.rs),
 which is also where a launch that remembers nothing looks.
 
-Both answer with a `Target`: the place as a `Database`, the path as the reader
-would write it (`shown`, starting with `~` under the home folder, for the screen
-and never for opening), and `taken`, whether anything at all is already
-at the name. Nothing is ever made over a file - a creation takes no snapshot -
-so the screen says so before a password is typed, and offers `choose_existing`,
-which points the session at what is there. A save panel's own "Replace" does not
-change that. `taken` is advice read off the disk a moment earlier; the creation
-itself takes the name with an exclusive create, and a file that arrived in
-between is answered with the failure of the same name.
+Both answer with a `Target`, which carries only what the creation screen draws:
+the path as the reader would write it (`shown`, starting with `~` under the home
+folder, for the screen and never for opening), and `standing`, what is already
+at the name. `free` is nothing; `vault` is a file with something in it, a link
+to one included; `copy` is nothing at the name but the copy a lock left of a
+vault by that name beside it; `empty` is an empty file, which is what a creation
+killed half way leaves; `other` is a folder, or a link to one or to nothing. The
+rule is the one the search of `~/Coffer` uses, in
+[`home.rs`](../crates/vault-gui/src/home.rs). Nothing is ever made over anything -
+a creation takes no snapshot - so the screen says so before a password is typed.
+For `vault` and `copy` it offers `choose_existing`, which points the session at
+the name: a vault opens there, and a copy is put back from that name's unlock
+screen. `empty` and `other` are named for what they are and the way on is
+"Somewhere else"; offering to open them would be an unlock that answers "not a
+database" or "gone". A save panel's own "Replace" does not change any of it.
+
+`standing` is advice read off the disk a moment earlier. `choose_existing` reads
+the name again by the same rule and answers `gone` for anything but a vault or a
+copy, and the screen then asks `target` for the place as it stands now, without
+the place changing. The creation itself takes the name with an exclusive create,
+refuses a name with a copy beside it, and either refusal is `taken`, after which
+the screen reads `target` as well.
 
 **A vault is written down when it opens, not when it is picked.** Every vault
 that opens - by an unlock or by a creation - goes through one function in
@@ -153,12 +167,28 @@ not fail the unlock.
 **A launch that remembers nothing looks in `~/Coffer`.** When `status` has no
 database it also answers `found`: the file name of a vault in Coffer's own
 folder, and the folder's name, for the sentence the first-run screen says above
-the offer to make one. The path does not cross; `choose_found` looks again and
-points the session at what it finds, or answers `gone`. What counts is a file
-whose name ends in `.kdbx` - not a snapshot, not a copy a lock left, not a
-folder, not an empty file, not a hidden one - and a link counts when it leads to
-one. With several, `vault.kdbx` wins, then the one written last, then the first
-by name. A folder that cannot be read is one in which nothing was found.
+the offer to make one. The path does not cross; the session keeps the one it
+named, and `choose_found` opens that file and no other. It asks the file again
+by the search's own rule and answers `gone` when it is no longer a vault, rather
+than searching again and opening whatever else the folder holds under a card
+that named another file. The screen then reads `status` again, so the card says
+what is there now or goes. What counts is a file whose name ends in `.kdbx` -
+not a snapshot, not a copy a lock left, not a folder, not an empty file, not a
+hidden one - and a link counts when it leads to one. A copy a lock left whose
+vault's file has gone counts under the vault's name and by the copy's time: it
+is all there is of that vault, and the unlock screen for the name puts it back.
+With several, `vault.kdbx` wins, then the one written last, then the first by
+name. A folder that cannot be read is one in which nothing was found.
+
+**A launch that remembers another vault opens its panel in `~/Coffer`.** Coffer
+0.1.0 wrote a vault down when it was picked and never when it was made, so a
+reader who once picked an older file and then made a vault in Coffer launches
+onto the older file, whose password is not the one they use. `SPEC.md` gives the
+unlock screen the path, the password field, the button and two small links, and
+says "Nothing else", so no second offer is drawn on it. Instead, when
+`~/Coffer` holds a vault that is not the remembered one, "Open another database"
+starts there, which puts the vault they use one press away from the screen they
+are on. Otherwise the panel starts beside the remembered vault.
 
 **`settings` sends the lists as well as the values.** What a reader may choose is
 Rust's to decide, and a screen holding its own copy would be a second place the
@@ -455,8 +485,8 @@ bytes, and the question is about what the entry has now.
 Nothing that names a file comes from the webview. `choose_database` opens the
 system's own dialog and keeps the answer; `choose_snapshot` takes a slot number
 and builds the path from the database the user already chose; `choose_found`
-searches Coffer's folder again and `choose_existing` takes the place the session
-is already holding for a new vault. There is no command that opens a path the
+takes the vault the session is holding from the last `status`, and
+`choose_existing` the place it is holding for a new vault. There is no command that opens a path the
 frontend sends.
 
 `open_url` reads the address out of the entry rather than accepting one, so the
@@ -487,10 +517,14 @@ sentence that the removal can no longer be undone.
 file, and nothing was moved: the unlock screen offers to open the copy instead
 (see below).
 
-`taken` is `create_database` finding a file where the new vault would go. The
-creation screen says so in its own sentence, which names the place and the way
-on, and hands back the two passwords it emptied on submit: this is the one
-refusal that says nothing about them.
+`taken` is `create_database` finding a file where the new vault would go, or the
+copy a lock left of a vault by that name beside it. The creation screen reads
+the place again with `target`, says what is there in its own sentence, which
+names the place and the way on, and hands back the two passwords it emptied on
+submit: this is the one refusal that says nothing about them. It is also
+`put_back_rescue` finding something at the vault's name by the time the copy
+would go there, and the unlock screen says so in a sentence about the move (see
+below).
 
 `attachmentInHistory` is the one the entry screen has an answer for. Removing a
 file is refused while previous versions of the entry still hold it - the format

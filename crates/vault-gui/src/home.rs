@@ -1,15 +1,21 @@
-//! Coffer's own folder in the reader's home.
+//! Coffer's own folder in the reader's home, and what counts as a vault at a
+//! place.
 //!
 //! A first vault goes into it when nobody says otherwise, and a launch that
 //! remembers no vault looks in it before greeting the reader as somebody who
 //! has none. Both are answers about the same two names, so the names are here
-//! and nowhere else.
+//! and nowhere else. So is the rule for what is a vault at a name, because the
+//! search, the offer it makes and the creation screen's warning are three
+//! readings of one place and a second rule would be a second answer.
 //!
 //! Not `~/Documents`: a Mac set up with the default answers synchronises that
 //! folder to iCloud, and a vault Coffer put into a sync folder without being
 //! asked is the one thing this application says it does not do.
 
 use std::path::{Path, PathBuf};
+
+use serde::Serialize;
+use vault_core::storage::{self, unsaved};
 
 /// The folder, directly inside the home folder.
 pub const FOLDER: &str = "Coffer";
@@ -29,13 +35,11 @@ pub fn first(home: &Path) -> PathBuf {
 /// launch, which showed the screen for somebody with nothing over a folder
 /// holding everything they had. This is what finds it again.
 ///
-/// Only what could be the reader's vault: a file whose name ends in `.kdbx`.
-/// Not a snapshot or the copy a lock left, which open with the same password
-/// and are older than the vault; not a folder; not an empty file, which is what
-/// a creation killed half way leaves; not a name the Finder hides, which on a
-/// volume that is not APFS is where macOS keeps a file's attributes. A link
-/// counts when it leads to a vault, because a link is how somebody who keeps
-/// the file elsewhere would put one here.
+/// Only what [`offered`] says could be the reader's vault. That includes the
+/// name of one whose file has gone while the copy a lock left of it is still
+/// beside it: the copy is then all there is of the vault, and the unlock
+/// screen for that name is where it is put back. Found under the vault's name
+/// rather than its own, and ranked by when the copy was written.
 ///
 /// With several, `vault.kdbx` wins, because that is the name Coffer gives the
 /// one it makes; after it the one written last, because that is the one in
@@ -47,7 +51,7 @@ pub fn first(home: &Path) -> PathBuf {
 /// the reader and making a vault at all.
 pub fn found(home: &Path) -> Option<PathBuf> {
     let preferred = first(home);
-    if is_vault(&preferred) {
+    if offered(&preferred) {
         return Some(preferred);
     }
 
@@ -55,10 +59,91 @@ pub fn found(home: &Path) -> Option<PathBuf> {
         .ok()?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| is_vault(path))
-        .map(|path| (modified(&path), path))
+        .map(|path| unsaved::taken_from(&path).unwrap_or(path))
+        .filter(|path| offered(path))
+        .map(|path| (written(&path), path))
         .max_by(|(one, first), (other, second)| one.cmp(other).then_with(|| second.cmp(first)))
         .map(|(_, path)| path)
+}
+
+/// Whether the search would offer `path` as the reader's vault.
+///
+/// A file whose name ends in `.kdbx`, without regard to case, that holds a
+/// vault, or a name with nothing at it and the copy a lock left of it beside
+/// it (see [`Standing`]). Not a snapshot or the copy itself, which open with
+/// the same password and are older than the vault; not a name the Finder
+/// hides, which on a volume that is not APFS is where macOS keeps a file's
+/// attributes.
+///
+/// Asked again when the reader presses the offer, so that what opens is the
+/// file the screen named, or nothing.
+pub fn offered(path: &Path) -> bool {
+    named_like_a_vault(path) && matches!(standing(path), Standing::Vault | Standing::Copy)
+}
+
+/// What is at a name where a vault could be.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum Standing {
+    /// Nothing, and no copy a lock left beside it: a vault can go here.
+    Free,
+    /// A file with something in it, which is what a vault is from outside. A
+    /// link counts when it leads to one, because a link is how somebody who
+    /// keeps the file elsewhere would put it here.
+    Vault,
+    /// Nothing, but the copy a lock left of a vault by this name is beside
+    /// it. The copy is the whole of that vault now: a new vault made here
+    /// would be offered it as its own unsaved work, which it is not, and the
+    /// next lock that had something to keep would write over it.
+    Copy,
+    /// An empty file, which is what a creation killed half way leaves. It
+    /// opens as nothing at all, and nothing is ever made over a file.
+    Empty,
+    /// Something that is not a file: a folder, or a link to one or to
+    /// nothing.
+    Other,
+}
+
+/// What is at `path` now.
+///
+/// A name that cannot be asked about counts as free: the creation that
+/// follows takes the name with an exclusive create and says what stopped it.
+pub fn standing(path: &Path) -> Standing {
+    // Followed, so that a link to a vault is a vault and a link to a folder or
+    // to nothing is not.
+    match std::fs::metadata(path) {
+        Ok(about) if about.is_file() && about.len() > 0 => Standing::Vault,
+        Ok(about) if about.is_file() => Standing::Empty,
+        Ok(_) => Standing::Other,
+        Err(_) if path.symlink_metadata().is_ok() => Standing::Other,
+        Err(_) if unsaved::found(path).ok().flatten().is_some() => Standing::Copy,
+        Err(_) => Standing::Free,
+    }
+}
+
+/// Where a panel for opening a vault starts: in Coffer's folder when it holds
+/// a vault that is not the remembered one, and otherwise beside the
+/// remembered one.
+///
+/// Coffer 0.1.0 wrote down a vault picked in a panel, and never one it made,
+/// so somebody who once picked an older file and then made a vault in Coffer
+/// launches onto the older file. The unlock screen offers nothing but that
+/// file and the ways to another, so the way to the vault they use is the
+/// panel, and it opens where that vault is.
+/// Nothing when neither is known, and the panel goes where macOS last left it.
+pub fn opening_in(remembered: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
+    // Compared as files rather than as spellings: the remembered vault linked
+    // into the folder is the remembered vault.
+    let file = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let elsewhere = home
+        .and_then(found)
+        .filter(|vault| Some(file(vault)) != remembered.map(file));
+
+    elsewhere
+        .as_deref()
+        .or(remembered)
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
 }
 
 /// Where a file is, the way its owner would write it: under their home folder
@@ -71,7 +156,7 @@ pub fn shown(path: &Path, home: Option<&Path>) -> String {
     }
 }
 
-fn is_vault(path: &Path) -> bool {
+fn named_like_a_vault(path: &Path) -> bool {
     let Some(name) = path.file_name() else {
         return false;
     };
@@ -82,13 +167,13 @@ fn is_vault(path: &Path) -> bool {
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("kdbx"));
 
-    if hidden || !kdbx || vault_core::storage::reserved(path) {
-        return false;
-    }
+    !hidden && kdbx && !storage::reserved(path)
+}
 
-    // Followed, so that a link to a vault is a vault and a link to a folder or
-    // to nothing is not.
-    std::fs::metadata(path).is_ok_and(|about| about.is_file() && about.len() > 0)
+/// When the vault at `path` was last written: its file's time, or the time of
+/// the copy standing in for a file that has gone.
+fn written(path: &Path) -> Option<std::time::SystemTime> {
+    modified(path).or_else(|| unsaved::beside(path).ok().and_then(|copy| modified(&copy)))
 }
 
 /// When a file was last written. A filesystem that keeps no time puts it
@@ -165,16 +250,165 @@ mod tests {
         assert_eq!(found(home.path()), None);
     }
 
-    /// The copy a lock left opens with the vault's password and is older than
-    /// the vault. Offered as the vault, it would be yesterday's passwords.
+    /// A snapshot opens with the vault's password and is older than the vault.
+    /// Offered as the vault, it would be yesterday's passwords.
     #[test]
-    fn a_rescue_copy_or_a_snapshot_on_its_own_is_not_a_vault() {
+    fn a_snapshot_or_a_lock_file_on_its_own_is_not_a_vault() {
         let (home, folder) = home();
-        vault(&folder.join("vault.kdbx.unsaved.kdbx"), hours_ago(1));
         vault(&folder.join("vault.kdbx.1.bak"), hours_ago(1));
         vault(&folder.join("vault.kdbx.lock"), hours_ago(1));
 
         assert_eq!(found(home.path()), None);
+    }
+
+    /// The vault's file was deleted while Coffer had it open, and the lock
+    /// wrote what it held beside the name. The copy is all there is of that
+    /// vault, so it is found under the vault's name, where the unlock screen
+    /// offers to put it back, and never under its own.
+    #[test]
+    fn a_copy_whose_vault_has_gone_is_found_under_the_vault_s_name() {
+        let (alone, folder) = home();
+        vault(&folder.join("vault.kdbx.unsaved.kdbx"), hours_ago(1));
+        assert_eq!(found(alone.path()), Some(first(alone.path())));
+
+        let (other, folder) = home();
+        vault(&folder.join("old.kdbx"), hours_ago(72));
+        vault(&folder.join("work.kdbx.unsaved.kdbx"), hours_ago(1));
+        assert_eq!(found(other.path()), Some(folder.join("work.kdbx")));
+    }
+
+    /// Beside a vault that is there, the copy is the vault's business and the
+    /// vault is what is found. A copy of a copy names no vault the folder can
+    /// offer, and a copy beside something that is not a vault is not offered
+    /// under that something's name.
+    #[test]
+    fn a_copy_stands_in_only_for_a_name_with_nothing_at_it() {
+        let (beside, folder) = home();
+        vault(&folder.join("work.kdbx"), hours_ago(48));
+        vault(&folder.join("work.kdbx.unsaved.kdbx"), hours_ago(1));
+        assert_eq!(found(beside.path()), Some(folder.join("work.kdbx")));
+
+        let (nested, folder) = home();
+        vault(
+            &folder.join("vault.kdbx.unsaved.kdbx.unsaved.kdbx"),
+            hours_ago(1),
+        );
+        assert_eq!(found(nested.path()), None);
+
+        let (blocked, folder) = home();
+        std::fs::write(folder.join("vault.kdbx"), b"").expect("the file is written");
+        vault(&folder.join("vault.kdbx.unsaved.kdbx"), hours_ago(1));
+        std::fs::create_dir(folder.join("work.kdbx")).expect("the folder is made");
+        vault(&folder.join("work.kdbx.unsaved.kdbx"), hours_ago(1));
+        assert_eq!(found(blocked.path()), None);
+    }
+
+    /// Every way a name can stand, read the way the creation screen and the
+    /// offer to open what is there read it.
+    #[test]
+    fn a_place_says_what_is_at_it() {
+        let (home, folder) = home();
+        let at = |name: &str| standing(&folder.join(name));
+
+        assert_eq!(at("free.kdbx"), Standing::Free);
+
+        vault(&folder.join("vault.kdbx"), hours_ago(1));
+        assert_eq!(at("vault.kdbx"), Standing::Vault);
+
+        std::fs::write(folder.join("empty.kdbx"), b"").expect("the file is written");
+        assert_eq!(at("empty.kdbx"), Standing::Empty);
+
+        std::fs::create_dir(folder.join("folder.kdbx")).expect("the folder is made");
+        assert_eq!(at("folder.kdbx"), Standing::Other);
+
+        symlink(folder.join("nowhere.kdbx"), folder.join("dangling.kdbx")).expect("a link");
+        assert_eq!(at("dangling.kdbx"), Standing::Other);
+
+        symlink(home.path(), folder.join("into-a-folder.kdbx")).expect("a link");
+        assert_eq!(at("into-a-folder.kdbx"), Standing::Other);
+
+        symlink(folder.join("vault.kdbx"), folder.join("linked.kdbx")).expect("a link");
+        assert_eq!(at("linked.kdbx"), Standing::Vault);
+
+        vault(&folder.join("gone.kdbx.unsaved.kdbx"), hours_ago(1));
+        assert_eq!(at("gone.kdbx"), Standing::Copy);
+
+        // A vault with its copy beside it is a vault: the copy is offered on
+        // its unlock screen, as unsaved work of that vault.
+        vault(&folder.join("vault.kdbx.unsaved.kdbx"), hours_ago(1));
+        assert_eq!(at("vault.kdbx"), Standing::Vault);
+
+        // A copy that is a folder is no copy.
+        std::fs::create_dir(folder.join("odd.kdbx.unsaved.kdbx")).expect("the folder is made");
+        assert_eq!(at("odd.kdbx"), Standing::Free);
+    }
+
+    /// The offer is asked again when it is pressed, by the same rule the
+    /// search used, so a name that holds a vault by content but not by name is
+    /// not offered either.
+    #[test]
+    fn only_a_name_the_search_would_find_is_offered() {
+        let (_home, folder) = home();
+        vault(&folder.join("._vault.kdbx"), hours_ago(1));
+        vault(&folder.join("vault.kdbx.unsaved.kdbx"), hours_ago(1));
+        vault(&folder.join("notes.txt"), hours_ago(1));
+
+        assert!(!offered(&folder.join("._vault.kdbx")));
+        assert!(!offered(&folder.join("vault.kdbx.unsaved.kdbx")));
+        assert!(!offered(&folder.join("notes.txt")));
+        assert!(offered(&folder.join("vault.kdbx")));
+    }
+
+    /// The 0.1.0 reader who once picked an older file and then made a vault
+    /// in Coffer is launched onto the older file. The panel that is their way
+    /// out opens on the folder holding the vault they use.
+    #[test]
+    fn the_open_panel_starts_where_a_vault_other_than_the_remembered_one_is() {
+        let (home, folder) = home();
+        let documents = home.path().join("Documents");
+        std::fs::create_dir(&documents).expect("the folder is made");
+        let old = documents.join("old.kdbx");
+        vault(&old, hours_ago(500));
+
+        // Nothing in the folder: beside the remembered one.
+        assert_eq!(
+            opening_in(Some(&old), Some(home.path())),
+            Some(documents.clone())
+        );
+
+        vault(&folder.join("vault.kdbx"), hours_ago(1));
+        assert_eq!(
+            opening_in(Some(&old), Some(home.path())),
+            Some(folder.clone())
+        );
+        assert_eq!(opening_in(None, Some(home.path())), Some(folder.clone()));
+        assert_eq!(
+            opening_in(Some(&folder.join("vault.kdbx")), Some(home.path())),
+            Some(folder.clone())
+        );
+
+        assert_eq!(opening_in(Some(&old), None), Some(documents));
+        assert_eq!(opening_in(None, None), None);
+    }
+
+    /// A remembered vault linked into the folder is the remembered vault, and
+    /// the panel opens where its file is.
+    #[test]
+    fn the_remembered_vault_linked_into_the_folder_is_not_another() {
+        let (home, folder) = home();
+        let kept = home.path().join("elsewhere");
+        std::fs::create_dir(&kept).expect("the folder is made");
+        vault(&kept.join("personal.kdbx"), hours_ago(1));
+        symlink(kept.join("personal.kdbx"), folder.join("personal.kdbx")).expect("a link");
+        let remembered = kept
+            .join("personal.kdbx")
+            .canonicalize()
+            .expect("the file is there");
+
+        assert_eq!(
+            opening_in(Some(&remembered), Some(home.path())),
+            remembered.parent().map(Path::to_path_buf)
+        );
     }
 
     #[test]

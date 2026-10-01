@@ -101,6 +101,7 @@ pub fn run() {
             commands::choose_existing,
             commands::choose_new_database,
             commands::default_new_database,
+            commands::target,
             commands::calibrate,
             commands::create_database,
             commands::unlock,
