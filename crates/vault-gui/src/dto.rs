@@ -856,6 +856,23 @@ impl Clash {
     }
 }
 
+/// What the page is told the reader chose outside it: an item of the menu bar,
+/// or the window's own close button.
+///
+/// Small on purpose. A message under 8 KiB is evaluated straight into the page
+/// (`ipc/channel.rs` in tauri 2.11.5); a larger one is parked in Rust and
+/// fetched back over `ipc:`, which is a second request for every choice.
+#[derive(Serialize)]
+#[serde(tag = "action", rename_all = "camelCase")]
+pub enum Action {
+    /// An item of Coffer's own in the menu bar.
+    Command { command: crate::menu::Command },
+    /// The close button, or Close Window. The page sends what is being typed
+    /// and then asks for `close_window` itself, the way the Lock button asks
+    /// for a lock.
+    Closing,
+}
+
 /// The value when the database does not protect it, and nothing at all when it
 /// does.
 fn shown(value: &FieldValue) -> Option<String> {
@@ -945,6 +962,29 @@ mod tests {
             alphabets,
             similar,
             avoid: avoid.to_owned(),
+        }
+    }
+
+    /// The page reads a choice by its tag and nothing else, so the shape is
+    /// pinned exactly. Every one stays on the path that evaluates it into the
+    /// page rather than parking it for a second request.
+    #[test]
+    fn an_action_is_a_small_message_read_by_its_tag() {
+        assert_eq!(
+            json(&Action::Command {
+                command: crate::menu::Command::NewEntry
+            }),
+            r#"{"action":"command","command":"newEntry"}"#
+        );
+        assert_eq!(json(&Action::Closing), r#"{"action":"closing"}"#);
+
+        for command in crate::menu::Command::ALL {
+            let sent = json(&Action::Command { command });
+            assert!(sent.len() < 8192, "{command:?} is fetched rather than told");
+            assert!(
+                sent.starts_with(r#"{"action":"command","command":""#),
+                "{sent}"
+            );
         }
     }
 

@@ -25,8 +25,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tauri::ipc::{InvokeBody, Request};
-use tauri::{AppHandle, Manager, State};
+use tauri::ipc::{Channel, InvokeBody, Request};
+use tauri::{AppHandle, Manager, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 use vault_core::storage::{self, snapshot, unsaved};
 use zeroize::Zeroizing;
@@ -39,12 +39,14 @@ use crate::autolock::timer::Timer;
 use crate::autolock::{Event, Reason};
 use crate::drafts::{Over, Typed};
 use crate::dto::{
-    self, Database, Entry, Group, Made, Revealed, Rival, Snapshot, Status, Target, Versions,
+    self, Action, Database, Entry, Group, Made, Revealed, Rival, Snapshot, Status, Target, Versions,
 };
 use crate::error::Failure;
 use crate::home::Standing;
+use crate::menu::{self, Command};
+use crate::route::Route;
 use crate::session::Session;
-use crate::{clipboard, generator, home, lock, opener, settings, window};
+use crate::{clipboard, closing, generator, home, lock, opener, settings, window};
 
 /// The session is behind an `Arc` so that a command can take it onto a blocking
 /// thread, which is where key derivation belongs.
@@ -512,6 +514,59 @@ pub fn stirred(app: AppHandle) -> Option<u64> {
     let timer = app.try_state::<Arc<Timer>>()?;
     timer.post(Event::Stirred);
     timer.left().map(|left| left.as_secs())
+}
+
+/// Hands Rust the page's way in: what the reader chooses in the menu bar, and
+/// the close button, arrive through this channel (see `route.rs`). One per
+/// window; the next window's page replaces it, and Rust lets go of it when the
+/// window goes.
+#[tauri::command(async)]
+pub fn listen(channel: Channel<Action>, window: WebviewWindow) {
+    if let Some(route) = window.try_state::<Route>() {
+        route.listen(window.label(), channel);
+    }
+}
+
+/// Which of Coffer's items in the menu bar the page's screens can do now, for
+/// the bar to grey out the rest.
+///
+/// Locking and opening another vault follow the session as well: a bar that
+/// offered Open Vault… over an open vault would offer a choice Rust refuses.
+/// Whether one is open is read without waiting for the session, which a save
+/// holds for seconds: a report stuck behind it would leave an item grey that
+/// applies, and AppKit drops the key of a grey item. The items are AppKit's,
+/// and are changed on the thread the window is drawn on by a message posted
+/// there rather than waited for. A report from a page that is no longer the
+/// one listening is dropped: it can arrive after the next window's page has
+/// said what it offers.
+#[tauri::command(async)]
+pub fn menu_state(enabled: Vec<Command>, window: WebviewWindow, session: Held<'_>) {
+    let unlocked = session.is_unlocked();
+    let said: Vec<Command> = enabled
+        .into_iter()
+        .filter(|command| command.allowed(unlocked))
+        .collect();
+    let app = window.app_handle().clone();
+    let label = window.label().to_owned();
+    let _ = window.run_on_main_thread(move || {
+        if app
+            .try_state::<Route>()
+            .is_some_and(|route| route.hears(&label))
+        {
+            menu::enable(&app, Some(&said));
+        }
+    });
+}
+
+/// Locks the vault and takes the window down without building it again,
+/// because the reader closed it. Asked by the page once what was being typed
+/// has reached Rust; Coffer then waits in the Dock.
+#[tauri::command(async)]
+pub fn close_window(window: WebviewWindow) {
+    closing::lock(window.app_handle());
+    // The lock takes the window down when a vault was open; with none open it
+    // still has to go.
+    let _ = window.destroy();
 }
 
 #[tauri::command(async)]
@@ -1521,24 +1576,124 @@ mod tests {
             }
         }
 
-        // The four that reach it, each of which the check above would catch
-        // anyway, named so that the reason survives a rewrite of their bodies.
-        // Locking wipes the tree, which takes the same mutex a save is holding
-        // - and writes the vault out first, so it costs a key derivation as
-        // well - and going back from an open copy to its vault is a lock. A
-        // shortened timeout that has already gone, and a stir that arrives
-        // after the time ran out, are both answered by a lock on the thread
-        // that posted them.
+        // The ones that reach it, named so that the reason survives a rewrite
+        // of their bodies. Locking wipes the tree, which takes the same mutex a
+        // save is holding - and writes the vault out first, so it costs a key
+        // derivation as well - and going back from an open copy to its vault
+        // is a lock. A shortened timeout that has already gone, and a stir
+        // that arrives after the time ran out, are both answered by a lock on
+        // the thread that posted them. Closing the window is a lock reached
+        // through `closing::lock`, which the check above cannot see into.
         for reaching in [
             "pub fn lock(",
             "pub fn leave_rescue(",
             "pub fn set_settings(",
             "pub fn stirred(",
+            "pub fn close_window(",
         ] {
             assert!(
                 source.contains(&format!("#[tauri::command(async)]\n{reaching}")),
                 "{reaching} reaches the lock and must not be answered inline"
             );
+        }
+    }
+
+    /// The menu bar and the close button reach Rust on the thread AppKit draws
+    /// on, outside any command: a menu event, the run callback's arms, and the
+    /// change to the bar `menu_state` posts there. The close button's lock is
+    /// held off that thread by `closing.rs`, whose tests say so. Every other
+    /// way in is read here, with the functions each one calls in this crate,
+    /// because the check above sees commands only, and a session read or a lock
+    /// added the obvious way - in an arm, or in one of the functions behind it -
+    /// freezes the window behind a save.
+    #[test]
+    fn nothing_the_menu_bar_or_the_close_button_runs_where_the_window_is_drawn_waits() {
+        fn after<'a>(source: &'a str, from: &str, to: &str) -> &'a str {
+            let start = source
+                .find(from)
+                .unwrap_or_else(|| panic!("{from} is no longer there"));
+            let rest = &source[start..];
+            &rest[..rest.find(to).unwrap_or(rest.len())]
+        }
+
+        /// The function of `file` whose head is `head`.
+        fn function(file: &str, head: &str) -> String {
+            functions(shipped(file))
+                .into_iter()
+                .find(|body| body.trim_start().starts_with(head))
+                .unwrap_or_else(|| panic!("{head} is no longer there"))
+        }
+
+        let commands = shipped(include_str!("commands.rs"));
+        let route = include_str!("route.rs");
+        let window = include_str!("window.rs");
+        let run = shipped(include_str!("lib.rs"));
+        let mut drawn: Vec<(&str, String)> = vec![
+            (
+                "the change menu_state posts",
+                after(
+                    after(commands, "pub fn menu_state(", "\n}\n"),
+                    "run_on_main_thread(move ||",
+                    "\n}\n",
+                )
+                .to_owned(),
+            ),
+            (
+                "the close button",
+                after(run, "WindowEvent::CloseRequested", "WindowEvent::Destroyed").to_owned(),
+            ),
+            (
+                "a window that went",
+                after(run, "WindowEvent::Destroyed", "RunEvent::ExitRequested").to_owned(),
+            ),
+            (
+                "the Dock icon",
+                after(run, "RunEvent::Reopen", "RunEvent::Exit =>").to_owned(),
+            ),
+        ];
+        for (what, file, head) in [
+            ("a menu event", route, "pub fn chosen<"),
+            ("telling the page", route, "pub fn tell("),
+            ("handing the page a choice", route, "pub fn deliver("),
+            ("reaching the page", route, "fn reach("),
+            ("forgetting the page", route, "pub fn forget("),
+            ("greying the bar", include_str!("menu.rs"), "pub fn enable<"),
+            ("bringing the window back", window, "pub fn bring_back<"),
+            ("building it again", window, "pub fn again<"),
+            ("building it", window, "fn open<"),
+            (
+                "asking the page to close",
+                include_str!("closing.rs"),
+                "pub fn requested<",
+            ),
+        ] {
+            drawn.push((what, function(file, head)));
+        }
+
+        for (what, code) in drawn {
+            assert!(code.len() > 40, "{what} was not found:\n{code}");
+            let code: String = code
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            // `.post(` rather than `Event::`, which every window event's arm
+            // spells: posting to the timer is what reaches the lock.
+            for waiting in [
+                "Held<",
+                "Session",
+                "is_unlocked",
+                "busy(",
+                "Timer",
+                ".post(",
+                "lock::lock(",
+                "closing::lock(",
+            ] {
+                assert!(
+                    !code.contains(waiting),
+                    "{what} reaches {waiting} on the thread the window is drawn on:\n{code}"
+                );
+            }
         }
     }
 

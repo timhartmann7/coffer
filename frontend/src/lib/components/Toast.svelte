@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { OWN } from '$lib/shortcuts';
 	import type { Notice } from '$lib/notices.svelte';
 	import Icon from './Icon.svelte';
 
@@ -66,7 +67,7 @@
 			>
 				Undo
 				<kbd class="rounded-xs border border-hairline px-1.5 py-0.5 font-mono text-label text-txt4">
-					⌘Z
+					{OWN.undo}
 				</kbd>
 			</button>
 		{/if}

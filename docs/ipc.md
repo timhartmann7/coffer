@@ -240,7 +240,9 @@ does not know settles on dark rather than being refused: a later Coffer offering
 a fourth look would otherwise take both timers down with its own name.
 
 **`stirred` is deliberately rare, and it can lock.** The window sends it on real
-input and at most once every fifteen seconds. A status bar that asked once a
+input and at most once every fifteen seconds. A key counts on its way in, before
+anything on the page answers it, so one a sheet over the window keeps to itself
+still says the reader is there. A status bar that asked once a
 second would be an idle timer resetting itself, and a vault that never locks. A
 stir that arrives after the time has already run out locks the vault rather than
 starting the clock again: the timer's own wait is counted on the clock that
@@ -681,7 +683,8 @@ Services submenu is the one way in the menu bar: a service is handed the
 selection by WebKit directly, with no copy event for the guard to take, and New
 Sticky Note or a TextEdit window containing the selection keeps a revealed value
 in plain text in another application. So Coffer builds its own menu bar
-(`menu.rs`), Tauri's item for item less Services. What is still open:
+(`menu.rs`), Tauri's item for item less Services, with Coffer's own items among
+them (see The menu bar). What is still open:
 
 - A service's keyboard shortcut, such as Shift+Cmd+Y for a new sticky note, is
   the system's and not the menu's. Whether AppKit still runs one with no
@@ -705,6 +708,129 @@ in, a version restored, any change at all (`conceal` in `reveal.svelte.ts`,
 from the window's one place a change lands). A reveal left up from before the
 change was the old password under the label of the new one, and a part of it
 selected and copied was cut out of the new value.
+
+## The menu bar
+
+Coffer's own items sit in the bar among AppKit's: Settings… (Cmd+,) and Lock
+Vault (Cmd+L) in the application menu; New Entry (Cmd+N), New Folder
+(Shift+Cmd+N) and Open Vault… (Cmd+O) in File; Find… (Cmd+F), Copy Login
+(Cmd+B), Copy Password (Shift+Cmd+C) and Move to Recycle Bin (Cmd+Backspace) in
+Edit, under the system's own; Keyboard Shortcuts in Help. `menu.rs` names each
+and gives it its key, and the window knows each by the same word (`COMMANDS` in
+`model.ts`) and draws the same key (`KEYS` in `shortcuts.ts`).
+`shortcuts.test.ts` reads `menu.rs` and fails when the two disagree.
+
+The commands the menu bar added:
+
+| Command | Takes | Answers |
+|---|---|---|
+| `listen` | `channel` | nothing; what the reader chooses outside the page arrives through the channel |
+| `menu_state` | `enabled` | nothing |
+| `close_window` | | nothing |
+
+**One route from the bar to the page.** Each item is a press the page answers
+with the function its button runs - New Entry is the + Entry button's, Lock
+Vault the Lock button's - so nothing on the screen is done two ways. Rust hears
+the choice as a `MenuEvent` on the main thread (`route::chosen`) and sends it as
+an `Action`, `{ action: 'command', command }`, through the `Channel` the page
+handed over with `listen` once its screens were drawn. The page a lock builds
+next hands over its own, which replaces it, and Rust lets go of it in the
+`Destroyed` arm of the run callback. A page is known by its window's label, so
+something the last page sent that lands after the next one is listening is not
+taken for the new page's, and a window's `Destroyed` handled after the next
+page listened leaves that page and its bar alone. Each screen says what it
+answers (`answer` in `menu.svelte.ts`). No two screens answer the same item at
+once yet - the title bar's Settings… is offered only where the vault's status
+bar is not drawn - and when two do, the newest that can is the one that does,
+because a screen drawn over another was drawn after it.
+
+A choice runs the way a press on its button would. A sheet over the window goes
+first. Then the field being written in is left: a press on a button takes the
+focus out of the field before the button runs, and leaving is when a field
+writes what was typed into it, while a choice from the menu bar takes no focus.
+Without it New Entry took the field off the screen with the value still in it -
+WebKit tells nothing it removes that it lost the focus - and the value was
+written only by the next lock. Keyboard Shortcuts leaves the field alone: its
+sheet takes the focus and gives it back. So does the search field
+(`role="searchbox"`), whose leaving writes nothing: a reader who copies a login
+from the menu while searching goes on typing in it.
+
+What was chosen happens in the window, so the window comes forward for it
+(`window::bring_back`). A minimised window still has its page listening and the
+bar as that page left it, and AppKit hands the bar its keys with no window in
+front: Move to Recycle Bin would otherwise run out of sight, and its offer to
+undo run out unread. Lock Vault alone is left where it is, because it takes the
+window down and the one it builds comes forward asking for the password.
+
+**The page says what applies; the session has the last word on two.** Whenever
+the items its screens can do change - each on the condition its button is drawn
+on - the page sends `menu_state` with the list (`greying.ts`). One message at a
+time: Rust answers two side by side and in either order, so the bar would
+otherwise be left as whichever finished last said. Rust filters the list through
+the session - Lock Vault only with a vault open, Open Vault… never then, because
+it refuses to point the session at another file while one is - reading whether
+one is open without waiting for the session, which a save holds for seconds: a
+report stuck behind it left an item grey that applied, and AppKit drops the key
+of a grey item. It greys the rest out on the main thread, by a message posted
+there rather than waited for. A choice that crossed with a change on its way is
+asked again when it arrives, and one nothing can do any more does nothing - it
+does not even put a sheet away. Open Vault… applies wherever no vault is open:
+on the unlock screen and the creation screen - except while a key is derived
+there or a vault made, because a file picked then would make the work in flight
+land stale - and on the settings with nothing open. With no page listening only
+Open Vault… and Settings… can be chosen. Either builds the window again
+(`window::bring_back`), and the choice waits in Rust for the page that arrives:
+the reader closed the window and went to the menu bar to get it back. Only the
+last such choice waits. Whether there is a page and keeping the choice for the
+next are decided under one lock, so a choice made just as a page starts
+listening reaches that page rather than the window after it; a choice told to a
+page, or one whose send failed, is never kept.
+
+**A key the menu owns is not the page's.** WebKit hands the page a key before
+AppKit looks for it in the menu, and a key the page answered is gone, so a key
+both answered would happen twice. The page's `keydown` answers Escape, Cmd+Z
+(the notice's undo, see above) and Cmd+C with nothing selected (the open entry's
+password, as the mockup has it), and nothing else; every other Cmd key is the
+menu's, and works wherever the focus is. Cmd+B copies the open entry's login
+with the focus in a field too, where the page used to leave it to the field: it
+is a copy, through Rust, and the field is left first, as above. A login being
+changed in its own field is written, and the copy waits until every value on its
+way to Rust has arrived (`flush` in `drafts.ts`) before it is asked for: Tauri
+answers the two side by side, and once a save lets go the session goes to
+whichever asks first, so a copy sent beside the write could put the login as it
+was on the pasteboard. Copy Login is offered on the condition the row's copy
+button is drawn on - a login Rust holds - so one typed into an empty field is
+offered once that field is left. Copy Password is on Shift+Cmd+C because Cmd+C is
+Edit ▸ Copy, which is how every text field in the window copies: an item of
+Coffer's on it would take copying away from them all. Cmd+Backspace in a field
+deletes to the start of the line, so Move to Recycle Bin is greyed out while a
+field has the focus, and it is offered only for an entry whose deletion goes to
+the bin, which is what it says; one that goes for good asks first, from the
+pane.
+
+**Closing the window locks, and Coffer waits in the Dock.** Before this the
+close button quit Coffer: the last window going asks the loop to exit
+(`ExitRequested` with no code), and nothing said no. Now the close is asked of
+the page first. `CloseRequested` sends `{ action: 'closing' }` and holds the
+window up; the page sends what is being typed, the way the Lock button does, and
+asks for `close_window`, which locks with `Reason::Closed` and takes the window
+down without building it again. A page that has not asked within three seconds
+is closed from Rust all the same - a close JavaScript can hold up is a lock
+JavaScript can refuse - and with no page listening the window goes at once and
+the lock runs off the main thread. The three seconds run only while nothing
+holds the session (`Session::busy`): the page's drafts wait behind a save for
+it, and a lock from Rust that took it first - the session is not handed out in
+the order it was asked for - would write the vault without what the reader
+typed during the save. The lock goes through the timer like every
+other, and then straight to the session as well, so that an unlock still
+deriving its key lands after it and is refused as stale rather than opening a
+vault behind a window that has gone. `ExitRequested` with no code is refused
+from then on. Quit never asks it - `terminate:` ends the loop and arrives as
+`Exit`, which locks with `Reason::Quitting` as before - and an exit with a code
+is one Coffer asked for itself. A click on the Dock icon (`RunEvent::Reopen`)
+brings the window back: forward, and out of the Dock when it was minimised, or
+built again where it was left when the reader had closed it. The unlock screen
+it comes back to says nothing about why: the reader asked.
 
 ## The master password
 
@@ -768,6 +894,9 @@ plugin commands, and application commands from a local origin bypass it unless
 the crate declares an ACL manifest of its own. The gate on `unlock` is that it
 is `unlock`, not that a capability lists it. Adding a `permissions/` directory
 to this crate would flip that and every command would then need an entry.
+`listen` takes a `Channel`, which needs nothing here either: the channel's own
+command, which a page uses to fetch a message too large to evaluate, is let past
+the ACL by name (`src/webview/mod.rs` in tauri 2.11.5).
 
 The dialog plugin is registered for its Rust API only. Its three webview-facing
 commands - `open`, `save`, `message` - are left unpermitted, so the file picker
@@ -802,6 +931,11 @@ Two things follow from that, and both are traps:
   reaches elements that are in the HTML at build time. This is why the sprite is
   hidden with a class, and why the two timers that drain on screen are CSS
   animations of a fixed length rather than a width that JavaScript sets.
+- **A message through a channel is not governed by the policy.** Rust evaluates
+  it into the page with `evaluateJavaScript:` (`src/wkwebview/mod.rs` in wry
+  0.55.1), the route Tauri's own answers take, and every one Coffer sends is far
+  under the 8 KiB above which Tauri parks it in Rust and has the page fetch it
+  over `ipc:` instead.
 
 ## Locking
 
@@ -810,13 +944,16 @@ still holding every value the reader looked at, in a heap nothing in this
 process can reach.
 
 One route in, whatever asked. The idle deadline, the machine's own
-notifications and the button all post to
-[`autolock::timer`](../crates/vault-gui/src/autolock/timer.rs), which is the
-only caller of [`lock.rs`](../crates/vault-gui/src/lock.rs). That order is the
-whole of what `lock.rs` is: the tree is wiped **first and synchronously**,
+notifications, the button and the close button all post to
+[`autolock::timer`](../crates/vault-gui/src/autolock/timer.rs), which is what
+calls [`lock.rs`](../crates/vault-gui/src/lock.rs); a close calls it once more
+after the timer, for an unlock still in flight (see The menu bar). That order is
+the whole of what `lock.rs` is: the tree is wiped **first and synchronously**,
 because destroying a window is a message to the event loop and a Mac going to
 sleep will not wait for it; then the clipboard is taken back; then the stack the
-key was derived on is written over; and only then is the destroy queued.
+key was derived on is written over; and only then is the destroy queued, with
+the window asked back unless Coffer is quitting or the reader closed it
+(`Reason::comes_back`).
 
 `Session::lock` answers whether it actually dropped a vault, and exactly one
 caller is told yes. Tauri goes on handing out the window between a destroy being
@@ -824,17 +961,25 @@ queued and the event that says it happened, so a second trigger arriving at the
 same moment would otherwise destroy the window the first one's rebuild had just
 made.
 
-The window is built again in the `Destroyed` event of the run callback and
-nowhere else. A destroy followed by a build in one function always fails: the
-label is taken until the event is delivered. It is built from its entry in
-`tauri.conf.json` rather than by hand, so the rebuilt window is the same window,
-and it is put back where the reader left it.
+After a lock the window is built again in the `Destroyed` event of the run
+callback and nowhere else. A destroy followed by a build in one function always
+fails: the label is taken until the event is delivered. After the reader closed
+it, it is built on `Reopen` or a choice in the menu bar (`window::bring_back`).
+Every build after the first goes through `window::again`, under a label no
+window has carried, and from its entry in `tauri.conf.json` rather than by hand,
+so the rebuilt window is the same window, and it is put back where the reader
+left it.
 
 **No Tauri event goes the other way.** The rebuilt page asks `status` and gets
 the reason it is asking for a password again. An event would need two
 capabilities the window does not have, and Tauri never clears a destroyed
 window's listeners: a rebuilt window reuses the label `main`, so every emit
 after the first relock would serialise every dead listener id ever registered.
+
+One channel does. The menu bar's choices and the close button reach the page
+through the `Channel` it hands over with `listen` (see The menu bar). It needs
+no capability, and nothing of it outlives the window: Rust lets go of it in the
+`Destroyed` arm, and the next page hands over its own.
 
 ## What the window does not do yet
 

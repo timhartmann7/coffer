@@ -40,7 +40,7 @@ pub fn label() -> String {
 
 /// Moves on to the next label, so that the window about to be built does not
 /// take the name of the one that just went.
-pub fn next_generation() {
+fn next_generation() {
     GENERATION.fetch_add(1, Ordering::AcqRel);
 }
 
@@ -95,7 +95,11 @@ struct Frame {
 /// Two things the configuration cannot say are filled in below, because both
 /// belong to the reader rather than to the build: where the window was last
 /// left, and which look it wears.
-pub fn open<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+///
+/// Private, so that nothing outside builds a window without choosing between
+/// [`first`] and [`again`]: a build under the label of one that went is an
+/// empty window for good (see `GENERATION`).
+fn open<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let Some(mut config) = described(app) else {
         return Err(tauri::Error::WebviewNotFound);
     };
@@ -149,6 +153,44 @@ pub fn open<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     });
 
     Ok(())
+}
+
+/// The window Coffer starts with, under the first label. Built once, when the
+/// application is set up; every window after it is built by [`again`].
+pub fn first<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    open(app)
+}
+
+/// Builds the window under a label no window has carried (see `GENERATION`).
+/// Every build after the first goes through here: after a lock, and after the
+/// reader closed the window and asked for it back.
+pub fn again<R: Runtime>(app: &AppHandle<R>) {
+    next_generation();
+    said(open(app));
+}
+
+/// The Dock icon was clicked, or something was chosen in the menu bar.
+///
+/// A window that is there is brought forward, and out of the Dock when it was
+/// minimised, which AppKit does not do here on its own: tao answers a click on
+/// the Dock icon with "do nothing" whenever no window is visible. One still
+/// loading is left to show itself when its page has drawn, rather than shown
+/// white. A window the reader closed is built again, where it was left.
+pub fn bring_back<R: Runtime>(app: &AppHandle<R>) {
+    match app.get_webview_window(&label()) {
+        Some(window) => said(window.unminimize().and_then(|()| window.set_focus())),
+        None => again(app),
+    }
+}
+
+/// A window that would not come back is a line on standard error, written
+/// here once for every way it is asked back. Nothing has been unlocked when
+/// it is asked for - a lock wiped the tree before its window went, and a
+/// close locked - so there is nothing in the error that could name a secret.
+fn said(built: tauri::Result<()>) {
+    if let Err(error) = built {
+        eprintln!("Coffer could not open its window again: {error}");
+    }
 }
 
 /// The look the reader chose, or the default on a Mac with nowhere to keep one.
@@ -275,6 +317,87 @@ mod tests {
             );
             seen.push(now);
         }
+    }
+
+    /// A window built under the label of one just destroyed is empty for good,
+    /// so every build after the first takes a new label first. `open` is
+    /// private, so the compiler holds every other file to `first` and `again`;
+    /// this holds `first` to the one build at startup, in every file of the
+    /// crate, and this file - which the compiler does not hold to anything -
+    /// to building only through those two. A Dock click after Cmd+W moves no
+    /// generation on by itself (a close is not a lock), so a `bring_back` that
+    /// built through `open` or `first` would build under the closed window's
+    /// label. Read from the source, because building a window needs the main
+    /// thread a test does not have.
+    #[test]
+    fn every_window_after_the_first_is_built_under_a_new_label() {
+        use crate::source::{every_file, functions, shipped};
+
+        /// A function without its comments, which name calls they do not make.
+        fn code(body: &str) -> String {
+            body.lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let here: Vec<String> = functions(shipped(include_str!("window.rs")))
+            .iter()
+            .map(|body| code(body))
+            .collect();
+        let building: Vec<&String> = here.iter().filter(|body| body.contains("open(")).collect();
+        assert_eq!(building.len(), 2, "{building:#?}");
+        assert!(
+            building
+                .iter()
+                .all(|body| body.contains("pub fn first<") || body.contains("pub fn again<")),
+            "a window is built in this file other than through `first` and `again`: {building:#?}"
+        );
+        assert!(
+            here.iter().all(|body| !body.contains("first(")),
+            "the first window's build is called again in this file"
+        );
+        let back = here
+            .iter()
+            .find(|body| body.contains("pub fn bring_back<"))
+            .expect("there is a way to bring the window back");
+        assert!(
+            back.contains("again(") && !back.contains("open("),
+            "a closed window is brought back under the label it went with:\n{back}"
+        );
+
+        let mut first = Vec::new();
+        for (path, file) in every_file() {
+            let calls = shipped(&file).matches("window::first(").count();
+            first.extend(std::iter::repeat_n(path.display().to_string(), calls));
+        }
+        assert_eq!(
+            first.len(),
+            1,
+            "the first window is built more than once, without a new label: {first:?}"
+        );
+        assert!(
+            first.iter().all(|path| path.ends_with("lib.rs")),
+            "the first window is built somewhere other than at startup: {first:?}"
+        );
+        assert!(
+            shipped(include_str!("lib.rs")).contains("window::again("),
+            "a lock no longer builds the window again"
+        );
+
+        let source = shipped(include_str!("window.rs"));
+        let again = functions(source)
+            .into_iter()
+            .find(|body| body.contains("pub fn again<"))
+            .expect("there is a way to build the window again");
+        let renamed = again
+            .find("next_generation()")
+            .expect("it takes a new label");
+        let built = again.find("open(app)").expect("it builds the window");
+        assert!(
+            renamed < built,
+            "the window is built before its label moves on"
+        );
     }
 
     /// Locking and closing arrive as the same event, and only one of them may

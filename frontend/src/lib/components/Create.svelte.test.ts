@@ -1,18 +1,14 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { applying, run } from '$lib/menu.svelte';
 import type { Target } from '$lib/model';
+import type { Stubbed } from '$lib/stubbed';
 import Create from './Create.svelte';
 
-const ipc = vi.hoisted(() => ({
-	calibrate: vi.fn(),
-	defaultNewDatabase: vi.fn(),
-	chooseNewDatabase: vi.fn(),
-	chooseExisting: vi.fn(),
-	target: vi.fn(),
-	createDatabase: vi.fn(),
-	asFailure: vi.fn()
-}));
-vi.mock('$lib/ipc', () => ipc);
+const ipc = vi.hoisted(() => ({}) as Stubbed);
+vi.mock(import('$lib/ipc'), async (real) =>
+	Object.assign(ipc, (await import('$lib/stubbed')).stubbed(await real()))
+);
 
 const HOME: Target = { shown: '~/Coffer/vault.kdbx', standing: 'free' };
 const WHERE: Target = { shown: '~/Vault/personal.kdbx', standing: 'free' };
@@ -26,13 +22,6 @@ beforeEach(() => {
 	ipc.defaultNewDatabase.mockResolvedValue(HOME);
 	ipc.chooseNewDatabase.mockResolvedValue(WHERE);
 	ipc.createDatabase.mockResolvedValue(undefined);
-	// The same reading the real one does: a command rejects with the value Rust
-	// serialised, and anything else is not one.
-	ipc.asFailure.mockImplementation((thrown: unknown) =>
-		thrown && typeof (thrown as { message?: unknown }).message === 'string'
-			? thrown
-			: { code: 'other', message: 'Coffer could not finish that.' }
-	);
 });
 
 afterEach(() => host.remove());
@@ -44,6 +33,7 @@ function show(over: Record<string, unknown> = {}) {
 			onMade: vi.fn().mockResolvedValue(undefined),
 			onCancel: vi.fn(),
 			onOpen: vi.fn(),
+			onChoose: vi.fn().mockResolvedValue(undefined),
 			...over
 		}
 	});
@@ -750,4 +740,43 @@ it('keeps a place picked while the one before it was being read again', async ()
 	expect(button('Make the vault').disabled).toBe(false);
 
 	unmount(component);
+});
+
+/**
+ * Open Vault… in the menu bar applies wherever no vault is open, and this
+ * screen is one of those places: a reader who came to make a vault and
+ * remembered they have one opens it from here, through the window's own
+ * picker. Not while the vault is being made, though - the creation in flight
+ * would land after the session had been pointed elsewhere, be refused, and
+ * leave a vault on the disk that nothing opened.
+ */
+it('opens another vault from the menu, and not while one is being made', async () => {
+	const onChoose = vi.fn().mockResolvedValue(undefined);
+	const component = await ready({ onChoose });
+	try {
+		expect(applying()).toContain('openVault');
+		run('openVault');
+		expect(onChoose).toHaveBeenCalledTimes(1);
+
+		let made: () => void = () => {};
+		ipc.createDatabase.mockReturnValue(new Promise<void>((resolve) => (made = resolve)));
+		const [first, second] = fields();
+		first.value = 'a password';
+		second.value = 'a password';
+		submit();
+		flushSync();
+		expect(applying(), 'offered while the vault was being made').not.toContain('openVault');
+		run('openVault');
+		await Promise.resolve();
+		expect(onChoose).toHaveBeenCalledTimes(1);
+		made();
+
+		// A panel that could not open says so here, where the reader is.
+		onChoose.mockRejectedValueOnce({ code: 'io', message: 'the panel did not open' });
+		await vi.waitFor(() => expect(applying()).toContain('openVault'));
+		run('openVault');
+		await vi.waitFor(() => expect(host.textContent).toContain('the panel did not open'));
+	} finally {
+		unmount(component);
+	}
 });

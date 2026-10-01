@@ -21,6 +21,7 @@
 	import { cancels, composing } from '$lib/lines';
 	import {
 		masked,
+		untouchable,
 		type Clash,
 		type Entry,
 		type Field,
@@ -103,13 +104,8 @@
 
 	const of = (kind: Field['kind']) => entry.fields.find((field) => field.kind === kind);
 
-	/**
-	 * Whether nothing here may be changed: a database Coffer will not write
-	 * back, or an entry in the recycle bin. What is in the bin is there to be
-	 * put back or let go, and an edit to it would be a change nobody sees until
-	 * it comes back.
-	 */
-	const locked = $derived(readOnly || entry.binned !== null);
+	/** Whether nothing here may be changed (see `untouchable`). */
+	const locked = $derived(untouchable(entry, readOnly));
 	/** Whether the reader has asked to delete the entry for good and not yet
 	 * answered the question that asks whether they mean it. */
 	let erasing = $state(false);

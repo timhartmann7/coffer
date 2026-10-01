@@ -541,6 +541,49 @@ accessibility tree. Every value in an entry the database does not protect is a
 live field that commits what the reader wrote in it when focus leaves, so a
 covered pane is an entry that can be rewritten by keys aimed at something else.
 
+## The menu bar and the keyboard
+
+The mockup draws no menu bar and no list of keys. Both follow from the window:
+the bar is the system's, with Coffer's items named the way a Mac names them,
+and the list is drawn from tokens the window already uses.
+
+**Keyboard Shortcuts is a sheet over the window, under the title bar.** It is
+the conflict dialog's veil and card with two lists in it: `canvas/75` fading in,
+the `raised` card with its hairline and `rounded-md` rising, at the mockup's
+`max-w-[720px]` so the lists stand side by side, and scrolling inside itself
+when the window is at its smallest. The title is `text-title`; each list is
+headed in the mono label the window puts over a column (`text-label`,
+`tracking-label`, `txt4`, upper case), and each row is what the key does in
+`text-small` `txt2` with the key in the search field's own key cap at the end,
+`line` between the rows. The first list is the keys of Coffer's items in the
+menu bar, the second the keys the window answers itself, with the system's
+Close Window, which locks the vault here. The one button is the plain bordered
+pill, "Close", and it is where the focus lands; Escape, Close, a press on the
+veil and anything chosen in the menu bar put the sheet away. Put away from
+itself, it gives the focus back where it was, once the screens under it are no
+longer inert; put away by a choice in the menu bar, it leaves the focus to the
+choice. The title bar stays above the veil, so the window can still be dragged
+and locked while it is open, and every key is the sheet's while it is up,
+wherever the focus is - on the title bar's Lock button one Shift+Tab away, or
+nowhere after a press on the title bar - so Cmd+C copies nothing out of the pane
+under it and Escape puts away the sheet and not the pane. `Sheet.svelte` is the
+veil and the card, for any sheet like it.
+
+**The Lock button names its key**, "Lock the vault · ⌘L", as a tooltip in the
+form the list row's copy buttons already use.
+
+**Cmd+C keeps the mockup's promise, and the menu's Copy Password is
+Shift+Cmd+C.** Edit ▸ Copy is the system's, and every text field finds Cmd+C
+through it, so no item of Coffer's can take the key. Cmd+C with nothing selected
+still copies the open entry's password, because the page answers it before
+AppKit looks in the menu.
+
+**Move to Recycle Bin is grey while a field is being written.** In a field
+Cmd+Backspace deletes to the start of the line, as it does everywhere on a Mac;
+Finder greys its own Move to Trash while a name is being edited, for the same
+reason. It is grey as well for an entry a deletion would erase, because the item
+says the bin: that one is deleted from the pane, which asks first.
+
 ## Motion
 
 The mockup is a still picture and names no duration. The window has three, and

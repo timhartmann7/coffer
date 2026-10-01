@@ -25,6 +25,7 @@ compile_error!("Coffer's window is macOS only. vault-core is the part that is no
 mod autolock;
 mod buttons;
 mod clipboard;
+mod closing;
 mod commands;
 mod drafts;
 mod dto;
@@ -37,6 +38,7 @@ mod menu;
 mod offered;
 mod opener;
 mod recent;
+mod route;
 mod session;
 mod settings;
 #[cfg(test)]
@@ -58,6 +60,7 @@ pub fn run() {
         // Tauri draws a bar of its own for an application that names none, and
         // that one carries Services (see `menu.rs`).
         .menu(menu::bar)
+        .on_menu_event(route::chosen)
         .setup(|app| {
             let directory = app.path().app_config_dir().ok();
             let remembered = directory.as_deref().and_then(recent::remembered);
@@ -69,6 +72,7 @@ pub fn run() {
             app.manage(Arc::new(generator::remembered(directory.clone())));
             app.manage(Arc::new(Session::new(remembered, directory)));
             app.manage(Arc::clone(&preferences));
+            app.manage(route::Route::default());
 
             let locking = app.handle().clone();
             app.manage(Arc::new(Timer::start(
@@ -93,7 +97,7 @@ pub fn run() {
                 }
             });
 
-            window::open(app.handle())?;
+            window::first(app.handle())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -114,6 +118,9 @@ pub fn run() {
             commands::forget_key_file,
             commands::lock,
             commands::stirred,
+            commands::listen,
+            commands::menu_state,
+            commands::close_window,
             commands::tree,
             commands::entry,
             commands::reveal,
@@ -167,39 +174,71 @@ pub fn run() {
 
     match application {
         Ok(application) => application.run(|app, event| match event {
-            // The window is built again exactly here and nowhere else. A destroy
-            // is a message to the event loop rather than something that has
-            // happened by the time the call returns, and the label stays taken
-            // until this event is delivered - so destroying and building in one
-            // function always fails, and building from a timer thread builds a
-            // window AppKit will not let that thread decorate.
-            //
-            // Only when a lock asked for it. The reader closing the window
-            // arrives as the same event, and a window that came back from that
-            // would be one Coffer could never be shut.
+            // The close button and Close Window. The page is asked to finish
+            // first (`closing.rs`); with no page the window goes and Rust
+            // locks.
+            tauri::RunEvent::WindowEvent {
+                ref label,
+                event: tauri::WindowEvent::CloseRequested { ref api, .. },
+                ..
+            } if label.starts_with(window::MAIN) => {
+                if closing::requested(app, label) {
+                    api.prevent_close();
+                }
+            }
             tauri::RunEvent::WindowEvent {
                 ref label,
                 event: tauri::WindowEvent::Destroyed,
                 ..
-            } if label.starts_with(window::MAIN) && window::wanted_again() => {
-                window::next_generation();
-                // Posted back to the main thread rather than built here. The
-                // runtime takes the window that just went out of its own books
-                // *after* this callback returns, and the replacement carries the
-                // same label - so a window built inline is the one that cleanup
-                // erases. What is left is a frame macOS still draws, with no
-                // page in it and nothing to answer a command: the reader locks
-                // the vault and cannot get back in.
-                let handle = app.clone();
-                let _ = app.run_on_main_thread(move || {
-                    if let Err(error) = window::open(&handle) {
-                        // Nothing has been unlocked at this point - the lock
-                        // that destroyed the window wiped the tree first - so
-                        // there is nothing here that could name a secret.
-                        eprintln!("Coffer could not open its window again: {error}");
-                    }
-                });
+            } if label.starts_with(window::MAIN) => {
+                // The page that was listening went with its window. Until the
+                // next one listens, the bar offers only what builds a window
+                // again. A window that had already been replaced - its event
+                // handled after the next page listened and said what it
+                // offers - leaves the bar to that page.
+                if app
+                    .try_state::<route::Route>()
+                    .is_some_and(|route| route.forget(label))
+                {
+                    menu::enable(app, None);
+                }
+
+                // The window is built again exactly here after a lock, and
+                // nowhere else. A destroy is a message to the event loop rather
+                // than something that has happened by the time the call
+                // returns, and the label stays taken until this event is
+                // delivered - so destroying and building in one function
+                // always fails, and building from a timer thread builds a
+                // window AppKit will not let that thread decorate.
+                //
+                // Only when a lock asked for it. The reader closing the window
+                // arrives as the same event, and a window that came back from
+                // that would be one Coffer could never put away: the Dock
+                // brings that one back.
+                if window::wanted_again() {
+                    // Posted back to the main thread rather than built here.
+                    // The runtime takes the window that just went out of its
+                    // own books *after* this callback returns, and the
+                    // replacement carries the same label - so a window built
+                    // inline is the one that cleanup erases. What is left is a
+                    // frame macOS still draws, with no page in it and nothing
+                    // to answer a command: the reader locks the vault and
+                    // cannot get back in.
+                    let handle = app.clone();
+                    let _ = app.run_on_main_thread(move || window::again(&handle));
+                }
             }
+            // The last window going is not Coffer quitting. The reader closed
+            // it, which locked the vault, and Coffer waits in the Dock until
+            // it is clicked or quit. Quit arrives as `Exit` and never asks
+            // first, and an exit with a code is one Coffer asked for itself.
+            tauri::RunEvent::ExitRequested {
+                code: None,
+                ref api,
+                ..
+            } => api.prevent_exit(),
+            // The Dock icon, or the application opened again while it runs.
+            tauri::RunEvent::Reopen { .. } => window::bring_back(app),
             // The window toolkit ends its loop by exiting the process, which
             // runs no destructor. Without this, quitting with a vault open
             // leaves the lock file beside the database for good, and a copied

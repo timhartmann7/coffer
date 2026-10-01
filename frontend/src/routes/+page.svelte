@@ -1,20 +1,27 @@
 <script lang="ts">
+	import { tick } from 'svelte';
 	import Create from '$lib/components/Create.svelte';
 	import InCopy from '$lib/components/InCopy.svelte';
 	import Settings from '$lib/components/Settings.svelte';
+	import Shortcuts from '$lib/components/Shortcuts.svelte';
 	import Titlebar from '$lib/components/Titlebar.svelte';
 	import Unlock from '$lib/components/Unlock.svelte';
 	import Vault from '$lib/components/Vault.svelte';
 	import { flush } from '$lib/drafts';
+	import { focused } from '$lib/focus.svelte';
+	import { report } from '$lib/greying';
 	import { lockByHand } from '$lib/locking';
 	import {
 		chooseDatabase,
 		leaveRescue,
+		listen,
 		promoteRescue,
 		settings as loadSettings,
 		status,
 		tree
 	} from '$lib/ipc';
+	import { answer, applying } from '$lib/menu.svelte';
+	import { outside } from '$lib/outside';
 	import { Presence } from '$lib/presence';
 	import { wear } from '$lib/theme';
 	import type {
@@ -58,6 +65,12 @@
 	/** The throttle on telling Rust that somebody is at the machine. */
 	const presence = new Presence();
 
+	/** Whether Rust has this window's way to tell it what the reader chose in
+	 * the menu bar, which is when the bar is worth telling what applies. */
+	let listening = $state(false);
+	/** Whether the sheet of keyboard shortcuts is over the window. */
+	let keysShown = $state(false);
+
 	// The window opens locked. Nothing is asked of the vault until a password
 	// has opened it.
 	//
@@ -82,7 +95,25 @@
 				// nothing in it says nothing.
 				ready = true;
 			}
-		})();
+		})().finally(hear);
+	});
+
+	/**
+	 * Starts hearing what the reader chooses outside the page, once the screens
+	 * that answer it are drawn. A choice made before then - the item that built
+	 * this window, when the reader had closed the last one - waits in Rust and
+	 * arrives now.
+	 */
+	async function hear() {
+		await tick();
+		await listen((action) => outside(action, () => presence.stir())).catch(() => {});
+		listening = true;
+	}
+
+	// The menu bar greys out what no screen can do now. The screens say what
+	// they can do, and this tells Rust whenever that changes.
+	$effect(() => {
+		if (listening) report(applying());
 	});
 
 	// Worn before the settings arrive as well as after. Rust built this window in
@@ -165,9 +196,25 @@
 		showing = showing === 'settings' ? 'vault' : 'settings';
 	}
 
+	/** Whether the title bar is the way in to the settings: with no vault open,
+	 * and not while a new one is being made. An open vault's is in its status
+	 * bar. */
+	const titleSettings = $derived(chosen !== null && showing !== 'create' && !(root && database));
+
+	// The items of the menu bar this window answers whatever screen it shows:
+	// the title bar's two buttons, and the sheet of keys.
+	$effect(() =>
+		answer({
+			lock: { run: lock, when: () => root !== null },
+			settings: { run: toggleSettings, when: () => titleSettings && showing !== 'settings' },
+			shortcuts: { run: () => (keysShown = true) }
+		})
+	);
+
 	/**
 	 * The settings screen offers another vault, which is the unlock screen's
-	 * picker under another name.
+	 * picker under another name, and so does Open Vault… in the menu bar while
+	 * a vault is being made.
 	 *
 	 * The refusal is left to reach the screen. Rust will not point the session
 	 * at another file while one is open - the tree of the first would still be
@@ -217,11 +264,17 @@
 	What counts as the reader being there. Deliberately not every event a browser
 	has: a scroll or a mouse move can happen without anybody in the room, and a
 	deadline they reset would be a vault that never locks itself.
+
+	A key is heard on its way in, before anything on the page answers it. A sheet
+	over the window keeps every key to itself, and a reader reading it with the
+	keyboard is as much there as one pressing the pointer.
 -->
 <svelte:window
-	onkeydown={() => presence.stir()}
+	onkeydowncapture={() => presence.stir()}
 	onpointerdown={() => presence.stir()}
 	onwheel={() => presence.stir()}
+	onfocusin={focused}
+	onfocusout={focused}
 />
 
 {#snippet settingsScreen()}
@@ -247,57 +300,67 @@
 		unlocked={root !== null}
 		{showing}
 		onLock={root !== null ? lock : undefined}
-		onSettings={chosen && showing !== 'create' && !(root && database) ? toggleSettings : undefined}
+		onSettings={titleSettings ? toggleSettings : undefined}
 	/>
 
-	{#if showing === 'create'}
-		<Create
-			onMade={async () => {
-				showing = 'vault';
-				await opened();
-			}}
-			onCancel={() => (showing = 'vault')}
-			onOpen={(picked) => void pointAt(picked)}
-		/>
-	{:else if root && database}
-		{#if copy}
-			<InCopy {copy} onPromote={promote} onBack={back} />
+	<!-- The sheet of keys goes over the screens and not over the title bar, so
+	     the window can still be dragged and locked while it is open. -->
+	<div class="relative flex min-h-0 flex-1 flex-col">
+		<div class="flex min-h-0 flex-1 flex-col" inert={keysShown}>
+			{#if showing === 'create'}
+				<Create
+					onMade={async () => {
+						showing = 'vault';
+						await opened();
+					}}
+					onCancel={() => (showing = 'vault')}
+					onOpen={(picked) => void pointAt(picked)}
+					onChoose={choose}
+				/>
+			{:else if root && database}
+				{#if copy}
+					<InCopy {copy} onPromote={promote} onBack={back} />
+				{/if}
+				<!-- An open vault keeps the screen, and the settings go over it. There is
+				     one way in and out of them while a vault is open, it is in the status
+				     bar, and it does not move when it is pressed. -->
+				<Vault
+					{database}
+					{root}
+					{readOnly}
+					settings={showing === 'settings' ? settingsScreen : undefined}
+					onSettings={toggleSettings}
+					onTree={(tree) => (root = tree)}
+				/>
+			{:else if showing === 'settings' && chosen}
+				<!-- Nothing is open, so there is nothing to lay them over: the way in was
+				     the title bar, and that is where it stays. -->
+				{@render settingsScreen()}
+			{:else if ready}
+				<Unlock
+					{database}
+					{found}
+					{keyFile}
+					{reason}
+					{rescue}
+					{lost}
+					{file}
+					{copy}
+					{typed}
+					{typedBeside}
+					onChoose={(picked) => {
+						database = picked;
+						void chosen_elsewhere();
+					}}
+					onKeyFile={(chosen) => (keyFile = chosen)}
+					onCreate={() => (showing = 'create')}
+					onGone={() => void foundAgain()}
+					onUnlocked={opened}
+				/>
+			{/if}
+		</div>
+		{#if keysShown}
+			<Shortcuts onClose={() => (keysShown = false)} />
 		{/if}
-		<!-- An open vault keeps the screen, and the settings go over it. There is
-		     one way in and out of them while a vault is open, it is in the status
-		     bar, and it does not move when it is pressed. -->
-		<Vault
-			{database}
-			{root}
-			{readOnly}
-			settings={showing === 'settings' ? settingsScreen : undefined}
-			onSettings={toggleSettings}
-			onTree={(tree) => (root = tree)}
-		/>
-	{:else if showing === 'settings' && chosen}
-		<!-- Nothing is open, so there is nothing to lay them over: the way in was
-		     the title bar, and that is where it stays. -->
-		{@render settingsScreen()}
-	{:else if ready}
-		<Unlock
-			{database}
-			{found}
-			{keyFile}
-			{reason}
-			{rescue}
-			{lost}
-			{file}
-			{copy}
-			{typed}
-			{typedBeside}
-			onChoose={(picked) => {
-				database = picked;
-				void chosen_elsewhere();
-			}}
-			onKeyFile={(chosen) => (keyFile = chosen)}
-			onCreate={() => (showing = 'create')}
-			onGone={() => void foundAgain()}
-			onUnlocked={opened}
-		/>
-	{/if}
+	</div>
 </div>

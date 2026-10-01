@@ -3,9 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import InCopy from './InCopy.svelte';
 import type { CopyOf, OnDisk } from '$lib/model';
 
-vi.mock('$lib/ipc', () => ({
-	asFailure: (thrown: unknown) => thrown as { code: string; message: string }
-}));
+vi.mock(import('$lib/ipc'), async (real) => (await import('$lib/stubbed')).stubbed(await real()));
 
 const copy: CopyOf = {
 	vault: 'personal.kdbx',

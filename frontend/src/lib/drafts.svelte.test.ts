@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { drop, flush, release, replacing, settle, typed, unfinished, type Place } from './drafts';
+import type { Stubbed } from './stubbed';
 
-const ipc = vi.hoisted(() => ({ draft: vi.fn() }));
-vi.mock('./ipc', () => ipc);
+const ipc = vi.hoisted(() => ({}) as Stubbed);
+vi.mock(import('./ipc'), async (real) =>
+	Object.assign(ipc, (await import('./stubbed')).stubbed(await real()))
+);
 
 /** Every entry in this file is its own, because what is typed is kept for the
  * life of the window and the window here is the whole file. */

@@ -6,10 +6,12 @@
  * node that shows it and is never kept.
  */
 
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 import type {
+	Action,
 	Attached,
 	Calibration,
+	Command,
 	Database,
 	Deletion,
 	Entry,
@@ -159,6 +161,30 @@ export function lock(): Promise<void> {
  */
 export function stirred(): Promise<number | null> {
 	return invoke('stirred');
+}
+
+/**
+ * Hands Rust the way to tell this window what the reader chose outside it: an
+ * item of the menu bar, or the close button. One way per window: the window a
+ * lock builds next hands over its own, and Rust lets go of this one when its
+ * window goes. A channel and not an event: it needs no capability, and nothing
+ * of it outlives the window (see docs/ipc.md).
+ */
+export function listen(heard: (action: Action) => void): Promise<void> {
+	const channel = new Channel<Action>(heard);
+	return invoke('listen', { channel });
+}
+
+/** Tells the menu bar which of Coffer's items the window can do now. Rust greys
+ * out the rest, and Lock Vault and Open Vault… follow the vault as well. */
+export function menuState(enabled: Command[]): Promise<void> {
+	return invoke('menu_state', { enabled });
+}
+
+/** Locks the vault and takes this window down for good; the Dock brings it
+ * back. */
+export function closeWindow(): Promise<void> {
+	return invoke('close_window');
 }
 
 /** What the reader chose, and the values they may choose instead. Both come

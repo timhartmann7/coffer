@@ -26,6 +26,9 @@ pub enum Reason {
     SessionSwitched,
     /// The reader pressed the button.
     ByHand,
+    /// The reader closed the window. Like quitting, the window does not come
+    /// back on its own: Coffer waits in the Dock until it is clicked.
+    Closed,
     /// Coffer is closing.
     Quitting,
 }
@@ -35,12 +38,14 @@ impl Reason {
     ///
     /// Quitting is not a preference and neither is the button: the lock file
     /// beside the database has to go on the way out whatever anybody chose, and
-    /// a button that did nothing would be worse than no button.
+    /// a button that did nothing would be worse than no button. Closing the
+    /// window is neither: a vault left open by a window that went would be a
+    /// decrypted vault in a process nobody can see.
     pub fn wanted(self, settings: Settings) -> bool {
         match self {
             Reason::Sleeping => settings.lock_on_sleep,
             Reason::ScreenLocked | Reason::SessionSwitched => settings.lock_on_screen_lock,
-            Reason::Idle | Reason::ByHand | Reason::Quitting => true,
+            Reason::Idle | Reason::ByHand | Reason::Closed | Reason::Quitting => true,
         }
     }
 
@@ -54,8 +59,16 @@ impl Reason {
             Reason::Sleeping => Some("sleeping"),
             Reason::ScreenLocked => Some("screenLocked"),
             Reason::SessionSwitched => Some("sessionSwitched"),
-            Reason::ByHand | Reason::Quitting => None,
+            Reason::ByHand | Reason::Closed | Reason::Quitting => None,
         }
+    }
+
+    /// Whether the window is built again after this lock, asking for the
+    /// password. Not when Coffer is quitting, and not when the reader closed
+    /// it: a window that came straight back from its own close button would be
+    /// one Coffer could never put away. The Dock brings that one back.
+    pub fn comes_back(self) -> bool {
+        !matches!(self, Reason::Closed | Reason::Quitting)
     }
 }
 
@@ -526,10 +539,12 @@ mod tests {
         assert!(!Reason::ScreenLocked.wanted(neither));
         assert!(!Reason::SessionSwitched.wanted(neither));
 
-        // Never a choice: the button has to work, and the lock file beside the
-        // database has to go on the way out.
+        // Never a choice: the button has to work, the lock file beside the
+        // database has to go on the way out, and a window that went must not
+        // leave its vault open behind it.
         assert!(Reason::Idle.wanted(neither));
         assert!(Reason::ByHand.wanted(neither));
+        assert!(Reason::Closed.wanted(neither));
         assert!(Reason::Quitting.wanted(neither));
     }
 
@@ -542,6 +557,28 @@ mod tests {
         assert_eq!(Reason::ScreenLocked.explained(), Some("screenLocked"));
         assert_eq!(Reason::SessionSwitched.explained(), Some("sessionSwitched"));
         assert_eq!(Reason::ByHand.explained(), None);
+        assert_eq!(Reason::Closed.explained(), None);
         assert_eq!(Reason::Quitting.explained(), None);
+    }
+
+    /// The close button that brought its own window straight back is the
+    /// window Coffer could never put away; the lock that did not bring it back
+    /// is a reader locked out until they relaunch.
+    #[test]
+    fn a_window_comes_back_after_every_lock_but_a_close_and_a_quit() {
+        for reason in [
+            Reason::Idle,
+            Reason::Sleeping,
+            Reason::ScreenLocked,
+            Reason::SessionSwitched,
+            Reason::ByHand,
+        ] {
+            assert!(reason.comes_back(), "{reason:?} left no window to unlock");
+        }
+        assert!(!Reason::Closed.comes_back(), "the closed window came back");
+        assert!(
+            !Reason::Quitting.comes_back(),
+            "a window was built on the way out"
+        );
     }
 }

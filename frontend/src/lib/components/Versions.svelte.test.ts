@@ -3,16 +3,13 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { entry, field, version } from '$lib/fixtures';
 import type { Version } from '$lib/model';
 import { reactive } from '$lib/props.svelte';
+import type { Stubbed } from '$lib/stubbed';
 import Versions from './Versions.svelte';
 
-const ipc = vi.hoisted(() => ({
-	version: vi.fn(),
-	revealVersion: vi.fn(),
-	restoreVersion: vi.fn(),
-	deleteVersion: vi.fn(),
-	clearHistory: vi.fn()
-}));
-vi.mock('$lib/ipc', () => ipc);
+const ipc = vi.hoisted(() => ({}) as Stubbed);
+vi.mock(import('$lib/ipc'), async (real) =>
+	Object.assign(ipc, (await import('$lib/stubbed')).stubbed(await real()))
+);
 
 const OLD = 'version 1 password';
 

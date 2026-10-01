@@ -16,16 +16,29 @@
 	import { deleted as deletedLine, eraseQuestion } from '$lib/bin';
 	import { flush } from '$lib/drafts';
 	import { named as howLong } from '$lib/duration';
+	import { writing } from '$lib/focus.svelte';
 	import { copied, quoted } from '$lib/format';
 	import { held } from '$lib/holding';
 	import { copying, typing } from '$lib/keys';
 	import { cancels, composing } from '$lib/lines';
+	import { answer } from '$lib/menu.svelte';
 	import { Moves } from '$lib/moves';
 	import { COPIED, Notices } from '$lib/notices.svelte';
 	import { conceal } from '$lib/reveal.svelte';
 	import { Saving } from '$lib/saving.svelte';
-	import type { Database, Entry, EntryRow, Group, History, Position, Span } from '$lib/model';
+	import {
+		untouchable,
+		type Database,
+		type Entry,
+		type EntryRow,
+		type Field,
+		type Group,
+		type History,
+		type Position,
+		type Span
+	} from '$lib/model';
 	import { index, search } from '$lib/search';
+	import { KEYS } from '$lib/shortcuts';
 	import {
 		entriesOf,
 		find,
@@ -172,6 +185,10 @@
 	/** Whether the list is showing the recycle bin or a folder inside it, where
 	 * nothing is made or changed and everything is read one folder at a time. */
 	const binned = $derived(group !== null && inBin(shown));
+	/** Whether things can be made here. The + Entry button and the folder
+	 * header's buttons are drawn on this, and so are the menu bar's New Entry
+	 * and New Folder. */
+	const changeable = $derived(!readOnly && !binned);
 	/** The folders drawn above the entries in the bin. A search is for entries,
 	 * and a folder row among its answers would be one it did not look inside. */
 	const folders = $derived(binned && query === '' ? shown.sections : []);
@@ -388,6 +405,48 @@
 		}
 	}
 
+	/** Whether the list and the pane are the reader's to act on: nothing is over
+	 * them. The settings make them inert, and the conflict dialog asks its
+	 * question first. */
+	const free = $derived(settings === undefined && file.conflict === null);
+
+	/** Opens the settings, or closes them again: the status bar's button, and
+	 * Settings… in the menu bar. Not over a pane that has to stay. */
+	function toggleSettings() {
+		if (settings || !held()) onSettings();
+	}
+
+	/** Puts the reader in the search field, with what is in it selected, the
+	 * way the key the field advertises does on every Mac. */
+	function seek() {
+		field?.focus();
+		field?.select();
+	}
+
+	/** The open entry's login or password, when it has one to copy. */
+	function filled(kind: 'username' | 'password'): Field | undefined {
+		return opened?.fields.find((each) => each.kind === kind && !each.empty);
+	}
+
+	/**
+	 * Copies the open entry's login or password in Rust. Copy Login, Copy
+	 * Password and Cmd+C with nothing selected all come here.
+	 *
+	 * After every value on its way to Rust has arrived. A choice from the menu
+	 * bar leaves the field it was made in, which sends what was typed there,
+	 * and Tauri answers the copy beside that write, not after it: the session
+	 * goes to whichever asks for it first once a save lets go, and a copy that
+	 * got there first put the login on the pasteboard as it was before the
+	 * edit, under a notice saying it had copied the one on the screen.
+	 */
+	async function copyOpen(kind: 'username' | 'password') {
+		const chosen = filled(kind);
+		if (!opened || !chosen) return;
+		const id = opened.id;
+		await flush();
+		await copy(id, chosen.name);
+	}
+
 	/** Moves the entry in the pane to the bin, or out of the file. */
 	function removeEntry() {
 		if (opened && !held()) void moves.removeEntry(opened);
@@ -517,6 +576,40 @@
 
 	$effect(() => () => notices.clear());
 
+	// What the menu bar's items do on this screen: each runs what its button
+	// runs, on the condition its button is drawn on.
+	$effect(() =>
+		answer({
+			newEntry: { run: addEntry, when: () => free && changeable },
+			// Opens the name and never closes it: the plus in the folders pane
+			// is the way to change one's mind.
+			newFolder: { run: addFolder, when: () => free && changeable && !naming },
+			find: { run: seek, when: () => free },
+			// On the condition the row's copy button is drawn on: a login Rust
+			// holds. One typed into an empty field is offered once it is left.
+			copyLogin: {
+				run: () => void copyOpen('username'),
+				when: () => free && !!filled('username')
+			},
+			copyPassword: {
+				run: () => void copyOpen('password'),
+				when: () => free && !!filled('password')
+			},
+			// Only a deletion that goes to the bin, which is what the item says.
+			// One that goes for good asks first, from the pane.
+			moveToBin: {
+				run: removeEntry,
+				when: () =>
+					free &&
+					opened !== null &&
+					opened.deletion === 'bin' &&
+					!untouchable(opened, readOnly) &&
+					!writing()
+			},
+			settings: { run: toggleSettings, when: () => settings === undefined }
+		})
+	);
+
 	/**
 	 * A field of the reader's own came off an entry.
 	 *
@@ -570,13 +663,6 @@
 			return;
 		}
 
-		if (event.key === 'f') {
-			event.preventDefault();
-			field?.focus();
-			field?.select();
-			return;
-		}
-
 		// A field's own undo is the field's. Cmd+Z in the search box or in a
 		// value being written takes back typing, and the offer waits for a key
 		// that is not aimed at one.
@@ -587,22 +673,20 @@
 			return;
 		}
 
-		if (!opened) return;
-		const wanted = event.key === 'b' ? 'username' : event.key === 'c' ? 'password' : null;
-		if (!wanted) return;
-
+		// Cmd+C with nothing selected copies the open entry's password, as the
+		// mockup has it. Every other key with Cmd is the menu bar's: the page sees
+		// a key before AppKit looks in the menu, and one answered here as well
+		// would happen twice.
+		//
 		// A key a row of the pane has already answered: Cmd+C on a protected
 		// value's own row copies that value, not the password.
 		if (event.defaultPrevented) return;
 		// Text the reader is writing is theirs to copy. A selection is copied by
 		// the node holding it, and a revealed value's node hands that to Rust
 		// itself, with the part that was selected.
-		if (wanted === 'password' ? !copying(event) : typing(event.target)) return;
-
-		const chosen = opened.fields.find((entry) => entry.kind === wanted);
-		if (!chosen || chosen.empty) return;
+		if (!copying(event) || !filled('password')) return;
 		event.preventDefault();
-		copy(opened.id, chosen.name);
+		void copyOpen('password');
 	}
 </script>
 
@@ -650,7 +734,7 @@
 		<aside class="flex flex-col overflow-hidden border-r border-hairline bg-surface2">
 			<div class="flex shrink-0 items-center gap-1 px-4 py-3">
 				<span class="flex-1 font-mono text-label tracking-label text-txt3 uppercase">Folders</span>
-				{#if !readOnly && !binned}
+				{#if changeable}
 					{#if group !== null}
 						<button
 							type="button"
@@ -843,6 +927,7 @@
 						bind:this={field}
 						bind:value={query}
 						type="text"
+						role="searchbox"
 						autocomplete="off"
 						spellcheck="false"
 						placeholder="Title, login, address, tag"
@@ -852,10 +937,10 @@
 					<kbd
 						class="shrink-0 rounded-xs border border-hairline px-1.5 py-0.5 font-mono text-label text-txt4"
 					>
-						⌘F
+						{KEYS.find}
 					</kbd>
 				</span>
-				{#if !readOnly && !binned}
+				{#if changeable}
 					<button
 						type="button"
 						onclick={addEntry}
@@ -1076,7 +1161,7 @@
 		     reader can answer a question in it. -->
 		<button
 			type="button"
-			onclick={() => (settings || !held()) && onSettings()}
+			onclick={toggleSettings}
 			aria-label={settings ? 'Back to the vault' : 'Settings'}
 			aria-expanded={settings !== undefined}
 			class="flex items-center gap-2 tracking-label uppercase transition-colors active:text-txt4 {settings

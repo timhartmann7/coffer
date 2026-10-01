@@ -1,4 +1,5 @@
-//! Locking, in the one place the timer, the machine and the button all reach.
+//! Locking, in the one place the timer, the machine, the button and the close
+//! button all reach.
 //!
 //! Locking destroys the window. It does not hide one: a hidden window is a
 //! webview that still holds every value the reader looked at, in a heap nothing
@@ -49,10 +50,10 @@ pub fn lock<R: Runtime>(app: &AppHandle<R>, reason: Reason) {
     vault_core::scrub::stack();
 
     if let Some(main) = app.get_webview_window(&window::label()) {
-        // Coffer is closing, so the window is not wanted back. Every other
-        // reason is a lock, and a lock is a window that returns asking for a
-        // password.
-        if reason != Reason::Quitting {
+        // Coffer is closing, or the reader closed the window, so the window is
+        // not wanted back. Every other reason is a lock, and a lock is a window
+        // that returns asking for a password.
+        if reason.comes_back() {
             window::rebuilding();
         }
 

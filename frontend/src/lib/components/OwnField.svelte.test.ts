@@ -4,22 +4,13 @@ import { settle } from '$lib/drafts';
 import { drawing, entry, field, generated } from '$lib/fixtures';
 import type { Field } from '$lib/model';
 import { reactive } from '$lib/props.svelte';
+import type { Stubbed } from '$lib/stubbed';
 import OwnField from './OwnField.svelte';
 
-const ipc = vi.hoisted(() => ({
-	reveal: vi.fn(),
-	draft: vi.fn(),
-	setField: vi.fn(),
-	generator: vi.fn(),
-	generatePassword: vi.fn(),
-	// The same reading the real one does: a command rejects with the value Rust
-	// serialised, and anything else is not one.
-	asFailure: (thrown: unknown) =>
-		thrown && typeof (thrown as { message?: unknown }).message === 'string'
-			? (thrown as { code: string; message: string })
-			: { code: 'other', message: 'Coffer could not finish that.' }
-}));
-vi.mock('$lib/ipc', () => ipc);
+const ipc = vi.hoisted(() => ({}) as Stubbed);
+vi.mock(import('$lib/ipc'), async (real) =>
+	Object.assign(ipc, (await import('$lib/stubbed')).stubbed(await real()))
+);
 
 const SECRET = 'correct horse battery staple';
 const MADE = 'q7Rk-2Vw9-Xm4T-Hp8L-Zn3B';

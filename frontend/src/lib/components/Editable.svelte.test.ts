@@ -1,10 +1,13 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Place } from '$lib/drafts';
+import type { Stubbed } from '$lib/stubbed';
 import Editable from './Editable.svelte';
 
-const ipc = vi.hoisted(() => ({ draft: vi.fn() }));
-vi.mock('$lib/ipc', () => ipc);
+const ipc = vi.hoisted(() => ({}) as Stubbed);
+vi.mock(import('$lib/ipc'), async (real) =>
+	Object.assign(ipc, (await import('$lib/stubbed')).stubbed(await real()))
+);
 
 let host: HTMLElement;
 

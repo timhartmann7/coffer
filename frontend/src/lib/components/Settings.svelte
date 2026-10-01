@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { asFailure, setSettings } from '$lib/ipc';
 	import { named } from '$lib/duration';
+	import { answer } from '$lib/menu.svelte';
 	import { LOOKS } from '$lib/theme';
 	import type { Database, Settings } from '$lib/model';
 	import Choice from './Choice.svelte';
@@ -45,6 +46,10 @@
 			failure = asFailure(thrown).message;
 		}
 	}
+
+	// Open Vault… in the menu bar is "Open another", refusal and all. Rust greys
+	// the item out while a vault is open, which is when it would be refused.
+	$effect(() => answer({ openVault: { run: () => void pick() } }));
 
 	async function change(wanted: Settings) {
 		failure = null;

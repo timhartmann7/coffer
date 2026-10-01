@@ -1,23 +1,13 @@
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { applying, run } from '$lib/menu.svelte';
+import type { Stubbed } from '$lib/stubbed';
 import Unlock from './Unlock.svelte';
 
-const ipc = vi.hoisted(() => ({
-	unlock: vi.fn(),
-	unlockTakingOver: vi.fn(),
-	snapshots: vi.fn(),
-	chooseDatabase: vi.fn(),
-	chooseFound: vi.fn(),
-	chooseSnapshot: vi.fn(),
-	chooseRescue: vi.fn(),
-	discardRescue: vi.fn(),
-	putBackRescue: vi.fn(),
-	leaveRescue: vi.fn(),
-	chooseKeyFile: vi.fn(),
-	forgetKeyFile: vi.fn(),
-	asFailure: (thrown: unknown) => thrown as { code: string; message: string }
-}));
-vi.mock('$lib/ipc', () => ipc);
+const ipc = vi.hoisted(() => ({}) as Stubbed);
+vi.mock(import('$lib/ipc'), async (real) =>
+	Object.assign(ipc, (await import('$lib/stubbed')).stubbed(await real()))
+);
 
 const database = { path: '/Users/someone/personal.kdbx', name: 'personal' };
 
@@ -186,6 +176,45 @@ it('will not let another database be chosen while one is opening', async () => {
 	another?.click();
 	flushSync();
 	expect(ipc.chooseDatabase).not.toHaveBeenCalled();
+
+	finish();
+	return unmount(component);
+});
+
+/** Open Vault… in the menu bar is the link, refusal of a busy screen and all:
+ * a database picked while a key derives would be refused as stale once the
+ * unlock in flight lands. */
+it('opens the picker from the menu the way the link does, and not while a key is deriving', async () => {
+	const picked = { path: '/Users/someone/work.kdbx', name: 'work' };
+	ipc.chooseDatabase.mockResolvedValue(picked);
+	const onChoose = vi.fn();
+	const component = mount(Unlock, {
+		target: host,
+		props: {
+			database,
+			onChoose,
+			onKeyFile: vi.fn(),
+			onCreate: vi.fn(),
+			onGone: vi.fn(),
+			onUnlocked: vi.fn()
+		}
+	});
+	flushSync();
+
+	expect(applying()).toContain('openVault');
+	run('openVault');
+	await vi.waitFor(() => expect(onChoose).toHaveBeenCalledWith(picked));
+
+	let finish: () => void = () => {};
+	ipc.unlock.mockReturnValue(new Promise<void>((resolve) => (finish = resolve)));
+	submit('correct horse battery staple');
+	await tick();
+	flushSync();
+
+	expect(applying(), 'offered while the key was deriving').not.toContain('openVault');
+	run('openVault');
+	await tick();
+	expect(ipc.chooseDatabase).toHaveBeenCalledTimes(1);
 
 	finish();
 	return unmount(component);

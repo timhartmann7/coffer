@@ -8,6 +8,7 @@
 		defaultNewDatabase,
 		target
 	} from '$lib/ipc';
+	import { answer } from '$lib/menu.svelte';
 	import type { Calibration, Database, Target } from '$lib/model';
 	import Icon from './Icon.svelte';
 
@@ -21,12 +22,17 @@
 	let {
 		onMade,
 		onCancel,
-		onOpen
+		onOpen,
+		onChoose
 	}: {
 		onMade: () => Promise<void>;
 		onCancel: () => void;
 		/** The reader chose to open what is already at the place instead. */
 		onOpen: (database: Database) => void;
+		/** Asks for another vault and takes the reader to its unlock screen,
+		 * the way the settings' "Open another" does. Rejects with what went
+		 * wrong, which is shown here. */
+		onChoose: () => Promise<void>;
 	} = $props();
 
 	let where = $state<Target | null>(null);
@@ -130,6 +136,27 @@
 			busy = false;
 		}
 	}
+
+	/**
+	 * Open Vault… in the menu bar: the reader came to make a vault and remembers
+	 * they have one. The window's own picker, which goes on to the unlock screen
+	 * for what was picked.
+	 *
+	 * Not while a vault is being made. Picking points the session at another
+	 * file, the creation in flight lands after that and is refused as stale, and
+	 * the reader is left with a new vault on the disk that nothing opened.
+	 */
+	async function pick() {
+		if (busy) return;
+		failure = null;
+		try {
+			await onChoose();
+		} catch (thrown) {
+			failure = asFailure(thrown).message;
+		}
+	}
+
+	$effect(() => answer({ openVault: { run: () => void pick(), when: () => !busy } }));
 
 	async function make(event: SubmitEvent) {
 		event.preventDefault();

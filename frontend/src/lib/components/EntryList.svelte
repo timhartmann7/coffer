@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import { when } from '$lib/format';
+	import { KEYS, OWN } from '$lib/shortcuts';
 	import type { EntryRow } from '$lib/model';
 	import Icon from './Icon.svelte';
 	import Mask from './Mask.svelte';
@@ -130,7 +131,7 @@
 					disabled={row.username === ''}
 					class="pointer-events-auto rounded-sm p-1 text-txt4 transition-colors hover:bg-surface2 hover:text-txt disabled:pointer-events-none disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-txt4"
 					aria-label="Copy login"
-					title="Copy login · ⌘B"
+					title="Copy login · {KEYS.copyLogin}"
 				>
 					<Icon name="copy" class="h-4 w-4" />
 				</button>
@@ -140,7 +141,7 @@
 					disabled={!row.hasPassword}
 					class="pointer-events-auto rounded-sm p-1 text-txt4 transition-colors hover:bg-surface2 hover:text-txt disabled:pointer-events-none disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-txt4"
 					aria-label="Copy password"
-					title="Copy password · ⌘C"
+					title="Copy password · {OWN.copy}"
 				>
 					<Icon name="key" class="h-4 w-4" />
 				</button>

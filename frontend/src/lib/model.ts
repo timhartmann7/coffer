@@ -274,6 +274,17 @@ export interface Entry {
 	deletion: Deletion;
 }
 
+/**
+ * Whether nothing in an entry may be changed: a database Coffer will not write
+ * back, or an entry in the recycle bin. What is in the bin is there to be put
+ * back or let go, and an edit to it would be a change nobody sees until it
+ * comes back. The pane draws it read only, and the menu bar offers nothing that
+ * would change it.
+ */
+export function untouchable(entry: Pick<Entry, 'binned'>, readOnly: boolean): boolean {
+	return readOnly || entry.binned !== null;
+}
+
 /** One previous version of an entry, as the versions block lists them. */
 export interface Version {
 	/**
@@ -451,3 +462,27 @@ export interface Failure {
 		| 'other';
 	message: string;
 }
+
+/**
+ * Coffer's own items of the menu bar, in the bar's order, by the word Rust and
+ * the page both know them by. `menu.rs` draws them, and `shortcuts.test.ts`
+ * reads it to keep this the same list.
+ */
+export const COMMANDS = [
+	'settings',
+	'lock',
+	'newEntry',
+	'newFolder',
+	'openVault',
+	'find',
+	'copyLogin',
+	'copyPassword',
+	'moveToBin',
+	'shortcuts'
+] as const;
+
+export type Command = (typeof COMMANDS)[number];
+
+/** What Rust tells the window the reader chose outside it: an item of the menu
+ * bar, or the window's own close button. */
+export type Action = { action: 'command'; command: Command } | { action: 'closing' };

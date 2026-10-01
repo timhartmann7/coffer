@@ -75,8 +75,9 @@ afterwards if you did not.
 ## The checks a runner cannot make
 
 Run these on a real machine before announcing anything. They are the pre-release
-list for the release itself, and the first item is a check of the vault's own;
-the rest of the vault's list is in the spec.
+list for the release itself, and the first items are checks of the window's
+own, which WebKit and AppKit answer and no runner has; the rest of the vault's
+list is in the spec.
 
 - A revealed value, selected: the Coffer menu has no Services, and Shift+Cmd+Y
   (New Sticky Note) and every other enabled Services shortcut put nothing in
@@ -84,7 +85,53 @@ the rest of the vault's list is in the spec.
   into the value draws no menu, and Cmd+C there leaves only the value's part,
   through Coffer's own copy. This file is where this check lives: the spec's
   list does not carry it.
-
+- Every key of Coffer's items in the menu bar does its thing once: Cmd+N makes
+  one entry, Cmd+F puts the focus in the search field, Cmd+B and Shift+Cmd+C copy
+  once with one notice, Cmd+L locks, Cmd+, opens the settings, Shift+Cmd+N opens
+  one folder name. Cmd+C with nothing selected still copies the password, and
+  Cmd+Z still takes back a removal. The page's keys are answered before the menu
+  is looked in, and this is the check that none is answered twice or not at all.
+- Cmd+Backspace in Notes and in the search field deletes to the start of the line
+  and moves nothing to the bin; with the focus on a row or a button it moves the
+  open entry to the bin and offers it back. The menu draws the item with ⌫.
+- Greying: on the unlock screen only Settings…, Open Vault… and Keyboard
+  Shortcuts can be chosen, and on the creation screen only Open Vault… and
+  Keyboard Shortcuts - Open Vault… not while the vault is being made; Lock Vault
+  only with a vault open, and Open Vault… never then; Move to Recycle Bin grey
+  in the bin, in a read-only vault, for a vault with no bin, and while a field
+  has the focus, and offered again as soon as the vault has opened. A grey
+  item's key does nothing.
+- A title typed into an entry and not yet left, then Cmd+N: the title is saved
+  before the new entry opens, and reopening the first entry shows it with no
+  Unsaved mark. The same with Cmd+, and with Cmd+B while a saved login is being
+  changed, which copies what was typed - also while a save of a vault carrying a
+  large file is still running. A login typed into an empty field leaves Copy
+  Login grey until the field is left. Cmd+B with the focus in the search field
+  copies the login and leaves the focus there, so the next key types into it.
+- Keyboard Shortcuts with the focus on a field's copy button: Escape, Close and
+  a press on the veil each give the focus back to that button, and VoiceOver
+  reads it; Help ▸ Keyboard Shortcuts and then Cmd+F puts the focus in the
+  search field instead. With the sheet up, Shift+Tab to the title bar's Lock
+  button and Cmd+C copies nothing and Escape puts the sheet away, not the
+  entry.
+- Cmd+W and the red button, with a vault open and a value typed a moment before:
+  the window goes, Coffer stays in the Dock, the lock file beside the vault is
+  gone, the Dock icon brings back the unlock screen where the window was, and
+  after unlocking the value is in the vault. The same with a value typed while a
+  save of a vault carrying a large file is running, closed before the save
+  ends: the window waits for the save, and the value is in the vault. Cmd+W
+  while the password is still being derived: nothing stays open, and the Dock
+  brings back the unlock screen.
+- With no window: Open Vault… builds the window and opens the panel, Settings…
+  builds it and opens the settings, every other item of Coffer's is grey, and
+  Cmd+Q quits. A minimised window comes back from a click on the Dock, and a
+  click while a lock is building the window again shows no white frame.
+- With the window minimised and Coffer still the active application: Cmd+N,
+  Cmd+Backspace, Cmd+B, Settings… and Keyboard Shortcuts each bring the window
+  back and happen there, where the notice they raise can be read; Cmd+L locks,
+  and the window that comes back asks for the password.
+- Help keeps its search field, and Keyboard Shortcuts opens the sheet; Edit still
+  ends with the items macOS adds (Start Dictation, Emoji & Symbols).
 - Both disk images mount, and the application inside each launches on a Mac of
   that architecture. `file Coffer.app/Contents/MacOS/Coffer` says the
   architecture you expect. Run the Intel image on an Intel Mac, not under

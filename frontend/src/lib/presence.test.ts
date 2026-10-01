@@ -8,9 +8,12 @@
 
 import { beforeEach, expect, it, vi } from 'vitest';
 import { Presence } from './presence';
+import type { Stubbed } from './stubbed';
 
-const ipc = vi.hoisted(() => ({ stirred: vi.fn() }));
-vi.mock('$lib/ipc', () => ipc);
+const ipc = vi.hoisted(() => ({}) as Stubbed);
+vi.mock(import('./ipc'), async (real) =>
+	Object.assign(ipc, (await import('./stubbed')).stubbed(await real()))
+);
 
 beforeEach(() => ipc.stirred.mockResolvedValue(300));
 

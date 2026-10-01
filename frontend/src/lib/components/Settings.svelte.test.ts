@@ -1,13 +1,14 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Settings as Chosen } from '$lib/model';
+import { run } from '$lib/menu.svelte';
+import type { Stubbed } from '$lib/stubbed';
 import Settings from './Settings.svelte';
 
-const ipc = vi.hoisted(() => ({
-	setSettings: vi.fn(),
-	asFailure: vi.fn()
-}));
-vi.mock('$lib/ipc', () => ipc);
+const ipc = vi.hoisted(() => ({}) as Stubbed);
+vi.mock(import('$lib/ipc'), async (real) =>
+	Object.assign(ipc, (await import('$lib/stubbed')).stubbed(await real()))
+);
 
 let host: HTMLElement;
 
@@ -26,13 +27,6 @@ beforeEach(() => {
 	host = document.createElement('div');
 	document.body.appendChild(host);
 	ipc.setSettings.mockImplementation((wanted: Chosen) => Promise.resolve(wanted));
-	// The faithful implementation, so that a failure reaches the screen the way
-	// a rejected command really does.
-	ipc.asFailure.mockImplementation((thrown: unknown) =>
-		thrown && typeof (thrown as { code?: unknown }).code === 'string'
-			? thrown
-			: { code: 'other', message: 'Coffer could not finish that.' }
-	);
 });
 
 afterEach(() => host.remove());
@@ -345,6 +339,24 @@ it('says why another vault cannot be opened from here yet', async () => {
 	);
 	found?.click();
 
+	await vi.waitFor(() =>
+		expect(host.textContent).toContain('lock the vault before opening another')
+	);
+
+	unmount(component);
+});
+
+/** Open Vault… in the menu bar is "Open another": with a vault open, Rust
+ * refuses the picker, and the refusal is said here rather than nowhere. */
+it('opens another vault from the menu, and says why when Rust refuses', async () => {
+	const onChoose = vi
+		.fn()
+		.mockRejectedValue({ code: 'refused', message: 'lock the vault before opening another' });
+	const component = show({ onChoose });
+	flushSync();
+
+	run('openVault');
+	await vi.waitFor(() => expect(onChoose).toHaveBeenCalledTimes(1));
 	await vi.waitFor(() =>
 		expect(host.textContent).toContain('lock the vault before opening another')
 	);

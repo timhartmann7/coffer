@@ -7,7 +7,8 @@
 //! lock file all go with it.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 use vault_core::kdf::Work;
 use vault_core::model::{Entry, EntryId, Project};
@@ -22,9 +23,19 @@ use crate::drafts::{Drafts, Over, Typed};
 use crate::error::Failure;
 use crate::offered::Waiting;
 use crate::recent;
+use slot::Slot;
 
 pub struct Session {
     held: Mutex<Held>,
+    /// Whether a vault is open, readable without waiting for `held`.
+    ///
+    /// A save holds that lock for a key derivation and the encryption of the
+    /// whole file, which on a vault carrying documents is seconds. The menu bar
+    /// asks whether there is anything to lock every time what the window offers
+    /// changes, and a question stuck behind a save left an item grey that
+    /// applied - and AppKit drops the key of a grey item. Shared with the
+    /// [`Slot`] the vault is held in, which is the one thing that changes it.
+    unlocked: Arc<AtomicBool>,
     /// Where the vault that opened is written down for the next launch, when
     /// this Mac gave Coffer a configuration directory to write it in.
     remembering: Option<PathBuf>,
@@ -77,7 +88,7 @@ struct Held {
     /// The open database, and the file waiting on the reader's word about one
     /// of its entries. Dropping it wipes the decrypted tree and the file, and
     /// removes the lock file beside the database.
-    open: Option<Open>,
+    open: Slot,
     /// Bumped every time the session is pointed somewhere else or emptied. Key
     /// derivation takes a second and does not hold the lock, so an unlock that
     /// started before such a change must not finish over it.
@@ -126,13 +137,13 @@ impl Held {
     /// The open vault, to be changed. The revision moves only if the vault
     /// says it did: see [`Held::revision`].
     fn changing(&mut self) -> Result<&mut Open, Failure> {
-        self.open.as_mut().ok_or_else(Failure::no_vault)
+        self.open.get_mut().ok_or_else(Failure::no_vault)
     }
 
     /// The revision of the vault as it is now. Every change the vault made
     /// since this was last asked moves it once.
     fn revision(&mut self) -> u64 {
-        if let Some(open) = &self.open {
+        if let Some(open) = self.open.get() {
             let edits = open.vault.edits();
             if edits != self.edits {
                 self.edits = edits;
@@ -144,7 +155,7 @@ impl Held {
 
     /// The open vault, when nothing has changed it since `revision`.
     fn at(&mut self, revision: u64) -> Result<&mut Open, Failure> {
-        if self.open.is_none() {
+        if self.open.get().is_none() {
             return Err(Failure::no_vault());
         }
         if revision != self.revision() {
@@ -200,10 +211,56 @@ impl Open {
     }
 }
 
+mod slot {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::Open;
+
+    /// Where the open vault is held, and whether there is one, said where
+    /// [`Session::is_unlocked`](super::Session::is_unlocked) reads it without
+    /// waiting for the lock the vault is behind.
+    ///
+    /// A module of its own so that its fields are private to it: the vault
+    /// goes in and comes out through [`Slot::put`] and nowhere else, which
+    /// keeps the two in step whichever way a later change takes the vault -
+    /// `take`, `replace`, a plain assignment - because no other way compiles.
+    pub(super) struct Slot {
+        open: Option<Open>,
+        unlocked: Arc<AtomicBool>,
+    }
+
+    impl Slot {
+        /// An empty slot, saying so in `unlocked`.
+        pub(super) fn new(unlocked: Arc<AtomicBool>) -> Slot {
+            unlocked.store(false, Ordering::Release);
+            Slot {
+                open: None,
+                unlocked,
+            }
+        }
+
+        /// Puts a vault in, or takes the one there out - which wipes it.
+        pub(super) fn put(&mut self, open: Option<Open>) {
+            self.unlocked.store(open.is_some(), Ordering::Release);
+            self.open = open;
+        }
+
+        pub(super) fn get(&self) -> Option<&Open> {
+            self.open.as_ref()
+        }
+
+        pub(super) fn get_mut(&mut self) -> Option<&mut Open> {
+            self.open.as_mut()
+        }
+    }
+}
+
 impl Session {
     /// A session pointed at `database`, writing down in `remembering` every
     /// vault that opens.
     pub fn new(database: Option<PathBuf>, remembering: Option<PathBuf>) -> Session {
+        let unlocked = Arc::new(AtomicBool::new(false));
         Session {
             held: Mutex::new(Held {
                 database,
@@ -214,13 +271,14 @@ impl Session {
                 making: None,
                 found: None,
                 measured: None,
-                open: None,
+                open: Slot::new(Arc::clone(&unlocked)),
                 generation: 0,
                 revision: 0,
                 edits: 0,
                 shown: None,
                 returning: false,
             }),
+            unlocked,
             remembering,
         }
     }
@@ -251,7 +309,7 @@ impl Session {
     pub fn choose(&self, database: PathBuf) {
         let database = database.canonicalize().unwrap_or(database);
         let mut held = self.held();
-        held.open = None;
+        held.open.put(None);
         held.database = Some(database);
         // A key file belongs to the vault it opens. Carrying one over to a
         // different file would turn a right password into a wrong one, with
@@ -268,7 +326,14 @@ impl Session {
     }
 
     pub fn is_unlocked(&self) -> bool {
-        self.held().open.is_some()
+        self.unlocked.load(Ordering::Acquire)
+    }
+
+    /// Whether something holds the session now - a save, usually - asked
+    /// without waiting for it to let go. A session left poisoned by a panic is
+    /// not held by anybody.
+    pub fn busy(&self) -> bool {
+        matches!(self.held.try_lock(), Err(TryLockError::WouldBlock))
     }
 
     /// The key file the next unlock will use, if one has been chosen.
@@ -312,7 +377,7 @@ impl Session {
         let chosen = held.database.clone().ok_or_else(Failure::no_vault)?;
         let vault = unsaved::taken_from(&chosen).ok_or(VaultError::NotACopy)?;
 
-        if held.open.is_some() {
+        if held.open.get().is_some() {
             held.returning = true;
         } else {
             drop(held);
@@ -347,7 +412,7 @@ impl Session {
             // Anything already open is dropped before the new one is opened, so
             // that reopening the same file does not find Coffer's own lock
             // beside it and refuse.
-            held.open = None;
+            held.open.put(None);
             (
                 held.database.clone().ok_or_else(Failure::no_vault)?,
                 held.key_file.clone(),
@@ -404,7 +469,7 @@ impl Session {
             let opened = vault.path().to_path_buf();
             held.database = Some(opened.clone());
             held.edits = vault.edits();
-            held.open = Some(Open::of(vault));
+            held.open.put(Some(Open::of(vault)));
             // Every position the window was sent was about the vault that was
             // open before, if any was.
             held.revision += 1;
@@ -476,11 +541,11 @@ impl Session {
         // reader was typing goes in first, so that it is written out with the
         // rest, or kept beside the vault with the rest when the file will not
         // take it.
-        let ended = held.open.as_mut().map(|open| {
+        let ended = held.open.get_mut().map(|open| {
             let typed = open.finish_typing();
             (typed, open.vault.rescue())
         });
-        held.open = None;
+        held.open.put(None);
         held.generation += 1;
         let returning = std::mem::take(&mut held.returning);
 
@@ -575,7 +640,7 @@ impl Session {
     pub fn create(&self, password: Zeroizing<Vec<u8>>) -> Result<(), Failure> {
         let (target, work, generation) = {
             let mut held = self.held();
-            held.open = None;
+            held.open.put(None);
             let target = held.making.clone().ok_or_else(Failure::nowhere_chosen)?;
             let work = held.measured.ok_or_else(|| {
                 Failure::refused("the vault's key derivation has not been measured yet")
@@ -649,7 +714,7 @@ impl Session {
     /// vault past a lock that was supposed to wipe it.
     pub fn with<T>(&self, read: impl FnOnce(&Vault) -> T) -> Result<T, Failure> {
         let held = self.held();
-        let open = held.open.as_ref().ok_or_else(Failure::no_vault)?;
+        let open = held.open.get().ok_or_else(Failure::no_vault)?;
         Ok(read(&open.vault))
     }
 
@@ -659,7 +724,7 @@ impl Session {
     pub fn listing<T>(&self, read: impl FnOnce(&Vault) -> T) -> Result<(u64, T), Failure> {
         let mut held = self.held();
         let revision = held.revision();
-        let open = held.open.as_ref().ok_or_else(Failure::no_vault)?;
+        let open = held.open.get().ok_or_else(Failure::no_vault)?;
         Ok((revision, read(&open.vault)))
     }
 
@@ -742,7 +807,7 @@ impl Session {
         sequence: u64,
     ) -> Result<(), Failure> {
         let mut held = self.held();
-        let open = held.open.as_mut().ok_or_else(Failure::no_vault)?;
+        let open = held.open.get_mut().ok_or_else(Failure::no_vault)?;
         open.drafts.hear(entry, field, typed, sequence);
         Ok(())
     }
@@ -775,7 +840,7 @@ impl Session {
     /// Lets go of the file waiting on `entry`, when there is one: see
     /// [`Waiting::withdraw`].
     pub fn withdraw(&self, entry: EntryId) {
-        if let Some(open) = self.held().open.as_mut() {
+        if let Some(open) = self.held().open.get_mut() {
             open.offered.withdraw(entry);
         }
     }
@@ -1661,6 +1726,95 @@ mod tests {
         assert!(!session.is_unlocked());
     }
 
+    /// The menu bar asks whether a vault is open every time what the window
+    /// offers changes. A save holds the session for a key derivation, and an
+    /// answer that waited behind it left Lock Vault and Move to Recycle Bin
+    /// grey - their keys dead - for as long as the save took.
+    #[test]
+    fn whether_a_vault_is_open_is_answered_while_a_save_holds_the_session() {
+        use std::sync::{Arc, mpsc};
+        use std::time::Duration;
+
+        /// Asks from another thread while this one holds the session the way a
+        /// save does, and gives up after five seconds.
+        fn asked_behind_a_save(session: &Arc<Session>) -> Result<bool, mpsc::RecvTimeoutError> {
+            let saving = session.held();
+            let (answer, answered) = mpsc::channel();
+            let asking = {
+                let session = Arc::clone(session);
+                std::thread::spawn(move || answer.send(session.is_unlocked()))
+            };
+            let open = answered.recv_timeout(Duration::from_secs(5));
+            drop(saving);
+            let _ = asking.join();
+            open
+        }
+
+        let (_directory, _database, session) = holding(RICH);
+        let session = Arc::new(session);
+        assert_eq!(
+            asked_behind_a_save(&session),
+            Ok(true),
+            "the answer waited for the save"
+        );
+
+        assert!(session.lock(Reason::ByHand));
+        assert_eq!(
+            asked_behind_a_save(&session),
+            Ok(false),
+            "a locked vault was said to be open"
+        );
+    }
+
+    /// A close from Rust waits out the page's grace only while nothing holds
+    /// the session: a page whose drafts are queued behind a save is still
+    /// answering. So whether it is held is asked without joining the queue -
+    /// and a session a panic left poisoned is held by nobody, or the close
+    /// would wait for it for good.
+    #[test]
+    fn whether_the_session_is_held_is_answered_without_waiting_for_it() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (_directory, _database, session) = holding(RICH);
+        let session = Arc::new(session);
+        assert!(
+            !session.busy(),
+            "a session nobody holds was said to be held"
+        );
+
+        let saving = session.held();
+        let (answer, answered) = mpsc::channel();
+        let asking = {
+            let session = Arc::clone(&session);
+            std::thread::spawn(move || answer.send(session.busy()))
+        };
+        let held = answered.recv_timeout(Duration::from_secs(5));
+        drop(saving);
+        let _ = asking.join();
+        assert_eq!(
+            held,
+            Ok(true),
+            "the question waited for the save, or missed it"
+        );
+        assert!(
+            !session.busy(),
+            "a session let go of was still said to be held"
+        );
+
+        let poisoning = Arc::clone(&session);
+        let panicked = std::thread::spawn(move || {
+            let _held = poisoning.held();
+            panic!("a panic while the session is held");
+        })
+        .join();
+        assert!(panicked.is_err());
+        assert!(
+            !session.busy(),
+            "a session a panic let go of was said to be held for good"
+        );
+    }
+
     /// The place the creation screen offers by default is a folder that does not
     /// exist until the first vault goes into it, so making one has to make the
     /// folder too - and a folder it cannot make is a refusal that still says
@@ -1944,7 +2098,7 @@ mod tests {
         let source = shipped(include_str!("session.rs"));
         let putting: Vec<String> = functions(source)
             .into_iter()
-            .filter(|body| body.contains("held.open = Some("))
+            .filter(|body| body.contains("held.open.put(Some("))
             .collect();
         assert_eq!(putting.len(), 1, "a vault is put into the session twice");
         assert!(

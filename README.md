@@ -103,7 +103,9 @@ an hour after the refusal, so the command is the reliable one.
   the file changed underneath.
 - Previous versions of an entry live in the file's own history block, pruned to
   the limits the file carries.
-- The vault locks itself after five minutes idle, on sleep and on screen lock.
+- The vault locks itself after five minutes idle, on sleep, on screen lock, and
+  when you close its window. After a close, Coffer waits in the Dock until you
+  click it; after the others, the window comes back asking for the password.
   Locking destroys the window and wipes the decrypted tree; it does not hide
   anything. It writes first: if the vault is holding a change the file has not
   got and the file will not take it — another client wrote it, the disk went, the

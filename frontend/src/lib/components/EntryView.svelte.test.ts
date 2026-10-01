@@ -1,43 +1,16 @@
-import { flushSync, mount, unmount } from 'svelte';
+import { flushSync, mount, unmount, type ComponentProps } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { attachment, drawing, entry, field, generated, group } from '$lib/fixtures';
 import { typing } from '$lib/keys';
 import type { Attached, Clash, Entry, Generated, Purpose, Recipe } from '$lib/model';
 import { reactive } from '$lib/props.svelte';
+import type { Stubbed } from '$lib/stubbed';
 import EntryView from './EntryView.svelte';
 
-const ipc = vi.hoisted(() => ({
-	reveal: vi.fn(),
-	openUrl: vi.fn(),
-	setField: vi.fn(),
-	draft: vi.fn(),
-	removeField: vi.fn(),
-	setProtection: vi.fn(),
-	renameField: vi.fn(),
-	setTags: vi.fn(),
-	addAttachment: vi.fn(),
-	keepBothAttachments: vi.fn(),
-	replaceAttachment: vi.fn(),
-	withdrawAttachment: vi.fn(),
-	exportAttachment: vi.fn(),
-	removeAttachment: vi.fn(),
-	generator: vi.fn(),
-	generatePassword: vi.fn(),
-	versions: vi.fn(),
-	version: vi.fn(),
-	revealVersion: vi.fn(),
-	restoreVersion: vi.fn(),
-	deleteVersion: vi.fn(),
-	clearHistory: vi.fn(),
-	removeAttachmentAndVersions: vi.fn(),
-	// The same reading the real one does: a command rejects with the value Rust
-	// serialised, and anything else is not one.
-	asFailure: (thrown: unknown) =>
-		thrown && typeof (thrown as { message?: unknown }).message === 'string'
-			? (thrown as { code: string; message: string })
-			: { code: 'other', message: 'Coffer could not finish that.' }
-}));
-vi.mock('$lib/ipc', () => ipc);
+const ipc = vi.hoisted(() => ({}) as Stubbed);
+vi.mock(import('$lib/ipc'), async (real) =>
+	Object.assign(ipc, (await import('$lib/stubbed')).stubbed(await real()))
+);
 
 const SECRET = 'correct horse battery staple';
 const MARKUP = '<script>alert(1)</script>';
@@ -63,25 +36,34 @@ afterEach(() => {
 	document.getSelection()?.removeAllRanges();
 });
 
+/**
+ * What the window hands the pane, with what a test is about put over it: the
+ * entry, and the callbacks whose calls it reads. One place, so that a prop the
+ * pane comes to need is given a default once rather than at every mount.
+ */
+function props<Over extends Partial<ComponentProps<typeof EntryView>>>(over: Over) {
+	return {
+		root: group({ name: 'Root' }),
+		path: [group({ name: 'Work' })],
+		history: null,
+		now: new Date('2026-08-29T14:30:00Z'),
+		readOnly: false,
+		onCopy: vi.fn(),
+		onChanged: vi.fn(),
+		onVersions: vi.fn(),
+		onClose: vi.fn(),
+		onDelete: vi.fn(),
+		onPutBack: vi.fn(),
+		onFieldRemoved: vi.fn(),
+		onFailure: vi.fn(),
+		...over
+	};
+}
+
 function show(entryOver: Parameters<typeof entry>[0]) {
 	return mount(EntryView, {
 		target: host,
-		props: {
-			entry: entry(entryOver),
-			root: group({ name: 'Root' }),
-			path: [group({ name: 'Work' })],
-			history: null,
-			now: new Date('2026-08-29T14:30:00Z'),
-			readOnly: false,
-			onCopy: vi.fn(),
-			onChanged: vi.fn(),
-			onVersions: vi.fn(),
-			onClose: vi.fn(),
-			onDelete: vi.fn(),
-			onPutBack: vi.fn(),
-			onFieldRemoved: vi.fn(),
-			onFailure: vi.fn()
-		}
+		props: props({ entry: entry(entryOver) })
 	});
 }
 
@@ -829,24 +811,12 @@ it('shows a file under the name the database holds and exports it under a safe o
 
 	const component = mount(EntryView, {
 		target: host,
-		props: {
+		props: props({
 			entry: entry({
 				attachments: [attachment({ name: '../../escape.txt', fileName: 'escape.txt', size: 12 })]
 			}),
-			root: group({ name: 'Root' }),
-			path: [group({ name: 'Work' })],
-			history: null,
-			now: new Date('2026-08-29T14:30:00Z'),
-			readOnly: false,
-			onCopy: vi.fn(),
-			onChanged,
-			onVersions: vi.fn(),
-			onClose: vi.fn(),
-			onDelete: vi.fn(),
-			onPutBack: vi.fn(),
-			onFieldRemoved: vi.fn(),
-			onFailure: vi.fn()
-		}
+			onChanged
+		})
 	});
 	flushSync();
 
@@ -1071,22 +1041,12 @@ it('offers to clear the versions that are holding a file back', async () => {
 
 	const component = mount(EntryView, {
 		target: host,
-		props: {
+		props: props({
 			entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
-			root: group({ name: 'Root' }),
-			path: [group({ name: 'Work' })],
-			history: null,
-			now: new Date('2026-08-29T14:30:00Z'),
-			readOnly: false,
-			onCopy: vi.fn(),
 			onChanged,
 			onVersions,
-			onClose: vi.fn(),
-			onDelete: vi.fn(),
-			onPutBack: vi.fn(),
-			onFieldRemoved: vi.fn(),
 			onFailure
-		}
+		})
 	});
 	flushSync();
 
@@ -1123,27 +1083,15 @@ it('refuses a new field named after one the entry already has', async () => {
 	const onFailure = vi.fn();
 	const component = mount(EntryView, {
 		target: host,
-		props: {
+		props: props({
 			entry: entry({
 				fields: [
 					field({ name: 'Password', kind: 'password', value: null, empty: false }),
 					field({ name: 'Notes', kind: 'notes', value: 'root access', empty: false })
 				]
 			}),
-			root: group({ name: 'Root' }),
-			path: [group({ name: 'Work' })],
-			history: null,
-			now: new Date('2026-08-29T14:30:00Z'),
-			readOnly: false,
-			onCopy: vi.fn(),
-			onChanged: vi.fn(),
-			onVersions: vi.fn(),
-			onClose: vi.fn(),
-			onDelete: vi.fn(),
-			onPutBack: vi.fn(),
-			onFieldRemoved: vi.fn(),
 			onFailure
-		}
+		})
 	});
 	flushSync();
 
@@ -1179,23 +1127,10 @@ it('says nothing about the entry that was open once another one is', async () =>
 
 	// A props object the test can change, which is how the window hands the pane
 	// another entry.
-	const props = reactive({
-		entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
-		root: group({ name: 'Root' }),
-		path: [group({ name: 'Work' })],
-		history: null,
-		now: new Date('2026-08-29T14:30:00Z'),
-		readOnly: false,
-		onCopy: vi.fn(),
-		onChanged: vi.fn(),
-		onVersions: vi.fn(),
-		onClose: vi.fn(),
-		onDelete: vi.fn(),
-		onPutBack: vi.fn(),
-		onFieldRemoved: vi.fn(),
-		onFailure: vi.fn()
-	});
-	const component = mount(EntryView, { target: host, props });
+	const handed = reactive(
+		props({ entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }) })
+	);
+	const component = mount(EntryView, { target: host, props: handed });
 	flushSync();
 
 	host.querySelector<HTMLButtonElement>('[aria-label="Remove id_ed25519"]')?.click();
@@ -1204,7 +1139,7 @@ it('says nothing about the entry that was open once another one is', async () =>
 	await vi.waitFor(() => expect(host.textContent).toContain('2 earlier versions still hold'));
 	flushSync();
 
-	props.entry = entry({ attachments: [attachment({ name: 'other.pem' })] });
+	handed.entry = entry({ attachments: [attachment({ name: 'other.pem' })] });
 	flushSync();
 
 	expect(host.textContent).not.toContain('2 earlier versions still hold');
@@ -1217,7 +1152,7 @@ it('says nothing about the entry that was open once another one is', async () =>
 it('offers no change on a database it cannot write', () => {
 	const component = mount(EntryView, {
 		target: host,
-		props: {
+		props: props({
 			entry: entry({
 				fields: [
 					field({ name: 'Title', kind: 'title', value: 'node-3', empty: false }),
@@ -1226,20 +1161,8 @@ it('offers no change on a database it cannot write', () => {
 				tags: ['prod'],
 				attachments: [attachment({ name: 'id_ed25519' })]
 			}),
-			root: group({ name: 'Root' }),
-			path: [group({ name: 'Work' })],
-			history: null,
-			now: new Date('2026-08-29T14:30:00Z'),
-			readOnly: true,
-			onCopy: vi.fn(),
-			onChanged: vi.fn(),
-			onVersions: vi.fn(),
-			onClose: vi.fn(),
-			onDelete: vi.fn(),
-			onPutBack: vi.fn(),
-			onFieldRemoved: vi.fn(),
-			onFailure: vi.fn()
-		}
+			readOnly: true
+		})
 	});
 	flushSync();
 
@@ -1406,22 +1329,11 @@ it('offers a way out of the entry, and it is not the way to delete one', () => {
 	const onDelete = vi.fn();
 	const component = mount(EntryView, {
 		target: host,
-		props: {
+		props: props({
 			entry: entry({ fields: [field({ name: 'Title', kind: 'title', value: 'node-3' })] }),
-			root: group({ name: 'Root' }),
-			path: [group({ name: 'Work' })],
-			history: null,
-			now: new Date('2026-08-29T14:30:00Z'),
-			readOnly: false,
-			onCopy: vi.fn(),
-			onChanged: vi.fn(),
-			onVersions: vi.fn(),
 			onClose,
-			onDelete,
-			onPutBack: vi.fn(),
-			onFieldRemoved: vi.fn(),
-			onFailure: vi.fn()
-		}
+			onDelete
+		})
 	});
 	flushSync();
 
@@ -1452,22 +1364,11 @@ it('still offers the way out when there is nothing else in the header', () => {
 	const onClose = vi.fn();
 	const component = mount(EntryView, {
 		target: host,
-		props: {
+		props: props({
 			entry: entry({ fields: [field({ name: 'Title', kind: 'title', value: 'node-3' })] }),
-			root: group({ name: 'Root' }),
-			path: [group({ name: 'Work' })],
-			history: null,
-			now: new Date('2026-08-29T14:30:00Z'),
 			readOnly: true,
-			onCopy: vi.fn(),
-			onChanged: vi.fn(),
-			onVersions: vi.fn(),
-			onClose,
-			onDelete: vi.fn(),
-			onPutBack: vi.fn(),
-			onFieldRemoved: vi.fn(),
-			onFailure: vi.fn()
-		}
+			onClose
+		})
 	});
 	flushSync();
 
@@ -1491,22 +1392,11 @@ it('does not report a change when the file panel was closed without one', async 
 
 	const component = mount(EntryView, {
 		target: host,
-		props: {
+		props: props({
 			entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
-			root: group({ name: 'Root' }),
-			path: [group({ name: 'Work' })],
-			history: null,
-			now: new Date('2026-08-29T14:30:00Z'),
-			readOnly: false,
-			onCopy: vi.fn(),
 			onChanged,
-			onVersions: vi.fn(),
-			onClose: vi.fn(),
-			onDelete: vi.fn(),
-			onPutBack: vi.fn(),
-			onFieldRemoved: vi.fn(),
 			onFailure
-		}
+		})
 	});
 	flushSync();
 
@@ -1717,23 +1607,8 @@ it('offers the name itself once the file there has gone', async () => {
 	ipc.addAttachment.mockReset();
 	ipc.addAttachment.mockResolvedValue(taken());
 	const first = entry({ attachments: [attachment({ name: SCAN })] });
-	const props = reactive({
-		entry: first,
-		root: group({ name: 'Root' }),
-		path: [group({ name: 'Work' })],
-		history: null,
-		now: new Date('2026-08-29T14:30:00Z'),
-		readOnly: false,
-		onCopy: vi.fn(),
-		onChanged: vi.fn(),
-		onVersions: vi.fn(),
-		onClose: vi.fn(),
-		onDelete: vi.fn(),
-		onPutBack: vi.fn(),
-		onFieldRemoved: vi.fn(),
-		onFailure: vi.fn()
-	});
-	const component = mount(EntryView, { target: host, props });
+	const handed = reactive(props({ entry: first }));
+	const component = mount(EntryView, { target: host, props: handed });
 	flushSync();
 
 	icon('Add a file').click();
@@ -1742,7 +1617,7 @@ it('offers the name itself once the file there has gone', async () => {
 	await vi.waitFor(() => expect(question()).toContain('Earlier versions are holding'));
 
 	// The file there, and the versions holding it, taken off by its own trash.
-	props.entry = { ...first, attachments: [] };
+	handed.entry = { ...first, attachments: [] };
 	flushSync();
 
 	expect(question()).toContain(`“\u2068${SCAN}\u2069” is no longer on this entry`);
@@ -1750,7 +1625,7 @@ it('offers the name itself once the file there has gone', async () => {
 	expect(answers.map((each) => each.textContent?.trim())).toEqual(['Don’t add it', 'Add it']);
 
 	button('Add it').click();
-	await vi.waitFor(() => expect(props.onChanged).toHaveBeenCalledWith(only));
+	await vi.waitFor(() => expect(handed.onChanged).toHaveBeenCalledWith(only));
 	expect(ipc.keepBothAttachments).toHaveBeenCalledWith(first.id);
 	expect(ipc.withdrawAttachment).not.toHaveBeenCalled();
 
@@ -1789,29 +1664,14 @@ it('lets the file go when the pane shows another entry or none', async () => {
 	ipc.addAttachment.mockReset();
 	ipc.addAttachment.mockResolvedValue(taken());
 	const first = entry({ attachments: [attachment({ name: SCAN })] });
-	const props = reactive({
-		entry: first,
-		root: group({ name: 'Root' }),
-		path: [group({ name: 'Work' })],
-		history: null,
-		now: new Date('2026-08-29T14:30:00Z'),
-		readOnly: false,
-		onCopy: vi.fn(),
-		onChanged: vi.fn(),
-		onVersions: vi.fn(),
-		onClose: vi.fn(),
-		onDelete: vi.fn(),
-		onPutBack: vi.fn(),
-		onFieldRemoved: vi.fn(),
-		onFailure: vi.fn()
-	});
-	const component = mount(EntryView, { target: host, props });
+	const handed = reactive(props({ entry: first }));
+	const component = mount(EntryView, { target: host, props: handed });
 	flushSync();
 
 	icon('Add a file').click();
 	await vi.waitFor(() => expect(host.querySelector('[data-confirm]')).not.toBeNull());
 
-	props.entry = entry({ attachments: [attachment({ name: SCAN })] });
+	handed.entry = entry({ attachments: [attachment({ name: SCAN })] });
 	flushSync();
 
 	expect(host.querySelector('[data-confirm]')).toBeNull();
@@ -1822,7 +1682,7 @@ it('lets the file go when the pane shows another entry or none', async () => {
 	// both look from here.
 	icon('Add a file').click();
 	await vi.waitFor(() => expect(host.querySelector('[data-confirm]')).not.toBeNull());
-	const second = props.entry.id;
+	const second = handed.entry.id;
 	unmount(component);
 	expect(ipc.withdrawAttachment).toHaveBeenLastCalledWith(second);
 	expect(ipc.keepBothAttachments).not.toHaveBeenCalled();
@@ -1839,29 +1699,14 @@ it('keeps the question while the entry it is about changes', async () => {
 	ipc.addAttachment.mockReset();
 	ipc.addAttachment.mockResolvedValue(taken());
 	const first = entry({ attachments: [attachment({ name: SCAN })] });
-	const props = reactive({
-		entry: first,
-		root: group({ name: 'Root' }),
-		path: [group({ name: 'Work' })],
-		history: null,
-		now: new Date('2026-08-29T14:30:00Z'),
-		readOnly: false,
-		onCopy: vi.fn(),
-		onChanged: vi.fn(),
-		onVersions: vi.fn(),
-		onClose: vi.fn(),
-		onDelete: vi.fn(),
-		onPutBack: vi.fn(),
-		onFieldRemoved: vi.fn(),
-		onFailure: vi.fn()
-	});
-	const component = mount(EntryView, { target: host, props });
+	const handed = reactive(props({ entry: first }));
+	const component = mount(EntryView, { target: host, props: handed });
 	flushSync();
 
 	icon('Add a file').click();
 	await vi.waitFor(() => expect(host.querySelector('[data-confirm]')).not.toBeNull());
 
-	props.entry = { ...first, fields: [field({ name: 'Title', value: 'Passport', empty: false })] };
+	handed.entry = { ...first, fields: [field({ name: 'Title', value: 'Passport', empty: false })] };
 	flushSync();
 
 	expect(question()).toContain(`This entry already has “\u2068${SCAN}\u2069”`);
@@ -1877,27 +1722,12 @@ it('asks nothing when the pane has moved on by the time the answer comes', async
 	ipc.addAttachment.mockReset();
 	ipc.addAttachment.mockReturnValue(new Promise<Attached>((resolve) => (answer = resolve)));
 	const first = entry({ attachments: [attachment({ name: SCAN })] });
-	const props = reactive({
-		entry: first,
-		root: group({ name: 'Root' }),
-		path: [group({ name: 'Work' })],
-		history: null,
-		now: new Date('2026-08-29T14:30:00Z'),
-		readOnly: false,
-		onCopy: vi.fn(),
-		onChanged: vi.fn(),
-		onVersions: vi.fn(),
-		onClose: vi.fn(),
-		onDelete: vi.fn(),
-		onPutBack: vi.fn(),
-		onFieldRemoved: vi.fn(),
-		onFailure: vi.fn()
-	});
-	const component = mount(EntryView, { target: host, props });
+	const handed = reactive(props({ entry: first }));
+	const component = mount(EntryView, { target: host, props: handed });
 	flushSync();
 
 	icon('Add a file').click();
-	props.entry = entry({ attachments: [attachment({ name: SCAN })] });
+	handed.entry = entry({ attachments: [attachment({ name: SCAN })] });
 	flushSync();
 	answer(taken());
 
@@ -1985,26 +1815,14 @@ it('copies a protected own field through rust rather than off the screen', async
 	const onCopy = vi.fn();
 	const component = mount(EntryView, {
 		target: host,
-		props: {
+		props: props({
 			entry: entry({
 				fields: [
 					field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false })
 				]
 			}),
-			root: group({ name: 'Root' }),
-			path: [group({ name: 'Work' })],
-			history: null,
-			now: new Date('2026-08-29T14:30:00Z'),
-			readOnly: false,
-			onCopy,
-			onChanged: vi.fn(),
-			onVersions: vi.fn(),
-			onClose: vi.fn(),
-			onDelete: vi.fn(),
-			onPutBack: vi.fn(),
-			onFieldRemoved: vi.fn(),
-			onFailure: vi.fn()
-		}
+			onCopy
+		})
 	});
 	flushSync();
 
@@ -2302,25 +2120,10 @@ it('names a new field to be written in lines', async () => {
 
 /** The pane with its callbacks as mocks the test can read. */
 function pane(over: Parameters<typeof entry>[0], readOnly = false) {
-	const props = {
-		entry: entry(over),
-		root: group({ name: 'Root' }),
-		path: [group({ name: 'Work' })],
-		history: null,
-		now: new Date('2026-08-29T14:30:00Z'),
-		readOnly,
-		onCopy: vi.fn(),
-		onChanged: vi.fn(),
-		onVersions: vi.fn(),
-		onClose: vi.fn(),
-		onDelete: vi.fn(),
-		onPutBack: vi.fn(),
-		onFieldRemoved: vi.fn(),
-		onFailure: vi.fn()
-	};
-	const component = mount(EntryView, { target: host, props });
+	const handed = props({ entry: entry(over), readOnly });
+	const component = mount(EntryView, { target: host, props: handed });
 	flushSync();
-	return { component, ...props };
+	return { component, ...handed };
 }
 
 /**
@@ -2423,30 +2226,17 @@ it('keeps the question when the copy could not be saved', async () => {
 /** The pane is handed one entry after another. A question about a file on the
  * entry that was open would otherwise be answered against the next one. */
 it('asks nothing about a file once another entry is open', () => {
-	const props = reactive({
-		entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
-		root: group({ name: 'Root' }),
-		path: [group({ name: 'Work' })],
-		history: null,
-		now: new Date('2026-08-29T14:30:00Z'),
-		readOnly: false,
-		onCopy: vi.fn(),
-		onChanged: vi.fn(),
-		onVersions: vi.fn(),
-		onClose: vi.fn(),
-		onDelete: vi.fn(),
-		onPutBack: vi.fn(),
-		onFieldRemoved: vi.fn(),
-		onFailure: vi.fn()
-	});
-	const component = mount(EntryView, { target: host, props });
+	const handed = reactive(
+		props({ entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }) })
+	);
+	const component = mount(EntryView, { target: host, props: handed });
 	flushSync();
 
 	icon('Remove id_ed25519').click();
 	flushSync();
 	expect(host.querySelector('[data-confirm]')).not.toBeNull();
 
-	props.entry = entry({ attachments: [attachment({ name: 'id_ed25519' })] });
+	handed.entry = entry({ attachments: [attachment({ name: 'id_ed25519' })] });
 	flushSync();
 	expect(host.querySelector('[data-confirm]')).toBeNull();
 
@@ -2482,35 +2272,23 @@ it('tells the window which field came off, once the change is in', async () => {
 	let settle: () => void = () => {};
 	const onChanged = vi.fn(() => new Promise<void>((resolve) => (settle = resolve)));
 	ipc.removeField.mockResolvedValue(entry());
-	const props = {
+	const handed = props({
 		entry: entry({
 			fields: [field({ name: 'PIN', kind: 'custom', protected: true, value: null, empty: false })]
 		}),
-		root: group({ name: 'Root' }),
-		path: [group({ name: 'Work' })],
-		history: null,
-		now: new Date('2026-08-29T14:30:00Z'),
-		readOnly: false,
-		onCopy: vi.fn(),
-		onChanged,
-		onVersions: vi.fn(),
-		onClose: vi.fn(),
-		onDelete: vi.fn(),
-		onPutBack: vi.fn(),
-		onFieldRemoved: vi.fn(),
-		onFailure: vi.fn()
-	};
-	const component = mount(EntryView, { target: host, props });
+		onChanged
+	});
+	const component = mount(EntryView, { target: host, props: handed });
 	flushSync();
 
 	icon('Remove the field PIN').click();
 	await vi.waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
-	expect(ipc.removeField).toHaveBeenCalledWith(props.entry.id, 'PIN', false);
-	expect(props.onFieldRemoved, 'the window heard before the save was done').not.toHaveBeenCalled();
+	expect(ipc.removeField).toHaveBeenCalledWith(handed.entry.id, 'PIN', false);
+	expect(handed.onFieldRemoved, 'the window heard before the save was done').not.toHaveBeenCalled();
 
 	settle();
 	await vi.waitFor(() =>
-		expect(props.onFieldRemoved).toHaveBeenCalledWith(props.entry.id, 'PIN', false)
+		expect(handed.onFieldRemoved).toHaveBeenCalledWith(handed.entry.id, 'PIN', false)
 	);
 	expect(host.querySelector('[data-confirm]'), 'a removal that can be undone asked').toBeNull();
 
@@ -2581,35 +2359,20 @@ it('asks nothing in an entry the pane has left', async () => {
 	ipc.removeField.mockReset();
 	ipc.removeField.mockReturnValueOnce(refusing.promise);
 	const pin = field({ name: 'PIN', kind: 'custom', protected: true, value: null, empty: false });
-	const props = reactive({
-		entry: entry({ fields: [pin] }),
-		root: group({ name: 'Root' }),
-		path: [group({ name: 'Work' })],
-		history: null,
-		now: new Date('2026-08-29T14:30:00Z'),
-		readOnly: false,
-		onCopy: vi.fn(),
-		onChanged: vi.fn(),
-		onVersions: vi.fn(),
-		onClose: vi.fn(),
-		onDelete: vi.fn(),
-		onPutBack: vi.fn(),
-		onFieldRemoved: vi.fn(),
-		onFailure: vi.fn()
-	});
-	const component = mount(EntryView, { target: host, props });
+	const handed = reactive(props({ entry: entry({ fields: [pin] }) }));
+	const component = mount(EntryView, { target: host, props: handed });
 	flushSync();
 
 	icon('Remove the field PIN').click();
-	props.entry = entry({ fields: [pin] });
+	handed.entry = entry({ fields: [pin] });
 	flushSync();
 	refusing.reject(FOR_GOOD);
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	flushSync();
 
 	expect(host.querySelector('[data-confirm]')).toBeNull();
-	expect(props.onFailure).not.toHaveBeenCalled();
-	expect(props.onFieldRemoved).not.toHaveBeenCalled();
+	expect(handed.onFailure).not.toHaveBeenCalled();
+	expect(handed.onFieldRemoved).not.toHaveBeenCalled();
 
 	return unmount(component);
 });
@@ -2681,25 +2444,10 @@ it("keeps a field's trash at the far end of its row, out of sight until it is wa
 
 /** The pane on an entry, with the tree around it that names folders. */
 function deleting(over: Parameters<typeof entry>[0], readOnly = false, root = group()) {
-	const props = reactive({
-		entry: entry(over),
-		root,
-		path: [group({ name: 'Work' })],
-		history: null,
-		now: new Date('2026-08-29T14:30:00Z'),
-		readOnly,
-		onCopy: vi.fn(),
-		onChanged: vi.fn(),
-		onVersions: vi.fn(),
-		onClose: vi.fn(),
-		onDelete: vi.fn(),
-		onPutBack: vi.fn(),
-		onFieldRemoved: vi.fn(),
-		onFailure: vi.fn()
-	});
-	const component = mount(EntryView, { target: host, props });
+	const handed = reactive(props({ entry: entry(over), root, readOnly }));
+	const component = mount(EntryView, { target: host, props: handed });
 	flushSync();
-	return { component, props };
+	return { component, props: handed };
 }
 
 const titled = (title: string | null) => [

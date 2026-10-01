@@ -1,53 +1,16 @@
-import { createRawSnippet, flushSync, mount, tick, unmount } from 'svelte';
+import { createRawSnippet, flushSync, mount as draw, tick, unmount as release } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { drawing, entry, field, generated, group, row, version } from '$lib/fixtures';
+import { focused } from '$lib/focus.svelte';
+import { applying, run } from '$lib/menu.svelte';
 import type { EntryRow, Version } from '$lib/model';
+import type { Stubbed } from '$lib/stubbed';
 import Vault from './Vault.svelte';
 
-const ipc = vi.hoisted(() => ({
-	entry: vi.fn(),
-	tree: vi.fn(),
-	setField: vi.fn(),
-	draft: vi.fn(),
-	copy: vi.fn(),
-	copyVersion: vi.fn(),
-	createEntry: vi.fn(),
-	createGroup: vi.fn(),
-	deleteEntry: vi.fn(),
-	deleteGroup: vi.fn(),
-	putBackEntry: vi.fn(),
-	putBackGroup: vi.fn(),
-	renameGroup: vi.fn(),
-	emptyRecycleBin: vi.fn(),
-	versions: vi.fn(),
-	version: vi.fn(),
-	revealVersion: vi.fn(),
-	restoreVersion: vi.fn(),
-	undoRemoval: vi.fn(),
-	deleteVersion: vi.fn(),
-	clearHistory: vi.fn(),
-	reveal: vi.fn(),
-	openUrl: vi.fn(),
-	removeField: vi.fn(),
-	setTags: vi.fn(),
-	addAttachment: vi.fn(),
-	exportAttachment: vi.fn(),
-	removeAttachment: vi.fn(),
-	generator: vi.fn(),
-	generatePassword: vi.fn(),
-	save: vi.fn(),
-	saveOver: vi.fn(),
-	saveCopy: vi.fn(),
-	reload: vi.fn(),
-	rival: vi.fn(),
-	// The same reading the real one does: a command rejects with the value Rust
-	// serialised, and anything else is not one.
-	asFailure: (thrown: unknown) =>
-		thrown && typeof (thrown as { message?: unknown }).message === 'string'
-			? (thrown as { code: string; message: string })
-			: { code: 'other', message: 'Coffer could not finish that.' }
-}));
-vi.mock('$lib/ipc', () => ipc);
+const ipc = vi.hoisted(() => ({}) as Stubbed);
+vi.mock(import('$lib/ipc'), async (real) =>
+	Object.assign(ipc, (await import('$lib/stubbed')).stubbed(await real()))
+);
 
 const database = { path: '/Users/someone/personal.kdbx', name: 'personal' };
 
@@ -76,6 +39,25 @@ const root = group({
 	]
 });
 
+/**
+ * Every screen a test drew and has not let go of. A screen answers the menu bar
+ * through a module every test in this file shares, so one that a failed test
+ * left drawn would go on answering in the tests after it: one regression read
+ * as a dozen, and an item offered by a screen nobody is looking at.
+ */
+const drawn = new Set<object>();
+
+const mount: typeof draw = (component, options) => {
+	const made = draw(component, options);
+	drawn.add(made);
+	return made;
+};
+
+const unmount: typeof release = (component, options) => {
+	drawn.delete(component);
+	return release(component, options);
+};
+
 let host: HTMLElement;
 
 beforeEach(() => {
@@ -89,6 +71,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	for (const left of drawn) void release(left);
+	drawn.clear();
 	host.remove();
 	// A selection one test made is still standing in the next one otherwise,
 	// and a stand-in for the selection has to go before it can be cleared.
@@ -225,8 +209,10 @@ it('opens an entry and shows it beside the list', async () => {
 });
 
 /** The two shortcuts the mockup puts on the rows. They act on the entry that is
- * open, and they never touch the value themselves. */
-it('copies the open entry through Rust on the keyboard', async () => {
+ * open, and they never touch the value themselves. Cmd+C is the window's own
+ * key; Copy Login is the menu bar's, and its key reaches the page only to be
+ * left for the menu. */
+it('copies the open entry through Rust on the keyboard and from the menu', async () => {
 	ipc.entry.mockResolvedValue(
 		entry({
 			id: kept.id,
@@ -251,9 +237,15 @@ it('copies the open entry through Rust on the keyboard', async () => {
 	await tick();
 	expect(reads()).toContain('Password copied. The clipboard clears in 1 minute.');
 
+	const key = new KeyboardEvent('keydown', { key: 'b', metaKey: true, cancelable: true });
+	window.dispatchEvent(key);
+	await tick();
+	expect(key.defaultPrevented, 'the page took the key the menu bar answers').toBe(false);
+	expect(ipc.copy).toHaveBeenCalledTimes(1);
+
 	// The two shortcuts are a key apart, and the notice of one must not read as
 	// the notice of the other: a login pasted into a password box was the result.
-	window.dispatchEvent(new KeyboardEvent('keydown', { key: 'b', metaKey: true }));
+	run('copyLogin');
 	await vi.waitFor(() => expect(ipc.copy).toHaveBeenCalledWith(kept.id, 'UserName', null));
 
 	await tick();
@@ -685,15 +677,21 @@ it('quotes a field of the reader’s own in the notice, whatever its name is spe
 	}
 });
 
-it('puts the reader in the search field on the shortcut the field advertises', async () => {
+it('puts the reader in the search field on the item the field advertises', async () => {
 	const component = open();
 	flushSync();
+	type('node');
 
+	search().blur();
 	expect(document.activeElement).not.toBe(search());
-	window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true }));
+	run('find');
 	await tick();
 
 	expect(document.activeElement).toBe(search());
+	expect(
+		[search().selectionStart, search().selectionEnd],
+		'what was typed is not selected'
+	).toEqual([0, 4]);
 
 	return unmount(component);
 });
@@ -1252,7 +1250,8 @@ it('lets Escape out of the settings, and leaves the list alone while they are op
 	const component = open({ onSettings, settings: sheet });
 	flushSync();
 
-	window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true }));
+	expect(applying(), 'the menu offers the list under the settings').not.toContain('find');
+	run('find');
 	flushSync();
 	expect(document.activeElement, 'a shortcut reached the list under the settings').not.toBe(
 		search()
@@ -3885,7 +3884,10 @@ it('keeps the pane and asks when a new password typed there would go with it', a
 			[
 				'the settings',
 				() => host.querySelector<HTMLButtonElement>('[aria-label="Settings"]')?.click()
-			]
+			],
+			['New Entry from the menu', () => run('newEntry')],
+			['Settings… from the menu', () => run('settings')],
+			['Move to Recycle Bin from the menu', () => run('moveToBin')]
 		];
 		for (const [what, attempt] of attempts) {
 			attempt();
@@ -4129,6 +4131,364 @@ it('makes and renames no folder on the Return that ends a composition', () => {
 		expect(returned(rename, composition).defaultPrevented).toBe(false);
 	}
 	expect(ipc.renameGroup).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/** Opens node-3 as Rust reads it, and waits until the pane is on it. */
+async function reading(over: Parameters<typeof entry>[0] = {}) {
+	ipc.entry.mockResolvedValue(entry({ id: kept.id, group: root.id, ...over }));
+	const asked = ipc.entry.mock.calls.length;
+	pressed('node-3');
+	await vi.waitFor(() => expect(ipc.entry).toHaveBeenCalledTimes(asked + 1));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	flushSync();
+}
+
+/**
+ * The page sees a key before AppKit looks in the menu bar, and a key it
+ * answers is gone. So each key an item of the bar owns is left alone here -
+ * not answered, not prevented - or it would happen twice, or never reach the
+ * menu at all.
+ */
+it('leaves every key the menu owns to the menu, so none of them happens twice', async () => {
+	const component = open();
+	flushSync();
+	await reading({
+		fields: [
+			field({ name: 'UserName', kind: 'username', value: 'deploy', empty: false }),
+			field({ name: 'Password', kind: 'password', value: null, empty: false })
+		]
+	});
+	const asked = ipc.entry.mock.calls.length;
+
+	for (const [key, shiftKey] of [
+		['f', false],
+		['b', false],
+		['n', false],
+		['N', true],
+		['n', true],
+		['l', false],
+		[',', false],
+		['o', false],
+		['C', true],
+		['c', true],
+		['Backspace', false]
+	] as const) {
+		const pressed = new KeyboardEvent('keydown', {
+			key,
+			shiftKey,
+			metaKey: true,
+			bubbles: true,
+			cancelable: true
+		});
+		window.dispatchEvent(pressed);
+		flushSync();
+		expect(pressed.defaultPrevented, `the page took ${shiftKey ? '⇧' : ''}⌘${key}`).toBe(false);
+	}
+	await tick();
+
+	expect(ipc.copy).not.toHaveBeenCalled();
+	expect(ipc.createEntry).not.toHaveBeenCalled();
+	expect(ipc.createGroup).not.toHaveBeenCalled();
+	expect(ipc.deleteEntry).not.toHaveBeenCalled();
+	expect(ipc.entry).toHaveBeenCalledTimes(asked);
+	expect(document.activeElement).not.toBe(search());
+	expect(host.querySelector('[aria-label="The name of the new folder"]')).toBeNull();
+
+	return unmount(component);
+});
+
+/** New Entry is the + Entry button: made in the folder being shown, and not
+ * offered where the button is not drawn. */
+it('makes an entry from the menu only where the + Entry button is drawn', async () => {
+	ipc.createEntry.mockResolvedValue({ tree: root, entry: kept.id });
+	ipc.entry.mockResolvedValue(entry({ id: kept.id, group: root.id }));
+	const writable = open();
+	flushSync();
+
+	expect(applying()).toContain('newEntry');
+	run('newEntry');
+	await vi.waitFor(() => expect(ipc.createEntry).toHaveBeenCalledWith(root.id));
+
+	pressed('Recycle Bin');
+	flushSync();
+	expect(applying(), 'the bin was offered a new entry').not.toContain('newEntry');
+	expect(applying()).not.toContain('newFolder');
+	run('newEntry');
+	await tick();
+	expect(ipc.createEntry).toHaveBeenCalledTimes(1);
+	unmount(writable);
+
+	const shut = open({ readOnly: true });
+	flushSync();
+	expect(applying(), 'a vault Coffer will not write was offered one').not.toContain('newEntry');
+	run('newEntry');
+	await tick();
+	expect(ipc.createEntry).toHaveBeenCalledTimes(1);
+
+	return unmount(shut);
+});
+
+/** The plus in the folders pane opens the name and closes it again. The menu
+ * only ever opens it: a second New Folder that threw away a half-typed name
+ * would be a key that undoes itself. */
+it('opens the name of a new folder from the menu and never closes it again', async () => {
+	const component = open();
+	flushSync();
+
+	run('newFolder');
+	await tick();
+	const name = host.querySelector<HTMLInputElement>('[aria-label="The name of the new folder"]');
+	expect(name, 'the menu opened no name').not.toBeNull();
+	expect(document.activeElement).toBe(name);
+	if (name) name.value = 'Clie';
+
+	expect(applying()).not.toContain('newFolder');
+	run('newFolder');
+	await tick();
+	expect(host.querySelector('[aria-label="The name of the new folder"]')).toBe(name);
+	expect(name?.value).toBe('Clie');
+	expect(ipc.createGroup).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/**
+ * The item says the Recycle Bin, so it is offered only where that is what
+ * happens: not for an entry a deletion would erase, and not for one already
+ * in the bin. Pressed twice before Rust answers, it moves the entry once.
+ */
+it('moves the open entry to the bin from the menu once, and only one that goes there', async () => {
+	let answer: (tree: typeof root) => void = () => {};
+	ipc.deleteEntry.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+	const component = open();
+	flushSync();
+	await reading({ deletion: 'bin' });
+
+	expect(applying()).toContain('moveToBin');
+	run('moveToBin');
+	run('moveToBin');
+	await tick();
+	expect(ipc.deleteEntry).toHaveBeenCalledTimes(1);
+	expect(ipc.deleteEntry).toHaveBeenCalledWith(kept.id, 'bin', expect.any(Number));
+	answer(root);
+	await vi.waitFor(() => expect(ipc.save).toHaveBeenCalled());
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	unmount(component);
+
+	for (const over of [
+		{ deletion: 'forever' as const },
+		{ deletion: 'forever' as const, binned: { since: null, within: null, from: null } }
+	]) {
+		const again = open();
+		flushSync();
+		await reading(over);
+		expect(applying(), JSON.stringify(over)).not.toContain('moveToBin');
+		run('moveToBin');
+		await tick();
+		expect(ipc.deleteEntry).toHaveBeenCalledTimes(1);
+		expect(reads()).not.toContain('Delete forever?');
+		unmount(again);
+	}
+});
+
+/** Cmd+Backspace in a field deletes to the start of the line. The item is
+ * greyed out while a field has the focus, so the key is the field's alone. */
+it('greys out Move to Recycle Bin while a field of the entry is being written', async () => {
+	window.addEventListener('focusin', focused);
+	window.addEventListener('focusout', focused);
+	const component = open();
+	try {
+		flushSync();
+		await reading({
+			fields: [field({ name: 'Notes', kind: 'notes', value: 'a note', empty: false })]
+		});
+		expect(applying()).toContain('moveToBin');
+
+		const notes = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Notes"]');
+		notes?.focus();
+		flushSync();
+		expect(applying(), 'offered while the notes were being written').not.toContain('moveToBin');
+		run('moveToBin');
+		await tick();
+		expect(ipc.deleteEntry).not.toHaveBeenCalled();
+
+		notes?.blur();
+		flushSync();
+		expect(applying()).toContain('moveToBin');
+	} finally {
+		window.removeEventListener('focusin', focused);
+		window.removeEventListener('focusout', focused);
+		await unmount(component);
+	}
+});
+
+/** The conflict dialog asks before anything else happens to the vault, and a
+ * key cannot go round it. */
+it('answers nothing from the menu while the conflict dialog asks its question', async () => {
+	ipc.save.mockRejectedValue({ code: 'externalChange', message: 'the database changed on disk' });
+	ipc.rival.mockResolvedValue({ modified: null, entries: 3 });
+	ipc.createEntry.mockResolvedValue({ tree: root, entry: kept.id });
+	ipc.entry.mockResolvedValue(entry({ id: kept.id, group: root.id }));
+	const component = open();
+	flushSync();
+
+	run('newEntry');
+	await vi.waitFor(() => expect(host.textContent).toContain('The file changed'));
+	flushSync();
+
+	for (const command of ['newEntry', 'newFolder', 'find', 'moveToBin'] as const) {
+		expect(applying(), command).not.toContain(command);
+		run(command);
+	}
+	await tick();
+	expect(ipc.createEntry).toHaveBeenCalledTimes(1);
+	expect(host.querySelector('[aria-label="The name of the new folder"]')).toBeNull();
+	expect(document.activeElement).not.toBe(search());
+
+	return unmount(component);
+});
+
+/** An entry with no password has nothing for Copy Password to copy, and the
+ * item is grey rather than a press that says "copied" about nothing. */
+it('copies nothing from the menu for an entry with no password, and says nothing', async () => {
+	const component = open();
+	flushSync();
+	await reading({
+		fields: [
+			field({ name: 'UserName', kind: 'username', value: 'deploy', empty: false }),
+			field({ name: 'Password', kind: 'password', value: null, empty: true })
+		]
+	});
+
+	expect(applying()).toContain('copyLogin');
+	expect(applying()).not.toContain('copyPassword');
+	run('copyPassword');
+	await tick();
+
+	expect(ipc.copy).not.toHaveBeenCalled();
+	expect(host.querySelector('[data-notice]')).toBeNull();
+
+	return unmount(component);
+});
+
+/** Settings… is the status bar's button, guard and all, and is not offered
+ * while the settings are already what is being read. */
+it('opens the settings from the menu the way the status bar does', () => {
+	const onSettings = vi.fn();
+	const closed = open({ onSettings });
+	flushSync();
+
+	run('settings');
+	expect(onSettings).toHaveBeenCalledTimes(1);
+	unmount(closed);
+
+	const shown = open({ onSettings, settings: sheet });
+	flushSync();
+	expect(applying()).not.toContain('settings');
+	run('settings');
+	expect(onSettings, 'the menu closed the settings it opens').toHaveBeenCalledTimes(1);
+
+	return unmount(shown);
+});
+
+/** In a vault Coffer will not write back, Rust still says a deletion would go
+ * to the bin - the bin decides that, not the file - so the screen is what
+ * keeps the item grey: the pane draws no deletion there at all. */
+it('offers no Move to Recycle Bin in a vault Coffer will not write', async () => {
+	const component = open({ readOnly: true });
+	flushSync();
+	await reading({ deletion: 'bin' });
+
+	expect(applying(), 'offered in a vault that will not be written').not.toContain('moveToBin');
+	run('moveToBin');
+	await tick();
+
+	expect(ipc.deleteEntry).not.toHaveBeenCalled();
+	return unmount(component);
+});
+
+/**
+ * A press on + Entry takes the focus out of the field being written in, and
+ * the field writes what was typed as it goes. New Entry from the menu takes no
+ * focus, and the entry it opens takes the field off the screen - which WebKit
+ * does without telling the field it lost the focus. So the menu leaves the
+ * field first, as the press does, and what was typed is written before the
+ * new entry is asked for.
+ */
+it('writes what is being typed before New Entry from the menu takes the pane', async () => {
+	ipc.createEntry.mockResolvedValue({ tree: root, entry: other.id });
+	ipc.setField.mockResolvedValue(entry({ id: kept.id, group: root.id }));
+	const component = open();
+	flushSync();
+	await reading();
+
+	const title = host.querySelector<HTMLInputElement>('h1 input');
+	title?.focus();
+	if (title) title.value = 'node-4';
+	title?.dispatchEvent(new Event('input', { bubbles: true }));
+
+	run('newEntry');
+	await vi.waitFor(() => expect(ipc.createEntry).toHaveBeenCalledTimes(1));
+
+	expect(ipc.setField).toHaveBeenCalledWith(kept.id, 'Title', 'node-4', false, expect.any(Number));
+	expect(
+		ipc.setField.mock.invocationCallOrder[0],
+		'the new entry was asked for with the title still in the field'
+	).toBeLessThan(ipc.createEntry.mock.invocationCallOrder[0]);
+
+	return unmount(component);
+});
+
+/**
+ * Cmd+B with the focus in the login field. The menu leaves the field, which
+ * writes what was typed, and the copy is asked for only once that write has
+ * arrived: Tauri answers the two side by side, and once a save lets go of the
+ * session it goes to whichever asks first, so a copy sent beside the write put
+ * the login as it was before the edit on the pasteboard, under a notice saying
+ * the one on the screen was copied. The search field writes nothing when it is
+ * left, and a copy from the menu leaves the reader typing in it.
+ */
+it('copies from the menu the login being typed, once it is written', async () => {
+	let written: (value: unknown) => void = () => {};
+	ipc.setField.mockReturnValue(new Promise((resolve) => (written = resolve)));
+	const component = open();
+	flushSync();
+	await reading({
+		fields: [field({ name: 'UserName', kind: 'username', value: 'alice', empty: false })]
+	});
+
+	const login = host.querySelector<HTMLInputElement>('input[aria-label="Login"]');
+	login?.focus();
+	if (login) login.value = 'bob';
+	login?.dispatchEvent(new Event('input', { bubbles: true }));
+
+	expect(applying()).toContain('copyLogin');
+	run('copyLogin');
+	expect(ipc.setField).toHaveBeenCalledWith(kept.id, 'UserName', 'bob', false, expect.any(Number));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(
+		ipc.copy,
+		'the copy was asked for before the login it copies was written'
+	).not.toHaveBeenCalled();
+
+	written(
+		entry({
+			id: kept.id,
+			group: root.id,
+			fields: [field({ name: 'UserName', kind: 'username', value: 'bob', empty: false })]
+		})
+	);
+	await vi.waitFor(() => expect(ipc.copy).toHaveBeenCalledWith(kept.id, 'UserName', null));
+	expect(ipc.setField.mock.invocationCallOrder[0]).toBeLessThan(
+		ipc.copy.mock.invocationCallOrder[0]
+	);
+
+	search().focus();
+	run('copyLogin');
+	expect(document.activeElement, 'the search field lost the focus to a copy').toBe(search());
+	await vi.waitFor(() => expect(ipc.copy).toHaveBeenCalledTimes(2));
 
 	return unmount(component);
 });

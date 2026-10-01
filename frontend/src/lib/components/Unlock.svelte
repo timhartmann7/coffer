@@ -15,6 +15,7 @@
 		unlockTakingOver
 	} from '$lib/ipc';
 	import { at, fully } from '$lib/format';
+	import { answer } from '$lib/menu.svelte';
 	import type { CopyOf, Database, Failure, Found, OnDisk, Rescued, Snapshot } from '$lib/model';
 	import Confirm from './Confirm.svelte';
 	import Icon from './Icon.svelte';
@@ -399,6 +400,9 @@
 	$effect(() => {
 		field?.focus();
 	});
+
+	// Open Vault… in the menu bar is the link on every face of this screen.
+	$effect(() => answer({ openVault: { run: () => void choose(), when: () => !busy } }));
 </script>
 
 <div class="flex flex-1 items-center justify-center overflow-y-auto px-10 py-10">
