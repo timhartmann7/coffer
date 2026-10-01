@@ -24,26 +24,35 @@
  * Coffer is written; the chrome selected around it is dropped, because the
  * chrome is not part of any field. A copy that reaches two values copies
  * nothing: there is no one field in the vault to cut it out of, and the
- * system's copy of both is the copy this module exists to stop. A cut is the
- * same copy, because nothing on the screen can be cut out of the vault. The menu
- * is not drawn and the drag does not start.
+ * system's copy of both is the copy this module exists to stop. It says so,
+ * because a Cmd+C that did nothing in silence leaves the reader pasting
+ * whatever the pasteboard held before - another password, as like as not. A
+ * cut is the same copy, because nothing on the screen can be cut out of the
+ * vault. The menu is not drawn and the drag does not start.
  */
 
 import type { Attachment } from 'svelte/attachments';
 import type { Span } from './model';
 
-/** Every node a value is written into, and where a copy of it goes. */
-const seals = new Map<HTMLElement, (range: Span | null) => void>();
+/** Where a copy of a value goes, and where a copy refused is said. */
+type Seal = { copy: (range: Span | null) => void; refuse: (thrown: unknown) => void };
+
+/** Every node a value is written into, and what is done with a copy of it. */
+const seals = new Map<HTMLElement, Seal>();
 
 const KINDS = ['copy', 'cut', 'contextmenu', 'dragstart'] as const;
 
 /** Attaches the rules above to the node a revealed value is written into.
  * `copy` is where a copy goes instead: Rust, by entry and field, with the part
- * of the value the reader selected or `null` for all of it. */
-export function sealed(copy: (range: Span | null) => void): Attachment<HTMLElement> {
+ * of the value the reader selected or `null` for all of it. `refuse` is where
+ * a copy that reached more than this value is said to have copied nothing. */
+export function sealed(
+	copy: (range: Span | null) => void,
+	refuse: (thrown: unknown) => void
+): Attachment<HTMLElement> {
 	return (node) => {
 		if (seals.size === 0) for (const kind of KINDS) document.addEventListener(kind, judge, true);
-		seals.set(node, copy);
+		seals.set(node, { copy, refuse });
 		return () => {
 			seals.delete(node);
 			if (seals.size === 0)
@@ -60,8 +69,10 @@ function judge(event: Event) {
 	event.preventDefault();
 	if (event.type !== 'copy' && event.type !== 'cut') return;
 
-	const [only] = reached;
-	if (reached.length === 1 && only) only.copy(only.range);
+	const [first] = reached;
+	if (!first) return;
+	if (reached.length === 1) first.copy(first.range);
+	else first.refuse({ code: 'refused', message: 'Select one value at a time to copy it.' });
 }
 
 /**
@@ -74,7 +85,7 @@ function judge(event: Event) {
  * though it may touch its edge. The event's own target reaches the value it is
  * inside, whole, when the selection does not cover any of it.
  */
-function reach(event: Event): { copy: (range: Span | null) => void; range: Span | null }[] {
+function reach(event: Event): (Seal & { range: Span | null })[] {
 	const selection = document.getSelection();
 	const chosen =
 		selection && selection.rangeCount > 0 && !selection.isCollapsed
@@ -83,16 +94,16 @@ function reach(event: Event): { copy: (range: Span | null) => void; range: Span 
 	const target = event.target instanceof Node ? event.target : null;
 
 	const reached = [];
-	for (const [node, copy] of seals) {
+	for (const [node, seal] of seals) {
 		const text = node.firstChild;
 		if (!(text instanceof Text) || text.length === 0) continue;
 
 		const span = chosen ? covered(node, text, chosen) : null;
 		if (span) {
 			const whole = span.from === 0 && span.to === text.length;
-			reached.push({ copy, range: whole ? null : span });
+			reached.push({ ...seal, range: whole ? null : span });
 		} else if (target && node.contains(target)) {
-			reached.push({ copy, range: null });
+			reached.push({ ...seal, range: null });
 		}
 	}
 	return reached;

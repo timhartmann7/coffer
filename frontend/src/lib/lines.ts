@@ -40,6 +40,17 @@ export function composing(event: KeyboardEvent): boolean {
 }
 
 /**
+ * Whether an Escape puts away what is being written.
+ *
+ * The Escape that cancels a conversion is the input method's for the same
+ * reason the Return that confirms one is, and arrives the same way. Read as
+ * the field's, it closed a Change and threw away everything typed into it.
+ */
+export function cancels(event: KeyboardEvent): boolean {
+	return event.key === 'Escape' && !composing(event);
+}
+
+/**
  * Whether a Return finishes what is being written rather than starting a line.
  *
  * A value on one line finishes on Return, the way every single line on a Mac

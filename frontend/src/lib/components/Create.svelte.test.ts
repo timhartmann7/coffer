@@ -687,3 +687,67 @@ it('names a copy that turned up beside the place at the last moment', async () =
 
 	unmount(component);
 });
+
+/**
+ * A place the screen points past is one the reader can clear in the Finder,
+ * and nothing they press here would read it again: Make stays disabled and
+ * there is no Open it. So the place is read again each time the window gets
+ * the focus back, and a place that came free is ready to make the vault in.
+ */
+it('reads a place that is not free again when the reader comes back to the window', async () => {
+	for (const standing of ['empty', 'other', 'vault', 'copy'] as const) {
+		ipc.defaultNewDatabase.mockResolvedValue({ ...HOME, standing });
+		ipc.target.mockReset();
+		ipc.target.mockResolvedValue(HOME);
+		const component = show();
+		flushSync();
+		await vi.waitFor(() => expect(host.textContent).not.toContain('Fitting the lock'));
+		expect(button('Make the vault').disabled, standing).toBe(true);
+
+		window.dispatchEvent(new FocusEvent('focus'));
+
+		await vi.waitFor(() => expect(button('Make the vault').disabled, standing).toBe(false));
+		expect(reads()).not.toContain('Nothing is made over a file');
+		expect(reads()).not.toContain('Pick Somewhere else');
+		expect(ipc.target).toHaveBeenCalledTimes(1);
+
+		unmount(component);
+	}
+});
+
+/** A free place has nothing to be cleared, and coming back reads nothing. */
+it('reads nothing when the reader comes back to a free place', async () => {
+	ipc.target.mockReset();
+	const component = await ready();
+
+	window.dispatchEvent(new FocusEvent('focus'));
+	flushSync();
+
+	expect(ipc.target).not.toHaveBeenCalled();
+	unmount(component);
+});
+
+/** The panel the reader picked in hands the focus back as it closes, so the
+ * place from before the choice is still being read when the choice lands. The
+ * choice is the later word on where the vault goes. */
+it('keeps a place picked while the one before it was being read again', async () => {
+	ipc.defaultNewDatabase.mockResolvedValue({ ...HOME, standing: 'empty' });
+	ipc.target.mockReset();
+	const before = Promise.withResolvers<Target>();
+	ipc.target.mockReturnValue(before.promise);
+	const component = show();
+	flushSync();
+	await vi.waitFor(() => expect(host.textContent).not.toContain('Fitting the lock'));
+
+	window.dispatchEvent(new FocusEvent('focus'));
+	button('Somewhere else').click();
+	await vi.waitFor(() => expect(host.textContent).toContain(WHERE.shown));
+	before.resolve({ ...HOME, standing: 'empty' });
+	await Promise.resolve();
+	flushSync();
+
+	expect(host.textContent).toContain(WHERE.shown);
+	expect(button('Make the vault').disabled).toBe(false);
+
+	unmount(component);
+});

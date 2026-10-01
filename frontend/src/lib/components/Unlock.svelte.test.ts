@@ -667,7 +667,7 @@ it('says why the copy was not put back and asks what is true now', async () => {
 it('sends the reader into the copy when this disk cannot take it back unopened', async () => {
 	ipc.putBackRescue.mockRejectedValue({
 		code: 'needsOpening',
-		message: 'this disk cannot take the copy back without it being opened'
+		message: 'no move on this disk is refused at a name in use'
 	});
 	const copied = {
 		path: '/Users/someone/personal.kdbx.unsaved.kdbx',

@@ -94,7 +94,7 @@
 	}
 </script>
 
-<Shown {revealed} bind:node {bare} {lines} {onCopy} />
+<Shown {revealed} bind:node {bare} {lines} {onCopy} {onFailure} />
 <!-- Neither press moves the focus, so a new value being written beside this
      row keeps it, and the old one can be looked at and copied from while it is
      being replaced. -->

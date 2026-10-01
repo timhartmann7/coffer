@@ -18,7 +18,7 @@
 		setTags,
 		withdrawAttachment
 	} from '$lib/ipc';
-	import { composing } from '$lib/lines';
+	import { cancels, composing } from '$lib/lines';
 	import type { Clash, Entry, Field, Group, History, Position, Span } from '$lib/model';
 	import Change from './Change.svelte';
 	import Confirm from './Confirm.svelte';
@@ -822,7 +822,7 @@
 						aria-label="The name of the new field"
 						placeholder="What is it called?"
 						onkeydown={(event) => {
-							if (event.key === 'Escape') naming = false;
+							if (cancels(event)) naming = false;
 							if (event.key === 'Enter' && !composing(event)) {
 								event.preventDefault();
 								makeField();

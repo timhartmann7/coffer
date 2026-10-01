@@ -19,7 +19,7 @@
 	import { quoted } from '$lib/format';
 	import { held } from '$lib/holding';
 	import { copying, typing } from '$lib/keys';
-	import { composing } from '$lib/lines';
+	import { cancels, composing } from '$lib/lines';
 	import { Moves } from '$lib/moves';
 	import { COPIED, Notices } from '$lib/notices.svelte';
 	import { conceal } from '$lib/reveal.svelte';
@@ -248,11 +248,25 @@
 		}
 	}
 
+	/**
+	 * How many times the list on the screen has been known to be out of date.
+	 *
+	 * Rust runs commands side by side and takes the vault in no fixed order, so
+	 * a list asked for before an edit can be read after it, and answer after
+	 * that edit took the list away. It is as out of date as the one taken away,
+	 * and a list asked for before the count last moved is dropped. A list a
+	 * change to the versions answered with moves it too, being newer than any
+	 * read still on its way.
+	 */
+	let stale = 0;
+
 	/** Lists the versions of the entry in the pane, while it is still there. */
 	async function list(id: string) {
 		if (showing !== id) return;
+		const asked = stale;
 		try {
-			listed(await loadVersions(id));
+			const history = await loadVersions(id);
+			if (asked === stale) listed(history);
 		} catch (thrown) {
 			if (showing === id) failed(thrown);
 		}
@@ -282,6 +296,7 @@
 	 * "Versions".
 	 */
 	function unread(id: string) {
+		stale += 1;
 		if (pane?.id === id) pane = { ...pane, history: null };
 	}
 
@@ -337,6 +352,7 @@
 	/** The versions of an entry came back changed, which is a change to the
 	 * file like any other. */
 	async function versionsChanged(history: History) {
+		stale += 1;
 		listed(history);
 		file.changedAt = new Date();
 		await file.persist();
@@ -538,12 +554,12 @@
 		// unless a control inside them has already answered it. A chip whose list
 		// was open took its own Escape and the whole screen closed behind it.
 		if (settings) {
-			if (event.key === 'Escape' && !event.defaultPrevented) onSettings();
+			if (cancels(event) && !event.defaultPrevented) onSettings();
 			return;
 		}
 
 		if (!event.metaKey) {
-			if (event.key === 'Escape') {
+			if (cancels(event)) {
 				if (query !== '') query = '';
 				else dismiss();
 			}
@@ -682,7 +698,7 @@
 					placeholder="What is it called?"
 					onblur={makeFolder}
 					onkeydown={(event) => {
-						if (event.key === 'Escape') naming = false;
+						if (cancels(event)) naming = false;
 						if (event.key === 'Enter' && !composing(event)) {
 							event.preventDefault();
 							makeFolder();
@@ -701,7 +717,7 @@
 					value={shown.name}
 					onblur={(event) => rename(event.currentTarget.value)}
 					onkeydown={(event) => {
-						if (event.key === 'Escape') renaming = false;
+						if (cancels(event)) renaming = false;
 						if (event.key === 'Enter' && !composing(event)) {
 							event.preventDefault();
 							rename(event.currentTarget.value);

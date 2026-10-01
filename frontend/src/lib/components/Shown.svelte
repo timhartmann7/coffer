@@ -31,7 +31,8 @@
 		lines = false,
 		classes = 'text-small',
 		hidden,
-		onCopy
+		onCopy,
+		onFailure
 	}: {
 		/** The clock the value is on, and whether it is on the screen at all. */
 		revealed: Revealed;
@@ -51,6 +52,8 @@
 		/** Where a copy of the value goes instead of the system's pasteboard:
 		 * Rust, with the part the reader selected or `null` for all of it. */
 		onCopy: (range: Span | null) => void;
+		/** Where a copy that reached more than this value says it copied nothing. */
+		onFailure: (thrown: unknown) => void;
 	} = $props();
 
 	const flow = $derived(
@@ -76,7 +79,7 @@
 		bind:this={node}
 		data-value
 		hidden={!revealed.showing}
-		{@attach sealed(onCopy)}
+		{@attach sealed(onCopy, onFailure)}
 		class="min-w-0 flex-1 font-mono text-txt {classes} {flow}"
 	></span>
 

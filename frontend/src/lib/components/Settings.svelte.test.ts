@@ -79,6 +79,19 @@ it('draws what was chosen, in words rather than in seconds', () => {
 	unmount(component);
 });
 
+/** A vault's file name may hold a right-to-left override, and running into the
+ * suffix it drew the suffix backwards. The name is isolated from it. */
+it('keeps the name of the vault apart from the names of its snapshots', () => {
+	const component = show({ database: { path: '/Users/someone/a\u202Eb.kdbx', name: 'a\u202Eb' } });
+	flushSync();
+
+	const name = [...host.querySelectorAll('bdi')].find((each) => each.textContent === 'a\u202Eb');
+	expect(name, 'the name is not isolated').toBeDefined();
+	expect(name?.nextSibling?.textContent).toBe('.1–10.bak');
+
+	unmount(component);
+});
+
 /** Both states, including the one the mockup does not draw. A switch whose off
  * state was never looked at is a switch that can only be turned on. */
 it('draws a switch that is off as well as one that is on', () => {

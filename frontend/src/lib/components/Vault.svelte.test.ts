@@ -379,6 +379,43 @@ it('hands the part of a revealed value the reader selected to Rust, and says so'
 	return unmount(component);
 });
 
+/**
+ * A selection from the password down into a revealed token reaches two
+ * values, and Rust copies one field at a time, so nothing is copied. A Cmd+C
+ * that did nothing without a word left the reader pasting whatever the
+ * pasteboard held before, so the window says why.
+ */
+it('says why a copy reaching two revealed values copied nothing', async () => {
+	ipc.reveal.mockImplementation((_entry: string, name: string) =>
+		Promise.resolve(name === 'Password' ? 'correct horse' : 'sk-live-9f3a2b')
+	);
+	const component = await showing([
+		field({ name: 'Password', kind: 'password', value: null, empty: false }),
+		field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false })
+	]);
+
+	[...host.querySelectorAll('button')].find((each) => each.textContent?.trim() === 'Show')?.click();
+	host.querySelector<HTMLButtonElement>('[aria-label="Show API token"]')?.click();
+	const [password, token] = [...host.querySelectorAll<HTMLElement>('[data-value]')];
+	await vi.waitFor(() => expect(password?.textContent).toBe('correct horse'));
+	await vi.waitFor(() => expect(token?.textContent).toBe('sk-live-9f3a2b'));
+
+	const range = document.createRange();
+	range.setStart(password?.firstChild as Text, 8);
+	range.setEnd(token?.firstChild as Text, 4);
+	document.getSelection()?.removeAllRanges();
+	document.getSelection()?.addRange(range);
+
+	const copied = new ClipboardEvent('copy', { bubbles: true, cancelable: true });
+	password?.dispatchEvent(copied);
+	expect(copied.defaultPrevented, 'the system copied two secrets').toBe(true);
+	await tick();
+	expect(reads()).toContain('Select one value at a time to copy it.');
+	expect(ipc.copy).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
 /** A previous version's value goes through a command of its own, which finds
  * the value by the version's position, and gets the same notice. */
 it('copies a value out of a previous version through Rust', async () => {
@@ -3347,6 +3384,59 @@ it('draws no version to act on between an edit and the list read after its save'
 	} finally {
 		await unmount(component);
 		vi.useRealTimers();
+	}
+});
+
+/**
+ * Two edits whose saves overlap. Commands run side by side in Rust and take
+ * the vault in no fixed order, so the list read after the first save can be
+ * read after the second edit and answer after it landed. That list is already
+ * out of date, and drawing it would offer for the whole second save a press
+ * Rust can only refuse. It is dropped, and the list read after the second
+ * save is the one drawn.
+ */
+it('drops a list asked for before a later edit landed', async () => {
+	const { component } = mounted(root);
+	try {
+		await openVersions();
+		const first = Promise.withResolvers<void>();
+		const second = Promise.withResolvers<void>();
+		ipc.save.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+		const stale = Promise.withResolvers<{ entry: string; revision: number; versions: Version[] }>();
+		ipc.versions.mockReturnValueOnce(stale.promise);
+
+		write(titleField() as HTMLInputElement, 'node-4');
+		await settled();
+		first.resolve();
+		await settled();
+		expect(ipc.versions).toHaveBeenCalledTimes(2);
+
+		ipc.setField.mockResolvedValue(titled(kept.id, 'node-5'));
+		write(titleField() as HTMLInputElement, 'node-5');
+		await settled();
+		expect(ipc.save).toHaveBeenCalledTimes(2);
+
+		stale.resolve({
+			entry: kept.id,
+			revision: REVISION,
+			versions: [0, 1, 2].map((index) => version({ index }))
+		});
+		await settled();
+		expect(trashes(), 'a list read before the second edit').toHaveLength(0);
+		expect(heading()).toBe('Versions');
+
+		ipc.versions.mockImplementation(
+			listing(
+				[0, 1].map((index) => version({ index })),
+				3
+			)
+		);
+		second.resolve();
+		await settled();
+		expect(heading()).toBe('Versions 2');
+		expect(trashes()).toHaveLength(2);
+	} finally {
+		await unmount(component);
 	}
 });
 

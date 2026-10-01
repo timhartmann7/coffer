@@ -331,6 +331,30 @@ it('leaves a Return that ends a composition to the input method in a field on on
 	return unmount(component);
 });
 
+/** The Escape that cancels a conversion is the input method's as well, and
+ * put the field back to what the vault holds with the edit thrown away. */
+it('leaves an Escape that cancels a composition to the input method', () => {
+	const onCommit = taken();
+	const component = show({ value: 'deploy', onCommit });
+	flushSync();
+	field().focus();
+
+	type('deploy-2');
+	for (const composition of [{ isComposing: true }, { keyCode: 229 }]) {
+		key('Escape', composition);
+		flushSync();
+		expect(field().value, JSON.stringify(composition)).toBe('deploy-2');
+		expect(document.activeElement, 'the composition put the field away').toBe(field());
+	}
+
+	key('Escape');
+	flushSync();
+	expect(field().value).toBe('deploy');
+	expect(onCommit).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
 /** What is typed is told to Rust as a draft of the place the field was given,
  * and Escape lets go of it. */
 it('tells what is typed to Rust as a draft of its field, and lets go of it on Escape', async () => {

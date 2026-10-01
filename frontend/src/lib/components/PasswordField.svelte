@@ -143,7 +143,13 @@
 	<span class="font-mono text-label tracking-label text-txt3 uppercase">Password</span>
 
 	<div class="mt-1.5 flex items-center">
-		<Shown {revealed} bind:node classes="text-body" onCopy={(range) => onCopy(field, range)}>
+		<Shown
+			{revealed}
+			bind:node
+			classes="text-body"
+			onCopy={(range) => onCopy(field, range)}
+			{onFailure}
+		>
 			{#snippet hidden()}
 				{#if empty}
 					<span class="min-w-0 flex-1 truncate text-body text-txt4">

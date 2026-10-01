@@ -228,12 +228,13 @@ prunes, and a list drawn through it offered a trash that dropped the neighbour
 of the version on its row. So from the moment an edit to the entry lands until
 the list read after its save arrives, the block is its heading alone -
 "Versions" with no number and no rows, the same state as an entry still being
-read - and a question or a version open in it closes. While a restore, a drop
-or a clear is on its way, a press on the block is let go. A press Rust still
-finds out of date does nothing, and is said in the notice a failure gets, with
-the warning in `warn`: "The versions changed while you were choosing, so
-nothing was done. Choose again from the list as it is now." The list is read
-again under it.
+read - and a question or a version open in it closes. A list asked for before
+the latest such edit is dropped when it answers, since saves overlap and it can
+answer after that edit. While a restore, a drop or a clear is on its way, a
+press on the block is let go. A press Rust still finds out of date does
+nothing, and is said in the notice a failure gets, with the warning in `warn`:
+"The versions changed while you were choosing, so nothing was done. Choose
+again from the list as it is now." The list is read again under it.
 
 ## Asking before, and taking back after
 
@@ -258,7 +259,9 @@ lines and the banners about a lock's copy put the reader's names into running
 text: an entry's title, a field's, a file's or a folder's name. Each one is
 bidi-isolated - a `<bdi>` in markup, and in a sentence built as a string the
 quotes from `quoted()` in `format.ts`, which put the name between U+2068 and
-U+2069 and close whatever isolate it leaves open. A name is the reader's or
+U+2069, close whatever isolate it leaves open, and show a paragraph separator
+in it (a line feed, U+2029 and the others UAX #9 counts) as a space, since one
+ends the isolate along with the paragraph. A name is the reader's or
 another client's and may hold right-to-left text or an override; bare, a U+202E
 in "This entry already has “…” (1.2 MB)" ran on to the end of the paragraph and
 drew the sizes and the warning backwards. Nothing changes on the screen for a
@@ -406,7 +409,9 @@ creation left, a folder or a link to nothing gets a sentence that names it and
 points at "Somewhere else" in the row above, and no pill: there is nothing there
 to open. A press that finds the place changed redraws the box from what is there
 now, with the refusal in `danger` at the foot of the form where every other one
-on this screen goes.
+on this screen goes. So does coming back to the window while the place is not
+free: a reader sent to the Finder to clear it returns to a box that says what
+they left there, and to a make button that is ready once they have.
 
 **The place is written from the tilde.** The creation screen's row shows
 `~/Coffer/vault.kdbx` rather than the whole path, which is how the mockup draws

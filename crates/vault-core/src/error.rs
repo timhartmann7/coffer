@@ -184,15 +184,15 @@ pub enum VaultError {
     /// a filesystem that keeps no second name for a file: there is no way to
     /// put a whole file at a name there that is refused if something arrived
     /// first. Opened, the copy becomes the vault through an ordinary save.
-    #[error(
-        "this disk cannot take the copy back without it being opened: open the copy, then make it your vault from inside"
-    )]
+    /// The window says that in words about the screen it was pressed on.
+    #[error("no move on this disk is refused at a name in use")]
     NoExclusiveMove,
 
     /// The vault's file is not as it stood when the reader was last told how
     /// it stood, and making the copy the vault would push a change they were
-    /// never shown into the snapshots.
-    #[error("your vault file changed after this was shown, so nothing was replaced")]
+    /// never shown into the snapshots. The window says that in words about
+    /// what it showed.
+    #[error("the vault file is not as it stood when it was shown")]
     VaultFileChanged,
 
     /// A password with no characters to choose from is not a password.

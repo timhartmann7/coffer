@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { drop, typed as said, unfinished, type Place } from '$lib/drafts';
-	import { composing, finishes, lines } from '$lib/lines';
+	import { cancels, composing, finishes, lines } from '$lib/lines';
 	import Bare from './Bare.svelte';
 	import Field from './Field.svelte';
 	import Unsaved from './Unsaved.svelte';
@@ -123,7 +123,7 @@
 
 	function keys(event: KeyboardEvent) {
 		if (!node) return;
-		if (event.key === 'Escape') {
+		if (cancels(event)) {
 			node.value = value;
 			edited = false;
 			written = lines(value);

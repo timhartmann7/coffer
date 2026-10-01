@@ -112,15 +112,19 @@ describe('what a sentence calls an entry', () => {
 });
 
 describe('a name in running text', () => {
+	/** What UAX #9 counts as the end of a paragraph, written out again rather
+	 * than taken from the code under test. */
+	const SEPARATORS = ['\n', '\r', '\u001C', '\u001D', '\u001E', '\u0085', '\u2029'];
 	const OVERRIDES = /[‪-‮]/u;
 
 	/**
 	 * What a mark opened inside a name can reach, by the rules of UAX #9: an
 	 * override or embedding lasts until the isolate around it closes, a closing
 	 * mark with nothing open is ignored, and anything left open lasts to the
-	 * end of the paragraph. Answers with the text outside every isolate, and
-	 * fails when the sentence ends with one still open or an override stands
-	 * outside them all.
+	 * end of the paragraph, where a paragraph separator closes every isolate
+	 * there is. Answers with the text outside every isolate, and fails when
+	 * the sentence ends with one still open or an override stands outside them
+	 * all.
 	 */
 	function outside(sentence: string): string {
 		let depth = 0;
@@ -128,6 +132,7 @@ describe('a name in running text', () => {
 		for (const char of sentence) {
 			if (['⁦', '⁧', '⁨'].includes(char)) depth += 1;
 			else if (char === '⁩') depth = Math.max(0, depth - 1);
+			else if (SEPARATORS.includes(char)) depth = 0;
 			else if (depth === 0) {
 				expect(char, `an override reaches ${JSON.stringify(sentence)}`).not.toMatch(OVERRIDES);
 				left += char;
@@ -151,6 +156,20 @@ describe('a name in running text', () => {
 			expect(outside(`Delete ${quoted(name)} forever? This can’t be undone.`), name).toBe(
 				'Delete “” forever? This can’t be undone.'
 			);
+		}
+	});
+
+	/** A paragraph separator ends every isolate along with the paragraph, so an
+	 * override after one in a name from another client ran on through the rest
+	 * of the question. */
+	it('does not let a paragraph separator in a name end the isolate', () => {
+		for (const separator of SEPARATORS) {
+			const name = `a${separator}\u202Efdp.exe`;
+			expect(
+				outside(`This entry already has ${quoted(name)} (1.2 MB). Keep both?`),
+				JSON.stringify(separator)
+			).toBe('This entry already has \u201C\u201D (1.2 MB). Keep both?');
+			expect(quoted(name)).toBe('\u201C\u2068a \u202Efdp.exe\u2069\u201D');
 		}
 	});
 

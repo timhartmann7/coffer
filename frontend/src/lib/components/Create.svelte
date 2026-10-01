@@ -91,6 +91,27 @@
 		}
 	}
 
+	/**
+	 * Reads what is at the place again, and keeps what the screen said when it
+	 * cannot be read. A place picked while this was on its way is the later
+	 * word, and is kept.
+	 */
+	async function look() {
+		const asked = where;
+		const now = await target().catch(() => asked);
+		if (where === asked) where = now;
+	}
+
+	/**
+	 * A place the screen points past is one the reader can clear in the Finder,
+	 * and nothing they could press here reads it again: Make is disabled, and
+	 * only a vault or a copy offers Open it. So coming back to the window reads
+	 * it again.
+	 */
+	function returned() {
+		if (where && where.standing !== 'free' && !busy) void look();
+	}
+
 	/** Opens what already sits at the place rather than making a vault over it.
 	 * Rust is holding the place, so nothing is sent. Something other than what
 	 * the screen said is there is a fact about the disk, so the place is read
@@ -104,7 +125,7 @@
 		} catch (thrown) {
 			const refused = asFailure(thrown);
 			failure = refused.message;
-			if (refused.code === 'gone') where = await target().catch(() => where);
+			if (refused.code === 'gone') await look();
 		} finally {
 			busy = false;
 		}
@@ -156,7 +177,7 @@
 				typed.fill(0);
 				first.value = back;
 				second.value = back;
-				where = await target().catch(() => place);
+				await look();
 			} else {
 				failure = refused.message;
 			}
@@ -168,6 +189,8 @@
 		}
 	}
 </script>
+
+<svelte:window onfocus={returned} />
 
 <div class="flex flex-1 items-center justify-center overflow-y-auto px-10 py-10">
 	<form onsubmit={make} class="w-full max-w-[620px] animate-rise">

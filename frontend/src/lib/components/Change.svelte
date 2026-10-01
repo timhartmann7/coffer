@@ -3,7 +3,7 @@
 	import { drop, replacing, unfinished, type Place } from '$lib/drafts';
 	import { hold } from '$lib/holding';
 	import { asFailure } from '$lib/ipc';
-	import { finishes, lines } from '$lib/lines';
+	import { cancels, finishes, lines } from '$lib/lines';
 	import Confirm from './Confirm.svelte';
 	import Field from './Field.svelte';
 	import Unsaved from './Unsaved.svelte';
@@ -193,7 +193,7 @@
 	}
 
 	function keys(event: KeyboardEvent) {
-		if (event.key === 'Escape') {
+		if (cancels(event)) {
 			// The window reads Escape as "close the entry", and a change put
 			// away is not an entry put away.
 			event.stopPropagation();

@@ -6,7 +6,7 @@
  * between two frames is the only motion in this window a reader ever asked for
  * and did not get. That half is Svelte's, and Svelte wants a number where the
  * stylesheet has a token - so the numbers are written here as well, and
- * `motion.test.ts` is what keeps the two copies from parting company.
+ * `motion.svelte.test.ts` is what keeps the two copies from parting company.
  */
 
 /** How long something that came from below takes to arrive, or to go. */

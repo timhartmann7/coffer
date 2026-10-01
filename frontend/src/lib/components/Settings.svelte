@@ -143,7 +143,9 @@
 				</div>
 			</div>
 			<span class="shrink-0 font-mono text-fine text-txt3">
-				{database ? `${database.name}.1–10.bak` : '1–10.bak'}
+				<!-- Isolated: a right-to-left override in the vault's name drew the
+				     suffix after it backwards. -->
+				{#if database}<bdi>{database.name}</bdi>.1–10.bak{:else}1–10.bak{/if}
 			</span>
 		</div>
 	</div>

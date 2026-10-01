@@ -119,9 +119,9 @@ export class Notices {
 	 *
 	 * The second of two waits: the first is how long the sentence is worth
 	 * reading, this one is the length of the movement that takes it off the
-	 * screen, and `motion.test.ts` is what keeps it and the stylesheet saying
-	 * the same number. A notice that has started going offers nothing any
-	 * more, whatever it said.
+	 * screen, and `motion.svelte.test.ts` is what keeps it and the stylesheet
+	 * saying the same number. A notice that has started going offers nothing
+	 * any more, whatever it said.
 	 */
 	#go(): void {
 		this.#offered = null;

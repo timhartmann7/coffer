@@ -34,7 +34,7 @@ function select(start: [Node, number], end: [Node, number]) {
 /** What a copy on the node asks Rust for, with the selection as it stands. */
 function selected(): Span | null {
 	const copy = vi.fn();
-	const detach = sealed(copy)(node);
+	const detach = sealed(copy, vi.fn())(node);
 	node.dispatchEvent(new ClipboardEvent('copy', { bubbles: true, cancelable: true }));
 	detach?.();
 	expect(copy).toHaveBeenCalledTimes(1);
@@ -101,7 +101,7 @@ it('counts in the units the text node counts in', () => {
 it('leaves a node that holds no value to the system', () => {
 	node.textContent = '';
 	const copy = vi.fn();
-	const detach = sealed(copy)(node);
+	const detach = sealed(copy, vi.fn())(node);
 	select([host.firstChild as Text, 0], [host.lastChild as Text, 3]);
 
 	for (const kind of ['copy', 'contextmenu']) {
@@ -117,7 +117,7 @@ it('leaves a node that holds no value to the system', () => {
  * lets go of the document again. */
 it('takes the copy, the cut, the menu and the drag, and lets go when detached', () => {
 	const copy = vi.fn();
-	const detach = sealed(copy)(node);
+	const detach = sealed(copy, vi.fn())(node);
 	select([text(), 10], [text(), 19]);
 
 	for (const kind of ['copy', 'cut']) {
@@ -147,7 +147,7 @@ it('takes the copy, the cut, the menu and the drag, and lets go when detached', 
  * and nothing else. */
 it('takes a copy that lands on the chrome around a selected value', () => {
 	const copy = vi.fn();
-	const detach = sealed(copy)(node);
+	const detach = sealed(copy, vi.fn())(node);
 	select([host.firstChild as Text, 2], [text(), 9]);
 
 	for (const kind of ['copy', 'cut']) {
@@ -165,7 +165,7 @@ it('takes a copy that lands on the chrome around a selected value', () => {
  * WebKit's menu there is about the whole selection, Look Up and Share
  * included. And a drag started on the label carries the whole selection. */
 it('draws no menu and starts no drag on chrome inside a selection that reaches a value', () => {
-	const detach = sealed(vi.fn())(node);
+	const detach = sealed(vi.fn(), vi.fn())(node);
 	select([host.firstChild as Text, 0], [text(), 4]);
 
 	for (const kind of ['contextmenu', 'dragstart']) {
@@ -181,7 +181,7 @@ it('draws no menu and starts no drag on chrome inside a selection that reaches a
  * own copy and menu are left alone, and Rust is not asked for anything. */
 it('leaves a selection that covers none of a value to the system', () => {
 	const copy = vi.fn();
-	const detach = sealed(copy)(node);
+	const detach = sealed(copy, vi.fn())(node);
 
 	for (const [start, end] of [
 		[
@@ -211,16 +211,18 @@ it('leaves a selection that covers none of a value to the system', () => {
 /** Two values in one selection - a username and a password, read across the
  * rows of an entry - are two fields, and Rust copies one field at a time. So
  * nothing is copied at all: half of it through Rust would be a copy the reader
- * did not make, and all of it through the system is the copy this stops. */
-it('copies nothing from a selection that reaches two values', () => {
+ * did not make, and all of it through the system is the copy this stops. The
+ * reader is told, or they paste what the pasteboard held before. */
+it('copies nothing from a selection that reaches two values, and says so', () => {
 	const second = document.createElement('span');
 	second.textContent = 'hunter2';
 	host.append(second, ' end');
 
 	const first = vi.fn();
 	const other = vi.fn();
-	const detachFirst = sealed(first)(node);
-	const detachOther = sealed(other)(second);
+	const refused = vi.fn();
+	const detachFirst = sealed(first, refused)(node);
+	const detachOther = sealed(other, refused)(second);
 	select([text(), 20], [second.firstChild as Text, 3]);
 
 	for (const kind of ['copy', 'cut', 'contextmenu', 'dragstart']) {
@@ -230,6 +232,12 @@ it('copies nothing from a selection that reaches two values', () => {
 	}
 	expect(first).not.toHaveBeenCalled();
 	expect(other).not.toHaveBeenCalled();
+	// Said once for each copy and cut, and never for a menu or a drag, which
+	// the reader sees did not happen.
+	expect(refused.mock.calls).toEqual([
+		[{ code: 'refused', message: 'Select one value at a time to copy it.' }],
+		[{ code: 'refused', message: 'Select one value at a time to copy it.' }]
+	]);
 
 	// One value going does not take the other's guard with it.
 	detachFirst?.();
@@ -237,6 +245,7 @@ it('copies nothing from a selection that reaches two values', () => {
 	host.dispatchEvent(copy);
 	expect(copy.defaultPrevented).toBe(true);
 	expect(other).toHaveBeenCalledWith({ from: 0, to: 3 });
+	expect(refused).toHaveBeenCalledTimes(2);
 
 	detachOther?.();
 });

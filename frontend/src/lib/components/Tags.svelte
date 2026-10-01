@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { composing } from '$lib/lines';
+	import { cancels, composing } from '$lib/lines';
 	import Icon from './Icon.svelte';
 
 	/**
@@ -29,7 +29,7 @@
 	}
 
 	function keys(event: KeyboardEvent) {
-		if (event.key === 'Escape') {
+		if (cancels(event)) {
 			adding = false;
 		}
 		if (event.key === 'Enter' && !composing(event)) {

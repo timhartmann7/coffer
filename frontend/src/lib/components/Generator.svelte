@@ -112,7 +112,7 @@
 			<span
 				bind:this={node}
 				data-value
-				{@attach sealed(refused)}
+				{@attach sealed(refused, onFailure)}
 				class="min-w-0 flex-1 font-mono text-base break-all text-txt"
 			></span>
 			<button

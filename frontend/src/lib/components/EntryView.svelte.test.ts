@@ -3219,6 +3219,31 @@ it('saves nothing on the Return that ends a composition', () => {
 });
 
 /**
+ * The Escape that cancels a conversion is the input method's too, and arrives
+ * the same way. Read as the field's, it closed the Change and threw away
+ * everything typed into it.
+ */
+it('keeps a new value on the Escape that cancels a conversion', () => {
+	const { component } = pane({ fields: [PASSWORD] });
+
+	button('Change').click();
+	flushSync();
+	enter(changer('New password'), 'half converted');
+	for (const composition of [{ isComposing: true }, { keyCode: 229 }]) {
+		returned(changer('New password'), { key: 'Escape', ...composition });
+		flushSync();
+		expect(changer('New password').value, JSON.stringify(composition)).toBe('half converted');
+	}
+
+	returned(changer('New password'), { key: 'Escape' });
+	flushSync();
+	expect(host.querySelector('[aria-label="New password"]')).toBeNull();
+	expect(ipc.setField).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/**
  * Ten recovery codes are replaced in lines. Their Change opened on one line
  * with Return as Save, and the first code typed was saved over all ten. A
  * value in lines - which Rust says, without saying what the lines are - opens

@@ -143,7 +143,7 @@ it('says why the copy did not become the vault, where the press was', async () =
 it('says nothing was replaced when the vault file changed after the banner said how it stood', async () => {
 	const onPromote = vi.fn().mockRejectedValue({
 		code: 'externalChange',
-		message: 'your vault file changed after this was shown, so nothing was replaced'
+		message: 'the vault file is not as it stood when it was shown'
 	});
 	const component = banner({ there: true, written: '2026-09-01T14:07:00Z' }, onPromote);
 

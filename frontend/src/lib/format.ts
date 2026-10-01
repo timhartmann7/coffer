@@ -76,6 +76,9 @@ const FIRST_STRONG_ISOLATE = '\u2068';
 const POP_DIRECTIONAL_ISOLATE = '\u2069';
 /** The three marks that open an isolate, each closed by the one above. */
 const OPENS_ISOLATE = new Set(['\u2066', '\u2067', FIRST_STRONG_ISOLATE]);
+/** The characters UAX #9 counts as the end of a paragraph, which closes every
+ * isolate, override and embedding there is. */
+const ENDS_PARAGRAPH = new Set(['\n', '\r', '\u001C', '\u001D', '\u001E', '\u0085', '\u2029']);
 
 /**
  * A name from the vault or the disk - an entry's title, a field's, a file's or
@@ -88,13 +91,20 @@ const OPENS_ISOLATE = new Set(['\u2066', '\u2067', FIRST_STRONG_ISOLATE]);
  * every override and embedding the name opened, but only once it closes the
  * isolate it was meant for: an isolate the name opens and leaves open is closed
  * first, and a closing mark of the name's own that has nothing in the name to
- * close is left out, so it cannot close this one early. Neither changes how the
- * name itself reads, and the vault keeps it as it is.
+ * close is left out, so it cannot close this one early. A paragraph separator
+ * in the name - a line feed, U+2029 and the few others - is a space here: it
+ * would end the isolate along with the paragraph, and an override after it
+ * would run on through the sentence. None of this changes how the name itself
+ * reads, and the vault keeps it as it is.
  */
 export function quoted(name: string): string {
 	let open = 0;
 	let kept = '';
 	for (const char of name) {
+		if (ENDS_PARAGRAPH.has(char)) {
+			kept += ' ';
+			continue;
+		}
 		if (OPENS_ISOLATE.has(char)) open += 1;
 		else if (char === POP_DIRECTIONAL_ISOLATE) {
 			if (open === 0) continue;

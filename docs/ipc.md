@@ -151,7 +151,9 @@ the name again by the same rule and answers `gone` for anything but a vault or a
 copy, and the screen then asks `target` for the place as it stands now, without
 the place changing. The creation itself takes the name with an exclusive create,
 refuses a name with a copy beside it, and either refusal is `taken`, after which
-the screen reads `target` as well.
+the screen reads `target` as well. While the place is not free, the screen also
+reads `target` each time the window gets the focus back, since the way on for
+`empty` and `other` is the Finder and nothing on the screen would read it.
 
 **A vault is written down when it opens, not when it is picked.** Every vault
 that opens - by an unlock or by a creation - goes through one function in
@@ -341,10 +343,13 @@ calls the pair a `Position`.
 The window keeps presses away from a list it knows is out of date. When an
 edit to the entry in the pane lands, its list goes - no rows, no count, and any
 open question or version view with it - until the list read after the save
-arrives; while a restore, a drop or a clear is on its way, every further press
-on the versions is let go. A `versionsChanged` that gets through anyway is
-answered by reading the list again and saying so in a sentence: "The versions
-changed while you were choosing, so nothing was done."
+arrives. Commands run side by side, so a list asked for before that edit can
+be read after it; the window counts every time its list went out of date and
+drops an answer asked for before the count last moved. While a restore, a drop
+or a clear is on its way, every further press on the versions is let go. A
+`versionsChanged` that gets through anyway is answered by reading the list
+again and saying so in a sentence: "The versions changed while you were
+choosing, so nothing was done."
 
 **A position is an answer about one entry.** The commands that list versions
 answer with the list alone, so `ipc.ts` hands each list on paired with the entry
@@ -527,6 +532,12 @@ the screen branches on: `wrongCredentials`, `notADatabase`, `unsupportedFormat`,
 `versionsChanged`, `forGood`, `superseded`, `deletionChanged`, `needsOpening`,
 `io`, `other`.
 
+Where the right words depend on what the screen showed, the window writes the
+sentence and the message is only a description of the refusal, kept out of
+sight: `needsOpening` from `put_back_rescue` (the unlock screen's card), and
+`externalChange` from `promote_rescue` (the banner over a copy). One sentence
+lives in one place.
+
 `versionsChanged` is a position read at a revision the vault has moved on from
 (see above). Nothing was done, so it is not shown as a failure: the window
 reads the list again and says the versions changed while the reader was
@@ -610,13 +621,15 @@ value's node or on chrome inside a selection that runs through the value, which
 is where a selection begun in a label lands them - and hands them to Rust with
 the part of the value that was selected, dropping the chrome around it. A
 selection that reaches two values copies nothing at all, because Rust copies one
-field at a time. `copy` and `copy_version` take a `range`, two positions counted
-in UTF-16 code units the way the text node counts them, or `null` for the whole
-value. `vault_core::SecretValue::part` cuts the value in Rust and refuses a
-range the value does not have, an empty one, or one with an end between the two
-halves of a character outside the basic plane. The positions come from the
-selection's own offsets and never from its text, which would be a copy of the
-secret in a JavaScript string. A right-click or a drag on anything inside such a
+field at a time, and the window says so in a failure notice ("Select one value
+at a time to copy it.") rather than leaving the reader to paste whatever the
+pasteboard held before. `copy` and `copy_version` take a `range`, two
+positions counted in UTF-16 code units the way the text node counts them, or
+`null` for the whole value. `vault_core::SecretValue::part` cuts the value in
+Rust and refuses a range the value does not have, an empty one, or one with an
+end between the two halves of a character outside the basic plane. The
+positions come from the selection's own offsets and never from its text, which
+would be a copy of the secret in a JavaScript string. A right-click or a drag on anything inside such a
 selection draws no WebKit menu and starts no drag. The generator's value is the
 one revealed value with nothing in the vault to copy by name, and its copy is
 refused with a sentence that says to put it in the field first.
