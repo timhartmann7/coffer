@@ -17,7 +17,8 @@ use crate::history::{self, Limits};
 use crate::kdf::Work;
 use crate::key::MasterKey;
 use crate::model::{
-    Attachment, Binned, Deletion, Entry, Field, FieldValue, Project, Timestamps, Version, fields,
+    self, Attachment, Binned, Deletion, Entry, Field, FieldValue, Project, Timestamps, Version,
+    fields,
 };
 use crate::preflight;
 use crate::secret::SecretValue;
@@ -86,6 +87,36 @@ pub enum NewValue {
     /// Stored protected, behind the database's inner cipher.
     Protected(Zeroizing<String>),
 }
+
+impl NewValue {
+    /// The text, whichever way it was to be stored, moved rather than copied.
+    fn into_text(self) -> Zeroizing<String> {
+        match self {
+            NewValue::Open(text) => Zeroizing::new(text),
+            NewValue::Protected(text) => text,
+        }
+    }
+}
+
+/// How text the reader was typing when the vault had to go stands to the field
+/// it was typed for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Typing {
+    /// Typed into the field where it stands. What is in the field is what the
+    /// reader wants there, and it is written into the field.
+    InPlace,
+    /// Typed as a new value for the field, in a field of its own under it,
+    /// while the value there stays until the reader saves the new one. A new
+    /// password half typed, or the wrong one pasted, is not the reader's word
+    /// that the old one may go. It is kept beside the value rather than over
+    /// it (see [`Vault::set_typed`]).
+    Beside,
+}
+
+/// What the field a new value is kept in when it cannot go over the old one is
+/// called, after the old one's name: a string field like any the reader makes,
+/// so every KeePass client shows it, and named so the reader knows it on sight.
+const TYPED_BEFORE_LOCKING: &str = "(typed before locking)";
 
 /// An open database.
 ///
@@ -468,11 +499,22 @@ impl Vault {
     /// text that is what the field already holds, under the same protection,
     /// writes nothing at all, so a vault that heard only that has nothing to
     /// save.
+    ///
+    /// A new value typed [`Typing::Beside`] never goes over a value. The
+    /// reader had not saved it, and a lock that wrote half a new password over
+    /// the real one - or the wrong one pasted while the right one was being
+    /// fetched - handed them a password that opens nothing. It goes into the
+    /// field only when the field holds nothing; otherwise into a new protected
+    /// field of the entry, named after the one it was typed for with
+    /// "(typed before locking)" after it and numbered past any the entry
+    /// already has, and the value it was typed for stays as it was. Nothing
+    /// typed there is no new value at all, and writes nothing.
     pub fn set_typed(
         &mut self,
         id: EntryId,
         field: &str,
         value: NewValue,
+        typing: Typing,
     ) -> Result<bool, VaultError> {
         let (text, protect) = match &value {
             NewValue::Open(written) => (written.as_str(), false),
@@ -480,16 +522,26 @@ impl Vault {
         };
 
         let entry = self.database.entry(id).ok_or(VaultError::NoSuchEntry)?;
-        let unchanged = match entry.fields.get(field) {
+        let held = entry.fields.get(field);
+        let unchanged = match held {
             Some(held) => held.get() == text && held.is_protected() == protect,
             None if fields::STANDARD.contains(&field) => text.is_empty(),
             None => return Err(VaultError::NoSuchField),
         };
-        if unchanged {
+        let beside = typing == Typing::Beside;
+        let nothing_new =
+            beside && (text.is_empty() || held.is_some_and(|held| held.get() == text));
+        if unchanged || nothing_new {
             return Ok(false);
         }
 
-        self.set_field(id, field, value)?;
+        if beside && held.is_some_and(|held| !held.get().is_empty()) {
+            let names: Vec<&str> = entry.fields.keys().map(String::as_str).collect();
+            let kept = clash::beside(&format!("{field} {TYPED_BEFORE_LOCKING}"), &names);
+            self.set_field(id, &kept, NewValue::Protected(value.into_text()))?;
+        } else {
+            self.set_field(id, field, value)?;
+        }
         Ok(true)
     }
 
@@ -1801,6 +1853,7 @@ fn entry_of(
                 Value::Unprotected(text) => FieldValue::Open(text.clone()),
                 Value::Protected(_) => FieldValue::Protected {
                     empty: value.get().is_empty(),
+                    lines: model::in_lines(value.get()),
                 },
             },
         })

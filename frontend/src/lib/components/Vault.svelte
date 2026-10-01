@@ -27,8 +27,11 @@
 	import { flush, release } from '$lib/drafts';
 	import { named as howLong } from '$lib/duration';
 	import { called } from '$lib/format';
+	import { held } from '$lib/holding';
 	import { copying, typing } from '$lib/keys';
+	import { composing } from '$lib/lines';
 	import { RISE, span } from '$lib/motion';
+	import { conceal } from '$lib/reveal.svelte';
 	import type {
 		Database,
 		Entry,
@@ -218,6 +221,26 @@
 		binned ? (row: EntryRow) => (row.binned ? deletedLine(row.binned, root, now) : '') : undefined
 	);
 
+	/**
+	 * Puts the pane away, unless it has to stay: a new value typed into it that
+	 * nobody has answered for, or one on its way to the vault. The field that
+	 * holds it puts its question, with the focus on it, and nothing here moves
+	 * until the reader has answered (`holding.ts`).
+	 *
+	 * `held` is asked by everything the reader presses that would take the pane
+	 * away or put another entry in it, and before it does anything else: a
+	 * folder moved to the bin with the entry inside it, and only then refused,
+	 * would have moved the entry out from under the question.
+	 */
+	function dismiss() {
+		if (!held()) pane = null;
+	}
+
+	/** Shows a folder the reader chose, unless the pane has to stay. */
+	function choose(id: string | null) {
+		if (!held()) select(id);
+	}
+
 	function select(id: string | null) {
 		group = id;
 		pane = null;
@@ -238,7 +261,10 @@
 	 * taken off the screen in the meantime.
 	 */
 	async function open(row: EntryRow) {
-		if (showing !== row.id) pane = { id: row.id, row, entry: null, history: null };
+		if (showing !== row.id) {
+			if (held()) return;
+			pane = { id: row.id, row, entry: null, history: null };
+		}
 		await read(row.id);
 		await list(row.id);
 	}
@@ -348,11 +374,16 @@
 	/**
 	 * An entry came back changed.
 	 *
+	 * Every value of it on the screen goes first: what was shown before the
+	 * change is not what the entry holds after it, whether the change was a new
+	 * password saved, one made and put in, a version restored or anything else.
+	 *
 	 * The tree comes back with it. A row in the list is drawn from the tree, and
 	 * a screen that changed a title in one pane and not in the other would go on
 	 * filtering and searching on a value that is no longer in the file.
 	 */
 	async function changed(entry: Entry) {
+		conceal(entry.id);
 		land(entry);
 		unread(entry.id);
 		changedAt = new Date();
@@ -399,6 +430,7 @@
 	 * and the new entry waits in the list rather than taking the pane from it.
 	 */
 	async function addEntry() {
+		if (held()) return;
 		const at = showing;
 		try {
 			const made = await createEntry(inside);
@@ -449,7 +481,7 @@
 	 * pane that is still empty, never over whatever the reader chose instead.
 	 */
 	async function removeEntry() {
-		if (!opened) return;
+		if (!opened || held()) return;
 		const id = opened.id;
 		const name = called(opened);
 		let tree: Group;
@@ -529,6 +561,7 @@
 	/** Deletes the folder being shown, after the question in the folders pane,
 	 * and offers it back when it went to the bin. */
 	async function removeFolder() {
+		if (held()) return;
 		deleting = false;
 		if (group === null) return;
 		const id = group;
@@ -575,7 +608,7 @@
 	/** Deletes the folder being shown in the bin for good, and goes up to the
 	 * folder it was in. */
 	async function eraseFolder() {
-		if (group === null) return;
+		if (group === null || held()) return;
 		const id = group;
 		const name = `“${shown.name}”`;
 		const above = pathTo(root, id)?.at(-2)?.id ?? null;
@@ -603,6 +636,7 @@
 	 * after that is a shorter list every time and never a longer one.
 	 */
 	async function empty() {
+		if (held()) return;
 		emptying = false;
 		let tree: Group;
 		let stayed = false;
@@ -893,7 +927,7 @@
 		if (!event.metaKey) {
 			if (event.key === 'Escape') {
 				if (query !== '') query = '';
-				else pane = null;
+				else dismiss();
 			}
 			return;
 		}
@@ -939,7 +973,7 @@
 <svelte:window onkeydown={shortcut} onblur={() => void flush()} />
 
 {#snippet deletedFolders()}
-	<BinFolders {folders} {root} {now} compact={pane !== null} onOpen={select} />
+	<BinFolders {folders} {root} {now} compact={pane !== null} onOpen={choose} />
 {/snippet}
 
 <div class="relative flex flex-1 animate-fade flex-col overflow-hidden">
@@ -1024,7 +1058,7 @@
 					onblur={makeFolder}
 					onkeydown={(event) => {
 						if (event.key === 'Escape') naming = false;
-						if (event.key === 'Enter') {
+						if (event.key === 'Enter' && !composing(event)) {
 							event.preventDefault();
 							makeFolder();
 						}
@@ -1043,7 +1077,7 @@
 					onblur={(event) => rename(event.currentTarget.value)}
 					onkeydown={(event) => {
 						if (event.key === 'Escape') renaming = false;
-						if (event.key === 'Enter') {
+						if (event.key === 'Enter' && !composing(event)) {
 							event.preventDefault();
 							rename(event.currentTarget.value);
 						}
@@ -1074,12 +1108,12 @@
 		-->
 			<div
 				role="presentation"
-				onclick={(event) => event.target === event.currentTarget && (pane = null)}
+				onclick={(event) => event.target === event.currentTarget && dismiss()}
 				class="flex-1 overflow-y-auto px-2 pb-2 text-body"
 			>
 				<button
 					type="button"
-					onclick={() => select(null)}
+					onclick={() => choose(null)}
 					class="relative flex w-full items-center gap-2 rounded-sm px-2 py-[7px] transition-colors {group ===
 					null
 						? 'bg-raised text-txt'
@@ -1105,7 +1139,7 @@
 					{root}
 					selected={group}
 					{expanded}
-					onSelect={select}
+					onSelect={choose}
 					onToggle={(id) => (expanded.has(id) ? expanded.delete(id) : expanded.add(id))}
 				/>
 			</div>
@@ -1115,7 +1149,7 @@
 				<div class="shrink-0 border-t border-hairline px-2 py-2">
 					<button
 						type="button"
-						onclick={() => select(deleted.id)}
+						onclick={() => choose(deleted.id)}
 						class="relative flex w-full items-center gap-2 rounded-sm px-2 py-[7px] text-body transition-colors {binned
 							? 'bg-raised text-txt'
 							: 'text-txt3 hover:bg-raised/60 hover:text-txt2'}"
@@ -1276,7 +1310,7 @@
 					note={whence}
 					before={folders.length > 0 ? deletedFolders : undefined}
 					onOpen={open}
-					onDismiss={() => (pane = null)}
+					onDismiss={dismiss}
 				/>
 			{:else}
 				<EntryList
@@ -1315,14 +1349,14 @@
 							onCopy={copy}
 							onChanged={changed}
 							onVersions={versionsChanged}
-							onClose={() => (pane = null)}
+							onClose={dismiss}
 							onDelete={() => void once(removeEntry)}
 							onPutBack={() => void once(putBack)}
 							onFieldRemoved={fieldRemoved}
 							onFailure={failed}
 						/>
 					{:else}
-						<Opening row={pane.row} {path} onClose={() => (pane = null)} />
+						<Opening row={pane.row} {path} onClose={dismiss} />
 					{/if}
 				</div>
 			{/if}
@@ -1386,9 +1420,11 @@
 		{:else if readOnly}
 			<span class="text-txt3">Read only</span>
 		{/if}
+		<!-- The settings go over the pane, which is the pane gone from where the
+		     reader can answer a question in it. -->
 		<button
 			type="button"
-			onclick={onSettings}
+			onclick={() => (settings || !held()) && onSettings()}
 			aria-label={settings ? 'Back to the vault' : 'Settings'}
 			aria-expanded={settings !== undefined}
 			class="flex items-center gap-2 tracking-label uppercase transition-colors active:text-txt4 {settings

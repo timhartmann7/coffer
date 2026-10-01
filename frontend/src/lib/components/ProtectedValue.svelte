@@ -51,11 +51,16 @@
 	let node = $state<HTMLElement>();
 	let eye = $state<HTMLButtonElement>();
 
+	/** Which entry the row is on: its own value, because the pane hands the id
+	 * on from an entry that is a new object after every change, and a change
+	 * that lands hides what is shown by itself (`conceal`). */
+	const showing = $derived(entry);
+
 	// A different entry is a different secret. `field` is not read: the lists
 	// this row is drawn in are keyed by the field's name, so a rename destroys
 	// the row rather than changing it under itself.
 	$effect(() => {
-		void entry;
+		void showing;
 		return () => revealed.hide();
 	});
 

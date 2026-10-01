@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { Attachment } from 'svelte/attachments';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { settle, type Place } from '$lib/drafts';
 	import { called, fully, size } from '$lib/format';
@@ -16,6 +17,7 @@
 		setTags,
 		withdrawAttachment
 	} from '$lib/ipc';
+	import { composing } from '$lib/lines';
 	import type { Clash, Entry, Field, Group, History, Position, Span } from '$lib/model';
 	import Change from './Change.svelte';
 	import Confirm from './Confirm.svelte';
@@ -233,15 +235,54 @@
 		}
 	}
 
-	/** Writes a value into a field of this entry, and finishes whatever was
-	 * typed there. */
-	function write(field: string, value: string, protect: boolean): Promise<boolean> {
+	/** Writes a value into a field of this entry, finishes whatever was typed
+	 * there, and hands the entry that comes back on. Rejects with what the
+	 * vault said when it would not take the value. */
+	async function put(field: string, value: string, protect: boolean): Promise<void> {
 		const id = entry.id;
-		return change(() =>
-			settle({ entry: id, field, protect }, (sequence) =>
+		await onChanged(
+			await settle({ entry: id, field, protect }, (sequence) =>
 				setField(id, field, value, protect, sequence)
 			)
 		);
+	}
+
+	/** The same for a value written where it stands, which is put back when it
+	 * is refused: says whether it was taken, and why not when it was not. */
+	function write(field: string, value: string, protect: boolean): Promise<boolean> {
+		return put(field, value, protect).then(
+			() => true,
+			(thrown) => {
+				onFailure(thrown);
+				return false;
+			}
+		);
+	}
+
+	/**
+	 * The field whose new value was just put away with the focus in it.
+	 *
+	 * Its Change comes back in place of the field, and takes the focus back as
+	 * it is drawn, rather than the focus falling out of the pane - where the
+	 * next Escape closes the entry. Nothing is drawn from it, so it is not
+	 * state.
+	 */
+	let returning: string | null = null;
+
+	/** A field's own Change field closed, with the focus in it or not. */
+	function closed(name: string, back: boolean) {
+		if (back) returning = name;
+		changing.delete(name);
+	}
+
+	/** Gives the focus to a field's Change as it is drawn again, when its own
+	 * field just closed with the focus in it. */
+	function returned(name: string): Attachment<HTMLButtonElement> {
+		return (button) => {
+			if (returning !== name) return;
+			returning = null;
+			button.focus();
+		};
 	}
 
 	/**
@@ -471,27 +512,30 @@
 <!--
 	The way to write a new value into a field the database protects, on the line
 	under the field: a Change in words, and in its place, once pressed, a field
-	of its own with Save and Cancel. `indent` puts it under the value when the
-	row has the field's name to its left.
+	of its own with Save and Cancel. A value in lines is replaced in lines, and so
+	is one the reader asked to write in lines when they named the field, for as
+	long as the entry is open.
 -->
-{#snippet changer(field: Field, indent: string)}
+{#snippet changer(field: Field)}
 	{#if !locked}
 		{#if changing.has(field.name)}
 			<Change
-				class="mt-2 animate-rise {indent}"
+				class="mt-2 animate-rise"
 				label="New value of {field.name}"
 				placeholder="New value"
 				what="value of “{field.name}”"
+				multiline={field.lines || field.name === longhand}
 				draft={place(field, field.name)}
-				onSave={(value) => write(field.name, value, field.protected)}
-				onClose={() => changing.delete(field.name)}
+				onSave={(value) => put(field.name, value, field.protected)}
+				onClose={(back) => closed(field.name, back)}
 				{onFailure}
 			/>
 		{:else}
 			<button
+				{@attach returned(field.name)}
 				type="button"
 				onclick={() => changing.add(field.name)}
-				class="mt-1 text-fine text-txt3 transition-colors hover:text-txt {indent}"
+				class="mt-1 text-fine text-txt3 transition-colors hover:text-txt"
 				aria-label="Change {field.name}"
 			>
 				Change
@@ -582,7 +626,7 @@
 				{/if}
 			</span>
 			{#if username && username.value === null && !username.empty}
-				{@render changer(username, '')}
+				{@render changer(username)}
 			{/if}
 		</div>
 
@@ -590,10 +634,11 @@
 			entry={entry.id}
 			field={nameOf(password, 'Password')}
 			empty={password?.empty ?? true}
+			lines={password?.lines ?? false}
 			protect={password?.protected ?? true}
 			readOnly={locked}
 			onCopy={(field, range) => onCopy(entry.id, field, range)}
-			onCommit={write}
+			onCommit={put}
 			{onFailure}
 		/>
 
@@ -613,7 +658,7 @@
 						{onFailure}
 					/>
 				</span>
-				{@render changer(url, '')}
+				{@render changer(url)}
 			{:else}
 				{@const at = place(url, 'URL')}
 				<span class="mt-1.5 flex items-center gap-2">
@@ -704,52 +749,62 @@
 				fingertip and a step further off than the gap between the others.
 				It used to sit twelve pixels from Copy at the same size, on every
 				row, and a press meant for the value took the field.
+
+				The name is a column of its own and the value another, and a
+				protected value's Change goes under the value in the value's
+				column. It starts where the value starts because it is in the same
+				column, not because a margin was worked out to match the width of
+				the name.
 			-->
 			{#each custom as field (field.name)}
 				{@const masked = field.value === null && !field.empty}
 				{@const at = place(field, field.name)}
 				<div class="mt-3">
-					<div class="group flex items-center gap-3">
-						<span class="w-24 shrink-0 truncate text-small text-txt2">{field.name}</span>
+					<div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3">
+						<span class="w-24 truncate text-small text-txt2">{field.name}</span>
+						<div class="group flex min-w-0 items-center gap-3">
+							{#if masked}
+								<ProtectedValue
+									entry={entry.id}
+									field={field.name}
+									onCopy={(range) => onCopy(entry.id, field.name, range)}
+									{onFailure}
+								/>
+							{:else}
+								<!-- A protected field that is empty comes back with no value to
+								     reveal, and it goes back protected: what the file says about
+								     a field is what is written back, and nothing here decides it
+								     again. A field of the reader's own may be given lines, so a
+								     paste keeps its breaks. -->
+								<Editable
+									value={field.value ?? ''}
+									label={field.name}
+									placeholder="Empty"
+									mono
+									breaks
+									multiline={field.name === longhand}
+									readonly={locked}
+									draft={at}
+									onCommit={(value) => write(at.field, value, at.protect)}
+								/>
+							{/if}
+							{#if !locked && dropping !== field.name}
+								<button
+									type="button"
+									onclick={() => void dropField(field.name)}
+									class="ml-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-sm text-txt4 opacity-0 transition group-focus-within:opacity-100 group-hover:opacity-100 hover:bg-dangerwash hover:text-danger"
+									aria-label="Remove the field {field.name}"
+								>
+									<Icon name="trash" class="h-4 w-4" />
+								</button>
+							{/if}
+						</div>
 						{#if masked}
-							<ProtectedValue
-								entry={entry.id}
-								field={field.name}
-								onCopy={(range) => onCopy(entry.id, field.name, range)}
-								{onFailure}
-							/>
-						{:else}
-							<!-- A protected field that is empty comes back with no value to
-							     reveal, and it goes back protected: what the file says about
-							     a field is what is written back, and nothing here decides it
-							     again. A field of the reader's own may be given lines, so a
-							     paste keeps its breaks. -->
-							<Editable
-								value={field.value ?? ''}
-								label={field.name}
-								placeholder="Empty"
-								mono
-								breaks
-								multiline={field.name === longhand}
-								readonly={locked}
-								draft={at}
-								onCommit={(value) => write(at.field, value, at.protect)}
-							/>
-						{/if}
-						{#if !locked && dropping !== field.name}
-							<button
-								type="button"
-								onclick={() => void dropField(field.name)}
-								class="ml-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-sm text-txt4 opacity-0 transition group-focus-within:opacity-100 group-hover:opacity-100 hover:bg-dangerwash hover:text-danger"
-								aria-label="Remove the field {field.name}"
-							>
-								<Icon name="trash" class="h-4 w-4" />
-							</button>
+							<div class="col-start-2 min-w-0">
+								{@render changer(field)}
+							</div>
 						{/if}
 					</div>
-					{#if masked}
-						{@render changer(field, 'ml-27')}
-					{/if}
 					{#if dropping === field.name}
 						<Confirm
 							class="mt-3 bg-surface2"
@@ -776,7 +831,7 @@
 						placeholder="What is it called?"
 						onkeydown={(event) => {
 							if (event.key === 'Escape') naming = false;
-							if (event.key === 'Enter') {
+							if (event.key === 'Enter' && !composing(event)) {
 								event.preventDefault();
 								makeField();
 							}

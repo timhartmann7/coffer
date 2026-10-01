@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use vault_core::storage::lock::{self, Lock, Outcome};
 use vault_core::storage::{self, OnDisk, snapshot, unsaved};
-use vault_core::{NewValue, Rescue, VaultError};
+use vault_core::{NewValue, Rescue, Typing, VaultError};
 
 use crate::support::{self, BUILT_PASSWORD, built, open, password, permissions_apply};
 
@@ -354,7 +354,7 @@ fn typing_a_lock_finishes_is_an_edit_like_any_other() {
         ),
     ] {
         assert_eq!(
-            vault.set_typed(id, field, typed).ok(),
+            vault.set_typed(id, field, typed, Typing::InPlace).ok(),
             Some(true),
             "{field}"
         );
@@ -407,7 +407,7 @@ fn typing_that_changes_nothing_writes_nothing() {
         (keepass::db::fields::NOTES, NewValue::Open(String::new())),
     ] {
         assert_eq!(
-            vault.set_typed(id, field, typed).ok(),
+            vault.set_typed(id, field, typed, Typing::InPlace).ok(),
             Some(false),
             "{field}"
         );
@@ -421,10 +421,91 @@ fn typing_that_changes_nothing_writes_nothing() {
 
     assert_eq!(
         vault
-            .set_typed(id, "PIN", NewValue::Open("1234".into()))
+            .set_typed(id, "PIN", NewValue::Open("1234".into()), Typing::InPlace)
             .ok(),
         Some(true),
         "a protected value going into the open is not nothing"
+    );
+}
+
+/// A new value typed beside the one it would replace - a new password half
+/// typed, or the wrong one pasted, when the lid closed - never goes over it. It
+/// is kept in a protected field of its own named after the one it was typed
+/// for, numbered past one an earlier lock kept, and the value it was typed for
+/// stays as it was. Into a field that holds nothing it goes where it was meant
+/// to go. Nothing typed, and what the field already holds, are nothing new.
+#[test]
+fn a_new_value_typed_beside_one_never_goes_over_it() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = vault_for_typing(scratch.path());
+    let mut vault = open(&database, BUILT_PASSWORD);
+    let id = vault.tree().entries[0].id;
+    let typed = |text: &str| NewValue::Protected(zeroize::Zeroizing::new(text.to_owned()));
+    vault
+        .set_field(id, "Passport", typed(""))
+        .expect("an empty field of the reader's own is made");
+    let versions = vault.versions(id).len();
+
+    for (field, text, written) in [
+        ("PIN", "98", true),
+        ("PIN", "9876", true),
+        ("PIN", "", false),
+        ("PIN", "1234", false),
+        ("Passport", "C01X00T4", true),
+        // A password the entry never had is one it has nothing in.
+        (keepass::db::fields::PASSWORD, "first one", true),
+    ] {
+        assert_eq!(
+            vault.set_typed(id, field, typed(text), Typing::Beside).ok(),
+            Some(written),
+            "{field} {text:?}"
+        );
+    }
+    // Typed in the open, kept beside all the same, and kept protected: it was
+    // typed where a protected value is replaced.
+    assert_eq!(
+        vault
+            .set_typed(
+                id,
+                keepass::db::fields::USERNAME,
+                NewValue::Open("mallory".into()),
+                Typing::Beside
+            )
+            .ok(),
+        Some(true)
+    );
+    assert_eq!(vault.versions(id).len(), versions + 5);
+    assert_eq!(vault.rescue(), Rescue::Saved);
+    drop(vault);
+
+    let file = open(&database, BUILT_PASSWORD);
+    let entry = file.entry(id).expect("the entry is there");
+    for (field, wanted) in [
+        ("PIN", "1234"),
+        ("PIN (typed before locking)", "98"),
+        ("PIN (typed before locking) 2", "9876"),
+        ("Passport", "C01X00T4"),
+        (keepass::db::fields::PASSWORD, "first one"),
+        (keepass::db::fields::USERNAME, "alice"),
+        ("UserName (typed before locking)", "mallory"),
+    ] {
+        assert_eq!(value(&file, id, field).as_deref(), Some(wanted), "{field}");
+    }
+    for kept in [
+        "PIN (typed before locking)",
+        "PIN (typed before locking) 2",
+        "UserName (typed before locking)",
+    ] {
+        assert!(
+            entry
+                .field(kept)
+                .is_some_and(|field| field.value.open().is_none()),
+            "{kept} was written in the open"
+        );
+    }
+    assert!(
+        entry.field("Passport (typed before locking)").is_none(),
+        "a field with nothing in it was kept beside rather than filled"
     );
 }
 
@@ -455,7 +536,8 @@ fn typing_into_what_has_gone_is_refused_and_changes_nothing() {
         vault.set_typed(
             id,
             "PIN",
-            NewValue::Protected(zeroize::Zeroizing::new("5678".to_owned()))
+            NewValue::Protected(zeroize::Zeroizing::new("5678".to_owned())),
+            Typing::InPlace
         ),
         Err(VaultError::NoSuchField)
     ));
@@ -463,7 +545,8 @@ fn typing_into_what_has_gone_is_refused_and_changes_nothing() {
         vault.set_typed(
             stranger,
             keepass::db::fields::TITLE,
-            NewValue::Open("nobody".into())
+            NewValue::Open("nobody".into()),
+            Typing::InPlace
         ),
         Err(VaultError::NoSuchEntry)
     ));
@@ -472,7 +555,8 @@ fn typing_into_what_has_gone_is_refused_and_changes_nothing() {
             .set_typed(
                 id,
                 keepass::db::fields::USERNAME,
-                NewValue::Open("null\0byte".into())
+                NewValue::Open("null\0byte".into()),
+                Typing::InPlace
             )
             .is_err()
     );

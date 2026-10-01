@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { composing } from '$lib/lines';
 	import Icon from './Icon.svelte';
 
 	/**
@@ -31,7 +32,7 @@
 		if (event.key === 'Escape') {
 			adding = false;
 		}
-		if (event.key === 'Enter') {
+		if (event.key === 'Enter' && !composing(event)) {
 			event.preventDefault();
 			add();
 		}

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { drop, flush, release, settle, typed, unfinished, type Place } from './drafts';
+import { drop, flush, release, replacing, settle, typed, unfinished, type Place } from './drafts';
 
 const ipc = vi.hoisted(() => ({ draft: vi.fn() }));
 vi.mock('./ipc', () => ipc);
@@ -14,7 +14,7 @@ function place(field = 'Notes', protect = false): Place {
 
 /** Every word Rust was told, in the order it was told, as (value, sequence). */
 function told(): [string | null, number][] {
-	return ipc.draft.mock.calls.map((call) => [call[2] as string | null, call[4] as number]);
+	return ipc.draft.mock.calls.map((call) => [call[2] as string | null, call[5] as number]);
 }
 
 beforeEach(() => {
@@ -44,7 +44,14 @@ it('tells Rust what is in the field once the reader pauses, and not at every key
 
 	vi.advanceTimersByTime(250);
 	expect(ipc.draft).toHaveBeenCalledTimes(1);
-	expect(ipc.draft).toHaveBeenCalledWith(at.entry, 'Notes', 'passport', false, expect.any(Number));
+	expect(ipc.draft).toHaveBeenCalledWith(
+		at.entry,
+		'Notes',
+		'passport',
+		false,
+		false,
+		expect.any(Number)
+	);
 
 	// Nothing more to say until something more is typed.
 	vi.advanceTimersByTime(10_000);
@@ -60,8 +67,54 @@ it('tells each field on its own, under the protection it was given', () => {
 	vi.advanceTimersByTime(250);
 
 	expect(ipc.draft).toHaveBeenCalledTimes(2);
-	expect(ipc.draft).toHaveBeenCalledWith(notes.entry, 'Notes', 'a note', false, expect.any(Number));
-	expect(ipc.draft).toHaveBeenCalledWith(notes.entry, 'PIN', '4711', true, expect.any(Number));
+	expect(ipc.draft).toHaveBeenCalledWith(
+		notes.entry,
+		'Notes',
+		'a note',
+		false,
+		false,
+		expect.any(Number)
+	);
+	expect(ipc.draft).toHaveBeenCalledWith(
+		notes.entry,
+		'PIN',
+		'4711',
+		true,
+		false,
+		expect.any(Number)
+	);
+});
+
+/**
+ * A new value typed in a Change field is not what the reader wants in the field
+ * until they save it, and Rust is told so: a lock keeps it beside the value it
+ * was for. Taking it back says the same, so nothing about it is left in Rust.
+ */
+it('tells a new value typed in a Change field as one to keep beside the old one', () => {
+	const at = place('Password', true);
+	replacing(at, () => 'Tr0ub');
+	vi.advanceTimersByTime(250);
+	drop(at);
+
+	expect(ipc.draft).toHaveBeenNthCalledWith(
+		1,
+		at.entry,
+		'Password',
+		'Tr0ub',
+		true,
+		true,
+		expect.any(Number)
+	);
+	expect(ipc.draft).toHaveBeenNthCalledWith(
+		2,
+		at.entry,
+		'Password',
+		null,
+		true,
+		true,
+		expect.any(Number)
+	);
+	expect(unfinished(at)).toBe(false);
 });
 
 /**

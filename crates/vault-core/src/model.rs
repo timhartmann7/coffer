@@ -185,14 +185,31 @@ pub struct Field {
 
 impl Field {
     /// Whether the field holds nothing. True for a protected field whose value
-    /// is empty, which is the one thing about a protected value that may be
-    /// known without revealing it.
+    /// is empty, which is one of the two things about a protected value that
+    /// may be known without revealing it.
     pub fn is_empty(&self) -> bool {
         match &self.value {
             FieldValue::Open(text) => text.is_empty(),
-            FieldValue::Protected { empty } => *empty,
+            FieldValue::Protected { empty, .. } => *empty,
         }
     }
+
+    /// Whether the value is written in lines, which is the other.
+    pub fn in_lines(&self) -> bool {
+        match &self.value {
+            FieldValue::Open(text) => in_lines(text),
+            FieldValue::Protected { lines, .. } => *lines,
+        }
+    }
+}
+
+/// Whether a value has a line break in it.
+///
+/// The format has no multi-line flag. Ten recovery codes are in lines because
+/// there is a break between each of them, and a CR on its own is one as much
+/// as a line feed is, the way a text area reads it.
+pub(crate) fn in_lines(text: &str) -> bool {
+    text.contains(['\n', '\r'])
 }
 
 /// A field's value, or the fact that it has one.
@@ -207,6 +224,11 @@ pub enum FieldValue {
         /// Whether the protected value is empty. The screen needs to know
         /// whether there is anything to reveal.
         empty: bool,
+        /// Whether the protected value has a line break in it. The screen
+        /// needs to know how a new one is written: ten recovery codes are
+        /// replaced in lines, where Return starts the next one rather than
+        /// saving the first over all ten.
+        lines: bool,
     },
 }
 
@@ -229,7 +251,9 @@ impl fmt::Debug for FieldValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FieldValue::Open(_) => f.write_str("Open([redacted])"),
-            FieldValue::Protected { empty } => write!(f, "Protected {{ empty: {empty} }}"),
+            FieldValue::Protected { empty, lines } => {
+                write!(f, "Protected {{ empty: {empty}, lines: {lines} }}")
+            }
         }
     }
 }

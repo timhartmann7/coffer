@@ -27,15 +27,28 @@ export function lines(text: string): number {
 }
 
 /**
+ * Whether a key belongs to an input method rather than to the field: an
+ * accent being built, a kana being converted.
+ *
+ * `isComposing` alone is not enough in WebKit, which is the only engine Coffer
+ * runs in. The Return that confirms a conversion there commonly arrives with
+ * `isComposing` already false and the key code the platform gives every key an
+ * input method has taken, 229 - and that Return saved half a converted word.
+ */
+export function composing(event: KeyboardEvent): boolean {
+	return event.isComposing || event.keyCode === 229;
+}
+
+/**
  * Whether a Return finishes what is being written rather than starting a line.
  *
  * A value on one line finishes on Return, the way every single line on a Mac
  * does, and Option-Return is the Mac's own way of putting a break into one. A
  * value already in lines takes Return as the next line, and Cmd-Return
- * finishes it. A Return that ends a composition - an accent, a kana - is the
- * input method's and never the field's.
+ * finishes it. A Return that ends a composition is the input method's and
+ * never the field's.
  */
 export function finishes(event: KeyboardEvent, lined: boolean): boolean {
-	if (event.key !== 'Enter' || event.isComposing) return false;
+	if (event.key !== 'Enter' || composing(event)) return false;
 	return lined ? event.metaKey : !event.altKey;
 }

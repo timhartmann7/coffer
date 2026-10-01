@@ -18,7 +18,7 @@ travels the other way, as bytes.
 | Action | What reaches the webview |
 |---|---|
 | Tree and list | id, title, username, URL, tags, dates, whether there is a password, how many attachments, and for anything in the recycle bin when it went in and the folder it came from |
-| Open an entry | the same, plus every field's name, kind and whether it is empty, plus attachment names and sizes, plus what deleting it would do |
+| Open an entry | the same, plus every field's name, kind, whether it is empty and whether it is in lines, plus attachment names and sizes, plus what deleting it would do |
 | Reveal a field | the value, one field, once |
 | Read a previous version | the same as an entry, and one value at a time on a reveal |
 | Copy a field, or the part of it selected on the screen | nothing; Rust writes the pasteboard |
@@ -31,6 +31,13 @@ A field's `value` is `null` exactly when it does not cross: the database
 protects it, or it is the password. **A password never crosses, protected or
 not.** A file can hold a `Password` field the database left unprotected, and it
 is still a password; `empty` says whether there is one to ask for.
+
+`lines` is one more bit of the same kind, sent for every field: whether the
+value has a line break in it. It says nothing of what the value is, and it is
+what opens the Change of a protected value in lines - ten recovery codes - in a
+field written in lines, where Return starts the next code rather than saving
+the first over all ten. Rust reads it off the value in
+[`Field::in_lines`](../crates/vault-core/src/model.rs).
 
 ## The commands
 
@@ -98,7 +105,7 @@ Everything slice 4 added:
 | `settings` | | the two timers, the two switches, the look, and the values each may be set to |
 | `set_settings` | `settings` | what was actually stored, which is not always what was sent |
 | `stirred` | | the seconds the open vault has left, or nothing when none is open |
-| `draft` | `entry`, `field`, `value`, `protect`, `sequence` | nothing |
+| `draft` | `entry`, `field`, `value`, `protect`, `beside`, `sequence` | nothing |
 | `default_new_database` | | where a first vault goes when nobody has said, and whether something is already there |
 | `choose_new_database` | | where the reader wants the new vault instead, on the same terms |
 | `choose_existing` | | what already sits where the new vault would go, now chosen |
@@ -198,8 +205,8 @@ through: a lock that asked the page to finish first could only wait for nothing.
 So the page never is asked. It sends `draft` for a field a quarter of a second
 after the last key, and at once when the window loses focus, with what is in the
 field; `value` is `null` when the typing was taken back - Escape, Cancel,
-Discard, a field left as it was, or a new password whose entry the pane stopped
-showing. Rust keeps the last of it per field, beside the open vault, in
+Discard, a field left as it was, a Change field emptied again, or a new password
+whose entry the pane stopped showing. Rust keeps the last of it per field, beside the open vault, in
 `Zeroizing` storage whose `Debug` prints `[redacted]`, and every lock writes it
 into the vault before it wipes it (see Locking). The Lock button waits for every
 draft and every value already on its way before it asks for the lock. The text
@@ -227,6 +234,22 @@ lock's save went through, `status` answers `typed`, and the unlock screen says
 because after a lock nothing of the vault is left in memory to name the entry
 with. When the save went beside the vault instead, the typing is in that copy
 with everything else, and `rescue` is what is said.
+
+**A new value typed in a Change field is kept beside the value, never over it.**
+`beside` is true for text typed in a Change field of its own rather than into
+the field where it stands. The reader has not saved it: it may be the first
+half of a new password, or the wrong one pasted while the right one is fetched,
+and a lock that wrote it over the stored password handed them one that opens
+nothing, with the real one pushed into Versions. So a lock writes it into the
+field only when the field holds nothing, and otherwise into a new protected
+field of the same entry named after the one it was typed for -
+`Password (typed before locking)`, numbered past a name the entry already uses
+by the rule that names a second file - and leaves the stored value as it was.
+That field is a standard KDBX string field of the kind the reader makes with
+"+", which KeePassXC and every other client show and edit like any other; it is
+not a field of Coffer's own, and nothing is added to the format (`SPEC.md`,
+section 12). The unlock screen says what it always says and names nothing. The
+rule is `Vault::set_typed`'s, in `vault-core`, and not the window's.
 
 **A version is addressed by `(entry, index)`.** The index is its position in the
 entry's history, which is the only thing that identifies one: modification times
@@ -509,6 +532,14 @@ the system copies it as it copies anything typed.
 A version's value goes through `copy_version`, the copying twin of
 `reveal_version`, because a version is read on the screen like the entry is
 and a value selected there is as much a secret.
+
+Rust cuts the value it holds now at the positions the screen measured, and
+nothing tells it which text they were measured on. So a value on the screen goes
+the moment its entry comes back changed - a new password saved, one made and put
+in, a version restored, any change at all (`conceal` in `reveal.svelte.ts`,
+from the window's one place a change lands). A reveal left up from before the
+change was the old password under the label of the new one, and a part of it
+selected and copied was cut out of the new value.
 
 ## The master password
 

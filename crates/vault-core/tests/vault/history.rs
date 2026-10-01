@@ -113,7 +113,10 @@ fn changing_a_field_from_open_to_protected_counts_as_a_change() {
             .expect("the entry is there")
             .field(fields::USERNAME)
             .map(|field| field.value.clone()),
-        Some(FieldValue::Protected { empty: false })
+        Some(FieldValue::Protected {
+            empty: false,
+            lines: false
+        })
     );
 }
 
@@ -798,7 +801,10 @@ fn a_removal_is_taken_back_by_the_version_it_wrote() {
     let vault = open(&database, BUILT_PASSWORD);
     assert_eq!(
         pin(&vault, id),
-        Some(FieldValue::Protected { empty: false })
+        Some(FieldValue::Protected {
+            empty: false,
+            lines: false
+        })
     );
     assert_eq!(
         vault
@@ -830,7 +836,10 @@ fn is_asked_about_first_and_then_for_good(limits: impl FnOnce(&mut keepass::Data
     ));
     assert_eq!(
         pin(&vault, id),
-        Some(FieldValue::Protected { empty: false }),
+        Some(FieldValue::Protected {
+            empty: false,
+            lines: false
+        }),
         "the field went before anybody agreed"
     );
     assert_eq!(
@@ -903,7 +912,10 @@ fn a_removal_asks_first_exactly_when_the_save_would_drop_its_version() {
                     .unwrap_or_else(|error| panic!("{limits}: no undo after all: {error}"));
                 assert_eq!(
                     pin(&vault, id),
-                    Some(FieldValue::Protected { empty: false })
+                    Some(FieldValue::Protected {
+                        empty: false,
+                        lines: false
+                    })
                 );
             }
             Err(VaultError::RemovalForGood) => {
@@ -1186,7 +1198,10 @@ fn a_version_from_the_distant_past_leaves_a_removal_its_undo() {
         .expect("the removal is taken back");
     assert_eq!(
         pin(&vault, id),
-        Some(FieldValue::Protected { empty: false })
+        Some(FieldValue::Protected {
+            empty: false,
+            lines: false
+        })
     );
     assert_eq!(
         notes(&vault, id),
@@ -1224,7 +1239,10 @@ fn a_version_from_the_distant_past_keeps_its_date_beside_the_removals() {
         .expect("the removal is taken back");
     assert_eq!(
         pin(&vault, id),
-        Some(FieldValue::Protected { empty: false })
+        Some(FieldValue::Protected {
+            empty: false,
+            lines: false
+        })
     );
     assert_eq!(
         notes(&vault, id),
@@ -1290,7 +1308,10 @@ fn edits_and_a_removal_in_one_second_are_taken_back_by_the_removals_version() {
         );
         assert_eq!(
             pin(&vault, id),
-            Some(FieldValue::Protected { empty: false })
+            Some(FieldValue::Protected {
+                empty: false,
+                lines: false
+            })
         );
     }
 }
@@ -1325,7 +1346,10 @@ fn two_edits_and_a_removal_are_taken_back_to_just_before_the_removal() {
     );
     assert_eq!(
         pin(&vault, id),
-        Some(FieldValue::Protected { empty: false })
+        Some(FieldValue::Protected {
+            empty: false,
+            lines: false
+        })
     );
 }
 
@@ -1354,7 +1378,10 @@ fn a_snapshot_takes_neither_a_removal_nor_its_undo() {
     ));
     assert_eq!(
         pin(&vault, id),
-        Some(FieldValue::Protected { empty: false })
+        Some(FieldValue::Protected {
+            empty: false,
+            lines: false
+        })
     );
 }
 

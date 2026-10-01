@@ -29,6 +29,7 @@
 		entry,
 		field,
 		empty,
+		lines,
 		protect,
 		readOnly,
 		onCopy,
@@ -38,6 +39,9 @@
 		entry: string;
 		field: string;
 		empty: boolean;
+		/** Whether the password has a line break in it, so that a new one is
+		 * written in lines too. */
+		lines: boolean;
 		/** Whether the database keeps this value protected. It goes back with the
 		 * edit so the file does not quietly lose the protection. */
 		protect: boolean;
@@ -46,23 +50,36 @@
 		readOnly: boolean;
 		/** Copies the password in Rust, whole or the part of it selected. */
 		onCopy: (field: string, range: Span | null) => void;
-		/** Writes a new password, and answers whether the vault took it. */
-		onCommit: (field: string, value: string, protect: boolean) => Promise<boolean>;
+		/** Writes a new password. Rejects with what the vault said when it would
+		 * not take it. */
+		onCommit: (field: string, value: string, protect: boolean) => Promise<void>;
 		onFailure: (thrown: unknown) => void;
 	} = $props();
 
 	const revealed = new Revealed();
 	let node = $state<HTMLElement>();
 	let toggler = $state<HTMLButtonElement>();
+	let opener = $state<HTMLButtonElement>();
 	let editor = $state<ReturnType<typeof Change>>();
 	let generating = $state(false);
 	let changing = $state(false);
+
+	/**
+	 * Which entry the row is on.
+	 *
+	 * Its own value rather than a read of `entry`, which the pane hands on from
+	 * an entry that is a new object after every change: an effect that followed
+	 * it ran again for an edit to the title, and took a new password being
+	 * typed away with it. A change that lands hides what is shown by itself
+	 * (`conceal`).
+	 */
+	const showing = $derived(entry);
 
 	// A different entry is a different secret. Whatever is on the screen goes
 	// before the next one arrives, and so does a new password half typed for
 	// the one that was open - which says so as it goes.
 	$effect(() => {
-		void entry;
+		void showing;
 		return () => {
 			revealed.hide();
 			generating = false;
@@ -93,23 +110,18 @@
 		}
 	}
 
-	/** Opens the field for a new password, or puts it away again - which is a
-	 * Cancel, and writes nothing. */
+	/** Opens the field for a new password, or puts it away again: at once when
+	 * nothing is typed in it, and after asking when something is. */
 	function change() {
-		if (changing) editor?.close();
+		if (changing) editor?.leave();
 		else changing = true;
 	}
 
-	/**
-	 * Writes the new password.
-	 *
-	 * Opening the field on an entry that has no password and leaving it empty
-	 * is not an edit. This is the one case where the row knows the value it
-	 * would be writing over, so it is the one it can refuse.
-	 */
-	function commit(value: string): Promise<boolean> {
-		if (empty && value === '') return Promise.resolve(true);
-		return onCommit(field, value, protect);
+	/** The field closed. The focus comes back here when it was in the field,
+	 * rather than falling out of the pane, where the next Escape closes it. */
+	function closed(back: boolean) {
+		changing = false;
+		if (back) opener?.focus();
 	}
 
 	/** A made password goes straight in: putting it there is the press that
@@ -117,7 +129,7 @@
 	 * because the reader chose the made one over it. */
 	function insert(made: string) {
 		editor?.close();
-		void onCommit(field, made, protect);
+		onCommit(field, made, protect).catch(onFailure);
 	}
 
 	/** None of the buttons takes the focus from a new password being written,
@@ -171,6 +183,7 @@
 		</button>
 		{#if !readOnly}
 			<button
+				bind:this={opener}
 				type="button"
 				onmousedown={kept}
 				onclick={change}
@@ -202,9 +215,10 @@
 			label="New password"
 			placeholder="New password"
 			what="password"
+			multiline={lines}
 			draft={{ entry, field, protect }}
-			onSave={commit}
-			onClose={() => (changing = false)}
+			onSave={(value) => onCommit(field, value, protect)}
+			onClose={closed}
 			{onFailure}
 		/>
 	{/if}

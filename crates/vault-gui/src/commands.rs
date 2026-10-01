@@ -31,7 +31,7 @@ use zeroize::Zeroizing;
 
 use vault_core::generate::{Alphabet, Recipe};
 use vault_core::kdf;
-use vault_core::{LockPolicy, NewValue, Vault};
+use vault_core::{LockPolicy, NewValue, Typing, Vault};
 
 use crate::autolock::timer::Timer;
 use crate::autolock::{Event, Reason};
@@ -863,6 +863,10 @@ pub fn set_field(
 /// same edit a commit makes. `value` is nothing when the typing was taken back:
 /// Escape, Cancel, Discard, or a field left as it was.
 ///
+/// `beside` is true for a new value typed in a Change field of its own rather
+/// than into the field itself. The reader has not saved it, so a lock keeps it
+/// beside the value it was for and never writes it over one.
+///
 /// The text travels the way `set_field`'s does and is wrapped the moment it
 /// arrives. `sequence` only goes up in any one window; a word about a field
 /// that is not newer than the last one heard about the field, its entry or
@@ -874,12 +878,18 @@ pub fn draft(
     field: String,
     value: Option<String>,
     protect: bool,
+    beside: bool,
     sequence: u64,
     session: Held<'_>,
 ) -> Result<(), Failure> {
     let typed = value.map(|value| Typed {
         value: Zeroizing::new(value),
         protect,
+        typing: if beside {
+            Typing::Beside
+        } else {
+            Typing::InPlace
+        },
     });
     session.draft(dto::entry_id(&entry)?, &field, typed, sequence)
 }

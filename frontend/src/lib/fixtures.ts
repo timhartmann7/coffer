@@ -52,6 +52,7 @@ export function field(over: Partial<Field> = {}): Field {
 		value: '',
 		empty: true,
 		openable: false,
+		lines: false,
 		...over
 	};
 }

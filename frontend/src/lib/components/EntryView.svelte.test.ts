@@ -545,32 +545,64 @@ it('puts a made password straight in and leaves no field open behind it', async 
 	return unmount(component);
 });
 
-/** Opening the field on an entry that has none and writing nothing is not an
- * edit either, and it is the one case where the pane knows what it would be
- * writing over. */
-it('does not write an empty password when the field was opened and left alone', async () => {
+/**
+ * Nothing typed is no new password. A field opened and left alone, or typed in
+ * and emptied again, offers no Save and takes Return as nothing - and what was
+ * typed before it was emptied is taken back from Rust, so a lock does not
+ * write the empty field over the password, or keep anything beside it. Leaving
+ * the same empty field used to write nothing while Save and Return wrote an
+ * empty password over the real one.
+ */
+it('writes nothing, and keeps nothing for a lock, from a new password field left empty', async () => {
+	vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 	const component = show({
-		fields: [field({ name: 'Password', kind: 'password', value: null, empty: true })]
+		fields: [
+			field({ name: 'Password', kind: 'password', value: null, empty: false, protected: true })
+		]
 	});
-	flushSync();
+	try {
+		flushSync();
+		button('Change').click();
+		flushSync();
+		expect(button('Save').disabled, 'Save was offered for nothing').toBe(true);
 
-	button('Set one').click();
-	flushSync();
-	button('Save').click();
-	flushSync();
-	expect(host.querySelector('[aria-label="New password"]')).toBeNull();
+		const typed = changer('New password');
+		enter(typed, 'the wrong one');
+		expect(button('Save').disabled).toBe(false);
+		vi.advanceTimersByTime(250);
+		expect(drafted()).toEqual([['Password', 'the wrong one', true, expect.any(Number)]]);
 
-	button('Set one').click();
-	flushSync();
-	enter(changer('New password'), 'x');
-	enter(changer('New password'), '');
-	button('Save').click();
-	await Promise.resolve();
-	flushSync();
+		// Cmd+A and Delete, and off to fetch the right one.
+		enter(typed, '');
+		expect(button('Save').disabled, 'Save was offered for an emptied field').toBe(true);
+		expect(markOf(typed), 'an emptied field says it is not saved').toBeNull();
+		expect(drafted().at(-1)?.slice(0, 2), 'Rust still holds the wrong one').toEqual([
+			'Password',
+			null
+		]);
+		vi.advanceTimersByTime(10_000);
+		expect(drafted().at(-1)?.slice(0, 2), 'the empty field was told as a draft').toEqual([
+			'Password',
+			null
+		]);
 
-	expect(ipc.setField).not.toHaveBeenCalled();
+		const returned = new KeyboardEvent('keydown', {
+			key: 'Enter',
+			bubbles: true,
+			cancelable: true
+		});
+		typed.dispatchEvent(returned);
+		button('Save').click();
+		await vi.advanceTimersByTimeAsync(0);
+		flushSync();
 
-	return unmount(component);
+		expect(returned.defaultPrevented, 'Return put a line into the empty field').toBe(true);
+		expect(ipc.setField).not.toHaveBeenCalled();
+		expect(host.querySelector('[aria-label="New password"]'), 'Return closed it').not.toBeNull();
+	} finally {
+		vi.useRealTimers();
+		unmount(component);
+	}
 });
 
 it('takes the value off the screen when the pane goes', async () => {
@@ -2858,7 +2890,13 @@ it('offers no way out of the bin on a database it cannot write', () => {
 
 /** Every word Rust was told about typing, as (field, value, protected, number). */
 function drafted(): [string, string | null, boolean, number][] {
-	return ipc.draft.mock.calls.map((call) => [call[1], call[2], call[3], call[4]]);
+	return ipc.draft.mock.calls.map((call) => [call[1], call[2], call[3], call[5]]);
+}
+
+/** Whether each word Rust was told about typing was about a new value typed in
+ * a Change field, which a lock keeps beside the old one. */
+function besides(): boolean[] {
+	return ipc.draft.mock.calls.map((call) => call[4]);
 }
 
 /** The number the last value written carried. */
@@ -2900,6 +2938,7 @@ it('tells Rust what is typed before the field is left, and finishes it when it i
 
 		vi.advanceTimersByTime(250);
 		expect(drafted()).toEqual([['UserName', 'bo', false, expect.any(Number)]]);
+		expect(besides(), 'a login typed where it stands was told as a new value').toEqual([false]);
 
 		enter(login, 'bob');
 		vi.advanceTimersByTime(100);
@@ -3013,6 +3052,7 @@ it('tells Rust a new password as it is typed, and ends it on Discard, Cancel and
 
 		const numbers = drafted().map(([, , , number]) => number);
 		expect(numbers, 'the numbers went backwards').toEqual([...numbers].sort((a, b) => a - b));
+		expect(besides(), 'a new password was told as the password itself').not.toContain(false);
 		vi.advanceTimersByTime(10_000);
 		expect(drafted().at(-1)?.[1], 'a draft followed the saved password').toBe('the whole new one');
 	} finally {
@@ -3041,11 +3081,381 @@ it('lets go of a new password half typed when its entry goes', () => {
 		});
 		flushSync();
 
-		expect(ipc.draft).toHaveBeenLastCalledWith(left, 'Password', null, false, expect.any(Number));
+		expect(ipc.draft).toHaveBeenLastCalledWith(
+			left,
+			'Password',
+			null,
+			false,
+			true,
+			expect.any(Number)
+		);
 		vi.advanceTimersByTime(10_000);
 		expect(ipc.draft).toHaveBeenCalledTimes(2);
 	} finally {
 		vi.useRealTimers();
 		unmount(component);
 	}
+});
+
+/** A password the pane shows masked, which a Change writes over. */
+const PASSWORD = field({
+	name: 'Password',
+	kind: 'password',
+	value: null,
+	empty: false,
+	protected: true
+});
+
+/** A Return pressed in a field, as the keyboard sends it. */
+function returned(into: HTMLElement, over: KeyboardEventInit = {}): KeyboardEvent {
+	const pressed = new KeyboardEvent('keydown', {
+		key: 'Enter',
+		bubbles: true,
+		cancelable: true,
+		...over
+	});
+	into.dispatchEvent(pressed);
+	return pressed;
+}
+
+/**
+ * The press that opened the field, pressed again, used to throw a new
+ * password away without a word: it reads as "done" as easily as "never mind".
+ * With something typed it asks what leaving asks, with the focus on the answer
+ * that loses nothing; with nothing typed it puts the field away.
+ */
+it('asks rather than discarding when Change is pressed again over a new password', () => {
+	const { component } = pane({ fields: [PASSWORD] });
+
+	button('Change').click();
+	flushSync();
+	enter(changer('New password'), 'set on the website just now');
+	button('Change').click();
+	flushSync();
+
+	expect(host.textContent).toContain('Save the new password?');
+	expect(changer('New password').value, 'the press threw it away').toBe(
+		'set on the website just now'
+	);
+	expect(document.activeElement, 'the question did not take the focus').toBe(button('Save'));
+	expect(ipc.setField).not.toHaveBeenCalled();
+
+	button('Discard').click();
+	flushSync();
+	button('Change').click();
+	flushSync();
+	button('Change').click();
+	flushSync();
+	expect(host.querySelector('[aria-label="New password"]'), 'an empty field stayed').toBeNull();
+
+	return unmount(component);
+});
+
+/** Return and Save pressed together, or Return twice behind a slow save,
+ * write the new password once. */
+it('writes a new password once when Return and Save are pressed together', async () => {
+	const saving = Promise.withResolvers<ReturnType<typeof entry>>();
+	ipc.setField.mockReturnValue(saving.promise);
+	const { component } = pane({ fields: [PASSWORD] });
+
+	button('Change').click();
+	flushSync();
+	enter(changer('New password'), 'only once');
+	returned(changer('New password'));
+	returned(changer('New password'));
+	button('Save').click();
+	saving.resolve(entry());
+	await vi.waitFor(() => expect(host.querySelector('[aria-label="New password"]')).toBeNull());
+
+	expect(ipc.setField).toHaveBeenCalledTimes(1);
+
+	return unmount(component);
+});
+
+/**
+ * The Return that confirms an input method's conversion belongs to the input
+ * method. WebKit commonly sends it with `isComposing` already false and the
+ * key code 229, and that Return saved a password half converted.
+ */
+it('saves nothing on the Return that ends a composition', () => {
+	const { component } = pane({ fields: [PASSWORD] });
+
+	button('Change').click();
+	flushSync();
+	enter(changer('New password'), 'half converted');
+	for (const composition of [{ isComposing: true }, { keyCode: 229 }]) {
+		expect(returned(changer('New password'), composition).defaultPrevented).toBe(false);
+	}
+	expect(ipc.setField).not.toHaveBeenCalled();
+	expect(changer('New password').value).toBe('half converted');
+
+	return unmount(component);
+});
+
+/**
+ * Ten recovery codes are replaced in lines. Their Change opened on one line
+ * with Return as Save, and the first code typed was saved over all ten. A
+ * value in lines - which Rust says, without saying what the lines are - opens
+ * its Change four lines tall, where Return starts the next line and Cmd+Return
+ * saves.
+ */
+it('replaces a protected value in lines in a field written in lines', async () => {
+	ipc.setField.mockResolvedValue(entry());
+	const { component } = pane({
+		fields: [
+			{ ...PASSWORD, lines: true },
+			field({
+				name: 'Recovery codes',
+				kind: 'custom',
+				protected: true,
+				value: null,
+				empty: false,
+				lines: true
+			})
+		]
+	});
+
+	for (const [opener, label] of [
+		[button('Change'), 'New password'],
+		[icon('Change Recovery codes'), 'New value of Recovery codes']
+	] as const) {
+		opener.click();
+		flushSync();
+		const typed = changer(label);
+		expect(typed.getAttribute('rows'), label).toBe('4');
+		expect(typed.getAttribute('wrap'), label).toBe('soft');
+		enter(typed, '0451-7719');
+		expect(returned(typed).defaultPrevented, `${label}: Return saved`).toBe(false);
+	}
+	expect(ipc.setField).not.toHaveBeenCalled();
+
+	returned(changer('New value of Recovery codes'), { metaKey: true });
+	await vi.waitFor(() =>
+		expect(ipc.setField).toHaveBeenCalledWith(
+			expect.any(String),
+			'Recovery codes',
+			'0451-7719',
+			true,
+			expect.any(Number)
+		)
+	);
+
+	return unmount(component);
+});
+
+/** A field named to be written in lines is written in lines after its first
+ * value too, for as long as the entry is open: it comes back protected, and
+ * its next value is written in a Change. */
+it('keeps writing a field named to be in lines in lines once it has a value', async () => {
+	ipc.setField.mockResolvedValue(entry());
+	const { component, props } = deleting({ fields: [PASSWORD] });
+
+	icon('Add a field').click();
+	flushSync();
+	const name = host.querySelector('[aria-label="The name of the new field"]') as HTMLInputElement;
+	name.value = 'Recovery codes';
+	button('Multi-line').click();
+	flushSync();
+	returned(name);
+	await vi.waitFor(() => expect(ipc.setField).toHaveBeenCalled());
+
+	props.entry = {
+		...props.entry,
+		fields: [
+			...props.entry.fields,
+			field({ name: 'Recovery codes', kind: 'custom', protected: true, value: null, empty: false })
+		]
+	};
+	flushSync();
+	icon('Change Recovery codes').click();
+	flushSync();
+
+	expect(changer('New value of Recovery codes').getAttribute('rows')).toBe('4');
+	enter(changer('New value of Recovery codes'), 'first code');
+	expect(returned(changer('New value of Recovery codes')).defaultPrevented).toBe(false);
+
+	return unmount(component);
+});
+
+/**
+ * Save, Cancel and Escape put the field away, and the focus used to fall to
+ * nothing: a keyboard reader lost their place, and the next Escape closed the
+ * entry. It goes back to the press that opened the field. A field put away
+ * because the reader clicked somewhere else leaves the focus there.
+ */
+it('gives the focus back to the Change that opened the field', async () => {
+	ipc.setField.mockResolvedValue(entry());
+	const { component } = pane({
+		fields: [
+			PASSWORD,
+			field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false })
+		]
+	});
+
+	button('Change').click();
+	flushSync();
+	enter(changer('New password'), 'never mind');
+	changer('New password').dispatchEvent(
+		new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+	);
+	flushSync();
+	expect(document.activeElement, 'Escape').toBe(button('Change'));
+
+	icon('Change API token').click();
+	flushSync();
+	button('Cancel').click();
+	flushSync();
+	expect(document.activeElement, 'Cancel').toBe(icon('Change API token'));
+
+	icon('Change API token').click();
+	flushSync();
+	enter(changer('New value of API token'), TOKEN);
+	button('Save').click();
+	await vi.waitFor(() =>
+		expect(host.querySelector('[aria-label="New value of API token"]')).toBeNull()
+	);
+	expect(document.activeElement, 'Save').toBe(icon('Change API token'));
+
+	button('Change').click();
+	flushSync();
+	const typed = changer('New password');
+	typed.blur();
+	leave(typed);
+	expect(host.querySelector('[aria-label="New password"]')).toBeNull();
+	expect(document.activeElement, 'the focus was taken back from elsewhere').not.toBe(
+		button('Change')
+	);
+
+	return unmount(component);
+});
+
+/**
+ * The entry coming back changed - an edit to its title, a tag - is not the
+ * reader leaving it. A new password being typed, and the question under it,
+ * stay where they are; they used to go with every change that landed, and
+ * said the password was not saved.
+ */
+it('keeps a new password being typed when the entry comes back changed', () => {
+	const { component, props } = deleting({ fields: [PASSWORD] });
+
+	button('Change').click();
+	flushSync();
+	enter(changer('New password'), 'half of it');
+	leave(changer('New password'));
+	props.entry = { ...props.entry, tags: ['changed'] };
+	flushSync();
+
+	expect(changer('New password').value).toBe('half of it');
+	expect(host.textContent).toContain('Save the new password?');
+	expect(props.onFailure).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/**
+ * A pane taken down while its new password is on its way to the vault has
+ * handed the password over, and did not lose it. It used to say "not saved"
+ * all the same, and a reader who believed it set yet another password on the
+ * website. It says nothing when the save goes through; when it does not, it
+ * says plainly that the new password did not go in, and why.
+ */
+it('says nothing about a new password on its way when its pane goes, unless it is refused', async () => {
+	for (const outcome of ['taken', 'refused'] as const) {
+		ipc.setField.mockReset();
+		const saving = Promise.withResolvers<ReturnType<typeof entry>>();
+		ipc.setField.mockReturnValue(saving.promise);
+		const { component, props } = deleting({ fields: [PASSWORD] });
+
+		button('Change').click();
+		flushSync();
+		enter(changer('New password'), 'set on the website');
+		returned(changer('New password'));
+		expect(ipc.setField).toHaveBeenCalledTimes(1);
+
+		props.entry = entry({ fields: [PASSWORD] });
+		flushSync();
+		expect(host.querySelector('[aria-label="New password"]')).toBeNull();
+		expect(props.onFailure, `${outcome}: said before the answer`).not.toHaveBeenCalled();
+
+		if (outcome === 'taken') {
+			saving.resolve(entry());
+			await vi.waitFor(() => expect(props.onChanged).toHaveBeenCalled());
+			await Promise.resolve();
+			expect(props.onFailure, 'a saved password was said to be lost').not.toHaveBeenCalled();
+		} else {
+			saving.reject({ code: 'noSuchEntry', message: 'there is no such entry in this database' });
+			await vi.waitFor(() =>
+				expect(props.onFailure).toHaveBeenCalledWith(
+					expect.objectContaining({
+						message: 'The new password was not saved: there is no such entry in this database.'
+					})
+				)
+			);
+			expect(props.onFailure).toHaveBeenCalledTimes(1);
+		}
+		await unmount(component);
+	}
+});
+
+/**
+ * The Change under a protected field of the reader's own starts where the
+ * value starts because it is in the value's column, not because a margin was
+ * worked out to match the width of the name: widen the name and the two still
+ * start together.
+ */
+it("puts a field's Change in the column its value is in", () => {
+	const { component } = pane({
+		fields: [
+			field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false })
+		]
+	});
+
+	const change = icon('Change API token');
+	const column = change.parentElement;
+	const row = column?.parentElement;
+	const [name, value] = [...(row?.children ?? [])];
+	expect(name?.textContent?.trim()).toBe('API token');
+	expect(value?.contains(icon('Copy API token')), 'the value is not the second column').toBe(true);
+	expect(row?.className).toContain('grid-cols-');
+	expect(column?.className).toContain('col-start-2');
+	for (const offset of [change.className, column?.className ?? '']) {
+		expect(offset, 'the Change is pushed into place by a margin').not.toMatch(/\bml-/);
+	}
+
+	return unmount(component);
+});
+
+/** A name or a tag typed through an input method is finished by the reader's
+ * own Return, not by the one that confirms a conversion. */
+it('makes no field and adds no tag on the Return that ends a composition', async () => {
+	ipc.setField.mockResolvedValue(entry());
+	ipc.setTags.mockResolvedValue(entry());
+	const { component } = pane({ fields: [PASSWORD] });
+	const compositions = [{ isComposing: true }, { keyCode: 229 }];
+
+	icon('Add a field').click();
+	flushSync();
+	const name = host.querySelector('[aria-label="The name of the new field"]') as HTMLInputElement;
+	name.value = 'Passport';
+	for (const composition of compositions) {
+		expect(returned(name, composition).defaultPrevented).toBe(false);
+	}
+	name.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+	flushSync();
+
+	button('+ tag').click();
+	flushSync();
+	await Promise.resolve();
+	const tag = host.querySelector('[aria-label="A new tag"]') as HTMLInputElement;
+	tag.value = 'travel';
+	for (const composition of compositions) {
+		expect(returned(tag, composition).defaultPrevented).toBe(false);
+	}
+	expect(ipc.setField).not.toHaveBeenCalled();
+	expect(ipc.setTags).not.toHaveBeenCalled();
+
+	expect(returned(tag).defaultPrevented).toBe(true);
+	expect(ipc.setTags).toHaveBeenCalledWith(expect.any(String), ['travel']);
+
+	return unmount(component);
 });

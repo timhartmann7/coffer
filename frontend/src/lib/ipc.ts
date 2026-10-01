@@ -306,16 +306,19 @@ export function setField(
 /**
  * Tells Rust what is in a field the reader is typing into and has not left, so
  * that a lock can write it: `value` is the field's text, or `null` when what
- * was typed was taken back. Only `drafts.ts` calls this.
+ * was typed was taken back. `beside` is a new value typed in a Change field,
+ * which a lock keeps beside the value it was for rather than writing it over
+ * one. Only `drafts.ts` calls this.
  */
 export function draft(
 	entry: string,
 	field: string,
 	value: string | null,
 	protect: boolean,
+	beside: boolean,
 	sequence: number
 ): Promise<void> {
-	return invoke('draft', { entry, field, value, protect, sequence });
+	return invoke('draft', { entry, field, value, protect, beside, sequence });
 }
 
 /**

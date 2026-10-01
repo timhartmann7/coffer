@@ -140,15 +140,20 @@ impl Open {
     }
 
     /// Writes what the reader was typing into the vault, the way leaving each
-    /// field would have, and says whether any of it changed an entry.
+    /// field would have, and says whether any of it changed an entry. A new
+    /// value typed in a Change field is kept beside the value it was for,
+    /// never over it (see [`Vault::set_typed`]).
     ///
     /// A draft the vault will not take - its entry gone, its field removed, a
     /// vault Coffer does not write back - is let go, and the rest are still
     /// written: nothing here may stop a lock.
     fn finish_typing(&mut self) -> bool {
         let mut changed = false;
-        for (entry, field, value) in self.drafts.take() {
-            changed |= self.vault.set_typed(entry, &field, value).unwrap_or(false);
+        for (entry, field, value, typing) in self.drafts.take() {
+            changed |= self
+                .vault
+                .set_typed(entry, &field, value, typing)
+                .unwrap_or(false);
         }
         changed
     }
@@ -2119,11 +2124,23 @@ mod tests {
         assert!(!printed.contains("OPENSSH"), "{printed}");
     }
 
-    /// Text the reader typed and never left, as the window says it.
+    /// Text the reader typed into a field and never left, as the window says
+    /// it.
     fn words(text: &str, protect: bool) -> Option<Typed> {
         Some(Typed {
             value: Zeroizing::new(text.to_owned()),
             protect,
+            typing: vault_core::Typing::InPlace,
+        })
+    }
+
+    /// A new value typed in a Change field and never saved, as the window says
+    /// it. Always for a protected value: that is what a Change is for.
+    fn replacement(text: &str) -> Option<Typed> {
+        Some(Typed {
+            value: Zeroizing::new(text.to_owned()),
+            protect: true,
+            typing: vault_core::Typing::Beside,
         })
     }
 
@@ -2281,11 +2298,12 @@ mod tests {
         session
             .draft(basic.id, fields::USERNAME, words("alice", false), 1)
             .expect("the draft is heard");
+        // A new password that is the one there is nothing to keep beside it.
         session
             .draft(
                 basic.id,
                 fields::PASSWORD,
-                words("correct horse battery staple", true),
+                replacement("correct horse battery staple"),
                 2,
             )
             .expect("the draft is heard");
@@ -2454,8 +2472,8 @@ mod tests {
     }
 
     /// A value the database protects goes back protected: a draft is written
-    /// under the protection the window read, a password and a field of the
-    /// reader's own alike.
+    /// under the protection the window read, a field typed into where it
+    /// stands and a new password kept beside the old one alike.
     #[test]
     fn a_protected_fields_draft_is_written_protected() {
         let (_directory, database, session) = holding(RICH);
@@ -2475,7 +2493,7 @@ mod tests {
             .draft(
                 basic.id,
                 fields::PASSWORD,
-                words("a new one, half", true),
+                replacement("a new one, half"),
                 1,
             )
             .expect("the draft is heard");
@@ -2487,7 +2505,8 @@ mod tests {
         let file = reopened(&database);
         let entry = file.entry(basic.id).expect("the entry is there");
         for (name, wanted) in [
-            (fields::PASSWORD, "a new one, half"),
+            (fields::PASSWORD, "correct horse battery staple"),
+            ("Password (typed before locking)", "a new one, half"),
             ("Passport", "C01X00T4"),
         ] {
             let field = entry.field(name).expect("the field is there");
@@ -2497,6 +2516,96 @@ mod tests {
             );
             assert_eq!(value_of(&file, basic.id, name).as_deref(), Some(wanted));
         }
+    }
+
+    /// The harm a Change field exists to prevent, done by the lock instead. A
+    /// reader pressed Change on "Home Wi-Fi", typed the first half of a new
+    /// password, and walked away with the question under it unanswered; the
+    /// idle lock wrote "Tr0ub" over the router's password and the next copy
+    /// handed that to a router that rejects it. The password stays what it was
+    /// now, what was typed is kept beside it in a field that says what it is,
+    /// and the unlock screen still says what it always says.
+    #[test]
+    fn a_lock_keeps_a_new_password_half_typed_beside_the_old_one() {
+        let (_directory, database, session) = holding(RICH);
+        let basic = entry_titled(&session, "basic");
+
+        session
+            .draft(basic.id, fields::PASSWORD, replacement("Tr0ub"), 1)
+            .expect("the draft is heard");
+        assert!(session.lock(Reason::Idle));
+        assert!(session.typed(), "the unlock screen is not told");
+
+        let file = reopened(&database);
+        assert_eq!(
+            value_of(&file, basic.id, fields::PASSWORD).as_deref(),
+            Some("correct horse battery staple"),
+            "the lock wrote a password nobody saved over the real one"
+        );
+        assert_eq!(
+            value_of(&file, basic.id, "Password (typed before locking)").as_deref(),
+            Some("Tr0ub")
+        );
+        assert_eq!(file.versions(basic.id).len(), basic.versions + 1);
+    }
+
+    /// "Set one" on an entry with no password has nothing to keep a new one
+    /// beside, and the lock writes it where the reader was putting it.
+    #[test]
+    fn a_lock_writes_a_first_password_half_typed_into_the_field() {
+        let (_directory, database, session) = holding(RICH);
+        let basic = entry_titled(&session, "basic");
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    basic.id,
+                    fields::PASSWORD,
+                    vault_core::NewValue::Protected(Zeroizing::new(String::new())),
+                )
+            })
+            .expect("the vault is open")
+            .expect("the password is emptied");
+
+        session
+            .draft(basic.id, fields::PASSWORD, replacement("first one"), 1)
+            .expect("the draft is heard");
+        assert!(session.lock(Reason::Sleeping));
+        assert!(session.typed());
+
+        let file = reopened(&database);
+        assert_eq!(
+            value_of(&file, basic.id, fields::PASSWORD).as_deref(),
+            Some("first one")
+        );
+        assert!(
+            file.entry(basic.id)
+                .expect("the entry is there")
+                .field("Password (typed before locking)")
+                .is_none()
+        );
+    }
+
+    /// A Change field typed into and emptied again holds no new password. The
+    /// window takes such a draft back; one that arrives all the same writes
+    /// nothing, empties nothing, and gives the lock nothing to save or say.
+    #[test]
+    fn a_lock_writes_nothing_for_a_new_password_emptied_again() {
+        let (_directory, database, session) = holding(RICH);
+        let basic = entry_titled(&session, "basic");
+
+        session
+            .draft(basic.id, fields::PASSWORD, replacement(""), 1)
+            .expect("the draft is heard");
+        assert!(session.lock(Reason::ScreenLocked));
+        assert!(!session.typed());
+
+        let snapshot =
+            vault_core::storage::snapshot::slot(&database, 1).expect("a slot has a name");
+        assert!(!snapshot.exists(), "a lock with nothing to write wrote");
+        assert_eq!(
+            value_of(&reopened(&database), basic.id, fields::PASSWORD).as_deref(),
+            Some("correct horse battery staple")
+        );
     }
 
     /// Everything the reader was in the middle of, across many entries and

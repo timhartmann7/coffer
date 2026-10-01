@@ -1,25 +1,39 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import type { Place } from '$lib/drafts';
 import Editable from './Editable.svelte';
+
+const ipc = vi.hoisted(() => ({ draft: vi.fn() }));
+vi.mock('$lib/ipc', () => ipc);
 
 let host: HTMLElement;
 
 beforeEach(() => {
 	host = document.createElement('div');
 	document.body.appendChild(host);
+	ipc.draft.mockResolvedValue(undefined);
 });
 
 afterEach(() => host.remove());
+
+/** Where a field's typing goes. Its own entry each time, because what is typed
+ * is kept for the life of the window and the window here is the whole file. */
+let made = 0;
+function place(): Place {
+	made += 1;
+	return { entry: `entry-${made}`, field: 'UserName', protect: false };
+}
 
 function show(props: {
 	value?: string;
 	multiline?: boolean;
 	breaks?: boolean;
+	draft?: Place;
 	onCommit: (value: string) => Promise<boolean>;
 }) {
 	return mount(Editable, {
 		target: host,
-		props: { value: '', label: 'Login', ...props }
+		props: { value: '', label: 'Login', draft: place(), ...props }
 	});
 }
 
@@ -190,6 +204,7 @@ it('finishes one line on Return, and leaves Option+Return and a composition alon
 
 	expect(key('Enter', { altKey: true }).defaultPrevented).toBe(false);
 	expect(key('Enter', { isComposing: true }).defaultPrevented).toBe(false);
+	expect(key('Enter', { keyCode: 229 }).defaultPrevented).toBe(false);
 
 	type('one line');
 	expect(key('Enter').defaultPrevented).toBe(true);
@@ -291,11 +306,67 @@ it('puts back a value the vault would not take', async () => {
 	return unmount(component);
 });
 
+/**
+ * The Return that confirms an input method's conversion is the input
+ * method's. WebKit commonly sends it with `isComposing` already false and the
+ * key code 229, and a login typed through one was finished, and written,
+ * half converted.
+ */
+it('leaves a Return that ends a composition to the input method in a field on one line', () => {
+	const onCommit = taken();
+	const component = show({ value: 'deploy', onCommit });
+	flushSync();
+	expect(field().tagName).toBe('INPUT');
+	field().focus();
+
+	type('deploy-2');
+	for (const composition of [{ isComposing: true }, { keyCode: 229 }]) {
+		expect(key('Enter', composition).defaultPrevented, JSON.stringify(composition)).toBe(false);
+		expect(document.activeElement, 'the composition finished the field').toBe(field());
+	}
+	expect(onCommit).not.toHaveBeenCalled();
+
+	expect(key('Enter').defaultPrevented).toBe(true);
+
+	return unmount(component);
+});
+
+/** What is typed is told to Rust as a draft of the place the field was given,
+ * and Escape lets go of it. */
+it('tells what is typed to Rust as a draft of its field, and lets go of it on Escape', async () => {
+	const at = place();
+	const component = show({ value: 'deploy', draft: at, onCommit: taken() });
+	flushSync();
+
+	type('deploy-2');
+	await vi.waitFor(() =>
+		expect(ipc.draft).toHaveBeenCalledWith(
+			at.entry,
+			'UserName',
+			'deploy-2',
+			false,
+			false,
+			expect.any(Number)
+		)
+	);
+	key('Escape');
+	expect(ipc.draft).toHaveBeenLastCalledWith(
+		at.entry,
+		'UserName',
+		null,
+		false,
+		false,
+		expect.any(Number)
+	);
+
+	return unmount(component);
+});
+
 /** A database Coffer will not write back offers nothing to change. */
 it('draws a value it cannot change as a value and not as a field', () => {
 	const component = mount(Editable, {
 		target: host,
-		props: { value: 'deploy', label: 'Login', readonly: true, onCommit: taken() }
+		props: { value: 'deploy', label: 'Login', readonly: true, draft: place(), onCommit: taken() }
 	});
 	flushSync();
 

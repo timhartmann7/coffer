@@ -21,6 +21,12 @@
  *
  * What is typed is read out of the field when Rust is told, not when the key is
  * pressed, so nothing but the field holds it in the meantime.
+ *
+ * Text typed into a field where it stands is what the reader wants there, and
+ * a lock writes it into the field. A new value typed in a Change field is not:
+ * the reader has not saved it, and it may be half a password or the wrong one
+ * pasted. Rust is told which it is, and a lock keeps a new value beside the
+ * one it was for rather than over it.
  */
 
 import { SvelteMap } from 'svelte/reactivity';
@@ -46,6 +52,8 @@ export interface Place {
 
 interface Typing {
 	place: Place;
+	/** Whether it is a new value typed in a Change field of its own. */
+	beside: boolean;
 	/** What the field holds now. */
 	read: () => string;
 	/** The pause before Rust is told, while one is running. */
@@ -83,7 +91,7 @@ function say(held: Typing) {
 	held.waiting = null;
 	held.told = true;
 	const { entry, field, protect } = held.place;
-	track(tell(entry, field, held.read(), protect, next()));
+	track(tell(entry, field, held.read(), protect, held.beside, next()));
 }
 
 function forget(name: string) {
@@ -92,8 +100,7 @@ function forget(name: string) {
 	typing.delete(name);
 }
 
-/** The reader typed into a field. `read` answers with what is in it. */
-export function typed(place: Place, read: () => string): void {
+function hear(place: Place, read: () => string, beside: boolean) {
 	const name = key(place);
 	const held = typing.get(name);
 	if (held) {
@@ -103,19 +110,33 @@ export function typed(place: Place, read: () => string): void {
 		held.waiting = setTimeout(() => say(held), PAUSE);
 		return;
 	}
-	const fresh: Typing = { place, read, waiting: null, told: false };
+	const fresh: Typing = { place, beside, read, waiting: null, told: false };
 	fresh.waiting = setTimeout(() => say(fresh), PAUSE);
 	typing.set(name, fresh);
 }
 
+/** The reader typed into a field where it stands. `read` answers with what is
+ * in it. */
+export function typed(place: Place, read: () => string): void {
+	hear(place, read, false);
+}
+
+/** The reader typed a new value for a field in a Change field of its own.
+ * `read` answers with what is in that. */
+export function replacing(place: Place, read: () => string): void {
+	hear(place, read, true);
+}
+
 /** What was typed into a field was taken back: Escape, Cancel, Discard, or the
- * field left as it was, or gone with its text still in it. */
+ * field left as it was, emptied, or gone with its text still in it. */
 export function drop(place: Place): void {
 	const name = key(place);
 	const held = typing.get(name);
 	if (!held) return;
 	forget(name);
-	if (held.told) track(tell(place.entry, place.field, null, place.protect, next()));
+	if (held.told) {
+		track(tell(place.entry, place.field, null, place.protect, held.beside, next()));
+	}
 }
 
 /**

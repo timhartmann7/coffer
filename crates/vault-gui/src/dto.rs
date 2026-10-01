@@ -555,6 +555,11 @@ pub struct Field {
     /// Only ever true for a URL field: the rule is in
     /// [`vault_core::url`], and this is the screen's copy of the answer.
     pub openable: bool,
+    /// Whether the value has a line break in it. One fact about a value that
+    /// does not cross, the way `empty` is, and nothing of what it says: ten
+    /// recovery codes are replaced in a field written in lines, where Return
+    /// starts the next code rather than saving the first over all ten.
+    pub lines: bool,
 }
 
 impl Field {
@@ -574,6 +579,7 @@ impl Field {
                     .is_some_and(|text| vault_core::url::openable(text).is_some()),
             value,
             empty: field.is_empty(),
+            lines: field.in_lines(),
         }
     }
 }
@@ -722,7 +728,10 @@ mod tests {
     fn protected(name: &str, empty: bool) -> Field {
         Field {
             name: name.to_owned(),
-            value: FieldValue::Protected { empty },
+            value: FieldValue::Protected {
+                empty,
+                lines: false,
+            },
         }
     }
 
@@ -767,6 +776,41 @@ mod tests {
         ));
     }
 
+    /// Whether a value is in lines crosses for every field, as one bit beside
+    /// `empty`, and the value it is about still does not: ten recovery codes
+    /// are replaced in lines without a word of them reaching the window.
+    #[test]
+    fn a_value_in_lines_says_so_and_nothing_more() {
+        let entry = Entry::of(&entry_of(vec![
+            Field {
+                name: "Recovery codes".to_owned(),
+                value: FieldValue::Protected {
+                    empty: false,
+                    lines: true,
+                },
+            },
+            protected(fields::PASSWORD, false),
+            open(fields::NOTES, "first\r\nsecond"),
+            open(fields::URL, "https://example.com"),
+        ]));
+
+        let payload = json(&entry);
+        for (name, lines) in [
+            ("Recovery codes", true),
+            ("Password", false),
+            ("Notes", true),
+            ("URL", false),
+        ] {
+            let field = entry
+                .fields
+                .iter()
+                .find(|field| field.name == name)
+                .expect("the field crosses");
+            assert_eq!(field.lines, lines, "{name}");
+        }
+        assert!(payload.contains(r#""name":"Recovery codes","kind":"custom","protected":true,"value":null,"empty":false,"openable":false,"lines":true"#), "{payload}");
+    }
+
     #[test]
     fn a_row_carries_the_four_things_a_list_filters_on_and_nothing_else() {
         let row = EntryRow::of(&EntrySummary {
@@ -774,7 +818,10 @@ mod tests {
             group: GroupId::from_uuid(uuid::Uuid::nil()),
             title: FieldValue::Open("node-3".to_owned()),
             username: FieldValue::Open("deploy".to_owned()),
-            url: FieldValue::Protected { empty: false },
+            url: FieldValue::Protected {
+                empty: false,
+                lines: false,
+            },
             tags: vec!["prod".to_owned(), "ssh".to_owned()],
             times: Timestamps {
                 created: None,

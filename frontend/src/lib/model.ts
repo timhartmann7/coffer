@@ -130,6 +130,13 @@ export interface Field {
 	empty: boolean;
 	/** True only for a url field Coffer is willing to hand to the system. */
 	openable: boolean;
+	/**
+	 * Whether the value has a line break in it: one fact about a value that
+	 * does not cross, the way `empty` is. A new value for one in lines - ten
+	 * recovery codes - is written in lines, where Return starts the next line
+	 * rather than saving the first over all ten.
+	 */
+	lines: boolean;
 }
 
 /**

@@ -7,6 +7,7 @@
  * it or a crash could write it down. What is state here is how long is left.
  */
 
+import { SvelteMap } from 'svelte/reactivity';
 import { reveal } from './ipc';
 
 /** How long a revealed value stays on the screen. The bar that drains beside
@@ -25,6 +26,22 @@ const SECONDS = 30;
  */
 export function place(node: HTMLElement, value: string): void {
 	node.textContent = value;
+}
+
+/** Every value on the screen, by the entry it is a value of. */
+const shown = new SvelteMap<Revealed, string>();
+
+/**
+ * Takes every value of an entry off the screen: the entry has come back
+ * changed.
+ *
+ * A value shown before a change is not what the entry holds after it. Left up,
+ * it was the old password read out to a guest under the label of the new one,
+ * for the rest of its half minute - and a part of it selected and copied was
+ * cut out of the new value in Rust at positions counted on the old text.
+ */
+export function conceal(entry: string): void {
+	for (const [revealed, of] of shown) if (of === entry) revealed.hide();
 }
 
 export class Revealed {
@@ -64,6 +81,7 @@ export class Revealed {
 		this.#asked = asked;
 		place(node, value);
 		this.#node = node;
+		shown.set(this, entry);
 		this.showing = true;
 		this.left = SECONDS;
 
@@ -88,6 +106,7 @@ export class Revealed {
 			place(this.#node, '');
 			this.#node = null;
 		}
+		shown.delete(this);
 		this.showing = false;
 		this.left = 0;
 	}

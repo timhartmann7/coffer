@@ -1764,12 +1764,13 @@ function mounted(tree: typeof root, readOnly = false) {
 	vi.setSystemTime(new Date('2026-08-29T14:30:00Z'));
 	ipc.tree.mockResolvedValue(tree);
 	const onTree = vi.fn();
+	const onSettings = vi.fn();
 	const component = mount(Vault, {
 		target: host,
-		props: { database, root: tree, readOnly, onSettings: vi.fn(), onTree }
+		props: { database, root: tree, readOnly, onSettings, onTree }
 	});
 	flushSync();
-	return { component, onTree };
+	return { component, onTree, onSettings };
 }
 
 function pressed(label: string, within: ParentNode = host) {
@@ -2335,6 +2336,7 @@ it('tells Rust what is being typed the moment the window loses focus', async () 
 			'Notes',
 			'Wi-Fi: the long one on the router',
 			false,
+			false,
 			expect.any(Number)
 		);
 		expect(ipc.setField, 'the window going behind wrote the note').not.toHaveBeenCalled();
@@ -2365,7 +2367,7 @@ it('deletes an entry with a number newer than anything typed into it', async () 
 		title.value = 'node-3, renamed half';
 		title.dispatchEvent(new Event('input', { bubbles: true }));
 		window.dispatchEvent(new Event('blur'));
-		const drafted = ipc.draft.mock.lastCall?.[4] as number;
+		const drafted = ipc.draft.mock.lastCall?.[5] as number;
 
 		pressed('Move to Recycle Bin');
 		await settled();
@@ -3163,4 +3165,255 @@ it('leaves an entry opened meanwhile in the pane when the bin is emptied', async
 			ipc.save.mockClear();
 		}
 	}
+});
+
+/** Two logins whose entries have a password, which is what a Change is for. */
+function withPasswords() {
+	const logins = twoLogins();
+	const read = (id: string) => {
+		const from = id === logins.gmail.id ? logins.gmail : logins.drive;
+		const title = readOf(from);
+		return entry({
+			...title,
+			fields: [
+				...title.fields,
+				field({ name: 'Password', kind: 'password', value: null, empty: false, protected: true })
+			]
+		});
+	};
+	ipc.entry.mockImplementation((id: string) => Promise.resolve(read(id)));
+	return { ...logins, read };
+}
+
+/** The field a new password is typed into, with something typed in it. */
+function typeNewPassword(text: string): HTMLTextAreaElement {
+	pressed('Change', pane() ?? host);
+	flushSync();
+	const typed = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="New password"]');
+	if (!typed) throw new Error('Change opened no field');
+	typed.value = text;
+	typed.dispatchEvent(new Event('input', { bubbles: true }));
+	flushSync();
+	return typed;
+}
+
+/** A button anywhere in the window whose words are exactly these. */
+function exactly(label: string): HTMLButtonElement {
+	const found = [...host.querySelectorAll('button')].find(
+		(each) => each.textContent?.trim() === label
+	);
+	if (!found) throw new Error(`no button that says ${label}`);
+	return found;
+}
+
+/**
+ * The reader changes a site's password, pastes the new one into Change and,
+ * by the habit every other field taught them, clicks the next entry. The pane
+ * used to switch, the new password went with it, and a notice said it had not
+ * been saved. Now nothing that would take the pane away does: the pane stays,
+ * the field asks its question with the focus on Save, and nothing typed is let
+ * go of in Rust either.
+ */
+it('keeps the pane and asks when a new password typed there would go with it', async () => {
+	const { drive, tree } = withPasswords();
+	ipc.createEntry.mockReset();
+	ipc.deleteEntry.mockReset();
+	const { component, onSettings } = mounted(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		const typed = typeNewPassword('n3w-from-the-website');
+		await settled();
+
+		const attempts: [string, () => void][] = [
+			['another row', () => pressed('Google Drive')],
+			['Escape', () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))],
+			[
+				'Close',
+				() => host.querySelector<HTMLButtonElement>('[aria-label="Close this entry"]')?.click()
+			],
+			['a folder', () => pressed('All entries')],
+			['+ Entry', () => exactly('Entry').click()],
+			['the bin', () => pressed('Move to Recycle Bin', pane() ?? host)],
+			[
+				'the settings',
+				() => host.querySelector<HTMLButtonElement>('[aria-label="Settings"]')?.click()
+			]
+		];
+		for (const [what, attempt] of attempts) {
+			attempt();
+			await settled();
+			expect(titleField()?.value, `${what} took the pane`).toBe('Gmail');
+			expect(typed.value, `${what} threw the new password away`).toBe('n3w-from-the-website');
+			expect(reads(), `${what} did not ask`).toContain('Save the new password?');
+			expect(document.activeElement, `${what}: the question has not got the focus`).toBe(
+				exactly('Save')
+			);
+		}
+		expect(ipc.entry).not.toHaveBeenCalledWith(drive.id);
+		expect(ipc.createEntry).not.toHaveBeenCalled();
+		expect(ipc.deleteEntry).not.toHaveBeenCalled();
+		expect(onSettings).not.toHaveBeenCalled();
+		expect(ipc.setField).not.toHaveBeenCalled();
+		expect(
+			ipc.draft.mock.calls.map((call) => call[2]),
+			'the new password was let go of in Rust'
+		).not.toContain(null);
+
+		exactly('Discard').click();
+		await settled();
+		pressed('Google Drive');
+		await settled();
+		expect(titleField()?.value).toBe('Google Drive');
+		expect(ipc.entry).toHaveBeenCalledWith(drive.id);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A new password on its way to the vault holds the pane until it is in: the
+ * press that lands meanwhile does nothing, and asks nothing, since there is
+ * nothing left to answer. */
+it('keeps the pane while a new password is on its way, and lets it go once it is in', async () => {
+	const { gmail, drive, tree, read } = withPasswords();
+	const saving = Promise.withResolvers<ReturnType<typeof entry>>();
+	ipc.setField.mockReset();
+	ipc.setField.mockReturnValue(saving.promise);
+	const { component } = mounted(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		const typed = typeNewPassword('n3w');
+		typed.dispatchEvent(
+			new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+		);
+		await settled();
+
+		pressed('Google Drive');
+		await settled();
+		expect(titleField()?.value).toBe('Gmail');
+		expect(reads()).not.toContain('Save the new password?');
+		expect(ipc.entry).not.toHaveBeenCalledWith(drive.id);
+
+		saving.resolve(read(gmail.id));
+		await settled();
+		expect(host.querySelector('textarea[aria-label="New password"]')).toBeNull();
+		pressed('Google Drive');
+		await settled();
+		expect(titleField()?.value).toBe('Google Drive');
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+		ipc.setField.mockReset();
+	}
+});
+
+/**
+ * A value shown before a change is not what the entry holds after it. The old
+ * password stayed on the screen under the label of the new one for the rest
+ * of its half minute, and a part of it selected and copied was cut out of the
+ * new value in Rust at positions counted on the old text. A new password
+ * saved, one made and put in, and a version restored each take every value of
+ * the entry off the screen.
+ */
+it('takes a revealed value off the screen when a new one lands, however it arrives', async () => {
+	const { gmail, tree, read } = withPasswords();
+	ipc.reveal.mockResolvedValue('the old one');
+	ipc.setField.mockReset();
+	ipc.setField.mockImplementation((id: string) => Promise.resolve(read(id)));
+	ipc.generatePassword.mockResolvedValue('Made-Password-123');
+	ipc.versions.mockImplementation(listing([version({ index: 0 })]));
+	ipc.restoreVersion.mockImplementation((id: string) => Promise.resolve(read(id)));
+	const shown = () => pane()?.querySelector('[data-value]')?.textContent ?? '';
+	const reveal = async () => {
+		pressed('Show', pane() ?? host);
+		await settled();
+		expect(shown()).toBe('the old one');
+	};
+	const { component } = mounted(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+
+		await reveal();
+		typeNewPassword('the new one');
+		exactly('Save').click();
+		await settled();
+		expect(ipc.setField).toHaveBeenCalledTimes(1);
+		expect(shown(), 'the old password stayed up after a new one was saved').toBe('');
+
+		await reveal();
+		pressed('Make one', pane() ?? host);
+		await settled();
+		pressed('Put it in the field', pane() ?? host);
+		await settled();
+		expect(ipc.setField).toHaveBeenLastCalledWith(
+			gmail.id,
+			'Password',
+			'Made-Password-123',
+			true,
+			expect.any(Number)
+		);
+		expect(shown(), 'the old password stayed up after a made one went in').toBe('');
+
+		await reveal();
+		pressed('Versions', pane() ?? host);
+		flushSync();
+		pressed('Restore', pane() ?? host);
+		await settled();
+		expect(ipc.restoreVersion).toHaveBeenCalledTimes(1);
+		expect(shown(), 'the password stayed up after a version was restored').toBe('');
+		expect(exactly('Show')).toBeTruthy();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+		ipc.setField.mockReset();
+	}
+});
+
+/** A folder named through an input method is made by the reader's own Return,
+ * not by the one that confirms a conversion, and renamed the same way. */
+it('makes and renames no folder on the Return that ends a composition', () => {
+	ipc.createGroup.mockReset();
+	ipc.renameGroup.mockReset();
+	const component = open();
+	flushSync();
+	const compositions = [{ isComposing: true }, { keyCode: 229 }];
+	const returned = (into: HTMLElement, over: KeyboardEventInit) => {
+		const event = new KeyboardEvent('keydown', {
+			key: 'Enter',
+			bubbles: true,
+			cancelable: true,
+			...over
+		});
+		into.dispatchEvent(event);
+		return event;
+	};
+
+	host.querySelector<HTMLButtonElement>('[aria-label="New folder"]')?.click();
+	flushSync();
+	const name = host.querySelector('[aria-label="The name of the new folder"]') as HTMLInputElement;
+	name.value = 'Clients';
+	for (const composition of compositions) {
+		expect(returned(name, composition).defaultPrevented).toBe(false);
+	}
+	expect(ipc.createGroup).not.toHaveBeenCalled();
+	name.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+	flushSync();
+
+	pressed('Work');
+	flushSync();
+	host.querySelector<HTMLButtonElement>('[aria-label="Rename this folder"]')?.click();
+	flushSync();
+	const rename = host.querySelector(
+		'[aria-label="A new name for this folder"]'
+	) as HTMLInputElement;
+	rename.value = 'Work, renamed';
+	for (const composition of compositions) {
+		expect(returned(rename, composition).defaultPrevented).toBe(false);
+	}
+	expect(ipc.renameGroup).not.toHaveBeenCalled();
+
+	return unmount(component);
 });

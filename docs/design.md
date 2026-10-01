@@ -96,15 +96,25 @@ with no scrollbar drawn, the way the field it used to be shown in did, so
 revealing it still moves nothing. A value with line breaks takes the lines it
 has, because ten recovery codes on one line are not what the vault holds; a
 protected note and a previous version's value wrap their long lines as well. The
-field's own countdown now runs under a protected note too.
+field's own countdown now runs under a protected note too. Whatever is revealed
+goes the moment the entry comes back changed, however the change arrived: the
+password shown before a new one was saved is not the password any more.
 
 **A new value is written in a field of its own.** Change opens, under the row's
 buttons, the mockup's field with a text area in mono `small`: one line tall
-until the value has more, then growing with it up to twenty lines. Under it the
+until the value has more, then growing with it up to twenty lines. A value
+already in lines - which Rust says without saying what they are - and a field
+the reader named to be written in lines open it four lines tall instead, the
+way Notes is, where Return starts a line and Cmd+Return saves. Under it the
 two answers in the order every question in the window uses: Cancel, the way out,
 as a plain `h-7` pill in `txt3`, then Save as the bordered `h-7` pill beside it.
-Neither takes the focus. The old value stays where it was, shown if it was
-shown, until the new one is saved.
+Neither takes the focus. While the field is empty Save is drawn the way the
+password's Copy is on an entry with none - `txt4`, the hairline kept under the
+pointer, the not-allowed cursor - and Return does nothing: nothing typed is no
+new password. The old value stays where it was, and so does anything shown of
+it, until the new one is saved. Save, Cancel and Escape give the focus back to
+the Change that opened the field; a field closed because the reader clicked
+somewhere else leaves the focus there.
 
 **Leaving that field with something typed asks, in the same place.** The Cancel
 and Save line gives way to the window's question box on `surface2`: "Save the
@@ -112,12 +122,27 @@ new password?", with Discard as the way out and Save as the neutral pill. There
 is no red answer, because neither takes anything out of the vault - a saved
 password leaves the old one in Versions, and Discard throws away only what was
 typed - and the box does not take the focus, because the reader just put it
-somewhere else. Going back into the field takes the question away.
+somewhere else. Going back into the field takes the question away. The pressed
+Change pill, pressed again with something typed, asks the same question.
+
+**The pane stays while that field holds something.** A row pressed, Escape,
+the header's close, "+ Entry", a folder chosen, the bin emptied, "Move to
+Recycle Bin" or the settings opened over it would each take a new password the
+reader just set on a website away with the pane. None of them does anything
+then: the pane stays, and the field's question rises again where it is - the
+same box, drawn afresh so that it moves where the reader is looking - with the
+focus on Save, the answer that loses nothing. Once it is answered, the press
+works. While the new value is on its way to the vault the pane waits for it
+without asking, since there is nothing left to answer. A state the mockup does
+not draw, built from the question it already has.
 
 **A protected field of the reader's own has its Change on the line under it.**
 Its row keeps the mockup's shape - name, value, eye - and has no room for a word
 more, so "Change" sits under the value, where the value starts, in `fine` and
-`txt3` like the Versions block's View and Restore. Pressed, it gives way to the
+`txt3` like the Versions block's View and Restore. The row is two columns, the
+name's `w-24` and the value's, and Change is in the value's column: it starts
+where the value starts because it is in the same column, not because a margin
+was worked out to match the name. Pressed, it gives way to the
 same field and answers as the password's. A login or an address another client
 protected gets the same line under its value. A protected note and a previous
 version get a copy beside their eye and no Change: a note Coffer never protects
@@ -126,8 +151,9 @@ is read and copied, and a version cannot be written into.
 **The step that names a new field offers "Multi-line".** Beside the name, the
 generator's own toggle pill - hairline, `meta` mono, the check in `txt2` and
 `surface2` behind it when it is on - because it is the same kind of choice. The
-format has no such flag, so it decides only the first field the value is written
-in: a text area four lines tall, where Return starts a line.
+format has no such flag, so it decides the fields the value is written in for as
+long as the entry is open: a text area four lines tall, where Return starts a
+line - the first value's, and a Change's after that.
 
 **A field holding typing that is not written yet carries a dot.** There is no
 save button, and a value is written when its field is left, so a note half
@@ -142,7 +168,11 @@ state; nothing here is a value it does not contain. What the dot marks is also
 what a lock writes before it wipes the window, so the unlock screen after one
 says "What you were typing was saved before locking." in the place and the type
 of the line about work a lock could not write - `small`, centred, `mt-6` - in
-`txt2` rather than `danger`, and names no entry.
+`txt2` rather than `danger`, and names no entry. A new value in a Change field
+is written beside the value it was for rather than over it, in a protected
+field of its own called after it - "Password (typed before locking)" - where it
+is found under Own fields; into the field itself only when that held nothing. A
+Change field emptied again has no dot and nothing to write.
 
 **A value of the reader's own in lines is written in lines.** Any value with a
 line break is edited in a text area that grows with it, up to twenty lines and

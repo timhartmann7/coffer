@@ -50,7 +50,8 @@ pub(crate) fn free(database: &Database, entry: EntryId, name: &str) -> String {
     beside(name, &names)
 }
 
-/// The rule behind [`free`], over the names an entry already uses.
+/// The rule behind [`free`], over the names an entry already uses - its files',
+/// or its fields' for a field Coffer names itself.
 ///
 /// A number is free only when no name on the entry matches it with letter case
 /// ignored. The format would hold `Scan 2.pdf` beside `scan 2.pdf`, but a Mac's
@@ -61,7 +62,7 @@ pub(crate) fn free(database: &Database, entry: EntryId, name: &str) -> String {
 /// of it. `Tax return 2025.pdf` is a year and not a count, and a copy of it
 /// named `Tax return 2026.pdf` would be a document that lies about itself; so a
 /// second `Scan 2.pdf` is `Scan 2 2.pdf`, which is odd to look at and true.
-fn beside(name: &str, names: &[&str]) -> String {
+pub(crate) fn beside(name: &str, names: &[&str]) -> String {
     if !names.contains(&name) {
         return name.to_owned();
     }

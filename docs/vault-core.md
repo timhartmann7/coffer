@@ -331,6 +331,29 @@ save, so a lock that found only that saves nothing and says nothing. What was
 typed, and in which order it arrived, is the window's business and is kept in
 `vault-gui`; this is the one rule for what a draft may do to the database.
 
+**A new value typed in a Change field never goes over a value.** The draft says
+how it was typed ([`Typing`](../crates/vault-core/src/vault.rs)): `InPlace` for
+a field edited where it stands, `Beside` for a new value typed in a field of its
+own under a protected one. The reader never saved a `Beside` value, and it may be
+half a password or the wrong one pasted, so a lock that wrote it over the stored
+one handed them a password that opens nothing. It goes into the field only when
+the field holds nothing - "Set one" on an entry without a password. Otherwise it
+goes into a new protected string field of the same entry, named after the one it
+was typed for with ` (typed before locking)` after it -
+`Password (typed before locking)` - and numbered past a name the entry already
+uses by the rule that names a second file (`clash::beside`), and the value it was
+typed for stays as it was. Nothing typed, or what the field already holds, is no
+new value and writes nothing. The field is an ordinary KDBX string field of the
+kind a reader makes with "+", which every client shows and edits; nothing is
+added to the format.
+
+**Whether a protected value is in lines is known without revealing it.**
+`FieldValue::Protected` carries `lines` beside `empty`: whether the value has a
+line feed or a carriage return in it, the way a text area counts a break. It is
+one bit about the value and nothing of what it says, and it is what lets the
+window replace ten recovery codes in a field written in lines.
+`Field::in_lines` answers it for an open value and a protected one alike.
+
 ## The recycle bin, and putting things back
 
 `SPEC.md` says a deletion goes to the recycle bin when the database keeps one

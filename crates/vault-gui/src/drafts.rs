@@ -18,8 +18,8 @@
 
 use std::collections::HashMap;
 
-use vault_core::NewValue;
 use vault_core::model::EntryId;
+use vault_core::{NewValue, Typing};
 use zeroize::Zeroizing;
 
 /// Text typed into one field and not yet written there.
@@ -28,18 +28,22 @@ pub struct Typed {
     /// Whether the database protects the field, as the window read it, so that
     /// a value the file keeps protected is written back protected.
     pub protect: bool,
+    /// Whether it was typed into the field itself, or as a new value for it in
+    /// a Change field of its own, which a lock never writes over a value.
+    pub typing: Typing,
 }
 
 impl Typed {
-    /// The value, in the shape a write takes. Moved rather than copied: the
-    /// text goes into the vault, and what is left behind is the empty buffer
-    /// the wrapper wipes.
-    fn into_value(mut self) -> NewValue {
-        if self.protect {
+    /// The value, in the shape a write takes, and how it was typed. Moved
+    /// rather than copied: the text goes into the vault, and what is left
+    /// behind is the empty buffer the wrapper wipes.
+    fn into_value(mut self) -> (NewValue, Typing) {
+        let value = if self.protect {
             NewValue::Protected(self.value)
         } else {
             NewValue::Open(std::mem::take(&mut *self.value))
-        }
+        };
+        (value, self.typing)
     }
 }
 
@@ -48,6 +52,7 @@ impl std::fmt::Debug for Typed {
         f.debug_struct("Typed")
             .field("value", &"[redacted]")
             .field("protect", &self.protect)
+            .field("typing", &self.typing)
             .finish()
     }
 }
@@ -138,7 +143,7 @@ impl Drafts {
 
     /// Everything typed and not finished, in the order it was said, as the
     /// writes that would finish it. Nothing is left behind.
-    pub fn take(&mut self) -> Vec<(EntryId, String, NewValue)> {
+    pub fn take(&mut self) -> Vec<(EntryId, String, NewValue, Typing)> {
         let mut typed: Vec<(u64, EntryId, String, Typed)> = self
             .entries
             .drain()
@@ -151,7 +156,10 @@ impl Drafts {
         typed.sort_by_key(|(sequence, ..)| *sequence);
         typed
             .into_iter()
-            .map(|(_, entry, field, typed)| (entry, field, typed.into_value()))
+            .map(|(_, entry, field, typed)| {
+                let (value, typing) = typed.into_value();
+                (entry, field, value, typing)
+            })
             .collect()
     }
 }
@@ -166,6 +174,7 @@ mod tests {
         Some(Typed {
             value: Zeroizing::new(text.to_owned()),
             protect: false,
+            typing: Typing::InPlace,
         })
     }
 
@@ -178,7 +187,7 @@ mod tests {
         drafts
             .take()
             .into_iter()
-            .map(|(entry, field, value)| {
+            .map(|(entry, field, value, _)| {
                 let text = match value {
                     NewValue::Open(text) => text,
                     NewValue::Protected(text) => text.to_string(),
@@ -295,9 +304,10 @@ mod tests {
         assert!(drafts.take().is_empty());
     }
 
-    /// A protected field's draft is written protected, and an open one's open.
+    /// A protected field's draft is written protected, and an open one's open;
+    /// a new value typed in a Change field goes to the lock as one.
     #[test]
-    fn a_draft_is_written_under_the_protection_the_window_read() {
+    fn a_draft_is_written_under_the_protection_and_the_way_the_window_said() {
         let mut drafts = Drafts::default();
         drafts.hear(
             id(1),
@@ -305,6 +315,7 @@ mod tests {
             Some(Typed {
                 value: Zeroizing::new("4711".to_owned()),
                 protect: true,
+                typing: Typing::Beside,
             }),
             1,
         );
@@ -312,9 +323,12 @@ mod tests {
         let taken = drafts.take();
         assert!(matches!(
             taken.first(),
-            Some((_, _, NewValue::Protected(_)))
+            Some((_, _, NewValue::Protected(_), Typing::Beside))
         ));
-        assert!(matches!(taken.get(1), Some((_, _, NewValue::Open(_)))));
+        assert!(matches!(
+            taken.get(1),
+            Some((_, _, NewValue::Open(_), Typing::InPlace))
+        ));
     }
 
     /// Typing is the reader's own, and printing it prints none of it.
@@ -325,6 +339,7 @@ mod tests {
             Typed {
                 value: Zeroizing::new("passport C01X00T47".to_owned()),
                 protect: true,
+                typing: Typing::Beside,
             }
         );
         assert!(printed.contains("[redacted]"), "{printed}");

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { drop, typed as said, unfinished, type Place } from '$lib/drafts';
-	import { finishes, lines } from '$lib/lines';
+	import { composing, finishes, lines } from '$lib/lines';
 	import Field from './Field.svelte';
 	import Unsaved from './Unsaved.svelte';
 
@@ -68,9 +68,9 @@
 		 * around a nineteen-pixel name is a box around the name of the screen. */
 		bare?: boolean;
 		/** Where what is typed would be written: the entry, the field, and whether
-		 * the database protects it. Given, what is typed is told to Rust before the
-		 * field is left; `onCommit` is what writes it. */
-		draft?: Place;
+		 * the database protects it. What is typed is told to Rust before the field
+		 * is left; `onCommit` is what writes it. */
+		draft: Place;
 		/** Answers whether the value was taken. A value that was refused is put
 		 * back, so that the screen never shows something the vault does not have.
 		 */
@@ -99,20 +99,15 @@
 		// has: a draft read from nothing would be an empty one, and a lock would
 		// write it over what the field held.
 		const element = node;
-		if (draft) said(draft, () => element.value);
-	}
-
-	/** What was typed is not going to be written, so Rust is told to let go of
-	 * it too. */
-	function unwritten() {
-		if (draft) drop(draft);
+		said(draft, () => element.value);
 	}
 
 	async function commit() {
 		if (!node || !edited) return;
 		edited = false;
 		if (node.value === value) {
-			unwritten();
+			// Not going to be written, so Rust is told to let go of it too.
+			drop(draft);
 			return;
 		}
 		const taken = await onCommit(node.value);
@@ -130,11 +125,11 @@
 			node.value = value;
 			edited = false;
 			written = lines(value);
-			unwritten();
+			drop(draft);
 			node.blur();
 			return;
 		}
-		if (area ? finishes(event, lined) : event.key === 'Enter') {
+		if (area ? finishes(event, lined) : event.key === 'Enter' && !composing(event)) {
 			event.preventDefault();
 			node.blur();
 		}
@@ -195,7 +190,7 @@
 <!-- Beside the first line of a value in lines, and in the middle of one that is
      a line. -->
 {#snippet mark(at: string)}
-	{#if draft && unfinished(draft)}
+	{#if unfinished(draft)}
 		<Unsaved class={at} />
 	{/if}
 {/snippet}
