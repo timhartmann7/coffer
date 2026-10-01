@@ -84,11 +84,16 @@ eighty-four pixels is not the constraint.
 two buttons and Coffer has three, which in a pane this narrow wrapped anyway —
 and which line they landed on depended on how long the value was.
 
-**There is a way out of the pane.** The mockup's header carries one button and it
-is the trash. Escape has always closed the pane and nothing else did, so the
-close goes beside the trash rather than after it: the mockup's own rule is that
-the destructive action stands at the end of a row, so that missing it costs a
-movement.
+**The header is the way out of the pane, and nothing else.** The mockup's
+header carries one button and it is the trash. Escape had always closed the pane
+and nothing else did, and a close put beside that trash - sixteen pixels away,
+the same size, the same grey - was a press meant for one landing on the other.
+So the header carries the close alone, and deleting is a labelled action at the
+foot of the pane, after the versions, where no press aimed at anything else
+lands: the trash and "Move to Recycle Bin" in a plain `h-9` pill in `txt3`,
+taking `dangerwash` and `danger` under the pointer the way every trash in the
+window does. A deletion that would be final - a vault that keeps no bin - reads
+"Delete forever…" and asks first.
 
 ## Asking before, and taking back after
 
@@ -138,6 +143,57 @@ version's is drawn into its row's padding, so the row is no taller. A field's
 trash is the last thing in the row and is drawn only while the row is under the
 pointer or holds the focus, so a row that is being read or copied from carries
 no way to lose it.
+
+## The recycle bin
+
+The mockup draws the bin as a row at the foot of the folders and as an empty
+state, and nothing of what is in it. Everything below is built from states it
+does draw.
+
+**What is in the bin is read, not edited.** An entry opened there is drawn the
+way the pane draws a vault Coffer will not write back, every value as text, with
+a card at the top of the pane: `surface2` behind a hairline, `rounded-sm`,
+`p-3`, the trash in `txt4`, and the sentence in `fine` and `txt2` - "In the
+Recycle Bin since 30 Sep · was in “Personal”". Where nothing says where it came
+from, the sentence says where it goes instead ("goes back to the top of the
+vault") rather than making up a past. Under it "Put back" is the one accent
+pill, the unlock button's fill at `h-9`, because putting back is what the card
+is for; "Delete forever…" beside it is a plain pill in `txt3` that takes
+`dangerwash` and `danger` only under the pointer, and asks in the same card
+before anything goes, the red answer last. A vault Coffer will not write back
+gets the sentence and no buttons.
+
+**A folder in the bin is a folder.** The bin used to pour a deleted folder out
+into itself, its entries mixed in with everything else. The folders in the part
+of the bin being shown are now rows above its entries, in the language of the
+list they sit at the top of - a band with a hairline under it in the wide list, a
+card beside an open entry - with the folder icon at the size of the list's key,
+the name in `body` and `txt2`, and the line the narrow list gives a login under
+it. Opening one shows what it holds, with the same card at the top of the list
+and the folder's name as its heading in `body` and `txt`. The bin's row in the
+folders pane stays lit while anything inside the bin is shown, since nothing
+else there is.
+
+**A row in the bin says when and where from** - "Deleted 3 days ago · from
+“Banking”" - on a second line in `sub` mono `txt4`. Beside an open entry that
+line takes the place of the login and the address. In the wide list it sits
+under the name in the first column, which makes those rows taller than the
+mockup's rows; nowhere else in the list is.
+
+**A move to the bin is taken back from its notice**, the one described above,
+for eight seconds and on Cmd+Z: "Moved “Bank” to the Recycle Bin". A folder
+moved there is offered back the same way after its question. A deletion that
+was final gets the notice without the button - "Deleted “Bank” forever" -
+because nothing can take it back.
+
+**The empty bin tells the truth.** The mockup's sentence promises that deleted
+entries stay until the bin is emptied by hand, which stopped being all of it
+once one thing could be put back or deleted on its own. It now reads "Anything
+moved here waits until it is put back or deleted forever." A folder in the bin
+with nothing left in it has an empty state of its own, the folder icon over
+the same two lines. Emptying the bin asks in the same box as before, and says
+what it is: everything in the bin deleted forever, with nothing to put back
+afterwards.
 
 ## A vault that is already there
 

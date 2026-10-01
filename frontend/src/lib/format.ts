@@ -1,5 +1,7 @@
 /** Values as the screen writes them. */
 
+import type { Entry } from './model';
+
 /**
  * A timestamp out of the database, in the reader's own clock.
  *
@@ -31,6 +33,46 @@ export function fully(stamp: string | null, now: Date): string {
 	return `${moment.getDate()} ${month(moment)} ${moment.getFullYear()}`;
 }
 
+/**
+ * A day as a sentence says it: "today", the day and the month for this year,
+ * and the year as well for any other. Nothing for a date that is not one.
+ */
+export function day(stamp: string | null, now: Date): string {
+	const moment = parse(stamp);
+	if (!moment) return '';
+	if (sameDay(moment, now)) return 'today';
+	const date = `${moment.getDate()} ${month(moment)}`;
+	return moment.getFullYear() === now.getFullYear() ? date : `${date} ${moment.getFullYear()}`;
+}
+
+/**
+ * How long ago, the way a row in the recycle bin says it: "today",
+ * "yesterday", a count of days for the week behind, and the day itself before
+ * that. A date after today is a clock somebody else set, and it is written as
+ * the day rather than counted backwards into nonsense.
+ */
+export function ago(stamp: string | null, now: Date): string {
+	const moment = parse(stamp);
+	if (!moment) return '';
+	// Counted between midnights rather than in hours, so that yesterday evening
+	// is yesterday this morning, and a clock change is not a day.
+	const days = Math.round((midnight(now) - midnight(moment)) / 86_400_000);
+	if (days === 0) return 'today';
+	if (days === 1) return 'yesterday';
+	if (days > 1 && days < 7) return `${days} days ago`;
+	return `on ${day(stamp, now)}`;
+}
+
+/**
+ * What a sentence calls an entry: its title in quotes, or "this entry" when
+ * it has none to show - left empty, or kept protected by the database, which
+ * no notice is a reason to reveal.
+ */
+export function called(entry: Entry): string {
+	const title = entry.fields.find((field) => field.kind === 'title')?.value;
+	return title ? `“${title}”` : 'this entry';
+}
+
 /** An attachment's size, in the unit that keeps it to three or four digits. */
 export function size(bytes: number): string {
 	if (bytes < 1024) return `${bytes} B`;
@@ -58,6 +100,10 @@ function sameDay(moment: Date, now: Date): boolean {
 		moment.getMonth() === now.getMonth() &&
 		moment.getDate() === now.getDate()
 	);
+}
+
+function midnight(moment: Date): number {
+	return new Date(moment.getTime()).setHours(0, 0, 0, 0);
 }
 
 function time(moment: Date): string {

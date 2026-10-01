@@ -157,6 +157,7 @@ impl From<VaultError> for Failure {
             | VaultError::UnreadableAttachments
             | VaultError::CannotMoveRoot
             | VaultError::CannotMoveIntoItself
+            | VaultError::NotInRecycleBin
             | VaultError::CopyOntoItself
             | VaultError::NothingToGenerateFrom
             | VaultError::RandomnessUnavailable => Code::Refused,
@@ -218,6 +219,7 @@ mod tests {
             (VaultError::AttachmentPinned, "refused"),
             (VaultError::AttachmentTooLarge, "refused"),
             (VaultError::CannotMoveRoot, "refused"),
+            (VaultError::NotInRecycleBin, "refused"),
             (VaultError::NothingToGenerateFrom, "refused"),
             (VaultError::Io(io::Error::other("a disk")), "io"),
         ] {

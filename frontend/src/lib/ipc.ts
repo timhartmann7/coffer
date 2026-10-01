@@ -238,6 +238,22 @@ export function deleteGroup(group: string): Promise<Group> {
 	return invoke('delete_group', { group });
 }
 
+/**
+ * Takes an entry out of the recycle bin, back to the folder it was deleted
+ * from, or to the top of the vault when that folder is nowhere to go. Rejects
+ * with `refused` for anything that is not in the bin, so an undo that arrives
+ * after the entry has already come back moves nothing.
+ */
+export function putBackEntry(entry: string): Promise<Group> {
+	return invoke('put_back_entry', { entry });
+}
+
+/** Takes a folder out of the recycle bin with everything in it, on the same
+ * terms. */
+export function putBackGroup(group: string): Promise<Group> {
+	return invoke('put_back_group', { group });
+}
+
 export function emptyRecycleBin(): Promise<Group> {
 	return invoke('empty_recycle_bin');
 }

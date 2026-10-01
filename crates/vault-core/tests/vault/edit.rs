@@ -6,7 +6,9 @@ use vault_core::model::{EntryId, Field, FieldValue, GroupId};
 use vault_core::{NewValue, Vault, VaultError};
 use zeroize::Zeroizing;
 
-use crate::support::{self, BUILT_PASSWORD, RICH, SECRET, built, entry_titled, files, open};
+use crate::support::{
+    self, BUILT_PASSWORD, RICH, SECRET, built, entry_titled, files, only_group, open,
+};
 
 /// A database with three entries in the root, each carrying one file, saved and
 /// closed so that it comes back the way a database from disk comes back.
@@ -45,27 +47,6 @@ fn only_entry(vault: &Vault, title: &str) -> EntryId {
 
 fn root_of(vault: &Vault) -> GroupId {
     vault.tree().id
-}
-
-/// The one folder with this name, wherever it sits.
-fn only_group(vault: &Vault, name: &str) -> GroupId {
-    fn walk(group: &vault_core::model::Project, name: &str, into: &mut Vec<GroupId>) {
-        if group.name == name {
-            into.push(group.id);
-        }
-        for section in &group.sections {
-            walk(section, name, into);
-        }
-    }
-
-    let mut found = Vec::new();
-    walk(&vault.tree(), name, &mut found);
-    assert_eq!(
-        found.len(),
-        1,
-        "expected exactly one folder called {name:?}"
-    );
-    found.remove(0)
 }
 
 #[test]

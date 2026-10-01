@@ -113,6 +113,11 @@ pub enum VaultError {
     #[error("a folder cannot be moved inside itself")]
     CannotMoveIntoItself,
 
+    /// Only what is in the recycle bin can be put back out of it. The bin
+    /// itself is not in the bin, and neither is anything already put back.
+    #[error("that is not in the recycle bin")]
+    NotInRecycleBin,
+
     /// What is open is one of Coffer's own snapshots. It opens like any other
     /// database and is not written back: the next save of the database it was
     /// taken from would rotate it away.

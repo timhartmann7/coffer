@@ -57,6 +57,7 @@ function show(entryOver: Parameters<typeof entry>[0]) {
 		target: host,
 		props: {
 			entry: entry(entryOver),
+			root: group({ name: 'Root' }),
 			path: [group({ name: 'Work' })],
 			versions: [],
 			now: new Date('2026-08-29T14:30:00Z'),
@@ -66,6 +67,7 @@ function show(entryOver: Parameters<typeof entry>[0]) {
 			onVersions: vi.fn(),
 			onClose: vi.fn(),
 			onDelete: vi.fn(),
+			onPutBack: vi.fn(),
 			onFieldRemoved: vi.fn(),
 			onFailure: vi.fn()
 		}
@@ -501,6 +503,7 @@ it('shows a file under the name the database holds and exports it under a safe o
 			entry: entry({
 				attachments: [attachment({ name: '../../escape.txt', fileName: 'escape.txt', size: 12 })]
 			}),
+			root: group({ name: 'Root' }),
 			path: [group({ name: 'Work' })],
 			versions: [],
 			now: new Date('2026-08-29T14:30:00Z'),
@@ -510,6 +513,7 @@ it('shows a file under the name the database holds and exports it under a safe o
 			onVersions: vi.fn(),
 			onClose: vi.fn(),
 			onDelete: vi.fn(),
+			onPutBack: vi.fn(),
 			onFieldRemoved: vi.fn(),
 			onFailure: vi.fn()
 		}
@@ -662,6 +666,7 @@ it('offers to clear the versions that are holding a file back', async () => {
 		target: host,
 		props: {
 			entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
+			root: group({ name: 'Root' }),
 			path: [group({ name: 'Work' })],
 			versions: [],
 			now: new Date('2026-08-29T14:30:00Z'),
@@ -671,6 +676,7 @@ it('offers to clear the versions that are holding a file back', async () => {
 			onVersions,
 			onClose: vi.fn(),
 			onDelete: vi.fn(),
+			onPutBack: vi.fn(),
 			onFieldRemoved: vi.fn(),
 			onFailure
 		}
@@ -717,6 +723,7 @@ it('refuses a new field named after one the entry already has', async () => {
 					field({ name: 'Notes', kind: 'notes', value: 'root access', empty: false })
 				]
 			}),
+			root: group({ name: 'Root' }),
 			path: [group({ name: 'Work' })],
 			versions: [],
 			now: new Date('2026-08-29T14:30:00Z'),
@@ -726,6 +733,7 @@ it('refuses a new field named after one the entry already has', async () => {
 			onVersions: vi.fn(),
 			onClose: vi.fn(),
 			onDelete: vi.fn(),
+			onPutBack: vi.fn(),
 			onFieldRemoved: vi.fn(),
 			onFailure
 		}
@@ -766,6 +774,7 @@ it('says nothing about the entry that was open once another one is', async () =>
 	// another entry.
 	const props = reactive({
 		entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
+		root: group({ name: 'Root' }),
 		path: [group({ name: 'Work' })],
 		versions: [],
 		now: new Date('2026-08-29T14:30:00Z'),
@@ -775,6 +784,7 @@ it('says nothing about the entry that was open once another one is', async () =>
 		onVersions: vi.fn(),
 		onClose: vi.fn(),
 		onDelete: vi.fn(),
+		onPutBack: vi.fn(),
 		onFieldRemoved: vi.fn(),
 		onFailure: vi.fn()
 	});
@@ -809,6 +819,7 @@ it('offers no change on a database it cannot write', () => {
 				tags: ['prod'],
 				attachments: [attachment({ name: 'id_ed25519' })]
 			}),
+			root: group({ name: 'Root' }),
 			path: [group({ name: 'Work' })],
 			versions: [],
 			now: new Date('2026-08-29T14:30:00Z'),
@@ -818,6 +829,7 @@ it('offers no change on a database it cannot write', () => {
 			onVersions: vi.fn(),
 			onClose: vi.fn(),
 			onDelete: vi.fn(),
+			onPutBack: vi.fn(),
 			onFieldRemoved: vi.fn(),
 			onFailure: vi.fn()
 		}
@@ -825,7 +837,8 @@ it('offers no change on a database it cannot write', () => {
 	flushSync();
 
 	expect(host.textContent).toContain('node-3');
-	expect(host.querySelector('[aria-label="Delete this entry"]')).toBeNull();
+	expect(host.textContent).not.toContain('Move to Recycle Bin');
+	expect(host.textContent).not.toContain('Delete forever');
 	expect(host.querySelector('[aria-label="Add a field"]')).toBeNull();
 	expect(host.querySelector('[aria-label="Add a file"]')).toBeNull();
 	expect(host.querySelector('[aria-label="Remove id_ed25519"]')).toBeNull();
@@ -973,10 +986,10 @@ it('keeps the password field the same box whether or not it is revealed', async 
 /**
  * A way out of the pane that is not the way to lose the entry.
  *
- * Escape closed it and nothing else did, so the pane had exactly one visible
- * button and that button was the trash. The close goes beside it and not after
- * it: the mockup's rule is that the destructive action stands at the end of a
- * row, so that missing it costs a movement rather than an entry.
+ * The trash used to stand sixteen pixels from the close, the same size and the
+ * same grey, and a press meant for one took the other. The header now carries
+ * the way out and nothing else; deleting is a labelled action at the foot of
+ * the pane, after everything else in it.
  */
 it('offers a way out of the entry, and it is not the way to delete one', () => {
 	const onClose = vi.fn();
@@ -985,6 +998,7 @@ it('offers a way out of the entry, and it is not the way to delete one', () => {
 		target: host,
 		props: {
 			entry: entry({ fields: [field({ name: 'Title', kind: 'title', value: 'node-3' })] }),
+			root: group({ name: 'Root' }),
 			path: [group({ name: 'Work' })],
 			versions: [],
 			now: new Date('2026-08-29T14:30:00Z'),
@@ -994,6 +1008,7 @@ it('offers a way out of the entry, and it is not the way to delete one', () => {
 			onVersions: vi.fn(),
 			onClose,
 			onDelete,
+			onPutBack: vi.fn(),
 			onFieldRemoved: vi.fn(),
 			onFailure: vi.fn()
 		}
@@ -1004,10 +1019,13 @@ it('offers a way out of the entry, and it is not the way to delete one', () => {
 	const buttons = [...(header?.querySelectorAll('button') ?? [])].map((each) =>
 		each.getAttribute('aria-label')
 	);
-	expect(buttons, 'the close is not the one before the delete').toEqual([
-		'Close this entry',
-		'Delete this entry'
+	expect(buttons, 'something that loses the entry is back beside the close').toEqual([
+		'Close this entry'
 	]);
+
+	// The last button in the pane, in words.
+	const all = [...host.querySelectorAll('button')];
+	expect(all.at(-1)?.textContent?.trim()).toBe('Move to Recycle Bin');
 
 	header?.querySelector<HTMLButtonElement>('button[aria-label="Close this entry"]')?.click();
 	flushSync();
@@ -1026,6 +1044,7 @@ it('still offers the way out when there is nothing else in the header', () => {
 		target: host,
 		props: {
 			entry: entry({ fields: [field({ name: 'Title', kind: 'title', value: 'node-3' })] }),
+			root: group({ name: 'Root' }),
 			path: [group({ name: 'Work' })],
 			versions: [],
 			now: new Date('2026-08-29T14:30:00Z'),
@@ -1035,6 +1054,7 @@ it('still offers the way out when there is nothing else in the header', () => {
 			onVersions: vi.fn(),
 			onClose,
 			onDelete: vi.fn(),
+			onPutBack: vi.fn(),
 			onFieldRemoved: vi.fn(),
 			onFailure: vi.fn()
 		}
@@ -1063,6 +1083,7 @@ it('does not report a change when the file panel was closed without one', async 
 		target: host,
 		props: {
 			entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
+			root: group({ name: 'Root' }),
 			path: [group({ name: 'Work' })],
 			versions: [],
 			now: new Date('2026-08-29T14:30:00Z'),
@@ -1072,6 +1093,7 @@ it('does not report a change when the file panel was closed without one', async 
 			onVersions: vi.fn(),
 			onClose: vi.fn(),
 			onDelete: vi.fn(),
+			onPutBack: vi.fn(),
 			onFieldRemoved: vi.fn(),
 			onFailure
 		}
@@ -1269,6 +1291,7 @@ it('offers the name itself once the file there has gone', async () => {
 	const first = entry({ attachments: [attachment({ name: SCAN })] });
 	const props = reactive({
 		entry: first,
+		root: group({ name: 'Root' }),
 		path: [group({ name: 'Work' })],
 		versions: [],
 		now: new Date('2026-08-29T14:30:00Z'),
@@ -1278,6 +1301,7 @@ it('offers the name itself once the file there has gone', async () => {
 		onVersions: vi.fn(),
 		onClose: vi.fn(),
 		onDelete: vi.fn(),
+		onPutBack: vi.fn(),
 		onFieldRemoved: vi.fn(),
 		onFailure: vi.fn()
 	});
@@ -1339,6 +1363,7 @@ it('lets the file go when the pane shows another entry or none', async () => {
 	const first = entry({ attachments: [attachment({ name: SCAN })] });
 	const props = reactive({
 		entry: first,
+		root: group({ name: 'Root' }),
 		path: [group({ name: 'Work' })],
 		versions: [],
 		now: new Date('2026-08-29T14:30:00Z'),
@@ -1348,6 +1373,7 @@ it('lets the file go when the pane shows another entry or none', async () => {
 		onVersions: vi.fn(),
 		onClose: vi.fn(),
 		onDelete: vi.fn(),
+		onPutBack: vi.fn(),
 		onFieldRemoved: vi.fn(),
 		onFailure: vi.fn()
 	});
@@ -1387,6 +1413,7 @@ it('keeps the question while the entry it is about changes', async () => {
 	const first = entry({ attachments: [attachment({ name: SCAN })] });
 	const props = reactive({
 		entry: first,
+		root: group({ name: 'Root' }),
 		path: [group({ name: 'Work' })],
 		versions: [],
 		now: new Date('2026-08-29T14:30:00Z'),
@@ -1396,6 +1423,7 @@ it('keeps the question while the entry it is about changes', async () => {
 		onVersions: vi.fn(),
 		onClose: vi.fn(),
 		onDelete: vi.fn(),
+		onPutBack: vi.fn(),
 		onFieldRemoved: vi.fn(),
 		onFailure: vi.fn()
 	});
@@ -1423,6 +1451,7 @@ it('asks nothing when the pane has moved on by the time the answer comes', async
 	const first = entry({ attachments: [attachment({ name: SCAN })] });
 	const props = reactive({
 		entry: first,
+		root: group({ name: 'Root' }),
 		path: [group({ name: 'Work' })],
 		versions: [],
 		now: new Date('2026-08-29T14:30:00Z'),
@@ -1432,6 +1461,7 @@ it('asks nothing when the pane has moved on by the time the answer comes', async
 		onVersions: vi.fn(),
 		onClose: vi.fn(),
 		onDelete: vi.fn(),
+		onPutBack: vi.fn(),
 		onFieldRemoved: vi.fn(),
 		onFailure: vi.fn()
 	});
@@ -1513,6 +1543,7 @@ it('copies a protected own field through rust rather than off the screen', async
 					field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false })
 				]
 			}),
+			root: group({ name: 'Root' }),
 			path: [group({ name: 'Work' })],
 			versions: [],
 			now: new Date('2026-08-29T14:30:00Z'),
@@ -1522,6 +1553,7 @@ it('copies a protected own field through rust rather than off the screen', async
 			onVersions: vi.fn(),
 			onClose: vi.fn(),
 			onDelete: vi.fn(),
+			onPutBack: vi.fn(),
 			onFieldRemoved: vi.fn(),
 			onFailure: vi.fn()
 		}
@@ -1554,6 +1586,7 @@ it('writes a protected own field back only when the reader typed in it', async (
 					field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false })
 				]
 			}),
+			root: group({ name: 'Root' }),
 			path: [group({ name: 'Work' })],
 			versions: [],
 			now: new Date('2026-08-29T14:30:00Z'),
@@ -1563,6 +1596,7 @@ it('writes a protected own field back only when the reader typed in it', async (
 			onVersions: vi.fn(),
 			onClose: vi.fn(),
 			onDelete: vi.fn(),
+			onPutBack: vi.fn(),
 			onFieldRemoved: vi.fn(),
 			onFailure: vi.fn()
 		}
@@ -1617,6 +1651,7 @@ it('writes nothing when the reader escapes out of a protected own field', async 
 					field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false })
 				]
 			}),
+			root: group({ name: 'Root' }),
 			path: [group({ name: 'Work' })],
 			versions: [],
 			now: new Date('2026-08-29T14:30:00Z'),
@@ -1626,6 +1661,7 @@ it('writes nothing when the reader escapes out of a protected own field', async 
 			onVersions: vi.fn(),
 			onClose: vi.fn(),
 			onDelete: vi.fn(),
+			onPutBack: vi.fn(),
 			onFieldRemoved: vi.fn(),
 			onFailure: vi.fn()
 		}
@@ -1660,6 +1696,7 @@ it('offers a look and a copy of a protected own field it cannot write', async ()
 					field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false })
 				]
 			}),
+			root: group({ name: 'Root' }),
 			path: [group({ name: 'Work' })],
 			versions: [],
 			now: new Date('2026-08-29T14:30:00Z'),
@@ -1669,6 +1706,7 @@ it('offers a look and a copy of a protected own field it cannot write', async ()
 			onVersions: vi.fn(),
 			onClose: vi.fn(),
 			onDelete: vi.fn(),
+			onPutBack: vi.fn(),
 			onFieldRemoved: vi.fn(),
 			onFailure: vi.fn()
 		}
@@ -1693,6 +1731,7 @@ it('offers a look and a copy of a protected own field it cannot write', async ()
 function pane(over: Parameters<typeof entry>[0], readOnly = false) {
 	const props = {
 		entry: entry(over),
+		root: group({ name: 'Root' }),
 		path: [group({ name: 'Work' })],
 		versions: [],
 		now: new Date('2026-08-29T14:30:00Z'),
@@ -1702,6 +1741,7 @@ function pane(over: Parameters<typeof entry>[0], readOnly = false) {
 		onVersions: vi.fn(),
 		onClose: vi.fn(),
 		onDelete: vi.fn(),
+		onPutBack: vi.fn(),
 		onFieldRemoved: vi.fn(),
 		onFailure: vi.fn()
 	};
@@ -1812,6 +1852,7 @@ it('keeps the question when the copy could not be saved', async () => {
 it('asks nothing about a file once another entry is open', () => {
 	const props = reactive({
 		entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
+		root: group({ name: 'Root' }),
 		path: [group({ name: 'Work' })],
 		versions: [],
 		now: new Date('2026-08-29T14:30:00Z'),
@@ -1821,6 +1862,7 @@ it('asks nothing about a file once another entry is open', () => {
 		onVersions: vi.fn(),
 		onClose: vi.fn(),
 		onDelete: vi.fn(),
+		onPutBack: vi.fn(),
 		onFieldRemoved: vi.fn(),
 		onFailure: vi.fn()
 	});
@@ -1871,6 +1913,7 @@ it('tells the window which field came off, once the change is in', async () => {
 		entry: entry({
 			fields: [field({ name: 'PIN', kind: 'custom', protected: true, value: null, empty: false })]
 		}),
+		root: group({ name: 'Root' }),
 		path: [group({ name: 'Work' })],
 		versions: [],
 		now: new Date('2026-08-29T14:30:00Z'),
@@ -1880,6 +1923,7 @@ it('tells the window which field came off, once the change is in', async () => {
 		onVersions: vi.fn(),
 		onClose: vi.fn(),
 		onDelete: vi.fn(),
+		onPutBack: vi.fn(),
 		onFieldRemoved: vi.fn(),
 		onFailure: vi.fn()
 	};
@@ -1943,6 +1987,258 @@ it("keeps a field's trash at the far end of its row, out of sight until it is wa
 	}
 	// On the protected row, the button before the trash is the copy.
 	expect(icon('Remove the field API token').previousElementSibling).toBe(icon('Copy API token'));
+
+	return unmount(component);
+});
+
+/** The pane on an entry, with the tree around it that names folders. */
+function deleting(over: Parameters<typeof entry>[0], readOnly = false, root = group()) {
+	const props = reactive({
+		entry: entry(over),
+		root,
+		path: [group({ name: 'Work' })],
+		versions: [],
+		now: new Date('2026-08-29T14:30:00Z'),
+		readOnly,
+		onCopy: vi.fn(),
+		onChanged: vi.fn(),
+		onVersions: vi.fn(),
+		onClose: vi.fn(),
+		onDelete: vi.fn(),
+		onPutBack: vi.fn(),
+		onFieldRemoved: vi.fn(),
+		onFailure: vi.fn()
+	});
+	const component = mount(EntryView, { target: host, props });
+	flushSync();
+	return { component, props };
+}
+
+const titled = (title: string | null) => [
+	field({ name: 'Title', kind: 'title', value: title, protected: title === null, empty: false })
+];
+
+/**
+ * A move to the bin is taken back from the notice that follows it, so the
+ * press goes at once: a question in front of something that can be undone is
+ * a question people learn to click through, and then it is no use for the one
+ * that cannot.
+ */
+it('moves an entry to the bin from the foot of the pane at once', () => {
+	const { component, props } = deleting({ fields: titled('Bank'), deletion: 'bin' });
+
+	button('Move to Recycle Bin').click();
+	flushSync();
+
+	expect(props.onDelete).toHaveBeenCalledTimes(1);
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+
+	return unmount(component);
+});
+
+/**
+ * An entry whose deletion is final - a vault that keeps no bin - says so
+ * before it goes, names it, keeps it on the way out and on Escape, and goes
+ * only on the red answer.
+ */
+it('asks before an entry goes for good, and keeps it on the way out', () => {
+	const { component, props } = deleting({ fields: titled('Bank'), deletion: 'forever' });
+
+	expect(host.textContent).not.toContain('Move to Recycle Bin');
+	button('Delete forever…').click();
+	flushSync();
+
+	expect(host.querySelector('[data-confirm]')?.textContent).toContain(
+		'Delete “Bank” forever? This can’t be undone.'
+	);
+	expect(document.activeElement).toBe(button('Keep it'));
+	expect(props.onDelete).not.toHaveBeenCalled();
+
+	button('Keep it').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+	flushSync();
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+	expect(props.onDelete).not.toHaveBeenCalled();
+
+	button('Delete forever…').click();
+	flushSync();
+	button('Delete forever').click();
+	flushSync();
+	expect(props.onDelete).toHaveBeenCalledTimes(1);
+
+	return unmount(component);
+});
+
+/** A title the database protects is not revealed to be put in a question, and
+ * an empty one is not written as a pair of quotes around nothing. */
+it('calls an entry with no title it can show "this entry"', () => {
+	for (const title of [null, '']) {
+		const { component } = deleting({ fields: titled(title), deletion: 'forever' });
+		button('Delete forever…').click();
+		flushSync();
+		expect(host.querySelector('[data-confirm]')?.textContent).toContain(
+			'Delete this entry forever?'
+		);
+		void unmount(component);
+	}
+});
+
+/** A question about deleting one entry for good is never still open over the
+ * next one, where its red answer would delete an entry nobody asked about. */
+it('drops the question about deleting an entry when another is shown', () => {
+	const { component, props } = deleting({ fields: titled('Bank'), deletion: 'forever' });
+	button('Delete forever…').click();
+	flushSync();
+	expect(host.querySelector('[data-confirm]')).not.toBeNull();
+
+	props.entry = entry({ fields: titled('Mail'), deletion: 'forever' });
+	flushSync();
+
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+	expect(props.onDelete).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/** The same for the card over an entry in the bin: its question belongs to the
+ * entry it was asked about. */
+it('drops the question about deleting an entry in the bin when another is shown', () => {
+	const binned = { since: null, from: null };
+	const { component, props } = deleting({ fields: titled('Bank'), binned, deletion: 'forever' });
+	button('Delete forever…').click();
+	flushSync();
+	expect(host.querySelector('[data-confirm]')?.textContent).toContain('“Bank”');
+
+	props.entry = entry({ fields: titled('Mail'), binned, deletion: 'forever' });
+	flushSync();
+
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+	expect(props.onDelete).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+const personal = group({ name: 'Personal' });
+const tree = group({ name: 'Root', sections: [personal] });
+
+/**
+ * An entry opened in the bin is read, not edited: every field is text, there
+ * is nothing to add or take away, and the one thing on offer is to put it back
+ * or let it go. The sentence over it says since when and where from.
+ */
+it('shows an entry in the bin read only, with the way back out on top', () => {
+	const { component, props } = deleting(
+		{
+			fields: [
+				...titled('Bank'),
+				field({ name: 'UserName', kind: 'username', value: 'me', empty: false }),
+				field({ name: 'Notes', kind: 'notes', value: 'a note', empty: false }),
+				field({ name: 'PIN', kind: 'custom', value: '2202', empty: false })
+			],
+			tags: ['money'],
+			attachments: [attachment({ name: 'statement.pdf', fileName: 'statement.pdf' })],
+			binned: { since: '2026-08-27T10:00:00Z', from: personal.id },
+			deletion: 'forever'
+		},
+		false,
+		tree
+	);
+
+	expect(host.querySelector('[data-binned]')?.textContent).toContain(
+		'In the Recycle Bin since 27 Aug · was in “Personal”'
+	);
+	const writable = [...host.querySelectorAll<HTMLInputElement>('input, textarea')].filter(
+		(each) => !each.readOnly
+	);
+	expect(writable, 'a value in the bin can be written into').toHaveLength(0);
+	for (const label of [
+		'Add a field',
+		'Add a file',
+		'Remove statement.pdf',
+		'Remove the field PIN',
+		'Remove the tag money'
+	]) {
+		expect(host.querySelector(`[aria-label="${label}"]`), label).toBeNull();
+	}
+	expect(host.textContent).not.toContain('Move to Recycle Bin');
+	// Reading is still reading: the file can still be written out.
+	expect(host.querySelector('[aria-label="Write statement.pdf out"]')).not.toBeNull();
+
+	button('Put back').click();
+	expect(props.onPutBack).toHaveBeenCalledTimes(1);
+
+	button('Delete forever…').click();
+	flushSync();
+	expect(host.querySelector('[data-confirm]')?.textContent).toContain(
+		'Delete “Bank” forever? This can’t be undone.'
+	);
+	button('Delete forever').click();
+	expect(props.onDelete).toHaveBeenCalledTimes(1);
+
+	return unmount(component);
+});
+
+/**
+ * Where the bin knows where something came from it says so, the top of the
+ * vault included. Where it does not, the sentence says where Put back takes
+ * it instead of inventing a past.
+ */
+it('says where an entry goes back to, and does not invent where it came from', () => {
+	for (const [from, said] of [
+		[tree.id, 'In the Recycle Bin since 27 Aug · was at the top of the vault'],
+		[null, 'In the Recycle Bin since 27 Aug · goes back to the top of the vault']
+	] as const) {
+		const { component } = deleting(
+			{
+				fields: titled('Bank'),
+				binned: { since: '2026-08-27T10:00:00Z', from },
+				deletion: 'forever'
+			},
+			false,
+			tree
+		);
+		expect(host.querySelector('[data-binned]')?.textContent).toContain(said);
+		void unmount(component);
+	}
+});
+
+/** A folder name out of somebody's database is text in the sentence, however
+ * much it looks like markup. */
+it('writes the name of the folder an entry came from as text', () => {
+	const hostile = group({ name: '<img src=x onerror="alert(1)">' });
+	const { component } = deleting(
+		{
+			fields: titled('Bank'),
+			binned: { since: null, from: hostile.id },
+			deletion: 'forever'
+		},
+		false,
+		group({ sections: [hostile] })
+	);
+
+	expect(host.querySelector('img')).toBeNull();
+	expect(host.querySelector('[data-binned]')?.textContent).toContain(
+		'In the Recycle Bin · was in “<img src=x onerror="alert(1)">”'
+	);
+
+	return unmount(component);
+});
+
+/** A database Coffer will not write back says what is in its bin and offers
+ * nothing it would only refuse. */
+it('offers no way out of the bin on a database it cannot write', () => {
+	const { component } = deleting(
+		{
+			fields: titled('Bank'),
+			binned: { since: '2026-08-27T10:00:00Z', from: personal.id },
+			deletion: 'forever'
+		},
+		true,
+		tree
+	);
+
+	expect(host.querySelector('[data-binned]')?.textContent).toContain('was in “Personal”');
+	expect(host.textContent).not.toContain('Put back');
+	expect(host.textContent).not.toContain('Delete forever');
 
 	return unmount(component);
 });

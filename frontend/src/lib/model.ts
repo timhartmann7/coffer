@@ -97,6 +97,27 @@ export interface Field {
 	openable: boolean;
 }
 
+/**
+ * What deleting something does, known before anybody asks for it: it moves to
+ * the recycle bin and can be put back, or it goes out of the file for good.
+ * Rust answers it for every entry and every folder, from the file as it is
+ * now, so a reload that brought in a vault which stopped keeping a bin is
+ * answered by the next tree.
+ */
+type Deletion = 'bin' | 'forever';
+
+/** What is known about something in the recycle bin. */
+export interface Binned {
+	/** When it went in: its own move, or that of the folder it went in with. */
+	since: string | null;
+	/**
+	 * The id of the folder it was in, which is where putting it back takes it.
+	 * `null` when that is not known, has gone, or is in the bin too, and
+	 * putting it back takes it to the top of the vault instead.
+	 */
+	from: string | null;
+}
+
 /** What a list row may know. Notes and custom fields are not here. */
 export interface EntryRow {
 	id: string;
@@ -108,12 +129,18 @@ export interface EntryRow {
 	modified: string | null;
 	hasPassword: boolean;
 	attachments: number;
+	/** When the entry is in the recycle bin, when it went in and where from. */
+	binned: Binned | null;
 }
 
 export interface Group {
 	id: string;
 	name: string;
 	isRecycleBin: boolean;
+	/** When the folder is in the recycle bin, when it went in and where it goes
+	 * back to. `null` for the bin itself and for everything outside it. */
+	binned: Binned | null;
+	deletion: Deletion;
 	sections: Group[];
 	entries: EntryRow[];
 }
@@ -162,6 +189,10 @@ export interface Entry {
 	tags: string[];
 	created: string | null;
 	modified: string | null;
+	/** When the entry is in the recycle bin, when it went in and where it goes
+	 * back to. Such an entry is shown read only. */
+	binned: Binned | null;
+	deletion: Deletion;
 }
 
 /** One previous version of an entry, as the versions block lists them. */

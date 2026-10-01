@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import { when } from '$lib/format';
 	import type { EntryRow } from '$lib/model';
 	import Icon from './Icon.svelte';
@@ -9,11 +10,18 @@
 	let {
 		rows,
 		now,
+		note,
+		before,
 		onOpen,
 		onCopy
 	}: {
 		rows: EntryRow[];
 		now: Date;
+		/** A line under a row's name, for a list that has something to say about
+		 * each row the columns do not: in the bin, when and where from. */
+		note?: (row: EntryRow) => string;
+		/** Rows of another kind at the top of the list, scrolled with it. */
+		before?: Snippet;
 		onOpen: (id: string) => void;
 		onCopy: (row: EntryRow, field: 'UserName' | 'Password') => void;
 	} = $props();
@@ -33,6 +41,7 @@
 </div>
 
 <div class="flex-1 overflow-y-auto text-body">
+	{@render before?.()}
 	{#each rows as row (row.id)}
 		<!--
 			The whole row opens the entry, not the name in it. The row is what
@@ -51,15 +60,22 @@
 				onclick={() => onOpen(row.id)}
 				class="grid w-full grid-cols-[1.5fr_0.85fr_0.85fr_78px_66px] items-center gap-4 px-5 py-[11px] text-left"
 			>
-				<span class="flex min-w-0 items-center gap-2 truncate text-txt2">
-					<Icon
-						name={row.hasPassword || row.attachments === 0 ? 'key' : 'clip'}
-						class="h-3.5 w-3.5 shrink-0 text-txt4"
-					/>
-					{#if row.title === null}
-						<Mask />
-					{:else}
-						<span class="truncate">{row.title}</span>
+				<span class="block min-w-0">
+					<span class="flex min-w-0 items-center gap-2 truncate text-txt2">
+						<Icon
+							name={row.hasPassword || row.attachments === 0 ? 'key' : 'clip'}
+							class="h-3.5 w-3.5 shrink-0 text-txt4"
+						/>
+						{#if row.title === null}
+							<Mask />
+						{:else}
+							<span class="truncate">{row.title}</span>
+						{/if}
+					</span>
+					{#if note}
+						<span class="mt-1 block truncate pl-[22px] font-mono text-sub text-txt4">
+							{note(row)}
+						</span>
 					{/if}
 				</span>
 

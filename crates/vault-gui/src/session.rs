@@ -925,6 +925,54 @@ mod tests {
         );
     }
 
+    /// The bin as the window is sent it, from a file KeePassXC wrote: the entry
+    /// in it says which folder it goes back to by that folder's id, says that
+    /// deleting it again is for good, and once put back crosses as an entry like
+    /// any other. A second put back is a refusal rather than a second move.
+    #[test]
+    fn an_entry_in_the_bin_crosses_saying_where_it_goes_and_is_put_back_there() {
+        let (_scratch, session) = unlocked(RICH);
+        let deleted = entry_titled(&session, "deleted entry");
+        let tree = serde_json::to_value(crate::dto::Group::of(
+            &session.tree().expect("the tree comes back"),
+        ))
+        .expect("it serialises");
+
+        let sections = tree["sections"].as_array().expect("the top has folders");
+        let named = |name: &str| {
+            sections
+                .iter()
+                .find(|section| section["name"] == name)
+                .unwrap_or_else(|| panic!("the fixture has {name}"))
+        };
+        let work = named("Work")["id"].clone();
+        let bin = named("Recycle Bin");
+        assert_eq!(bin["isRecycleBin"], true);
+        assert_eq!(bin["entries"][0]["binned"]["from"], work);
+        assert_eq!(named("Work")["deletion"], "bin");
+
+        let drawn = serde_json::to_value(crate::dto::Entry::of(&deleted)).expect("it serialises");
+        assert_eq!(drawn["deletion"], "forever");
+        assert_eq!(drawn["binned"]["from"], work);
+
+        session
+            .with_mut(|vault| vault.put_back_entry(deleted.id))
+            .expect("the session is open")
+            .expect("it is put back");
+        let back = serde_json::to_value(crate::dto::Entry::of(
+            &session.entry(deleted.id).expect("the entry comes back"),
+        ))
+        .expect("it serialises");
+        assert_eq!(back["group"], work);
+        assert_eq!(back["binned"], serde_json::Value::Null);
+        assert_eq!(back["deletion"], "bin");
+
+        assert!(matches!(
+            session.with_mut(|vault| vault.put_back_entry(deleted.id)),
+            Ok(Err(VaultError::NotInRecycleBin))
+        ));
+    }
+
     /// The screen locks while a vault is opening.
     ///
     /// Opening is the moment a vault is most exposed: the password is in

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import type { EntryRow } from '$lib/model';
 	import Icon from './Icon.svelte';
 	import Mask from './Mask.svelte';
@@ -17,11 +18,19 @@
 	let {
 		rows,
 		open,
+		note,
+		before,
 		onOpen,
 		onDismiss
 	}: {
 		rows: EntryRow[];
 		open: string | null;
+		/** What a row's second line says in place of the login and the address,
+		 * for a list that has something to say about each row: in the bin, when
+		 * and where from. */
+		note?: (row: EntryRow) => string;
+		/** Rows of another kind at the top of the list, scrolled with it. */
+		before?: Snippet;
 		onOpen: (id: string) => void;
 		/** What the empty part of the list under the rows does: it puts the open
 		 * entry away, the way pressing Escape does. */
@@ -52,6 +61,7 @@
 	onclick={(event) => event.target === event.currentTarget && onDismiss()}
 	class="flex-1 overflow-y-auto p-2"
 >
+	{@render before?.()}
 	{#each rows as row (row.id)}
 		{@const here = row.id === open}
 		<button
@@ -83,7 +93,7 @@
 			<span
 				class="mt-1 block truncate pl-[22px] font-mono text-sub {here ? 'text-txt3' : 'text-txt4'}"
 			>
-				{subtitle(row)}
+				{note ? note(row) : subtitle(row)}
 			</span>
 		</button>
 	{/each}

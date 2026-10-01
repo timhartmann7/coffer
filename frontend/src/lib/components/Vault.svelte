@@ -11,6 +11,8 @@
 		deleteGroup,
 		emptyRecycleBin,
 		entry as loadEntry,
+		putBackEntry,
+		putBackGroup,
 		reload,
 		renameGroup,
 		restoreVersion,
@@ -21,11 +23,14 @@
 		tree as loadTree,
 		versions as loadVersions
 	} from '$lib/ipc';
+	import { deleted as deletedLine } from '$lib/bin';
 	import { named as howLong } from '$lib/duration';
+	import { called } from '$lib/format';
 	import { RISE, span } from '$lib/motion';
 	import type { Database, Entry, EntryRow, Group, Rival, Version } from '$lib/model';
 	import { index, search } from '$lib/search';
-	import { entriesOf, liveEntries, pathTo, recycleBin, shownEntries } from '$lib/tree';
+	import { entriesOf, find, inBin, liveEntries, pathTo, recycleBin, shownEntries } from '$lib/tree';
+	import BinFolders from './BinFolders.svelte';
 	import Confirm from './Confirm.svelte';
 	import Conflict from './Conflict.svelte';
 	import Empty from './Empty.svelte';
@@ -33,6 +38,7 @@
 	import EntryListCompact from './EntryListCompact.svelte';
 	import EntryView from './EntryView.svelte';
 	import Icon from './Icon.svelte';
+	import InBin from './InBin.svelte';
 	import Toast from './Toast.svelte';
 	import Tree from './Tree.svelte';
 
@@ -142,7 +148,7 @@
 	// redrawn once a second to move one of them from "23:59" to "yesterday".
 	const now = new Date();
 
-	const shown = $derived(group === null ? root : (findGroup(root, group) ?? root));
+	const shown = $derived(group === null ? root : (find(root, group) ?? root));
 	// Walked once. The tree is the whole vault, and three walks of fifty
 	// thousand entries to draw one screen is three too many.
 	const live = $derived(liveEntries(root));
@@ -154,16 +160,16 @@
 	/** Where a new folder or entry goes: the folder being shown, or the top of
 	 * the vault when the list is showing everything. */
 	const inside = $derived(group === null ? root.id : shown.id);
-	const inBin = $derived(bin !== null && group === bin.id);
-
-	function findGroup(group: Group, id: string): Group | null {
-		if (group.id === id) return group;
-		for (const section of group.sections) {
-			const here = findGroup(section, id);
-			if (here) return here;
-		}
-		return null;
-	}
+	/** Whether the list is showing the recycle bin or a folder inside it, where
+	 * nothing is made or changed and everything is read one folder at a time. */
+	const binned = $derived(group !== null && inBin(shown));
+	/** The folders drawn above the entries in the bin. A search is for entries,
+	 * and a folder row among its answers would be one it did not look inside. */
+	const folders = $derived(binned && query === '' ? shown.sections : []);
+	/** The line under a row in the bin: when it went in, and where from. */
+	const whence = $derived(
+		binned ? (row: EntryRow) => (row.binned ? deletedLine(row.binned, root, now) : '') : undefined
+	);
 
 	function select(id: string | null) {
 		group = id;
@@ -278,15 +284,94 @@
 		}
 	}
 
+	/**
+	 * Whether a move into the bin, out of it or out of the file is on its way.
+	 *
+	 * The button that asked for it stays on the screen until Rust answers, and
+	 * a second press of "Move to Recycle Bin" in that second would find the
+	 * entry already in the bin and take it out of the file. Nothing is drawn
+	 * from it, so it is not state.
+	 */
+	let moving = false;
+
+	/** Runs one move at a time, and drops a press that arrives during one. */
+	async function once(move: () => Promise<void>) {
+		if (moving) return;
+		moving = true;
+		try {
+			await move();
+		} finally {
+			moving = false;
+		}
+	}
+
+	/**
+	 * Deletes the entry in the pane, and says what became of it.
+	 *
+	 * What became of it is read off the tree that comes back, not off what the
+	 * pane expected: an entry still in the file went to the bin and is offered
+	 * back, and one that is not went for good. A move whose save failed has a
+	 * notice of its own already, and an offer over it would push the one
+	 * sentence that matters off the screen.
+	 */
 	async function removeEntry() {
 		if (!opened) return;
 		const id = opened.id;
+		const name = called(opened);
+		let tree: Group;
 		try {
-			const tree = await deleteEntry(id);
-			opened = null;
-			versions = [];
-			await reshaped(tree);
+			tree = await deleteEntry(id);
 		} catch (thrown) {
+			failed(thrown);
+			return;
+		}
+		opened = null;
+		versions = [];
+		await reshaped(tree);
+		if (unsaved) return;
+
+		if (!entriesOf(tree).some((row) => row.id === id)) {
+			tell({ message: `Deleted ${name} forever`, kind: 'removed' }, 6000);
+			return;
+		}
+		offer(`Moved ${name} to the Recycle Bin`, async () => {
+			await reshaped(await putBackEntry(id));
+			await open(id);
+		});
+	}
+
+	/** Takes the entry in the pane out of the bin. The pane stays on it and
+	 * reads it again: back out of the bin it is an entry like any other, and the
+	 * line above its title says where it went. */
+	async function putBack() {
+		if (!opened) return;
+		const id = opened.id;
+		try {
+			await reshaped(await putBackEntry(id));
+			await reread();
+		} catch (thrown) {
+			failed(thrown);
+		}
+	}
+
+	/**
+	 * Reads the entry in the pane again after a change that moved it without
+	 * touching it.
+	 *
+	 * A folder put back takes the entries in it along, and an entry that was
+	 * open inside it would otherwise go on being drawn read only, with a banner
+	 * offering to put it back from a bin it has left.
+	 */
+	async function reread() {
+		if (!opened) return;
+		const id = opened.id;
+		try {
+			const fresh = await loadEntry(id);
+			// The save before this takes a second, and a reader who opened
+			// another entry in it is looking at that one now.
+			if (opened?.id === id) opened = fresh;
+		} catch (thrown) {
+			if (opened?.id === id) opened = null;
 			failed(thrown);
 		}
 	}
@@ -324,13 +409,61 @@
 		}
 	}
 
+	/** Deletes the folder being shown, after the question in the folders pane,
+	 * and offers it back when it went to the bin. */
 	async function removeFolder() {
 		deleting = false;
 		if (group === null) return;
+		const id = group;
+		const name = `“${shown.name}”`;
 		try {
-			const tree = await deleteGroup(group);
+			const tree = await deleteGroup(id);
 			select(null);
 			await reshaped(tree);
+			if (unsaved) return;
+			if (find(tree, id) === null) {
+				tell({ message: `Deleted ${name} forever`, kind: 'removed' }, 6000);
+				return;
+			}
+			offer(`Moved ${name} to the Recycle Bin`, async () => {
+				await reshaped(await putBackGroup(id));
+			});
+		} catch (thrown) {
+			failed(thrown);
+		}
+	}
+
+	/**
+	 * Takes the folder being shown out of the bin with everything in it.
+	 *
+	 * The list stays on it, and the folders above it are opened in the tree, so
+	 * that the place it went back to is on the screen rather than folded away.
+	 */
+	async function putBackFolder() {
+		if (group === null) return;
+		const id = group;
+		try {
+			const tree = await putBackGroup(id);
+			for (const step of pathTo(tree, id)?.slice(0, -1) ?? []) expanded.add(step.id);
+			await reshaped(tree);
+			await reread();
+		} catch (thrown) {
+			failed(thrown);
+		}
+	}
+
+	/** Deletes the folder being shown in the bin for good, and goes up to the
+	 * folder it was in. */
+	async function eraseFolder() {
+		if (group === null) return;
+		const id = group;
+		const name = `“${shown.name}”`;
+		const above = pathTo(root, id)?.at(-2)?.id ?? null;
+		try {
+			const tree = await deleteGroup(id);
+			select(above);
+			await reshaped(tree);
+			if (!unsaved) tell({ message: `Deleted ${name} forever`, kind: 'removed' }, 6000);
 		} catch (thrown) {
 			failed(thrown);
 		}
@@ -673,6 +806,10 @@
 
 <svelte:window onkeydown={shortcut} />
 
+{#snippet deletedFolders()}
+	<BinFolders {folders} {root} {now} compact={opened !== null} onOpen={select} />
+{/snippet}
+
 <div class="relative flex flex-1 animate-fade flex-col overflow-hidden">
 	<!--
 		Inert while the settings are over it, and not merely covered.
@@ -709,8 +846,8 @@
 		<aside class="flex flex-col overflow-hidden border-r border-hairline bg-surface2">
 			<div class="flex shrink-0 items-center gap-1 px-4 py-3">
 				<span class="flex-1 font-mono text-label tracking-label text-txt3 uppercase">Folders</span>
-				{#if !readOnly}
-					{#if group !== null && !inBin}
+				{#if !readOnly && !binned}
+					{#if group !== null}
 						<button
 							type="button"
 							onmousedown={(event) => event.preventDefault()}
@@ -784,12 +921,17 @@
 			{/if}
 
 			{#if deleting && group !== null}
+				<!-- Named by what it does, which Rust has already said: a folder
+				     the bin is inside, or one in a vault that keeps no bin, goes
+				     for good. -->
 				<Confirm
 					class="mx-2 mb-2 shrink-0 bg-surface"
-					question="Delete “{shown.name}” and everything in it?"
-					act="Delete"
+					question={shown.deletion === 'bin'
+						? `Move “${shown.name}” and everything in it to the Recycle Bin?`
+						: `Delete “${shown.name}” and everything in it forever? This can’t be undone.`}
+					act={shown.deletion === 'bin' ? 'Move to Recycle Bin' : 'Delete forever'}
 					onKeep={() => (deleting = false)}
-					onAct={removeFolder}
+					onAct={() => void once(removeFolder)}
 				/>
 			{/if}
 
@@ -842,12 +984,11 @@
 					<button
 						type="button"
 						onclick={() => select(deleted.id)}
-						class="relative flex w-full items-center gap-2 rounded-sm px-2 py-[7px] text-body transition-colors {group ===
-						deleted.id
+						class="relative flex w-full items-center gap-2 rounded-sm px-2 py-[7px] text-body transition-colors {binned
 							? 'bg-raised text-txt'
 							: 'text-txt3 hover:bg-raised/60 hover:text-txt2'}"
 					>
-						{#if group === deleted.id}
+						{#if binned}
 							<span
 								class="absolute top-1 left-0 h-[calc(100%-8px)] w-[2px] rounded-full bg-accent"
 								aria-hidden="true"
@@ -855,14 +996,14 @@
 						{/if}
 						<Icon name="trash" class="h-4 w-4 shrink-0" />
 						<span class="flex-1 text-left">{deleted.name}</span>
-						<span class="font-mono text-meta text-txt4">{shownEntries(deleted).length}</span>
+						<span class="font-mono text-meta text-txt4">{entriesOf(deleted).length}</span>
 					</button>
 
-					{#if inBin && !readOnly && shownEntries(deleted).length > 0}
+					{#if group === deleted.id && !readOnly && (deleted.entries.length > 0 || deleted.sections.length > 0)}
 						{#if emptying}
 							<Confirm
 								class="mt-2 bg-surface"
-								question="Take all of it out of the file? This is the one deletion nothing comes back from."
+								question="Delete everything in the bin forever? Nothing in it can be put back afterwards, and this can’t be undone."
 								act="Empty it"
 								onKeep={() => (emptying = false)}
 								onAct={empty}
@@ -903,7 +1044,7 @@
 						⌘F
 					</kbd>
 				</span>
-				{#if !readOnly && !inBin}
+				{#if !readOnly && !binned}
 					<button
 						type="button"
 						onclick={addEntry}
@@ -913,6 +1054,22 @@
 					</button>
 				{/if}
 			</div>
+
+			{#if binned && shown.binned}
+				{#key shown.id}
+					<InBin
+						class="mx-5 mt-3 shrink-0"
+						binned={shown.binned}
+						{root}
+						{now}
+						name={shown.name}
+						question="Delete “{shown.name}” and everything in it forever? This can’t be undone."
+						{readOnly}
+						onPutBack={() => void once(putBackFolder)}
+						onDelete={() => void once(eraseFolder)}
+					/>
+				{/key}
+			{/if}
 
 			{#if found.length === 0 && query !== ''}
 				<Empty
@@ -948,13 +1105,21 @@
 						{/if}
 					{/snippet}
 				</Empty>
-			{:else if found.length === 0 && inBin}
-				<Empty
-					icon="trash"
-					title="The recycle bin is empty"
-					detail="Deleted entries stay here until the bin is emptied by hand."
-				/>
-			{:else if found.length === 0}
+			{:else if found.length === 0 && folders.length === 0 && binned}
+				{#if shown.isRecycleBin}
+					<Empty
+						icon="trash"
+						title="The recycle bin is empty"
+						detail="Anything moved here waits until it is put back or deleted forever."
+					/>
+				{:else}
+					<Empty
+						icon="folder"
+						title="There is nothing in “{shown.name}”"
+						detail="It is in the recycle bin with nothing left inside it."
+					/>
+				{/if}
+			{:else if found.length === 0 && !binned}
 				<Empty
 					icon="folder"
 					title="There is nothing in “{shown.name}” yet"
@@ -976,11 +1141,20 @@
 				<EntryListCompact
 					rows={found}
 					open={opened.id}
+					note={whence}
+					before={folders.length > 0 ? deletedFolders : undefined}
 					onOpen={open}
 					onDismiss={() => (opened = null)}
 				/>
 			{:else}
-				<EntryList rows={found} {now} onOpen={open} onCopy={copyFrom} />
+				<EntryList
+					rows={found}
+					{now}
+					note={whence}
+					before={folders.length > 0 ? deletedFolders : undefined}
+					onOpen={open}
+					onCopy={copyFrom}
+				/>
 			{/if}
 		</div>
 
@@ -989,6 +1163,7 @@
 				<div class="h-full w-[384px]">
 					<EntryView
 						entry={opened}
+						{root}
 						{path}
 						{versions}
 						{now}
@@ -997,7 +1172,8 @@
 						onChanged={changed}
 						onVersions={versionsChanged}
 						onClose={() => (opened = null)}
-						onDelete={removeEntry}
+						onDelete={() => void once(removeEntry)}
+						onPutBack={() => void once(putBack)}
 						onFieldRemoved={(entry, name) => void fieldRemoved(entry, name)}
 						onFailure={failed}
 					/>

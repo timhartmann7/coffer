@@ -12,6 +12,8 @@ const ipc = vi.hoisted(() => ({
 	createGroup: vi.fn(),
 	deleteEntry: vi.fn(),
 	deleteGroup: vi.fn(),
+	putBackEntry: vi.fn(),
+	putBackGroup: vi.fn(),
 	renameGroup: vi.fn(),
 	emptyRecycleBin: vi.fn(),
 	versions: vi.fn(),
@@ -1372,11 +1374,19 @@ it('leaves nothing to undo once the window is gone', async () => {
 /**
  * The folder's own question, now the one every confirmation in the window is.
  * It asks in words, keeps the folder on the way out and on Escape - without
- * the Escape reaching the list as well - and deletes only on the red answer.
+ * the Escape reaching the list as well - and moves it only on the red answer,
+ * which says where it goes. Once it has gone to the bin it is offered back.
  */
 it('asks before a folder goes, and keeps it on the way out', async () => {
 	const work = root.sections[0];
-	ipc.deleteGroup.mockResolvedValue(group({ ...root, sections: [root.sections[1]] }));
+	const binned = group({
+		...root.sections[1],
+		sections: [
+			{ ...work, binned: { since: '2026-08-29T14:00:00Z', from: root.id }, deletion: 'forever' }
+		]
+	});
+	ipc.deleteGroup.mockResolvedValue(group({ ...root, sections: [binned] }));
+	ipc.putBackGroup.mockResolvedValue(root);
 
 	const component = open();
 	flushSync();
@@ -1387,7 +1397,7 @@ it('asks before a folder goes, and keeps it on the way out', async () => {
 	trash()?.click();
 	flushSync();
 	expect(host.querySelector('[data-confirm]')?.textContent).toContain(
-		'Delete “Work” and everything in it?'
+		'Move “Work” and everything in it to the Recycle Bin?'
 	);
 	const keep = [...host.querySelectorAll('button')].find(
 		(each) => each.textContent?.trim() === 'Keep it'
@@ -1403,10 +1413,15 @@ it('asks before a folder goes, and keeps it on the way out', async () => {
 	trash()?.click();
 	flushSync();
 	[...host.querySelectorAll('button')]
-		.find((each) => each.textContent?.trim() === 'Delete')
+		.find((each) => each.textContent?.trim() === 'Move to Recycle Bin')
 		?.click();
 	await vi.waitFor(() => expect(ipc.deleteGroup).toHaveBeenCalledWith(work.id));
 	await vi.waitFor(() => expect(ipc.save).toHaveBeenCalledTimes(1));
+	await vi.waitFor(() => expect(toast()?.textContent).toContain('Moved “Work” to the Recycle Bin'));
+
+	undo()?.click();
+	await vi.waitFor(() => expect(ipc.putBackGroup).toHaveBeenCalledWith(work.id));
+	await vi.waitFor(() => expect(ipc.save).toHaveBeenCalledTimes(2));
 
 	return unmount(component);
 });
@@ -1426,7 +1441,7 @@ it('keeps the bin as it is when the reader keeps it', () => {
 	flushSync();
 
 	expect(host.querySelector('[data-confirm]')?.textContent).toContain(
-		'This is the one deletion nothing comes back from.'
+		'Delete everything in the bin forever? Nothing in it can be put back afterwards'
 	);
 	[...host.querySelectorAll('button')]
 		.find((each) => each.textContent?.trim() === 'Keep it')
@@ -1438,4 +1453,605 @@ it('keeps the bin as it is when the reader keeps it', () => {
 	expect(host.textContent).toContain('thrown away');
 
 	return unmount(component);
+});
+
+/** Everything in the vault as a reader who deleted a few things would have it:
+ * a folder of their own in the bin with an entry inside it, and an entry that
+ * went on its own. */
+function binnedVault() {
+	const personal = group({ name: 'Personal', entries: [row({ title: 'Bank' })] });
+	const work = group({ name: 'Work' });
+	const card = row({
+		title: 'Visa',
+		binned: { since: '2026-08-26T09:00:00Z', from: null }
+	});
+	const banking = group({
+		name: 'Banking',
+		binned: { since: '2026-08-26T09:00:00Z', from: personal.id },
+		deletion: 'forever',
+		entries: [card]
+	});
+	const mail = row({
+		title: 'Old mail',
+		binned: { since: '2026-08-28T10:00:00Z', from: work.id }
+	});
+	const bin = group({
+		name: 'Recycle Bin',
+		isRecycleBin: true,
+		deletion: 'forever',
+		entries: [mail],
+		sections: [banking]
+	});
+	const tree = group({ name: 'Root', deletion: 'forever', sections: [personal, work, bin] });
+	return { tree, personal, work, bin, banking, card, mail };
+}
+
+/** The same vault after the folder in the bin went back where it came from. */
+function putBack(vault: ReturnType<typeof binnedVault>) {
+	const banking = {
+		...vault.banking,
+		binned: null,
+		deletion: 'bin' as const,
+		entries: [{ ...vault.card, binned: null }]
+	};
+	return group({
+		...vault.tree,
+		sections: [
+			{ ...vault.personal, sections: [banking] },
+			vault.work,
+			{ ...vault.bin, sections: [] }
+		]
+	});
+}
+
+function titled(id: string, title: string, over: Parameters<typeof entry>[0] = {}) {
+	return entry({
+		id,
+		group: root.id,
+		fields: [field({ name: 'Title', kind: 'title', value: title, empty: false })],
+		...over
+	});
+}
+
+/** A window on a given tree, with the clock where the dates in it make sense. */
+function mounted(tree: typeof root, readOnly = false) {
+	vi.useFakeTimers();
+	vi.setSystemTime(new Date('2026-08-29T14:30:00Z'));
+	ipc.tree.mockResolvedValue(tree);
+	const onTree = vi.fn();
+	const component = mount(Vault, {
+		target: host,
+		props: { database, root: tree, readOnly, onSettings: vi.fn(), onTree }
+	});
+	flushSync();
+	return { component, onTree };
+}
+
+function pressed(label: string, within: ParentNode = host) {
+	const found = [...within.querySelectorAll('button')].find(
+		(each) => each.textContent?.trim() === label || each.textContent?.includes(label)
+	);
+	if (!found) throw new Error(`no button for ${label}`);
+	found.click();
+}
+
+/** The card in the list that says the folder being shown is in the bin. */
+const folderCard = () =>
+	[...host.querySelectorAll<HTMLElement>('[data-binned]')].find(
+		(card) => !card.closest('section')
+	) ?? null;
+/** The card in the entry pane that says the entry is in the bin. */
+const entryCard = () => host.querySelector<HTMLElement>('section [data-binned]');
+
+/**
+ * A folder that went into the bin is a folder there: a row of its own with
+ * when it went and where from, above the entries that went on their own - and
+ * its entries are inside it rather than poured out around it.
+ */
+it('shows a deleted folder as a folder in the bin, saying when and where from', async () => {
+	const vault = binnedVault();
+	const { component } = mounted(vault.tree);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+
+		const folders = [...host.querySelectorAll('[data-folder]')];
+		expect(folders).toHaveLength(1);
+		expect(folders[0].textContent).toContain('Banking');
+		expect(folders[0].textContent).toContain('Deleted 3 days ago · from “Personal”');
+		expect(reads()).toContain('Old mail');
+		expect(reads()).toContain('Deleted yesterday · from “Work”');
+		expect(reads(), 'the folder was poured out into the bin').not.toContain('Visa');
+		// Nothing is made in the bin.
+		expect(host.querySelector('[aria-label="New folder"]')).toBeNull();
+		expect(reads()).not.toContain('+ Entry');
+		expect(reads()).toContain('Empty the bin');
+		// The bin itself is not in the bin: nothing offers to put it back or to
+		// delete it from inside.
+		expect(folderCard()).toBeNull();
+		expect(host.querySelector('[aria-label="Delete this folder"]')).toBeNull();
+
+		(folders[0] as HTMLElement).click();
+		flushSync();
+		expect(folderCard()?.textContent).toContain('Banking');
+		expect(folderCard()?.textContent).toContain(
+			'In the Recycle Bin since 26 Aug · was in “Personal”'
+		);
+		expect(reads()).toContain('Visa');
+		expect(reads()).toContain('Deleted 3 days ago');
+		expect(reads(), 'emptying is for the whole bin, not a folder in it').not.toContain(
+			'Empty the bin'
+		);
+		expect(host.querySelector('[aria-label="Delete this folder"]')).toBeNull();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A search is over the vault the reader works in. What is in the bin is not
+ * in "All entries" and does not answer a search there. */
+it('leaves the bin out of All entries and out of a search there', async () => {
+	const vault = binnedVault();
+	const { component } = mounted(vault.tree);
+	try {
+		expect(reads()).toContain('Bank');
+		expect(reads()).not.toContain('Old mail');
+		type('mail');
+		expect(reads()).toContain('Nothing matches');
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * Moving an entry to the bin is the one press in the pane that used to lose
+ * it, and it is taken back from the notice that follows: for eight seconds, on
+ * the notice's button and on Cmd+Z, once. Taking it back opens it again.
+ */
+it('moves the open entry to the bin and offers it back', async () => {
+	const bank = row({ title: 'node-3' });
+	const before = group({
+		name: 'Root',
+		entries: [bank],
+		sections: [group({ name: 'Recycle Bin', isRecycleBin: true, deletion: 'forever' })]
+	});
+	const after = group({
+		...before,
+		entries: [],
+		sections: [
+			group({
+				name: 'Recycle Bin',
+				isRecycleBin: true,
+				deletion: 'forever',
+				entries: [{ ...bank, binned: { since: '2026-08-29T14:30:00Z', from: before.id } }]
+			})
+		]
+	});
+	ipc.entry.mockResolvedValue(titled(bank.id, 'node-3'));
+	ipc.deleteEntry.mockResolvedValue(after);
+	ipc.putBackEntry.mockResolvedValue(before);
+	ipc.save.mockResolvedValue(undefined);
+
+	const { component, onTree } = mounted(before);
+	try {
+		pressed('node-3');
+		await settled();
+		ipc.entry.mockClear();
+
+		pressed('Move to Recycle Bin');
+		await settled();
+
+		expect(ipc.deleteEntry).toHaveBeenCalledWith(bank.id);
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+		expect(onTree).toHaveBeenLastCalledWith(after);
+		expect(host.querySelector('h1'), 'the pane stayed open on a deleted entry').toBeNull();
+		expect(toast()?.textContent).toContain('Moved “node-3” to the Recycle Bin');
+		expect(undo()?.textContent).toContain('Undo');
+
+		expect(press('z').defaultPrevented).toBe(true);
+		press('z');
+		undo()?.click();
+		await settled();
+
+		expect(ipc.putBackEntry).toHaveBeenCalledTimes(1);
+		expect(ipc.putBackEntry).toHaveBeenCalledWith(bank.id);
+		expect(ipc.save).toHaveBeenCalledTimes(2);
+		expect(onTree).toHaveBeenLastCalledWith(before);
+		expect(ipc.entry, 'the entry taken back was not opened again').toHaveBeenCalledWith(bank.id);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Eight seconds, like every offer, and a press after that takes nothing
+ * back. */
+it('withdraws the offer of a moved entry once its eight seconds are up', async () => {
+	const bank = row({ title: 'node-3' });
+	const before = group({ name: 'Root', entries: [bank] });
+	const bin = group({
+		name: 'Recycle Bin',
+		isRecycleBin: true,
+		deletion: 'forever',
+		entries: [{ ...bank, binned: { since: null, from: before.id } }]
+	});
+	ipc.entry.mockResolvedValue(titled(bank.id, 'node-3'));
+	ipc.deleteEntry.mockResolvedValue(group({ ...before, entries: [], sections: [bin] }));
+
+	const { component } = mounted(before);
+	try {
+		pressed('node-3');
+		await settled();
+		pressed('Move to Recycle Bin');
+		await settled();
+
+		await vi.advanceTimersByTimeAsync(8_000);
+		flushSync();
+		expect(press('z').defaultPrevented).toBe(false);
+		await settled();
+		expect(ipc.putBackEntry).not.toHaveBeenCalled();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * What happened is read off the tree Rust answered with. An entry the pane
+ * expected to go to the bin and that is not in the file any more went for
+ * good, and an offer to put it back would be an offer to do something nobody
+ * can.
+ */
+it('says an entry went for good when it is not in the tree that came back', async () => {
+	const bank = row({ title: 'node-3' });
+	const before = group({ name: 'Root', entries: [bank] });
+	ipc.entry.mockResolvedValue(titled(bank.id, 'node-3', { deletion: 'bin' }));
+	ipc.deleteEntry.mockResolvedValue(group({ ...before, entries: [] }));
+
+	const { component } = mounted(before);
+	try {
+		pressed('node-3');
+		await settled();
+		pressed('Move to Recycle Bin');
+		await settled();
+
+		expect(toast()?.textContent).toContain('Deleted “node-3” forever');
+		expect(undo()).toBeNull();
+		expect(press('z').defaultPrevented).toBe(false);
+		await settled();
+		expect(ipc.putBackEntry).not.toHaveBeenCalled();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A move whose save failed is in memory and not in the file. The failure is
+ * the sentence that matters, and an offer would push it off the screen. */
+it('offers nothing back over a move whose save failed', async () => {
+	const bank = row({ title: 'node-3' });
+	const before = group({ name: 'Root', entries: [bank] });
+	const bin = group({
+		name: 'Recycle Bin',
+		isRecycleBin: true,
+		deletion: 'forever',
+		entries: [{ ...bank, binned: { since: null, from: before.id } }]
+	});
+	ipc.entry.mockResolvedValue(titled(bank.id, 'node-3'));
+	ipc.deleteEntry.mockResolvedValue(group({ ...before, entries: [], sections: [bin] }));
+	ipc.save.mockRejectedValue({ code: 'io', message: 'No space left on device' });
+
+	const { component } = mounted(before);
+	try {
+		pressed('node-3');
+		await settled();
+		pressed('Move to Recycle Bin');
+		await settled();
+
+		expect(toast()?.textContent).toContain('No space left on device');
+		expect(undo()).toBeNull();
+		expect(reads()).toContain('Not saved');
+	} finally {
+		await unmount(component);
+		ipc.save.mockReset();
+		ipc.save.mockResolvedValue(undefined);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * An entry opened in the bin is read only, and its card is the way out: Put
+ * back takes it home and the pane stays on it, read again as an entry like any
+ * other; Delete forever asks first and is not offered back.
+ */
+it('puts an entry back from the bin, or deletes it for good after asking', async () => {
+	const vault = binnedVault();
+	const inBin = titled(vault.mail.id, 'Old mail', {
+		binned: vault.mail.binned,
+		deletion: 'forever'
+	});
+	const home = titled(vault.mail.id, 'Old mail', { group: vault.work.id });
+	ipc.entry.mockResolvedValue(inBin);
+	ipc.putBackEntry.mockResolvedValue(vault.tree);
+
+	const { component } = mounted(vault.tree);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		pressed('Old mail');
+		await settled();
+
+		expect(entryCard()?.textContent).toContain('In the Recycle Bin since 28 Aug · was in “Work”');
+		expect(host.querySelector('section h1 input'), 'the title can be written into').toBeNull();
+
+		ipc.entry.mockResolvedValue(home);
+		pressed('Put back', entryCard() ?? host);
+		await settled();
+		expect(ipc.putBackEntry).toHaveBeenCalledWith(vault.mail.id);
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+		expect(entryCard(), 'the pane still says the entry is in the bin').toBeNull();
+		expect(host.querySelector('section h1 input')).not.toBeNull();
+
+		// And the other way out, from the bin again.
+		ipc.entry.mockResolvedValue(inBin);
+		pressed('Old mail');
+		await settled();
+		ipc.deleteEntry.mockResolvedValue(
+			group({
+				...vault.tree,
+				sections: [vault.personal, vault.work, { ...vault.bin, entries: [] }]
+			})
+		);
+		pressed('Delete forever…', entryCard() ?? host);
+		flushSync();
+		expect(host.querySelector('[data-confirm]')?.textContent).toContain(
+			'Delete “Old mail” forever? This can’t be undone.'
+		);
+		expect(ipc.deleteEntry).not.toHaveBeenCalled();
+		pressed('Delete forever', host.querySelector('[data-confirm]') ?? host);
+		await settled();
+
+		expect(ipc.deleteEntry).toHaveBeenCalledWith(vault.mail.id);
+		expect(toast()?.textContent).toContain('Deleted “Old mail” forever');
+		expect(undo()).toBeNull();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * A folder put back takes the entries in it along. One of them open in the
+ * pane is read again, so the pane does not go on offering to put back an entry
+ * that has already left the bin with its folder.
+ */
+it('puts a folder back and reads the entry open inside it again', async () => {
+	const vault = binnedVault();
+	const after = putBack(vault);
+	ipc.entry.mockResolvedValue(
+		titled(vault.card.id, 'Visa', { binned: vault.card.binned, deletion: 'forever' })
+	);
+	ipc.putBackGroup.mockResolvedValue(after);
+
+	const { component, onTree } = mounted(vault.tree);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		(host.querySelector('[data-folder]') as HTMLElement).click();
+		flushSync();
+		pressed('Visa');
+		await settled();
+		expect(entryCard()).not.toBeNull();
+
+		ipc.entry.mockResolvedValue(titled(vault.card.id, 'Visa'));
+		pressed('Put back', folderCard() ?? host);
+		await settled();
+
+		expect(ipc.putBackGroup).toHaveBeenCalledWith(vault.banking.id);
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+		expect(onTree).toHaveBeenLastCalledWith(after);
+		expect(ipc.entry).toHaveBeenLastCalledWith(vault.card.id);
+		expect(entryCard(), 'the pane still offers to put back an entry that is out').toBeNull();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A folder deleted for good from inside the bin asks first, goes, and the
+ * list goes up to the folder it was in. */
+it('deletes a folder in the bin for good after asking, and goes up a level', async () => {
+	const vault = binnedVault();
+	const after = group({
+		...vault.tree,
+		sections: [vault.personal, vault.work, { ...vault.bin, sections: [] }]
+	});
+	ipc.deleteGroup.mockResolvedValue(after);
+
+	const { component } = mounted(vault.tree);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		(host.querySelector('[data-folder]') as HTMLElement).click();
+		flushSync();
+
+		pressed('Delete forever…', folderCard() ?? host);
+		flushSync();
+		expect(host.querySelector('[data-confirm]')?.textContent).toContain(
+			'Delete “Banking” and everything in it forever? This can’t be undone.'
+		);
+		pressed('Delete forever', host.querySelector('[data-confirm]') ?? host);
+		await settled();
+
+		expect(ipc.deleteGroup).toHaveBeenCalledWith(vault.banking.id);
+		expect(toast()?.textContent).toContain('Deleted “Banking” forever');
+		expect(undo()).toBeNull();
+		expect(reads(), 'the list did not go back up to the bin').toContain('Old mail');
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * A vault that keeps no bin, or a folder the bin is inside, deletes a folder
+ * for good. Rust has already said so, and the question says it too.
+ */
+it('says so when deleting a folder is for good', async () => {
+	const work = group({ name: 'Work', deletion: 'forever' });
+	const tree = group({ name: 'Root', sections: [work] });
+	ipc.deleteGroup.mockResolvedValue(group({ ...tree, sections: [] }));
+
+	const { component } = mounted(tree);
+	try {
+		pressed('Work');
+		flushSync();
+		host.querySelector<HTMLButtonElement>('[aria-label="Delete this folder"]')?.click();
+		flushSync();
+
+		expect(host.querySelector('[data-confirm]')?.textContent).toContain(
+			'Delete “Work” and everything in it forever? This can’t be undone.'
+		);
+		pressed('Delete forever', host.querySelector('[data-confirm]') ?? host);
+		await settled();
+
+		expect(ipc.deleteGroup).toHaveBeenCalledWith(work.id);
+		expect(toast()?.textContent).toContain('Deleted “Work” forever');
+		expect(undo()).toBeNull();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * The empty bin used to promise that entries stay until it is emptied by
+ * hand, which stopped being all of the truth the moment one could be put back
+ * or deleted on its own. A bin holding only a folder is not empty.
+ */
+it('says what the bin keeps, and does not call a bin with a folder in it empty', async () => {
+	const empty = group({
+		name: 'Root',
+		sections: [group({ name: 'Recycle Bin', isRecycleBin: true, deletion: 'forever' })]
+	});
+	const first = mounted(empty);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		expect(reads()).toContain('The recycle bin is empty');
+		expect(reads()).toContain('Anything moved here waits until it is put back or deleted forever.');
+		expect(reads()).not.toContain('emptied by hand');
+		expect(reads()).not.toContain('Empty the bin');
+	} finally {
+		await unmount(first.component);
+		vi.useRealTimers();
+	}
+
+	const vault = binnedVault();
+	const onlyFolder = group({
+		...vault.tree,
+		sections: [vault.personal, vault.work, { ...vault.bin, entries: [] }]
+	});
+	const second = mounted(onlyFolder);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		expect(reads()).not.toContain('The recycle bin is empty');
+		expect(host.querySelectorAll('[data-folder]')).toHaveLength(1);
+		expect(reads()).toContain('Empty the bin');
+	} finally {
+		await unmount(second.component);
+		vi.useRealTimers();
+	}
+});
+
+/** A database Coffer will not write back shows its bin and offers nothing it
+ * would only refuse: no Put back, no Delete forever, no emptying. */
+it('offers no way out of the bin on a database it cannot write', async () => {
+	const vault = binnedVault();
+	const { component } = mounted(vault.tree, true);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		expect(reads()).not.toContain('Empty the bin');
+		(host.querySelector('[data-folder]') as HTMLElement).click();
+		flushSync();
+
+		expect(folderCard()?.textContent).toContain('was in “Personal”');
+		expect(reads()).not.toContain('Put back');
+		expect(reads()).not.toContain('Delete forever');
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Folder names in the bin are values out of somebody's database, and they
+ * are written as text wherever the bin shows them. */
+it('writes the names of folders in the bin as text', async () => {
+	const hostile = '<img src=x onerror="alert(1)">';
+	const from = group({ name: hostile });
+	const gone = group({
+		name: hostile,
+		binned: { since: null, from: from.id },
+		deletion: 'forever'
+	});
+	const tree = group({
+		name: 'Root',
+		sections: [
+			from,
+			group({ name: 'Recycle Bin', isRecycleBin: true, deletion: 'forever', sections: [gone] })
+		]
+	});
+	const { component } = mounted(tree);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		expect(host.querySelector('[data-folder]')?.textContent).toContain(`Deleted from “${hostile}”`);
+		(host.querySelector('[data-folder]') as HTMLElement).click();
+		flushSync();
+		expect(folderCard()?.textContent).toContain(`In the Recycle Bin · was in “${hostile}”`);
+		expect(host.querySelector('img')).toBeNull();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * The button stays on the screen until Rust answers. A double press used to be
+ * two deletions: the first moved the entry to the bin, and the second found it
+ * there and took it out of the file.
+ */
+it('moves an entry to the bin once however quickly the button is pressed again', async () => {
+	const bank = row({ title: 'node-3' });
+	const before = group({ name: 'Root', entries: [bank] });
+	const bin = group({
+		name: 'Recycle Bin',
+		isRecycleBin: true,
+		deletion: 'forever',
+		entries: [{ ...bank, binned: { since: null, from: before.id } }]
+	});
+	ipc.entry.mockResolvedValue(titled(bank.id, 'node-3'));
+	ipc.deleteEntry.mockResolvedValue(group({ ...before, entries: [], sections: [bin] }));
+
+	const { component } = mounted(before);
+	try {
+		pressed('node-3');
+		await settled();
+		const button = [...host.querySelectorAll('button')].find(
+			(each) => each.textContent?.trim() === 'Move to Recycle Bin'
+		);
+		button?.click();
+		button?.click();
+		await settled();
+
+		expect(ipc.deleteEntry).toHaveBeenCalledTimes(1);
+		expect(toast()?.textContent).toContain('Moved “node-3” to the Recycle Bin');
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
 });

@@ -118,6 +118,8 @@ pub fn run() {
             commands::create_group,
             commands::rename_group,
             commands::delete_group,
+            commands::put_back_entry,
+            commands::put_back_group,
             commands::empty_recycle_bin,
             commands::set_field,
             commands::remove_field,

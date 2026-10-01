@@ -28,15 +28,28 @@ export function liveEntries(root: Group): EntryRow[] {
 }
 
 /**
+ * Whether a folder is the recycle bin or somewhere inside it.
+ *
+ * Everything there is read only and goes back out through Put back, and it is
+ * shown folder by folder: a folder that went into the bin is still a folder.
+ */
+export function inBin(group: Group): boolean {
+	return group.isRecycleBin || group.binned !== null;
+}
+
+/**
  * The entries a folder shows when it is the one being drawn.
  *
  * The recycle bin is a group like any other in the file and a client may put it
  * anywhere, including inside a project. Deleted entries belong to the bin's own
- * screen and to no other, so a project holding one does not show its contents -
- * unless the bin itself is the folder that was chosen.
+ * screen and to no other, so a project holding one does not show its contents.
+ *
+ * In the bin a folder shows only what it holds itself. What sits in a deleted
+ * folder is that folder's, and the folder is drawn as a folder rather than
+ * poured out into the bin around it with nothing to say where it came from.
  */
 export function shownEntries(group: Group): EntryRow[] {
-	return group.isRecycleBin ? entriesOf(group) : liveEntries(group);
+	return inBin(group) ? group.entries : liveEntries(group);
 }
 
 export function recycleBin(root: Group): Group | null {
@@ -44,6 +57,16 @@ export function recycleBin(root: Group): Group | null {
 	for (const section of root.sections) {
 		const found = recycleBin(section);
 		if (found) return found;
+	}
+	return null;
+}
+
+/** The group with this id, wherever it sits, or `null` when there is none. */
+export function find(root: Group, id: string): Group | null {
+	if (root.id === id) return root;
+	for (const section of root.sections) {
+		const here = find(section, id);
+		if (here) return here;
 	}
 	return null;
 }

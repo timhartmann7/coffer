@@ -26,6 +26,7 @@ export function row(over: Partial<EntryRow> = {}): EntryRow {
 		modified: null,
 		hasPassword: false,
 		attachments: 0,
+		binned: null,
 		...over
 	};
 }
@@ -35,6 +36,8 @@ export function group(over: Partial<Group> = {}): Group {
 		id: id(),
 		name: 'a group',
 		isRecycleBin: false,
+		binned: null,
+		deletion: 'bin',
 		sections: [],
 		entries: [],
 		...over
@@ -80,6 +83,8 @@ export function entry(over: Partial<Entry> = {}): Entry {
 		tags: [],
 		created: null,
 		modified: null,
+		binned: null,
+		deletion: 'bin',
 		...over
 	};
 }

@@ -301,6 +301,11 @@ pub struct Group {
     pub id: String,
     pub name: String,
     pub is_recycle_bin: bool,
+    /// When the group is in the recycle bin, when it went in and where it goes
+    /// back to. `null` for the bin itself and for everything outside it.
+    pub binned: Option<Binned>,
+    /// What deleting the group would do.
+    pub deletion: Deletion,
     pub sections: Vec<Group>,
     pub entries: Vec<EntryRow>,
 }
@@ -311,8 +316,54 @@ impl Group {
             id: project.id.to_string(),
             name: project.name.clone(),
             is_recycle_bin: project.is_recycle_bin,
+            binned: project.binned.map(Binned::of),
+            deletion: Deletion::of(project.deletion),
             sections: project.sections.iter().map(Group::of).collect(),
             entries: project.entries.iter().map(EntryRow::of).collect(),
+        }
+    }
+}
+
+/// What deleting something does, said before the reader asks for it.
+///
+/// It travels with the tree and with the entry rather than in `status`,
+/// because both are read again after every change and after a reload, and a
+/// file another client rewrote can have stopped keeping a bin: a flag read
+/// once at unlock would go on promising a bin to a deletion that erases.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum Deletion {
+    /// It moves to the recycle bin, and can be put back.
+    Bin,
+    /// It goes out of the file for good.
+    Forever,
+}
+
+impl Deletion {
+    fn of(deletion: model::Deletion) -> Deletion {
+        match deletion {
+            model::Deletion::Bin => Deletion::Bin,
+            model::Deletion::Forever => Deletion::Forever,
+        }
+    }
+}
+
+/// What is known about something in the recycle bin.
+#[derive(Serialize)]
+pub struct Binned {
+    /// When it went in: its own move, or that of the folder it went in with.
+    pub since: Option<String>,
+    /// The folder it was in, which is where putting it back takes it: `null`
+    /// when that is not known, has gone, or is in the bin too, and putting it
+    /// back takes it to the top of the vault.
+    pub from: Option<String>,
+}
+
+impl Binned {
+    fn of(binned: model::Binned) -> Binned {
+        Binned {
+            since: stamp(binned.since),
+            from: binned.from.map(|group| group.to_string()),
         }
     }
 }
@@ -332,6 +383,8 @@ pub struct EntryRow {
     pub modified: Option<String>,
     pub has_password: bool,
     pub attachments: usize,
+    /// When the entry is in the recycle bin, when it went in and where from.
+    pub binned: Option<Binned>,
 }
 
 impl EntryRow {
@@ -346,6 +399,7 @@ impl EntryRow {
             modified: stamp(summary.times.modified),
             has_password: summary.has_password,
             attachments: summary.attachments,
+            binned: summary.binned.map(Binned::of),
         }
     }
 }
@@ -445,6 +499,11 @@ pub struct Entry {
     pub tags: Vec<String>,
     pub created: Option<String>,
     pub modified: Option<String>,
+    /// When the entry is in the recycle bin, when it went in and where it goes
+    /// back to. The screen shows such an entry read only.
+    pub binned: Option<Binned>,
+    /// What deleting the entry would do.
+    pub deletion: Deletion,
 }
 
 impl Entry {
@@ -466,6 +525,8 @@ impl Entry {
             tags: entry.tags.clone(),
             created: stamp(entry.times.created),
             modified: stamp(entry.times.modified),
+            binned: entry.binned.map(Binned::of),
+            deletion: Deletion::of(entry.deletion),
         }
     }
 }
@@ -570,6 +631,8 @@ mod tests {
             tags: Vec::new(),
             times: Timestamps::default(),
             versions: 0,
+            binned: None,
+            deletion: model::Deletion::Bin,
         }
     }
 
@@ -618,11 +681,12 @@ mod tests {
             has_password: true,
             attachments: 2,
             versions: 7,
+            binned: None,
         });
 
         assert_eq!(
             json(&row),
-            r#"{"id":"00000000-0000-0000-0000-000000000000","group":"00000000-0000-0000-0000-000000000000","title":"node-3","username":"deploy","url":null,"tags":["prod","ssh"],"modified":"2026-03-12T18:42:00Z","hasPassword":true,"attachments":2}"#
+            r#"{"id":"00000000-0000-0000-0000-000000000000","group":"00000000-0000-0000-0000-000000000000","title":"node-3","username":"deploy","url":null,"tags":["prod","ssh"],"modified":"2026-03-12T18:42:00Z","hasPassword":true,"attachments":2,"binned":null}"#
         );
     }
 
@@ -779,6 +843,75 @@ mod tests {
             payload.contains(r#"{"name":"../../escape.txt","size":12,"fileName":"escape.txt"}"#),
             "{payload}"
         );
+    }
+
+    /// A row in the bin says when it went in and where it goes back, and the
+    /// folder crosses as its id: the name is the tree's to give, so a folder
+    /// renamed since is called what it is called now. Nothing known crosses as
+    /// `null` rather than as a guess, and the screen says the top of the vault.
+    #[test]
+    fn an_entry_in_the_bin_crosses_with_when_it_went_and_where_it_goes_back() {
+        let from = GroupId::from_uuid(uuid::Uuid::from_u128(7));
+        let mut entry = entry_of(vec![open(fields::TITLE, "Bank")]);
+        entry.binned = Some(model::Binned {
+            since: NaiveDate::from_ymd_opt(2026, 9, 27).and_then(|day| day.and_hms_opt(12, 0, 0)),
+            from: Some(from),
+        });
+        entry.deletion = model::Deletion::Forever;
+
+        let whole = serde_json::to_value(Entry::of(&entry)).expect("the entry serialises");
+        assert_eq!(
+            whole["binned"],
+            serde_json::json!({ "since": "2026-09-27T12:00:00Z", "from": from.to_string() })
+        );
+        assert_eq!(whole["deletion"], "forever");
+
+        let row = serde_json::to_value(EntryRow::of(&entry.summary())).expect("the row serialises");
+        assert_eq!(row["binned"], whole["binned"]);
+
+        entry.binned = Some(model::Binned {
+            since: None,
+            from: None,
+        });
+        let unknown = serde_json::to_value(Entry::of(&entry)).expect("the entry serialises");
+        assert_eq!(
+            unknown["binned"],
+            serde_json::json!({ "since": null, "from": null })
+        );
+
+        entry.binned = None;
+        entry.deletion = model::Deletion::Bin;
+        let live = serde_json::to_value(Entry::of(&entry)).expect("the entry serialises");
+        assert_eq!(live["binned"], serde_json::Value::Null);
+        assert_eq!(live["deletion"], "bin");
+    }
+
+    /// A folder says what deleting it would do, and so does every folder in
+    /// it: the answer is Rust's for each one, never inferred by the screen from
+    /// the folder above.
+    #[test]
+    fn every_folder_says_what_deleting_it_would_do() {
+        let folder = |name: &str, deletion, sections| model::Project {
+            id: GroupId::from_uuid(uuid::Uuid::new_v4()),
+            name: name.to_owned(),
+            notes: None,
+            is_recycle_bin: false,
+            binned: None,
+            deletion,
+            sections,
+            entries: Vec::new(),
+        };
+        let tree = folder(
+            "Root",
+            model::Deletion::Forever,
+            vec![folder("Personal", model::Deletion::Bin, Vec::new())],
+        );
+
+        let payload = serde_json::to_value(Group::of(&tree)).expect("the tree serialises");
+        assert_eq!(payload["deletion"], "forever");
+        assert_eq!(payload["binned"], serde_json::Value::Null);
+        assert_eq!(payload["sections"][0]["deletion"], "bin");
+        assert_eq!(payload["sections"][0]["isRecycleBin"], false);
     }
 
     #[test]

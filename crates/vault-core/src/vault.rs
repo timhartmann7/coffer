@@ -5,17 +5,20 @@ use std::path::{Path, PathBuf};
 
 use keepass::Database;
 use keepass::config::{DatabaseVersion, InnerCipherConfig};
-use keepass::db::{EntryId, GroupId, GroupRef, History, Times, Value};
+use keepass::db::{EntryId, EntryRef, GroupId, GroupRef, History, Times, Value};
 use zeroize::Zeroizing;
 
 use crate::attachment;
+use crate::bin::{Bin, Standing};
 use crate::blank;
 use crate::clash::{self, Clash};
 use crate::error::VaultError;
 use crate::history::{self, Limits};
 use crate::kdf::Work;
 use crate::key::MasterKey;
-use crate::model::{Attachment, Entry, Field, FieldValue, Project, Timestamps, Version, fields};
+use crate::model::{
+    Attachment, Binned, Deletion, Entry, Field, FieldValue, Project, Timestamps, Version, fields,
+};
 use crate::preflight;
 use crate::secret::SecretValue;
 use crate::storage::lock::{Lock, Outcome};
@@ -330,14 +333,37 @@ impl Vault {
     /// projects. Previous versions of an entry are not in it: they belong to
     /// their entry and never appear in a tree, a list or a search.
     pub fn tree(&self) -> Project {
-        project_of(self.database.root(), self.recycle_bin())
+        let bin = Bin::of(&self.database);
+        project_of(
+            &self.database,
+            &bin,
+            self.database.root(),
+            Standing::Outside,
+        )
     }
 
     /// One entry's metadata.
     pub fn entry(&self, id: EntryId) -> Option<Entry> {
         let entry = self.database.entry(id)?;
         let group = entry.parent().id();
-        Some(entry_of(&entry, group))
+        let (binned, deletion) = self.placed(&entry, group);
+        Some(entry_of(&entry, group, binned, deletion))
+    }
+
+    /// Whether an entry held by `group` is in the recycle bin, and what
+    /// deleting it would do.
+    fn placed(&self, entry: &EntryRef<'_>, group: GroupId) -> (Option<Binned>, Deletion) {
+        let bin = Bin::of(&self.database);
+        let holder = bin.standing(&self.database, group);
+        (
+            bin.binned(
+                &self.database,
+                holder,
+                &entry.times,
+                entry.previous_parent().map(|previous| previous.id()),
+            ),
+            bin.deletion(holder),
+        )
     }
 
     /// The previous versions of an entry, oldest first.
@@ -528,11 +554,15 @@ impl Vault {
     }
 
     /// One previous version of an entry, read the same way the entry itself is.
+    ///
+    /// It says where the entry it belongs to stands. A version goes wherever
+    /// its entry goes, into the bin and out of the file alike.
     pub fn version(&self, id: EntryId, index: usize) -> Option<Entry> {
         let entry = self.database.entry(id)?;
         let group = entry.parent().id();
+        let (binned, deletion) = self.placed(&entry, group);
         let version = entry.historical(index)?;
-        Some(entry_of(&version, group))
+        Some(entry_of(&version, group, binned, deletion))
     }
 
     /// Hands out one field's value from a previous version.
@@ -582,9 +612,10 @@ impl Vault {
     /// Deletes a folder and everything in it.
     ///
     /// A database with a recycle bin gets the folder moved into it, and a
-    /// folder that is already in the bin, or a database with no bin, gets it
-    /// removed and recorded in `DeletedObjects` so that other clients do not
-    /// bring it back.
+    /// folder that is already in the bin, one the bin is inside, or a database
+    /// with no bin, gets it removed and recorded in `DeletedObjects` so that
+    /// other clients do not bring it back. Which of the two happens is what
+    /// [`Project::deletion`] said it would.
     pub fn delete_group(&mut self, id: GroupId) -> Result<(), VaultError> {
         self.writable()?;
         if id == self.database.root().id() {
@@ -594,23 +625,20 @@ impl Vault {
             return Err(VaultError::NoSuchGroup);
         }
 
-        let bin = self.bin_for(id)?;
-
-        // A folder that holds the bin cannot be moved into it: a folder cannot
-        // contain itself, and moving it there would take the bin with it. This
-        // is about the folder being deleted and nothing else, which is why it
-        // lives here rather than in `bin_for`, whose other caller deletes an
-        // entry and never takes the bin anywhere.
-        match bin {
-            Some(bin) if !self.sections_of(id).contains(&bin) => self.move_group(id, bin),
-            _ => self.erase_group(id),
+        let bin = Bin::of(&self.database);
+        match bin.group_deletion(id, bin.standing(&self.database, id)) {
+            Deletion::Forever => self.erase_group(id),
+            Deletion::Bin => {
+                let into = self.bin(bin.id());
+                self.move_group(id, into)
+            }
         }
     }
 
     /// Empties the recycle bin, if the database has one with anything in it.
     pub fn empty_recycle_bin(&mut self) -> Result<(), VaultError> {
         self.writable()?;
-        let Some(bin) = self.recycle_bin() else {
+        let Some(bin) = Bin::of(&self.database).id() else {
             return Ok(());
         };
 
@@ -728,7 +756,12 @@ impl Vault {
     /// Deletes an entry.
     ///
     /// As with a folder: to the recycle bin when the database has one, and out
-    /// of the file and into `DeletedObjects` when it is already there.
+    /// of the file and into `DeletedObjects` when it is already there. Which of
+    /// the two happens is what [`Entry::deletion`] said it would.
+    ///
+    /// A move to the bin is not an edit. It writes no version and records no
+    /// deletion, and the entry keeps the folder it came out of as its
+    /// `PreviousParentGroup`, which is where [`Vault::put_back_entry`] takes it.
     pub fn delete_entry(&mut self, id: EntryId) -> Result<(), VaultError> {
         self.writable()?;
         let group = self
@@ -738,16 +771,75 @@ impl Vault {
             .parent()
             .id();
 
-        match self.bin_for(group)? {
-            Some(bin) => {
-                let mut entry = self.database.entry_mut(id).ok_or(VaultError::NoSuchEntry)?;
-                entry.move_to(bin).map_err(|_| VaultError::NoSuchGroup)?;
-                entry.times.location_changed = Some(Times::now());
-                self.changed = true;
-                Ok(())
+        let bin = Bin::of(&self.database);
+        match bin.deletion(bin.standing(&self.database, group)) {
+            Deletion::Forever => self.erase_entry(id),
+            Deletion::Bin => {
+                let into = self.bin(bin.id());
+                self.move_entry(id, into)
             }
-            None => self.erase_entry(id),
         }
+    }
+
+    /// Takes an entry out of the recycle bin and puts it back where it was,
+    /// and says where that is.
+    ///
+    /// Back into the folder it was deleted from, when that folder is still
+    /// somewhere to go. One that has gone, one that is in the bin itself, and
+    /// an entry another client put in the bin without saying where from all
+    /// send it to the top of the vault instead: put back somewhere is better
+    /// than left behind.
+    ///
+    /// Moving is not an edit, so no version is written, and the folder it
+    /// leaves becomes its `PreviousParentGroup` the way every move makes it.
+    pub fn put_back_entry(&mut self, id: EntryId) -> Result<GroupId, VaultError> {
+        self.writable()?;
+        let into = {
+            let entry = self.database.entry(id).ok_or(VaultError::NoSuchEntry)?;
+            let (binned, _) = self.placed(&entry, entry.parent().id());
+            self.back(binned)?
+        };
+        self.move_entry(id, into)?;
+        Ok(into)
+    }
+
+    /// Takes a folder out of the recycle bin with everything in it, on the
+    /// same terms as [`Vault::put_back_entry`]. The bin itself is not in the
+    /// bin, and cannot be put back.
+    pub fn put_back_group(&mut self, id: GroupId) -> Result<GroupId, VaultError> {
+        self.writable()?;
+        let into = {
+            let group = self.database.group(id).ok_or(VaultError::NoSuchGroup)?;
+            let bin = Bin::of(&self.database);
+            let holder = group.parent().map_or(Standing::Outside, |parent| {
+                bin.standing(&self.database, parent.id())
+            });
+            self.back(bin.binned(
+                &self.database,
+                holder,
+                &group.times,
+                group.previous_parent().map(|previous| previous.id()),
+            ))?
+        };
+        self.move_group(id, into)?;
+        Ok(into)
+    }
+
+    /// Where putting something back takes it: the folder it came from, or the
+    /// top of the vault when that is nowhere to go.
+    fn back(&self, binned: Option<Binned>) -> Result<GroupId, VaultError> {
+        let binned = binned.ok_or(VaultError::NotInRecycleBin)?;
+        Ok(binned.from.unwrap_or_else(|| self.database.root().id()))
+    }
+
+    /// Moves an entry into another folder, which is not an edit: no version,
+    /// and the modification time stays where it was.
+    fn move_entry(&mut self, id: EntryId, into: GroupId) -> Result<(), VaultError> {
+        let mut entry = self.database.entry_mut(id).ok_or(VaultError::NoSuchEntry)?;
+        entry.move_to(into).map_err(|_| VaultError::NoSuchGroup)?;
+        entry.times.location_changed = Some(Times::now());
+        self.changed = true;
+        Ok(())
     }
 
     /// Puts a file on an entry, unless the entry already gives its name to
@@ -1169,32 +1261,12 @@ impl Vault {
         ]
     }
 
-    /// The recycle bin a deletion out of `group` should go to, or nothing when
-    /// the deletion is a removal: the database says it keeps no bin, or the
-    /// group is the bin or inside it.
-    ///
-    /// The bin is made here when the database asks for one and has none, which
-    /// is what KeePassXC does on the first deletion.
-    fn bin_for(&mut self, group: GroupId) -> Result<Option<GroupId>, VaultError> {
-        if self.database.meta.recyclebin_enabled == Some(false) {
-            return Ok(None);
-        }
-
-        if let Some(bin) = self.recycle_bin() {
-            // The bin itself, or something already inside it: what is in the bin
-            // has nowhere further to go, and the next deletion is a removal.
-            //
-            // Whether the thing being deleted *holds* the bin is deliberately
-            // not asked here. It is only ever true of the group a deletion comes
-            // out of, and the top group is the one every entry Coffer makes
-            // lands in, so asking it here quietly erased entries at the top of
-            // the vault instead of binning them. `delete_group` asks it, because
-            // moving a folder into a bin it contains is the one case where it
-            // means anything.
-            if bin == group || self.sections_of(bin).contains(&group) {
-                return Ok(None);
-            }
-            return Ok(Some(bin));
+    /// The recycle bin a deletion goes to: the one the database has, or one
+    /// made now when it asks for one and has none, which is what KeePassXC does
+    /// on the first deletion.
+    fn bin(&mut self, found: Option<GroupId>) -> GroupId {
+        if let Some(bin) = found {
+            return bin;
         }
 
         let made = {
@@ -1212,7 +1284,7 @@ impl Vault {
         self.database.meta.recyclebin_uuid = Some(made.uuid());
         self.database.meta.recyclebin_changed = Some(Times::now());
         self.changed = true;
-        Ok(Some(made))
+        made
     }
 
     fn move_group(&mut self, id: GroupId, into: GroupId) -> Result<(), VaultError> {
@@ -1322,10 +1394,6 @@ impl Vault {
             .group(id)
             .map(|group| group.entries().map(|entry| entry.id()).collect())
             .unwrap_or_default()
-    }
-
-    fn recycle_bin(&self) -> Option<keepass::db::GroupId> {
-        self.database.recycle_bin().map(|group| group.id())
     }
 }
 
@@ -1570,20 +1638,44 @@ fn classify(database: &Database, path: &Path, lock: Option<&Lock>) -> Source {
     }
 }
 
-fn project_of(group: GroupRef<'_>, recycle_bin: Option<keepass::db::GroupId>) -> Project {
+/// Reads a group and everything in it, given where the group holding it stands
+/// with respect to the recycle bin.
+///
+/// Where each group stands is worked out once, on the way down, and handed to
+/// the entries in it: a vault of fifty thousand entries asks the question once
+/// per folder rather than once per entry.
+fn project_of(database: &Database, bin: &Bin, group: GroupRef<'_>, holder: Standing) -> Project {
     let group_id = group.id();
+    let standing = bin.enter(holder, group_id, &group.times);
+    let deletion = bin.deletion(standing);
+
     Project {
         id: group_id,
         name: group.name.clone(),
         notes: group.notes.clone(),
-        is_recycle_bin: Some(group.id()) == recycle_bin,
+        is_recycle_bin: Some(group_id) == bin.id(),
+        binned: bin.binned(
+            database,
+            holder,
+            &group.times,
+            group.previous_parent().map(|previous| previous.id()),
+        ),
+        deletion: bin.group_deletion(group_id, standing),
         sections: group
             .groups()
-            .map(|section| project_of(section, recycle_bin))
+            .map(|section| project_of(database, bin, section, standing))
             .collect(),
         entries: group
             .entries()
-            .map(|entry| entry_of(&entry, group_id).summary())
+            .map(|entry| {
+                let binned = bin.binned(
+                    database,
+                    standing,
+                    &entry.times,
+                    entry.previous_parent().map(|previous| previous.id()),
+                );
+                entry_of(&entry, group_id, binned, deletion).summary()
+            })
             .collect(),
     }
 }
@@ -1593,7 +1685,14 @@ fn project_of(group: GroupRef<'_>, recycle_bin: Option<keepass::db::GroupId>) ->
 /// The group is passed in rather than read off the entry, because a previous
 /// version carries the group it was in when it was written and that group may
 /// be gone; asking a version for its parent is a way to bring the window down.
-fn entry_of(entry: &keepass::db::EntryRef<'_>, group: GroupId) -> Entry {
+/// Where it stands with respect to the bin is passed in for the same reason: a
+/// version is wherever its entry is.
+fn entry_of(
+    entry: &EntryRef<'_>,
+    group: GroupId,
+    binned: Option<Binned>,
+    deletion: Deletion,
+) -> Entry {
     let mut fields: Vec<Field> = entry
         .fields
         .iter()
@@ -1633,5 +1732,7 @@ fn entry_of(entry: &keepass::db::EntryRef<'_>, group: GroupId) -> Entry {
                 .filter(|_| entry.times.expires == Some(true)),
         },
         versions: entry.history.as_ref().map_or(0, |h| h.get_entries().len()),
+        binned,
+        deletion,
     }
 }

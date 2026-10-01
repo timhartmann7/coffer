@@ -694,6 +694,25 @@ pub fn delete_group(group: String, session: Held<'_>) -> Result<Group, Failure> 
     tree_of(&session)
 }
 
+/// Takes an entry out of the recycle bin, back to the folder it was deleted
+/// from, or to the top of the vault when that folder is nowhere to go. The
+/// undo of a move to the bin, and the bin's own way out.
+#[tauri::command(async)]
+pub fn put_back_entry(entry: String, session: Held<'_>) -> Result<Group, Failure> {
+    let id = dto::entry_id(&entry)?;
+    session.with_mut(|vault| vault.put_back_entry(id))??;
+    tree_of(&session)
+}
+
+/// Takes a folder out of the recycle bin with everything in it, on the same
+/// terms.
+#[tauri::command(async)]
+pub fn put_back_group(group: String, session: Held<'_>) -> Result<Group, Failure> {
+    let group = dto::group_id(&group)?;
+    session.with_mut(|vault| vault.put_back_group(group))??;
+    tree_of(&session)
+}
+
 #[tauri::command(async)]
 pub fn empty_recycle_bin(session: Held<'_>) -> Result<Group, Failure> {
     session.with_mut(vault_core::Vault::empty_recycle_bin)??;

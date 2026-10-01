@@ -120,6 +120,31 @@ pub fn entry_titled(vault: &Vault, title: &str) -> vault_core::model::Entry {
         .expect("the entry the tree named is in the database")
 }
 
+/// The one folder with this name, wherever it sits.
+pub fn only_group(vault: &Vault, name: &str) -> vault_core::model::GroupId {
+    fn walk(
+        group: &vault_core::model::Project,
+        name: &str,
+        into: &mut Vec<vault_core::model::GroupId>,
+    ) {
+        if group.name == name {
+            into.push(group.id);
+        }
+        for section in &group.sections {
+            walk(section, name, into);
+        }
+    }
+
+    let mut found = Vec::new();
+    walk(&vault.tree(), name, &mut found);
+    assert_eq!(
+        found.len(),
+        1,
+        "expected exactly one folder called {name:?}"
+    );
+    found.remove(0)
+}
+
 /// Builds a database in the scratch directory with a deliberately cheap key
 /// derivation.
 ///

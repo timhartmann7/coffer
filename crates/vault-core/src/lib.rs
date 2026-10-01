@@ -27,6 +27,7 @@ pub mod storage;
 pub mod url;
 
 mod attachment;
+mod bin;
 mod blank;
 mod clash;
 mod history;

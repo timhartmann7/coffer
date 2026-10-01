@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { fully, size } from '$lib/format';
+	import { called, fully, size } from '$lib/format';
 	import {
 		addAttachment,
 		asFailure,
@@ -18,6 +18,7 @@
 	import Confirm from './Confirm.svelte';
 	import Editable from './Editable.svelte';
 	import Icon from './Icon.svelte';
+	import InBin from './InBin.svelte';
 	import Mask from './Mask.svelte';
 	import PasswordField from './PasswordField.svelte';
 	import ProtectedValue from './ProtectedValue.svelte';
@@ -35,6 +36,7 @@
 	 */
 	let {
 		entry,
+		root,
 		path,
 		versions,
 		now,
@@ -44,10 +46,14 @@
 		onVersions,
 		onClose,
 		onDelete,
+		onPutBack,
 		onFieldRemoved,
 		onFailure
 	}: {
 		entry: Entry;
+		/** The whole tree, which is where an entry in the bin finds the name of
+		 * the folder it came from. */
+		root: Group;
 		/** The folders from the vault down to this entry, for the line above the
 		 * title. */
 		path: Group[];
@@ -62,7 +68,11 @@
 		/** Puts the pane away. Escape does the same, and so does a press on the
 		 * empty part of either pane to the left of this one. */
 		onClose: () => void;
+		/** Deletes the entry: to the recycle bin, or for good once the reader has
+		 * said so, which is `entry.deletion`'s to decide and the pane's to ask. */
 		onDelete: () => void;
+		/** Takes the entry out of the recycle bin. */
+		onPutBack: () => void;
 		/** One of the reader's own fields came off, and the change has been
 		 * handed to the window like any other. The window is what can offer it
 		 * back, because it is what knows whether the change reached the file. */
@@ -71,6 +81,18 @@
 	} = $props();
 
 	const of = (kind: Field['kind']) => entry.fields.find((field) => field.kind === kind);
+
+	/**
+	 * Whether nothing here may be changed: a database Coffer will not write
+	 * back, or an entry in the recycle bin. What is in the bin is there to be
+	 * put back or let go, and an edit to it would be a change nobody sees until
+	 * it comes back.
+	 */
+	const locked = $derived(readOnly || entry.binned !== null);
+	/** Whether the reader has asked to delete the entry for good and not yet
+	 * answered the question that asks whether they mean it. */
+	let erasing = $state(false);
+	const forever = $derived(`Delete ${called(entry)} forever? This can’t be undone.`);
 
 	const title = $derived(of('title'));
 	const username = $derived(of('username'));
@@ -148,6 +170,7 @@
 			held = false;
 			naming = false;
 			asking = null;
+			erasing = false;
 		};
 	});
 
@@ -368,11 +391,10 @@
 			</div>
 		{/if}
 
-		<!-- The name and the two things that can be done to the entry, on one
-		     line and centred against each other. The way out first and the way to
-		     lose the entry last, with a gap between them: the mockup's rule is
-		     that a destructive action stands at the end of a row so that missing
-		     it costs a movement. -->
+		<!-- The name and the way out, on one line and centred against each other.
+		     The trash used to stand sixteen pixels from the close at the same size,
+		     and a press meant for one took the other; deleting is now a labelled
+		     action at the foot of the pane. -->
 		<div class="flex items-center gap-4">
 			{#if title && title.value === null}
 				<h1 class="min-w-0 flex-1 truncate text-title font-medium tracking-tight text-txt">
@@ -385,7 +407,7 @@
 						label="Title"
 						placeholder="Untitled"
 						classes="text-title font-medium tracking-tight text-txt"
-						readonly={readOnly}
+						readonly={locked}
 						bare
 						onCommit={(value) => write(nameOf(title, 'Title'), value, title?.protected ?? false)}
 					/>
@@ -399,20 +421,27 @@
 			>
 				<Icon name="x" class="h-4 w-4" />
 			</button>
-			{#if !readOnly}
-				<button
-					type="button"
-					onclick={onDelete}
-					class="shrink-0 text-txt4 transition-colors hover:text-danger"
-					aria-label="Delete this entry"
-				>
-					<Icon name="trash" class="h-4 w-4" />
-				</button>
-			{/if}
 		</div>
 	</header>
 
 	<div class="flex-1 overflow-y-auto px-6 py-5">
+		{#if entry.binned}
+			<!-- Keyed, so a question about deleting one entry for good is never
+			     still open over the next one. -->
+			{#key entry.id}
+				<InBin
+					class="mb-5"
+					binned={entry.binned}
+					{root}
+					{now}
+					question={forever}
+					{readOnly}
+					{onPutBack}
+					{onDelete}
+				/>
+			{/key}
+		{/if}
+
 		<div class="block">
 			<span class="font-mono text-label tracking-label text-txt3 uppercase">Login</span>
 			<span class="mt-1.5 flex items-center gap-2">
@@ -424,7 +453,7 @@
 					<SecretField
 						entry={entry.id}
 						field={username.name}
-						{readOnly}
+						readOnly={locked}
 						onCopy={() => onCopy(entry.id, username.name)}
 						onCommit={(value) => write(username.name, value, true)}
 						{onFailure}
@@ -435,7 +464,7 @@
 						label="Login"
 						placeholder="No login"
 						mono
-						readonly={readOnly}
+						readonly={locked}
 						onCommit={(value) =>
 							write(nameOf(username, 'UserName'), value, username?.protected ?? false)}
 					/>
@@ -460,7 +489,7 @@
 			field={nameOf(password, 'Password')}
 			empty={password?.empty ?? true}
 			protect={password?.protected ?? true}
-			{readOnly}
+			readOnly={locked}
 			onCopy={(field) => onCopy(entry.id, field)}
 			onCommit={write}
 			{onFailure}
@@ -478,7 +507,7 @@
 					<SecretField
 						entry={entry.id}
 						field={url.name}
-						{readOnly}
+						readOnly={locked}
 						onCopy={() => onCopy(entry.id, url.name)}
 						onCommit={(value) => write(url.name, value, true)}
 						{onFailure}
@@ -490,7 +519,7 @@
 						value={url?.value ?? ''}
 						label="Address"
 						placeholder="No address"
-						readonly={readOnly}
+						readonly={locked}
 						onCommit={(value) => write(nameOf(url, 'URL'), value, url?.protected ?? false)}
 					/>
 					{#if url?.openable}
@@ -511,7 +540,7 @@
 			<span class="font-mono text-label tracking-label text-txt3 uppercase">Tags</span>
 			<Tags
 				tags={entry.tags}
-				{readOnly}
+				readOnly={locked}
 				onSet={(tags) => void change(() => setTags(entry.id, tags))}
 			/>
 		</div>
@@ -534,7 +563,7 @@
 						label="Notes"
 						placeholder="Nothing written down"
 						multiline
-						readonly={readOnly}
+						readonly={locked}
 						onCommit={(value) => write(nameOf(notes, 'Notes'), value, notes?.protected ?? false)}
 					/>
 				</div>
@@ -544,7 +573,7 @@
 		<div class="mt-6 border-t border-line pt-5">
 			<div class="flex items-center justify-between">
 				<span class="font-mono text-label tracking-label text-txt3 uppercase">Own fields</span>
-				{#if !readOnly}
+				{#if !locked}
 					<button
 						type="button"
 						onmousedown={(event) => event.preventDefault()}
@@ -571,7 +600,7 @@
 						<SecretField
 							entry={entry.id}
 							field={field.name}
-							{readOnly}
+							readOnly={locked}
 							onCopy={() => onCopy(entry.id, field.name)}
 							onCommit={(value) => write(field.name, value, field.protected)}
 							{onFailure}
@@ -586,11 +615,11 @@
 							label={field.name}
 							placeholder="Empty"
 							mono
-							readonly={readOnly}
+							readonly={locked}
 							onCommit={(value) => write(field.name, value, field.protected)}
 						/>
 					{/if}
-					{#if !readOnly}
+					{#if !locked}
 						<button
 							type="button"
 							onclick={() => void dropField(field.name)}
@@ -627,7 +656,7 @@
 		<div class="mt-6 border-t border-line pt-5">
 			<div class="flex items-center justify-between">
 				<span class="font-mono text-label tracking-label text-txt3 uppercase">Attachments</span>
-				{#if !readOnly}
+				{#if !locked}
 					<button
 						type="button"
 						onclick={() => void attach()}
@@ -680,7 +709,7 @@
 						>
 							<Icon name="export" class="h-4 w-4" />
 						</button>
-						{#if !readOnly && asking !== attachment.name}
+						{#if !locked && asking !== attachment.name}
 							<button
 								type="button"
 								onclick={() => (asking = attachment.name)}
@@ -727,11 +756,43 @@
 			entry={entry.id}
 			{versions}
 			{now}
-			{readOnly}
+			readOnly={locked}
 			{onVersions}
 			onChanged={(changed) => onChanged(changed)}
 			{onFailure}
 		/>
+
+		<!--
+			The way to lose the entry is at the foot of the pane, in words, where no
+			press aimed at anything else lands on it. Moving it to the bin is taken
+			back from the notice that follows, so it goes at once; deleting it for
+			good cannot be, so that asks first.
+		-->
+		{#if !locked}
+			<div class="mt-6 border-t border-line pt-5">
+				{#if erasing}
+					<Confirm
+						class="bg-surface2"
+						question={forever}
+						act="Delete forever"
+						onKeep={() => (erasing = false)}
+						onAct={() => {
+							erasing = false;
+							onDelete();
+						}}
+					/>
+				{:else}
+					<button
+						type="button"
+						onclick={() => (entry.deletion === 'bin' ? onDelete() : (erasing = true))}
+						class="-ml-3 flex h-9 items-center gap-2 rounded-full px-3 text-small text-txt3 transition-colors hover:bg-dangerwash hover:text-danger"
+					>
+						<Icon name="trash" class="h-4 w-4" />
+						{entry.deletion === 'bin' ? 'Move to Recycle Bin' : 'Delete forever…'}
+					</button>
+				{/if}
+			</div>
+		{/if}
 	</div>
 
 	<footer class="shrink-0 border-t border-hairline px-6 py-3 font-mono text-label text-txt4">

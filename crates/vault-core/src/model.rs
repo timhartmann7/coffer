@@ -24,6 +24,11 @@ pub struct Project {
     /// True for the group the database nominates as its recycle bin. Deleted
     /// entries live there, and the tree shows it apart from the rest.
     pub is_recycle_bin: bool,
+    /// When the group is in the recycle bin, what is known about how it got
+    /// there. Nothing for the bin itself and for everything outside it.
+    pub binned: Option<Binned>,
+    /// What deleting the group would do.
+    pub deletion: Deletion,
     /// The groups nested directly inside this one.
     pub sections: Vec<Project>,
     /// The entries held directly by this group. Entry history is not here: a
@@ -56,6 +61,9 @@ pub struct EntrySummary {
     pub attachments: usize,
     /// How many previous versions the entry keeps.
     pub versions: usize,
+    /// When the entry is in the recycle bin, what is known about how it got
+    /// there. A row in the bin says when and where from.
+    pub binned: Option<Binned>,
 }
 
 /// An entry, as much of it as can be looked at without a reveal.
@@ -73,6 +81,35 @@ pub struct Entry {
     pub times: Timestamps,
     /// How many previous versions this entry keeps.
     pub versions: usize,
+    /// When the entry is in the recycle bin, what is known about how it got
+    /// there.
+    pub binned: Option<Binned>,
+    /// What deleting the entry would do.
+    pub deletion: Deletion,
+}
+
+/// What deleting something does, known before anybody asks for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Deletion {
+    /// It moves to the recycle bin, and can be put back from there.
+    Bin,
+    /// It goes out of the file for good: it is in the bin already, the
+    /// database keeps no bin, or it is a folder the bin itself is inside.
+    Forever,
+}
+
+/// What is known about something in the recycle bin.
+///
+/// Dates and a folder, none of it the reader's data, so it prints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Binned {
+    /// When it went in. A folder takes everything in it along, so what sits
+    /// inside a deleted folder went in when the folder did.
+    pub since: Option<NaiveDateTime>,
+    /// The folder it was in before, which is where putting it back takes it.
+    /// Nothing when that is not known, is not there any more, or is in the bin
+    /// itself, and putting it back takes it to the top of the vault instead.
+    pub from: Option<GroupId>,
 }
 
 /// The KeePass field names Coffer treats as standard. Every other field an
@@ -95,6 +132,7 @@ impl Entry {
             has_password: self.has_password(),
             attachments: self.attachments.len(),
             versions: self.versions,
+            binned: self.binned,
         }
     }
 

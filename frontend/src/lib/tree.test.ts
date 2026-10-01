@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { group, row } from './fixtures';
 import {
 	entriesOf,
+	find,
+	inBin,
 	liveEntries,
 	pathTo,
 	projects,
@@ -51,6 +53,47 @@ describe('walking the tree', () => {
 		expect(shownEntries(work)).toHaveLength(2);
 		expect(shownEntries(bin)).toHaveLength(1);
 		expect(entriesOf(work)).toHaveLength(3);
+	});
+
+	/**
+	 * A folder that went into the bin is still a folder. The bin shows what it
+	 * holds itself, and the folder shows its own: poured out into the bin, the
+	 * entries of a deleted folder were a heap with nothing to say they had been
+	 * together.
+	 */
+	it('shows a folder in the bin as a folder rather than pouring it out', () => {
+		const went = { since: '2026-08-26T09:00:00Z', from: null };
+		const inner = group({ name: 'Cards', binned: went, entries: [row({ title: 'Visa' })] });
+		const banking = group({
+			name: 'Banking',
+			binned: went,
+			entries: [row({ title: 'Bank' })],
+			sections: [inner]
+		});
+		const bin = group({
+			name: 'Recycle Bin',
+			isRecycleBin: true,
+			entries: [row({ title: 'Mail' })],
+			sections: [banking]
+		});
+		const tree = group({ entries: [row({ title: 'kept' })], sections: [bin] });
+
+		expect(shownEntries(bin).map((entry) => entry.title)).toEqual(['Mail']);
+		expect(shownEntries(banking).map((entry) => entry.title)).toEqual(['Bank']);
+		expect(shownEntries(inner).map((entry) => entry.title)).toEqual(['Visa']);
+		expect([bin, banking, inner].every(inBin)).toBe(true);
+		expect(inBin(tree)).toBe(false);
+		expect(liveEntries(tree).map((entry) => entry.title)).toEqual(['kept']);
+		expect(entriesOf(bin)).toHaveLength(3);
+	});
+
+	it('finds a group wherever it sits, and nothing for one that is not there', () => {
+		const deep = group({ name: 'Servers' });
+		const tree = group({ sections: [group({ sections: [deep] })] });
+
+		expect(find(tree, deep.id)).toBe(deep);
+		expect(find(tree, tree.id)).toBe(tree);
+		expect(find(tree, 'not a group')).toBeNull();
 	});
 
 	it('finds the recycle bin wherever the file puts it', () => {

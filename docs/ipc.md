@@ -17,8 +17,8 @@ travels the other way, as bytes.
 
 | Action | What reaches the webview |
 |---|---|
-| Tree and list | id, title, username, URL, tags, dates, whether there is a password, how many attachments |
-| Open an entry | the same, plus every field's name, kind and whether it is empty, plus attachment names and sizes |
+| Tree and list | id, title, username, URL, tags, dates, whether there is a password, how many attachments, and for anything in the recycle bin when it went in and the folder it came from |
+| Open an entry | the same, plus every field's name, kind and whether it is empty, plus attachment names and sizes, plus what deleting it would do |
 | Reveal a field | the value, one field, once |
 | Read a previous version | the same as an entry, and one value at a time on a reveal |
 | Copy a field | nothing; Rust writes the pasteboard |
@@ -60,6 +60,8 @@ Everything slice 3 added:
 | `create_group` | `parent`, `name` | the tree |
 | `rename_group` | `group`, `name` | the tree |
 | `delete_group` | `group` | the tree |
+| `put_back_entry` | `entry` | the tree |
+| `put_back_group` | `group` | the tree |
 | `empty_recycle_bin` | | the tree |
 | `set_field` | `entry`, `field`, `value`, `protect` | the entry |
 | `remove_field` | `entry`, `field` | the entry |
@@ -209,6 +211,46 @@ key is not aimed at a text field. It is withdrawn by the notice going, by a
 newer notice, by any other change reaching the file, and by the pane showing
 another entry or none, and it runs once however it is asked for. A removal whose
 save failed is not offered back at all: the failure has a notice of its own.
+
+**What a deletion will do is said before it happens.** Every entry and every
+group carries `deletion`, `bin` or `forever`: whether deleting it moves it to the
+recycle bin, where it can be put back from, or takes it out of the file. It is
+`forever` for anything already in the bin, for everything in a vault whose
+`RecycleBinEnabled` is false, and for a folder the bin sits inside, which cannot
+go into itself. The rule is one function in
+[`vault-core`'s `bin.rs`](../crates/vault-core/src/bin.rs), and it is the same
+function the deletion asks, so the answer the window drew is the thing that
+happens. The window asks before a deletion that is `forever` and offers the
+other kind back from its notice.
+
+It travels with the tree and with the entry rather than in `status`, on
+purpose. `status` is read when the window is built; the tree and the entry are
+read again after every change and after `reload`, and a file another client
+rewrote may have stopped keeping a bin. A flag read at unlock would go on
+promising the bin to a deletion that erases.
+
+What the window says afterwards is read off the answer rather than off that
+promise: `delete_entry` and `delete_group` answer with the tree, and the window
+offers Undo only for something still in it.
+
+**The bin says when and where from.** Anything inside the bin - an entry row,
+an entry, a group - carries `binned`, `null` everywhere else and for the bin
+itself. `since` is when it went in: its own `LocationChanged`, or that of the
+folder it went in with. `from` is the id of the folder it was in, which is the
+format's `PreviousParentGroup`, and only when that folder is still somewhere to
+go: `null` when nothing was written down, when the folder has gone, and when it
+is in the bin too. The folder crosses as an id and the window names it from the
+tree, so a folder renamed since is called what it is called now.
+
+**`put_back_entry` and `put_back_group` take something out of the bin** and
+answer with the tree. It goes back into `from`, or to the top of the vault when
+`from` is `null`. A folder goes with everything in it. Both refuse with
+`refused` for anything not in the bin - the bin itself, the top of the vault, an
+entry already put back - so an undo that arrives after the thing came back
+moves nothing, and with `readOnly` on a database Coffer will not write back.
+Putting back is a move and not an edit: no version is written, the
+modification time stays, and nothing is added to `DeletedObjects`; the same is
+true of the move into the bin.
 
 **`add_attachment` and `export_attachment` open their panel in Rust.** The
 bytes of a file never cross in either direction and neither does a path: the
@@ -478,8 +520,9 @@ Tauri's mock runtime and belongs with the window work rather than with this
 slice.
 
 **An entry cannot be moved between folders.** It is made in the folder that is
-open and it stays there until it is deleted, which moves it to the recycle bin.
-The mockup shows dragging a row into another folder; nothing here does that yet.
+open and it stays there until it is deleted, which moves it to the recycle bin,
+and put back from there, which returns it. The mockup shows dragging a row into
+another folder; nothing here does that yet.
 
 **The three window buttons are not moved at all.** macOS puts the close,
 minimise and zoom buttons a fixed distance below the top of the window, and it

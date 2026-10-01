@@ -298,6 +298,48 @@ database is shown as the database holds it and is never used as a path; this is
 the name the save panel is offered, and it is the only place the conversion
 happens.
 
+## The recycle bin, and putting things back
+
+`SPEC.md` says a deletion goes to the recycle bin when the database keeps one
+and out of the file otherwise. Coffer also takes things back out of the bin, and
+says before a deletion which of the two it will be.
+
+**The library keeps where something came from, and hides half of it.**
+`EntryMut::move_to` and `GroupMut::move_to` both set `PreviousParentGroup` to
+the group being left, and the field is read and written with the rest of the
+file (`format/xml_db/entry.rs`, `format/xml_db/group.rs`). The field itself is
+`pub(crate)`. The only way to read it is `previous_parent()`, which answers only
+when the group it names is still there, so a folder that was never written down
+and one that has since gone look the same from here. Both send what is put back
+to the top of the vault, which is the right answer for either.
+
+Moving is not an edit. The move uses `move_to` on an `EntryMut` or a `GroupMut` rather than
+through `track_changes`, so no version is written, and it records nothing in
+`DeletedObjects`: a record there would make every other client delete the entry
+at its next merge. Putting back moves the same way, and the folder it leaves -
+the bin, or a folder in it - becomes its `PreviousParentGroup`.
+
+**Where something goes back to is the folder it came from, while that is
+somewhere to go.** Not when it has gone, and not when it is in the bin itself:
+an entry whose folder followed it into the bin goes to the top of the vault
+rather than into a deleted folder. The top of the vault is a folder like any
+other to come from.
+
+**When something went in is the date its folder went in.** A folder takes what
+is in it along, and nothing inside it is moved, so its own `LocationChanged` is
+the date of some older move. What sits inside a deleted folder reports the
+folder's.
+
+**One rule, asked from both sides.** [`bin.rs`](../crates/vault-core/src/bin.rs)
+decides where a deletion goes, what the tree says it will do, and what the bin
+says about what it holds. A walk of the tree steps down folder by folder with
+`Bin::enter`; a single entry is placed by taking the same steps from the top, so
+the tree and the entry cannot disagree, and the deletion asks the same function
+the window was answered from. A folder the bin is inside is erased rather than
+binned - it cannot go inside itself - and that is asked of a folder and never of
+an entry, because the top of the vault holds the bin and is where every entry
+Coffer makes lands.
+
 ## The pool of files, and why removing one is not a removal
 
 Every attachment in a KDBX 4 file lives once, in the inner header, and an entry
