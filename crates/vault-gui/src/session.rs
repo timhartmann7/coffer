@@ -18,6 +18,7 @@ use zeroize::Zeroizing;
 use crate::autolock::Reason;
 use crate::drafts::{Drafts, Over, Typed};
 use crate::error::Failure;
+use crate::offered::Waiting;
 use crate::recent;
 
 pub struct Session {
@@ -138,10 +139,10 @@ impl Held {
 /// and leave the file or the typing behind. A lock, another database chosen, an
 /// unlock over the top: every way the vault goes, the rest goes with it, wiped,
 /// and no path through here has to remember to say so. The file goes the same
-/// way with its entry (see [`Open::settle`]).
+/// way with its entry (see [`Waiting::settle`]).
 struct Open {
     vault: Vault,
-    offered: Option<Offered>,
+    offered: Waiting,
     drafts: Drafts,
 }
 
@@ -149,7 +150,7 @@ impl Open {
     fn of(vault: Vault) -> Open {
         Open {
             vault,
-            offered: None,
+            offered: Waiting::default(),
             drafts: Drafts::default(),
         }
     }
@@ -171,51 +172,6 @@ impl Open {
                 .unwrap_or(false);
         }
         changed
-    }
-
-    /// Lets go of the file waiting on an entry the reader can no longer be
-    /// looking at: one deleted, emptied out of the bin, or in the bin, where
-    /// nothing goes on an entry. Under the lock of the change that took the
-    /// entry away, so that no answer can land between the two.
-    fn settle(&mut self) {
-        let gone = self.offered.as_ref().is_some_and(|offered| {
-            self.vault
-                .entry(offered.entry)
-                .is_none_or(|entry| entry.binned.is_some())
-        });
-        if gone {
-            self.offered = None;
-        }
-    }
-}
-
-/// A file offered to an entry under a name the entry already gives another,
-/// held until the reader says which of the two to keep.
-///
-/// The bytes rather than the path they were read from. A path is a question
-/// asked again later of a disk that has moved on: the file can be renamed,
-/// rewritten by the scanner that made it, or on a stick that has been pulled
-/// out by the time the reader answers, and what went on the entry would not be
-/// what they were asked about, or would be nothing at all. The bytes are the
-/// file they chose, as it was when they chose it. They cost what the offer had
-/// already paid to read them - no more than the largest file a vault takes -
-/// and they are held the way the vault holds everything else: wiped when they
-/// go, and gone whenever the vault is.
-///
-/// Tied to the entry the file was picked for. An answer about any other entry
-/// does not reach it, so a file is never put on an entry it was not chosen for.
-struct Offered {
-    entry: EntryId,
-    name: String,
-    data: Zeroizing<Vec<u8>>,
-}
-
-impl std::fmt::Debug for Offered {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Offered")
-            .field("entry", &self.entry)
-            .field("file", &"[redacted]")
-            .finish()
     }
 }
 
@@ -702,7 +658,7 @@ impl Session {
         let mut held = self.held();
         let open = held.changing()?;
         let changed = change(&mut open.vault);
-        open.settle();
+        open.offered.settle(&open.vault);
         Ok(changed)
     }
 
@@ -730,11 +686,11 @@ impl Session {
         // The file read again keeps an entry's id and may not keep the file
         // the reader was asked about, so whatever was waiting goes as well.
         if matches!(over, Over::Everything) {
-            open.offered = None;
+            open.offered.clear();
         }
         open.drafts.over(over, sequence);
         let changed = change(&mut open.vault);
-        open.settle();
+        open.offered.settle(&open.vault);
         Ok(changed)
     }
 
@@ -755,11 +711,7 @@ impl Session {
     }
 
     /// Offers a file to an entry, and holds on to it when the entry already
-    /// gives its name to another, until the reader says which to keep.
-    ///
-    /// Whatever was waiting before is let go first, whichever entry it was for:
-    /// a file picked is a new question, and the last one is no longer being
-    /// asked.
+    /// gives its name to another: see [`Waiting::offer`].
     pub fn offer(
         &self,
         entry: EntryId,
@@ -768,26 +720,11 @@ impl Session {
     ) -> Result<Attached, Failure> {
         let mut held = self.held();
         let open = held.changing()?;
-        open.offered = None;
-
-        let attached = open.vault.add_attachment(entry, &name, &data)?;
-        if matches!(attached, Attached::Taken(_)) {
-            open.offered = Some(Offered { entry, name, data });
-        }
-        Ok(attached)
+        Ok(open.offered.offer(&mut open.vault, entry, name, data)?)
     }
 
-    /// Puts the file waiting on `entry` where the reader said: `answer` is
-    /// [`Vault::keep_both`] or [`Vault::replace_attachment`].
-    ///
-    /// Only the file picked for this entry answers to it. One waiting on any
-    /// other entry is refused and left where it is, and none waiting at all -
-    /// the reader said no, or picked again - is refused as well, so an answer
-    /// that arrives late can never put anything anywhere.
-    ///
-    /// The file is let go once the answer is in, and kept when the answer is
-    /// refused: a replacement the versions stand in the way of leaves keeping
-    /// both still open to the reader, without choosing the file again.
+    /// Puts the file waiting on `entry` where the reader said: see
+    /// [`Waiting::answer`].
     pub fn answer(
         &self,
         entry: EntryId,
@@ -795,31 +732,14 @@ impl Session {
     ) -> Result<(), Failure> {
         let mut held = self.held();
         let open = held.changing()?;
-        let offered = open
-            .offered
-            .as_ref()
-            .filter(|offered| offered.entry == entry)
-            .ok_or_else(|| Failure::refused("no file is waiting to go on that entry"))?;
-
-        answer(&mut open.vault, entry, &offered.name, &offered.data)?;
-        open.offered = None;
-        Ok(())
+        open.offered.answer(&mut open.vault, entry, answer)
     }
 
-    /// Lets go of the file waiting on `entry`, when there is one.
-    ///
-    /// Only that entry's. The window says this about the entry it is leaving,
-    /// and the message can arrive after a file has been picked for the next
-    /// one, which is not the window's to throw away.
+    /// Lets go of the file waiting on `entry`, when there is one: see
+    /// [`Waiting::withdraw`].
     pub fn withdraw(&self, entry: EntryId) {
-        let mut held = self.held();
-        if let Some(open) = held.open.as_mut()
-            && open
-                .offered
-                .as_ref()
-                .is_some_and(|offered| offered.entry == entry)
-        {
-            open.offered = None;
+        if let Some(open) = self.held().open.as_mut() {
+            open.offered.withdraw(entry);
         }
     }
 }
@@ -2331,21 +2251,6 @@ mod tests {
                 .is_err()
         );
         assert!(session.answer(nobody, Vault::keep_both).is_err());
-    }
-
-    /// The file waiting is the reader's file, and printing it prints neither
-    /// its bytes nor its name.
-    #[test]
-    fn the_file_waiting_prints_nothing_of_itself() {
-        let offered = Offered {
-            entry: EntryId::from_uuid(uuid::Uuid::nil()),
-            name: "passport scan.pdf".to_owned(),
-            data: Zeroizing::new(b"-----BEGIN OPENSSH PRIVATE KEY-----".to_vec()),
-        };
-        let printed = format!("{offered:?}");
-        assert!(printed.contains("[redacted]"), "{printed}");
-        assert!(!printed.contains("passport"), "{printed}");
-        assert!(!printed.contains("OPENSSH"), "{printed}");
     }
 
     /// Text the reader typed into a field and never left, as the window says

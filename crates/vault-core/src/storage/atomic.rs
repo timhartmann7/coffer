@@ -136,9 +136,10 @@ pub fn reserve(path: &Path) -> Result<(), io::Error> {
 /// it.
 ///
 /// Anything at the name counts, a link that leads nowhere included, because
-/// that is what an exclusive create refuses. The answer is advice for a screen
-/// and nothing more: anything can arrive between it and a reservation, which is
-/// why a creation takes the name rather than asking about it.
+/// that is what an exclusive create refuses. The answer is advice and nothing
+/// more - for a move that would rather refuse before it reads a large copy -
+/// and anything can arrive between it and a reservation, which is why a
+/// creation takes the name rather than asking about it.
 pub fn taken(path: &Path) -> bool {
     path.symlink_metadata().is_ok()
 }

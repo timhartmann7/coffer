@@ -85,3 +85,14 @@ export function deleted(binned: Binned, root: Group, now: Date): string {
 export function eraseQuestion(name: string, folder = false): string {
 	return `Delete ${name}${folder ? ' and everything in it' : ''} forever? This can’t be undone.`;
 }
+
+/** What a move into the bin says, for an entry and for a folder alike. */
+export function moved(name: string): string {
+	return `Moved ${name} to the Recycle Bin`;
+}
+
+/** What is said once something has gone out of the file, where nothing can
+ * put it back. */
+export function erased(name: string): string {
+	return `Deleted ${name} forever`;
+}

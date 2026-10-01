@@ -233,16 +233,17 @@ own - sleep, the screen locking, Coffer quitting - arrive on the thread the
 window is drawn on, where neither a message into the page nor its answer can get
 through: a lock that asked the page to finish first could only wait for nothing.
 So the page never is asked. It sends `draft` for a field a quarter of a second
-after the last key, at least once a second while the keys keep coming - a
-steady typist never pauses that long, and a lock then would cost everything
-since they last stopped - and at once when the window loses focus, with what is
-in the field; `value` is `null` when the typing was taken back - Escape, Cancel,
+after the last key, at least once a second while the keys keep coming - a steady
+typist never pauses that long, and a lock then would cost everything since they
+last stopped - and at once when the window loses focus, with what is in the
+field; `value` is `null` when the typing was taken back - Escape, Cancel,
 Discard, a field left as it was, a Change field emptied again, or a new password
-whose entry the pane stopped showing. Rust keeps the last of it per field, beside the open vault, in
-`Zeroizing` storage whose `Debug` prints `[redacted]`, and every lock writes it
-into the vault before it wipes it (see Locking). The Lock button waits for every
-draft and every value already on its way before it asks for the lock. The text
-travels the way `set_field`'s does, window to Rust, and nothing comes back.
+whose entry the pane stopped showing. Rust keeps the last of it per field,
+beside the open vault, in `Zeroizing` storage whose `Debug` prints `[redacted]`,
+and every lock writes it into the vault before it wipes it (see Locking). The
+Lock button waits for every draft and every value already on its way before it
+asks for the lock. The text travels the way `set_field`'s does, window to Rust,
+and nothing comes back.
 
 **Only values are drafted, not names.** A lock writes what was typed into the
 value of any of an entry's fields, the standard five and the reader's own, in
@@ -421,13 +422,13 @@ is called what it is called now.
 
 **`put_back_entry` and `put_back_group` take something out of the bin** and
 answer with the tree. It goes back into `from`, or to the top of the vault when
-`from` is `null`, and the window reads where it went off the tree. A folder goes with everything in it. Both refuse with
-`refused` for anything not in the bin - the bin itself, the top of the vault, an
-entry already put back - so an undo that arrives after the thing came back
-moves nothing, and with `readOnly` on a database Coffer will not write back.
-Putting back is a move and not an edit: no version is written, the
-modification time stays, and nothing is added to `DeletedObjects`; the same is
-true of the move into the bin.
+`from` is `null`, and the window reads where it went off the tree. A folder goes
+with everything in it. Both refuse with `refused` for anything not in the bin -
+the bin itself, the top of the vault, an entry already put back - so an undo
+that arrives after the thing came back moves nothing, and with `readOnly` on a
+database Coffer will not write back. Putting back is a move and not an edit: no
+version is written, the modification time stays, and nothing is added to
+`DeletedObjects`; the same is true of the move into the bin.
 
 **`add_attachment` and `export_attachment` open their panel in Rust.** The
 bytes of a file never cross in either direction and neither does a path: the
@@ -454,7 +455,8 @@ removal would and puts the new one in its place, and `withdraw_attachment` lets
 the file go. Replacing is refused with `attachmentInHistory` exactly as a
 removal is, and the file goes on waiting, so the reader can still keep both.
 
-The file waits in Rust, beside the vault, until then - its bytes rather than its
+The file waits in Rust, beside the vault, until then
+([`offered.rs`](../crates/vault-gui/src/offered.rs)) - its bytes rather than its
 path. A path is a question asked again later of a disk that has moved on: the
 file can be renamed, rewritten by the scanner that made it, or on a stick that
 was pulled out before the reader answered. The bytes are what they chose, they
@@ -486,8 +488,8 @@ Nothing that names a file comes from the webview. `choose_database` opens the
 system's own dialog and keeps the answer; `choose_snapshot` takes a slot number
 and builds the path from the database the user already chose; `choose_found`
 takes the vault the session is holding from the last `status`, and
-`choose_existing` the place it is holding for a new vault. There is no command that opens a path the
-frontend sends.
+`choose_existing` the place it is holding for a new vault. There is no command
+that opens a path the frontend sends.
 
 `open_url` reads the address out of the entry rather than accepting one, so the
 only thing the webview can ask Coffer to open is an address it can already see -

@@ -32,6 +32,7 @@ mod error;
 mod home;
 mod lock;
 mod menu;
+mod offered;
 mod opener;
 mod recent;
 mod session;

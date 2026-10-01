@@ -715,7 +715,7 @@ pub(crate) fn moment(time: std::time::SystemTime) -> Option<String> {
         i64::try_from(since.as_secs()).ok()?,
         since.subsec_nanos(),
     )?;
-    Some(moment.naive_utc().format("%Y-%m-%dT%H:%M:%SZ").to_string())
+    stamp(Some(moment.naive_utc()))
 }
 
 #[cfg(test)]

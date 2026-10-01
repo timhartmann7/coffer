@@ -369,11 +369,11 @@ when the group it names is still there, so a folder that was never written down
 and one that has since gone look the same from here. Both send what is put back
 to the top of the vault, which is the right answer for either.
 
-Moving is not an edit. The move uses `move_to` on an `EntryMut` or a `GroupMut` rather than
-through `track_changes`, so no version is written, and it records nothing in
-`DeletedObjects`: a record there would make every other client delete the entry
-at its next merge. Putting back moves the same way, and the folder it leaves -
-the bin, or a folder in it - becomes its `PreviousParentGroup`.
+Moving is not an edit. The move uses `move_to` on an `EntryMut` or a `GroupMut`
+rather than through `track_changes`, so no version is written, and it records
+nothing in `DeletedObjects`: a record there would make every other client delete
+the entry at its next merge. Putting back moves the same way, and the folder it
+leaves - the bin, or a folder in it - becomes its `PreviousParentGroup`.
 
 **Where something goes back to is the folder it came from, while that is
 somewhere to go.** Not when it has gone, and not when it is in the bin itself:
@@ -572,8 +572,9 @@ be old states of the vault opening with an old password.
 
 **Whether a file is there is its own question.** `storage::on_disk` answers it
 for the screen - gone only when nothing at all is at the name, and a link that
-leads nowhere is still something - and it is only ever advice. The two moves above ask the disk again,
-with the publish's hard link and with `Seen` under the vault's lock.
+leads nowhere is still something - and it is only ever advice. The two moves
+above ask the disk again, with the publish's hard link and with `Seen` under the
+vault's lock.
 
 ## Making a vault, and what a second of work costs
 

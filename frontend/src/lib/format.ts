@@ -12,25 +12,14 @@ import type { Entry } from './model';
 export function when(stamp: string | null, now: Date): string {
 	const moment = parse(stamp);
 	if (!moment) return '';
-
-	if (sameDay(moment, now)) {
-		return time(moment);
-	}
-	if (moment.getFullYear() === now.getFullYear()) {
-		return `${moment.getDate()} ${month(moment)}`;
-	}
-	return `${moment.getDate()} ${month(moment)} ${moment.getFullYear()}`;
+	return sameDay(moment, now) ? time(moment) : day(stamp, now);
 }
 
 /** The long form the entry screen puts at the bottom. */
 export function fully(stamp: string | null, now: Date): string {
 	const moment = parse(stamp);
 	if (!moment) return 'unknown';
-
-	if (sameDay(moment, now)) {
-		return `today at ${time(moment)}`;
-	}
-	return `${moment.getDate()} ${month(moment)} ${moment.getFullYear()}`;
+	return sameDay(moment, now) ? at(stamp, now) : dated(moment, true);
 }
 
 /**
@@ -41,8 +30,7 @@ export function day(stamp: string | null, now: Date): string {
 	const moment = parse(stamp);
 	if (!moment) return '';
 	if (sameDay(moment, now)) return 'today';
-	const date = `${moment.getDate()} ${month(moment)}`;
-	return moment.getFullYear() === now.getFullYear() ? date : `${date} ${moment.getFullYear()}`;
+	return dated(moment, moment.getFullYear() !== now.getFullYear());
 }
 
 /**
@@ -164,8 +152,11 @@ function time(moment: Date): string {
 	return `${moment.getHours()}:${String(moment.getMinutes()).padStart(2, '0')}`;
 }
 
-function month(moment: Date): string {
-	return MONTHS[moment.getMonth()];
+/** The day of the month and the month, "12 Sep", and the year after them
+ * when `year` says so. */
+function dated(moment: Date, year: boolean): string {
+	const date = `${moment.getDate()} ${MONTHS[moment.getMonth()]}`;
+	return year ? `${date} ${moment.getFullYear()}` : date;
 }
 
 function round(value: number): string {

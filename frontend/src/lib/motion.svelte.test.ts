@@ -19,7 +19,7 @@ import { RISE } from './motion';
 
 const css = readFileSync('src/app.css', 'utf8');
 const toast = readFileSync('src/lib/components/Toast.svelte', 'utf8');
-const vault = readFileSync('src/lib/components/Vault.svelte', 'utf8');
+const notices = readFileSync('src/lib/notices.svelte.ts', 'utf8');
 
 describe('a notice goes in exactly as long as it is drawn going', () => {
 	it('leaves on the length the stylesheet gives it to arrive', () => {
@@ -32,7 +32,9 @@ describe('a notice goes in exactly as long as it is drawn going', () => {
 	/** A notice that is removed on its own clock rather than on the movement's is
 	 * the half-faded box, or the invisible one. */
 	it('is taken out of the document by the same number', () => {
-		expect(vault, 'the window waits on something other than the movement').toContain('span(RISE)');
+		expect(notices, 'the notice waits on something other than the movement').toContain(
+			'span(RISE)'
+		);
 	});
 
 	/**

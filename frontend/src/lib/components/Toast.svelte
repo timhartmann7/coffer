@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { Notice } from '$lib/notices.svelte';
 	import Icon from './Icon.svelte';
 
 	/**
@@ -27,7 +28,7 @@
 		onUndo
 	}: {
 		message: string;
-		kind: 'copied' | 'failed' | 'removed';
+		kind: Notice['kind'];
 		leaving: boolean;
 		/** Takes back what the notice is about. The window decides for how long
 		 * that is on offer, and takes the notice away when it no longer is. */

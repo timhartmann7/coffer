@@ -7,41 +7,24 @@
 		copyVersion,
 		createEntry,
 		createGroup,
-		deleteEntry,
-		deleteGroup,
-		emptyRecycleBin,
 		entry as loadEntry,
-		putBackEntry,
-		putBackGroup,
-		reload,
 		renameGroup,
-		rival,
-		save,
-		saveCopy,
-		saveOver,
 		tree as loadTree,
 		undoRemoval,
 		versions as loadVersions
 	} from '$lib/ipc';
 	import { deleted as deletedLine, eraseQuestion } from '$lib/bin';
-	import { flush, release } from '$lib/drafts';
+	import { flush } from '$lib/drafts';
 	import { named as howLong } from '$lib/duration';
-	import { called, quoted } from '$lib/format';
+	import { quoted } from '$lib/format';
 	import { held } from '$lib/holding';
 	import { copying, typing } from '$lib/keys';
 	import { composing } from '$lib/lines';
-	import { RISE, span } from '$lib/motion';
+	import { Moves } from '$lib/moves';
+	import { COPIED, Notices } from '$lib/notices.svelte';
 	import { conceal } from '$lib/reveal.svelte';
-	import type {
-		Database,
-		Entry,
-		EntryRow,
-		Group,
-		History,
-		Position,
-		Rival,
-		Span
-	} from '$lib/model';
+	import { Saving } from '$lib/saving.svelte';
+	import type { Database, Entry, EntryRow, Group, History, Position, Span } from '$lib/model';
 	import { index, search } from '$lib/search';
 	import {
 		entriesOf,
@@ -140,59 +123,31 @@
 	let renaming = $state(false);
 	let emptying = $state(false);
 	let deleting = $state(false);
-	let saving = $state(false);
-	/**
-	 * Whether the vault is holding a change the file has not got.
-	 *
-	 * A save refused with anything but a conflict raises a notice that fades
-	 * after six seconds, and a reader who missed it goes on editing into a
-	 * window whose every write is failing. This is the standing version of that
-	 * notice, and the status bar is where it sits.
-	 */
-	let unsaved = $state(false);
-	let conflict = $state<Rival | null>(null);
-	/** Whether the dialog is about a file somebody rewrote or one that is not
-	 * there any more. The two ask different questions and offer different ways
-	 * out: nothing can be reloaded from a file that is gone. */
-	let missing = $state(false);
-	let changedAt = $state<Date | null>(null);
 
-	type Notice = {
-		message: string;
-		kind: 'copied' | 'failed' | 'removed';
-		/** Takes back what the notice is about, while that is still on offer. */
-		undo?: () => void;
-	};
-
-	/**
-	 * How long a notice stays up: one that reports, one that says what was
-	 * copied, and one that offers to take a change back.
-	 *
-	 * The last is the longest because it asks for a decision, and the pointer
-	 * has the width of the window to cross to reach it.
-	 */
-	const REPORTED = 6000;
-	const COPIED = 5000;
-	const UNDOABLE = 8000;
-
-	let notice = $state<Notice | null>(null);
-	/**
-	 * The way to take back what the notice on the screen reports, while it
-	 * still can be.
-	 *
-	 * Nothing is drawn from it, so it is not state: it is the answer to whether
-	 * the offer still stands, asked by the notice's button, by Cmd+Z and by
-	 * everything that withdraws it. An undo clears it before its first wait, so
-	 * the button and the key pressed together run it once.
-	 */
-	let offered: (() => Promise<void>) | null = null;
-	let fading: ReturnType<typeof setTimeout> | null = null;
-	/** Whether the notice on the screen is on its way out. Nothing animates an
-	 * element that has already gone, so it says so first and goes after. */
-	let leaving = $state(false);
-	/** Which notice the toast is. Each is drawn afresh, so that a new sentence
-	 * rises into the corner rather than changing its words in place. */
-	let told = $state(0);
+	const notices = new Notices(failed);
+	const file = new Saving({
+		reread,
+		reloaded: (tree) => {
+			onTree(tree);
+			pane = null;
+		},
+		failed,
+		notices
+	});
+	const moves = new Moves({
+		root: () => root,
+		showing: () => showing,
+		unsaved: () => file.unsaved,
+		close: () => (pane = null),
+		select,
+		open,
+		read,
+		unread,
+		expand: (id) => expanded.add(id),
+		reshaped,
+		failed,
+		notices
+	});
 
 	// Timestamps are written against the moment the vault was opened rather than
 	// against a clock that ticks, so that a list of a thousand rows is not
@@ -344,39 +299,6 @@
 	}
 
 	/**
-	 * Writes the vault back after a change.
-	 *
-	 * There is no save button, so this is what one means: the change is already
-	 * in the window, and this is the moment it reaches the file. A file somebody
-	 * else wrote in the meantime stops here and asks, and so does one that is not
-	 * there any more.
-	 *
-	 * Both have to ask rather than report. A save that only raised a notice left
-	 * the reader editing into a window whose every write failed - a renamed file,
-	 * an unmounted disk - with a whole session's work in memory and nothing in
-	 * the application able to put it anywhere.
-	 */
-	async function persist() {
-		saving = true;
-		try {
-			await save();
-			unsaved = false;
-		} catch (thrown) {
-			unsaved = true;
-			const refused = asFailure(thrown);
-			if (refused.code === 'externalChange' || refused.code === 'gone') {
-				missing = refused.code === 'gone';
-				conflict = await rival().catch(() => ({ modified: null, entries: null }));
-			} else {
-				failed(thrown);
-			}
-		} finally {
-			saving = false;
-		}
-		await reread();
-	}
-
-	/**
 	 * An entry came back changed.
 	 *
 	 * Every value of it on the screen goes first: what was shown before the
@@ -391,8 +313,8 @@
 		conceal(entry.id);
 		land(entry);
 		unread(entry.id);
-		changedAt = new Date();
-		await persist();
+		file.changedAt = new Date();
+		await file.persist();
 		await redraw();
 	}
 
@@ -415,16 +337,16 @@
 	 * file like any other. */
 	async function versionsChanged(history: History) {
 		listed(history);
-		changedAt = new Date();
-		await persist();
+		file.changedAt = new Date();
+		await file.persist();
 		await redraw();
 	}
 
 	/** The tree came back changed. */
 	async function reshaped(tree: Group) {
 		onTree(tree);
-		changedAt = new Date();
-		await persist();
+		file.changedAt = new Date();
+		await file.persist();
 	}
 
 	/**
@@ -440,112 +362,23 @@
 		try {
 			const made = await createEntry(inside);
 			onTree(made.tree);
-			changedAt = new Date();
+			file.changedAt = new Date();
 			const row = rowOf(made.tree, made.entry);
 			if (row && showing === at) await open(row);
-			await persist();
+			await file.persist();
 		} catch (thrown) {
 			failed(thrown);
 		}
 	}
 
-	/**
-	 * The entries and folders a move into the bin, out of it or out of the file
-	 * has been asked for and Rust has not yet answered about.
-	 *
-	 * The button that asked stays on the screen until Rust answers, and a
-	 * second press of "Move to Recycle Bin" in that time would find the entry
-	 * already in the bin and take it out of the file. So a press is dropped
-	 * while the same thing is on its way, and only then: one on another entry or
-	 * folder is a choice of its own, and Rust takes it after the first. The
-	 * save that follows a move is not part of it - by then the screen has moved
-	 * on from the button that asked. Nothing is drawn from it; it is a
-	 * SvelteSet only because the linter allows no other kind in a component.
-	 */
-	const moving = new SvelteSet<string>();
-
-	/** Sends one move for `id`, or nothing while one for it is on its way:
-	 * `null` is a press that was dropped. */
-	async function once(id: string, move: () => Promise<Group>): Promise<Group | null> {
-		if (moving.has(id)) return null;
-		moving.add(id);
-		try {
-			return await move();
-		} finally {
-			moving.delete(id);
-		}
+	/** Moves the entry in the pane to the bin, or out of the file. */
+	function removeEntry() {
+		if (opened && !held()) void moves.removeEntry(opened);
 	}
 
-	/**
-	 * Deletes the entry in the pane, and says what became of it.
-	 *
-	 * What became of it is read off the tree that comes back, not off what the
-	 * pane expected: an entry still in the file went to the bin and is offered
-	 * back, and one that is not went for good. A move whose save failed has a
-	 * notice of its own already, and an offer over it would push the one
-	 * sentence that matters off the screen.
-	 *
-	 * Rust may answer a second later, behind a save, and a reader who opened
-	 * another entry in that second is reading it: the pane is put away only if
-	 * it is still on the entry that went. The move is offered back either way.
-	 * Its undo puts the entry back by its id, and opens it again only into a
-	 * pane that is still empty, never over whatever the reader chose instead.
-	 */
-	async function removeEntry() {
-		if (!opened || held()) return;
-		// An entry whose folder is on its way to the bin goes with it. Its own
-		// move would reach Rust after the folder's, find it in the bin already
-		// and take it out of the file.
-		if (pathTo(root, opened.group)?.some((step) => moving.has(step.id))) return;
-		const id = opened.id;
-		const name = called(opened);
-		let tree: Group | null;
-		try {
-			tree = await once(id, () => deleteEntry(id, release(id)));
-		} catch (thrown) {
-			failed(thrown);
-			return;
-		}
-		if (tree === null) return;
-		if (showing === id) pane = null;
-		await reshaped(tree);
-		if (unsaved) return;
-
-		if (rowOf(tree, id) === null) {
-			erased(name);
-			return;
-		}
-		offer(moved(name), async () => {
-			const back = await putBackEntry(id);
-			await reshaped(back);
-			const row = rowOf(back, id);
-			// An entry the reader opened since, or during the save, is their
-			// later choice.
-			if (row && showing === null) await open(row);
-		});
-	}
-
-	/**
-	 * Takes the entry in the pane out of the bin. The pane stays on it and
-	 * reads it again: back out of the bin it is an entry like any other, and the
-	 * line above its title says where it went.
-	 *
-	 * Read again before the save rather than after it, so the pane does not go
-	 * on offering Put back, and a deletion for good, on an entry that has
-	 * already left the bin for the length of the save.
-	 */
-	async function putBack() {
-		if (!opened) return;
-		const id = opened.id;
-		try {
-			const tree = await once(id, () => putBackEntry(id));
-			if (tree === null) return;
-			unread(id);
-			await read(id);
-			await reshaped(tree);
-		} catch (thrown) {
-			failed(thrown);
-		}
+	/** Takes the entry in the pane out of the bin. */
+	function putBack() {
+		if (opened) void moves.putBackEntry(opened.id);
 	}
 
 	/** Opens the field that asks for a name, and closes it again. The press is
@@ -583,166 +416,22 @@
 
 	/** Deletes the folder being shown, after the question in the folders pane,
 	 * and offers it back when it went to the bin. */
-	async function removeFolder() {
+	function removeFolder() {
 		if (held()) return;
 		deleting = false;
-		if (group === null) return;
-		const id = group;
-		const name = quoted(shown.name);
-		try {
-			const tree = await once(id, () => deleteGroup(id));
-			if (tree === null) return;
-			select(null);
-			await reshaped(tree);
-			if (unsaved) return;
-			if (find(tree, id) === null) {
-				erased(name);
-				return;
-			}
-			offer(moved(name), async () => {
-				await reshaped(await putBackGroup(id));
-			});
-		} catch (thrown) {
-			failed(thrown);
-		}
+		if (group !== null) void moves.removeFolder(group, quoted(shown.name));
 	}
 
-	/**
-	 * Takes the folder being shown out of the bin with everything in it.
-	 *
-	 * The list stays on it, and the folders above it are opened in the tree, so
-	 * that the place it went back to is on the screen rather than folded away.
-	 */
-	async function putBackFolder() {
-		if (group === null) return;
-		const id = group;
-		// An entry open inside the folder went back with it, and is drawn read
-		// only with a banner about a bin it has left until it is read again.
-		const reading = showing;
-		try {
-			const tree = await once(id, () => putBackGroup(id));
-			if (tree === null) return;
-			for (const step of pathTo(tree, id)?.slice(0, -1) ?? []) expanded.add(step.id);
-			if (reading !== null) await read(reading);
-			await reshaped(tree);
-		} catch (thrown) {
-			failed(thrown);
-		}
+	/** Deletes the folder being shown in the bin for good. */
+	function eraseFolder() {
+		if (group !== null && !held()) void moves.eraseFolder(group, quoted(shown.name));
 	}
 
-	/** Deletes the folder being shown in the bin for good, and goes up to the
-	 * folder it was in. */
-	async function eraseFolder() {
-		if (group === null || held()) return;
-		const id = group;
-		const name = quoted(shown.name);
-		const above = pathTo(root, id)?.at(-2)?.id ?? null;
-		try {
-			const tree = await once(id, () => deleteGroup(id));
-			if (tree === null) return;
-			select(above);
-			await reshaped(tree);
-			if (!unsaved) erased(name);
-		} catch (thrown) {
-			failed(thrown);
-		}
-	}
-
-	/**
-	 * Empties the bin, and says what to do about anything that would not go.
-	 *
-	 * A file that a previous version of some other entry names has to keep the
-	 * number it has, and the pool of files has to stay an unbroken run from
-	 * zero, so now and then an entry cannot be erased until those versions go.
-	 * The message has to name the way out, because nothing on this screen shows
-	 * which entry is in the way: open the one still in the bin and take its file
-	 * off, which clears the versions holding it wherever they are.
-	 *
-	 * Whatever could go has gone by the time this is read, so pressing it again
-	 * after that is a shorter list every time and never a longer one.
-	 */
-	async function empty() {
+	/** Empties the bin, after the question under it. */
+	function empty() {
 		if (held()) return;
 		emptying = false;
-		let tree: Group;
-		let stayed = false;
-		try {
-			tree = await emptyRecycleBin();
-		} catch (thrown) {
-			if (asFailure(thrown).code !== 'attachmentInHistory') {
-				failed(thrown);
-				return;
-			}
-			// The refusal is about what stayed, not about what went: emptying
-			// the bin is all-or-nothing per entry and the ones that could go
-			// are already out of the vault in memory. So this is read back and
-			// written like any other change - a screen that only reported the
-			// refusal drew a bin that was emptier than the file, and lost the
-			// erasures at the next lock.
-			tree = await loadTree().catch(() => root);
-			stayed = true;
-		}
-		// The pane goes only with the entry in it. Rust may answer a second
-		// later, behind a save, and an entry the reader opened from outside the
-		// bin in that second was never in it.
-		if (showing !== null && rowOf(tree, showing) === null) pane = null;
-		await reshaped(tree);
-		if (stayed) warn('Some of it stayed: open what is left in the bin and remove its file first.');
-	}
-
-	async function takeTheirs() {
-		try {
-			saving = true;
-			const tree = await reload(release(null));
-			onTree(tree);
-			pane = null;
-			changedAt = null;
-			conflict = null;
-			missing = false;
-			// Reading the file again is throwing the change away, which is a
-			// thing the reader chose. There is nothing left unsaved either way.
-			unsaved = false;
-		} catch (thrown) {
-			failed(thrown);
-		} finally {
-			saving = false;
-		}
-	}
-
-	async function keepBoth() {
-		try {
-			saving = true;
-			const beside = await saveCopy();
-			if (!beside) return;
-			conflict = null;
-			tell({ message: `Kept as ${quoted(beside.name)}`, kind: 'copied' });
-			// Only where there is a file to take instead. When the vault itself
-			// is gone there is nothing to read back, and the window goes on
-			// holding the version the copy was made from - which is still the
-			// only one, and can still be written back where it belongs.
-			if (!missing) await takeTheirs();
-			else await reread();
-			missing = false;
-		} catch (thrown) {
-			failed(thrown);
-		} finally {
-			saving = false;
-		}
-	}
-
-	async function keepOurs() {
-		try {
-			saving = true;
-			await saveOver();
-			conflict = null;
-			missing = false;
-			unsaved = false;
-			await reread();
-		} catch (thrown) {
-			failed(thrown);
-		} finally {
-			saving = false;
-		}
+		void moves.empty();
 	}
 
 	/**
@@ -775,14 +464,10 @@
 	 * corner for a whole minute.
 	 */
 	function announce(seconds: number) {
-		tell(
+		notices.tell(
 			{ message: `Copied. The clipboard clears in ${howLong(seconds)}.`, kind: 'copied' },
 			COPIED
 		);
-	}
-
-	function warn(message: string) {
-		tell({ message, kind: 'failed' });
 	}
 
 	function failed(thrown: unknown) {
@@ -791,7 +476,7 @@
 			void outdated();
 			return;
 		}
-		warn(refused.message);
+		notices.warn(refused.message);
 	}
 
 	/**
@@ -801,7 +486,7 @@
 	 * so the reader is told why, and the list is read again to choose from.
 	 */
 	async function outdated() {
-		warn(
+		notices.warn(
 			'The versions changed while you were choosing, so nothing was done. Choose again from the list as it is now.'
 		);
 		if (showing === null) return;
@@ -809,101 +494,7 @@
 		await list(showing);
 	}
 
-	/**
-	 * Puts a sentence on the screen and takes it away again.
-	 *
-	 * The clock of whatever notice was there is stopped first: without that, a
-	 * timer left over from the last one takes this one away early, and the class
-	 * that was fading it out arrives already on it. Whatever that notice offered
-	 * to take back goes with it, because an undo belongs to the sentence that
-	 * says what it undoes.
-	 */
-	function tell(next: Notice, after = REPORTED) {
-		clear();
-		told += 1;
-		notice = next;
-		fade(after);
-	}
-
-	/**
-	 * Says what was just done and offers to take it back, for eight seconds.
-	 *
-	 * The offer is withdrawn by the notice going and by a newer notice, because
-	 * an undo belongs to the sentence that says what it undoes. A lock takes the
-	 * whole window down, and the offer with it. Nothing else withdraws it: every
-	 * undo acts on what it is about by its id, whichever entry the pane shows by
-	 * then, and never opens anything over the reader's later choice, and one the
-	 * vault has moved on from is refused by Rust at the press and said to be.
-	 */
-	function offer(message: string, undo: () => Promise<void>) {
-		tell({ message, kind: 'removed', undo: () => void takeBack(undo) }, UNDOABLE);
-		offered = undo;
-	}
-
-	/**
-	 * Runs an undo once, and only while it is still the one on offer.
-	 *
-	 * The notice starts going as the undo starts: its one question has been
-	 * answered, and whatever the undo has to say next is a notice of its own.
-	 */
-	async function takeBack(undo: () => Promise<void>) {
-		if (offered !== undo) return;
-		clear();
-		go();
-		try {
-			await undo();
-		} catch (thrown) {
-			failed(thrown);
-		}
-	}
-
-	/** Says that something went out of the file, where nothing can put it back. */
-	function erased(name: string) {
-		tell({ message: `Deleted ${name} forever`, kind: 'removed' });
-	}
-
-	/** What a move into the bin says, for an entry and for a folder alike. */
-	function moved(name: string): string {
-		return `Moved ${name} to the Recycle Bin`;
-	}
-
-	/**
-	 * Takes the notice away, once it has been read and once it has finished
-	 * going.
-	 *
-	 * Two waits rather than one: the first is how long the sentence is worth
-	 * reading, the second is the length of the movement that takes it off the
-	 * screen, and `motion.test.ts` is what keeps that second one and the
-	 * stylesheet saying the same number.
-	 */
-	function fade(after: number) {
-		fading = setTimeout(go, after);
-	}
-
-	/** The second of the two waits. A notice that has started going offers
-	 * nothing any more, whatever it said. */
-	function go() {
-		offered = null;
-		leaving = true;
-		fading = setTimeout(() => {
-			notice = null;
-			leaving = false;
-			fading = null;
-		}, span(RISE));
-	}
-
-	function clear() {
-		offered = null;
-		if (fading !== null) {
-			clearTimeout(fading);
-			fading = null;
-		}
-		// A notice that is replaced while it is going arrives fully faded out
-		// otherwise, because the class that is taking it away is still on it.
-		leaving = false;
-	}
-
-	$effect(() => () => clear());
+	$effect(() => () => notices.clear());
 
 	/**
 	 * A field of the reader's own came off an entry.
@@ -920,19 +511,19 @@
 	 * the last thing that happened to the entry, and nothing is restored.
 	 */
 	function fieldRemoved(entry: string, name: string, forever: boolean) {
-		if (unsaved) return;
+		if (file.unsaved) return;
 		const said = `Field ${quoted(name)} removed`;
 		if (forever) {
-			tell({ message: `${said} forever`, kind: 'removed' });
+			notices.tell({ message: `${said} forever`, kind: 'removed' });
 			return;
 		}
-		offer(said, async () => {
+		notices.offer(said, async () => {
 			let restored: Entry;
 			try {
 				restored = await undoRemoval(entry, name);
 			} catch (thrown) {
 				if (asFailure(thrown).code !== 'superseded') throw thrown;
-				warn('The entry has changed since, so that can no longer be undone.');
+				notices.warn('The entry has changed since, so that can no longer be undone.');
 				return;
 			}
 			await changed(restored);
@@ -969,9 +560,9 @@
 		// value being written takes back typing, and the offer waits for a key
 		// that is not aimed at one.
 		if (event.key.toLowerCase() === 'z' && !event.shiftKey) {
-			if (offered === null || typing(event.target)) return;
+			if (!notices.offering || typing(event.target)) return;
 			event.preventDefault();
-			void takeBack(offered);
+			notices.takeBack();
 			return;
 		}
 
@@ -1130,7 +721,7 @@
 						: eraseQuestion(quoted(shown.name), true)}
 					act={shown.deletion === 'bin' ? 'Move to Recycle Bin' : 'Delete forever'}
 					onKeep={() => (deleting = false)}
-					onAct={() => void removeFolder()}
+					onAct={removeFolder}
 				/>
 			{/if}
 
@@ -1265,8 +856,8 @@
 						{readOnly}
 						ways={{
 							question: eraseQuestion(quoted(shown.name), true),
-							onPutBack: () => void putBackFolder(),
-							onDelete: () => void eraseFolder()
+							onPutBack: () => void moves.putBackFolder(shown.id),
+							onDelete: eraseFolder
 						}}
 					/>
 				{/key}
@@ -1385,8 +976,8 @@
 							onChanged={changed}
 							onVersions={versionsChanged}
 							onClose={dismiss}
-							onDelete={() => void removeEntry()}
-							onPutBack={() => void putBack()}
+							onDelete={removeEntry}
+							onPutBack={putBack}
 							onFieldRemoved={fieldRemoved}
 							onFailure={failed}
 						/>
@@ -1406,17 +997,17 @@
 		</div>
 	{/if}
 
-	{#if conflict}
+	{#if file.conflict}
 		<Conflict
-			rival={conflict}
-			{missing}
+			rival={file.conflict}
+			missing={file.missing}
 			entries={entriesOf(root).length}
-			{changedAt}
+			changedAt={file.changedAt}
 			{now}
-			busy={saving}
-			onReload={takeTheirs}
-			onCopy={keepBoth}
-			onOverwrite={keepOurs}
+			busy={file.saving}
+			onReload={() => file.takeTheirs()}
+			onCopy={() => file.keepBoth()}
+			onOverwrite={() => file.keepOurs()}
 		/>
 	{/if}
 
@@ -1425,9 +1016,14 @@
 	     screen reader may never announce. Polite, because nothing here is worth
 	     interrupting a sentence for. -->
 	<div role="status" aria-live="polite" aria-atomic="true">
-		{#if notice}
-			{#key told}
-				<Toast message={notice.message} kind={notice.kind} {leaving} onUndo={notice.undo} />
+		{#if notices.notice}
+			{#key notices.told}
+				<Toast
+					message={notices.notice.message}
+					kind={notices.notice.kind}
+					leaving={notices.leaving}
+					onUndo={notices.notice.undo}
+				/>
 			{/key}
 		{/if}
 	</div>
@@ -1445,9 +1041,9 @@
 	<!-- One group, because two `ml-auto` siblings in a flex row do not both push
 	     right. -->
 	<span class="ml-auto flex shrink-0 items-center gap-4">
-		{#if saving}
+		{#if file.saving}
 			<span class="text-txt3">Saving…</span>
-		{:else if unsaved}
+		{:else if file.unsaved}
 			<!-- A state design.html does not draw, built from its own tokens: the
 			     mockup has no vault whose writes are failing, and a reader with
 			     one has to be told for as long as it is true. -->

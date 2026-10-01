@@ -30,6 +30,8 @@ describe('a date as the list writes it', () => {
 	it('says "today" on the entry screen and the full date everywhere else', () => {
 		expect(fully('2026-08-29T13:08:00Z', now)).toBe('today at 13:08');
 		expect(fully('2024-03-12T18:42:00Z', now)).toBe('12 Mar 2024');
+		// The year even for this one, which the list and a sentence leave out.
+		expect(fully('2026-03-12T18:42:00Z', now)).toBe('12 Mar 2026');
 		expect(fully(null, now)).toBe('unknown');
 	});
 });

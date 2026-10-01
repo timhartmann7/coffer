@@ -309,11 +309,10 @@ it; the export next to a file gets the same box with `raised` behind it. The
 folder's trash in the header of the folders pane only asks, and gets the same
 box all the same: it is the last icon there, a step further from Rename and New
 folder, and its box is drawn into the header's padding so the header is no
-taller. A
-version's is drawn into its row's padding, so the row is no taller. A field's
-trash is the last thing in the row and is drawn only while the row is under the
-pointer or holds the focus, so a row that is being read or copied from carries
-no way to lose it.
+taller. A version's is drawn into its row's padding, so the row is no taller. A
+field's trash is the last thing in the row and is drawn only while the row is
+under the pointer or holds the focus, so a row that is being read or copied from
+carries no way to lose it.
 
 ## The recycle bin
 
@@ -452,14 +451,14 @@ here changes the copy and not the vault. The second, in `fine` and `txt2`, says
 what "Make this my vault" does to the vault's file: which file it goes over,
 when that file last changed - which is how a reader sees that somebody wrote it
 after the copy was made - and the snapshot name it is kept under until later
-saves push it out of the snapshots, file names in mono. At the end, "Back to my vault" in the bordered `h-9` pill and "Make this
-my vault" in the accent pill, which is what the copy was opened to decide; while
-it writes, it takes the Unlock button's busy look and reads "Making it your
-vault…". A refusal is said under the second line in `danger`. When the vault's
-file changed after the banner said when it last changed, the window reads it
-again, the second line says how it stands now, and the refusal says nothing was
-replaced and points at that line. The strip is not
-part of the panes, so the settings do not cover it.
+saves push it out of the snapshots, file names in mono. At the end, "Back to my
+vault" in the bordered `h-9` pill and "Make this my vault" in the accent pill,
+which is what the copy was opened to decide; while it writes, it takes the
+Unlock button's busy look and reads "Making it your vault…". A refusal is said
+under the second line in `danger`. When the vault's file changed after the
+banner said when it last changed, the window reads it again, the second line
+says how it stands now, and the refusal says nothing was replaced and points at
+that line. The strip is not part of the panes, so the settings do not cover it.
 
 ## The settings, and the way in and out of them
 
@@ -501,8 +500,8 @@ track, so an entry is never laid out at a width nobody asked for on its way in.
 do.** Nothing animates an element that has already been taken out of the
 document, so a notice that is going stays until it has gone. That is the only
 motion in the window whose length is written down twice — once in the
-stylesheet, once in the window that removes it. `motion.svelte.test.ts` keeps
-the two saying the same number.
+stylesheet, once in the script that removes it (`notices.svelte.ts`).
+`motion.svelte.test.ts` keeps the two saying the same number.
 
 ## The application icon
 
