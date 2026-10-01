@@ -28,11 +28,9 @@ pub fn beside(database: &Path) -> Result<PathBuf, io::Error> {
     sibling(database, SUFFIX)
 }
 
-/// Whether a path is one of these, so that nothing makes a vault at the name.
-///
-/// A database created there would be overwritten without a word by the next
-/// lock that had something to keep.
-pub fn reserved(path: &Path) -> bool {
+/// Whether a path is one of these. Half of [`super::reserved`], which is the
+/// question everything else asks.
+pub(crate) fn reserved(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.len() > SUFFIX.len() && name.ends_with(SUFFIX))

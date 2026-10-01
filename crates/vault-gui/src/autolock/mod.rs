@@ -64,7 +64,15 @@ impl Reason {
 pub enum Event {
     /// A vault was opened. The clock starts here and nowhere else.
     Unlocked,
-    /// The reader is there.
+    /// The reader is there, which starts the clock again - unless it had
+    /// already run out.
+    ///
+    /// A Mac that slept through the deadline wakes with the watcher still
+    /// waiting on a clock that stood still while it slept, and the first key
+    /// pressed after that gets here before the watcher does. Taken as a reason
+    /// to start again, it would hand a fresh timeout to whoever sat down at the
+    /// machine; taken for what it is, it is the first thing to find the vault
+    /// overdue, and it locks it.
     Stirred,
     /// The wait ran out. Whether that means anything is this module's answer,
     /// not the timer's: a condition variable wakes up on its own.
@@ -152,13 +160,6 @@ impl Deadline {
                 self.since = Some(now);
                 Decision::WaitFor(self.after)
             }
-            Event::Stirred => match self.since {
-                None => Decision::Nothing,
-                Some(_) => {
-                    self.since = Some(now);
-                    Decision::WaitFor(self.after)
-                }
-            },
             Event::Locking(reason) => match self.since {
                 None => Decision::Nothing,
                 Some(_) => {
@@ -166,11 +167,18 @@ impl Deadline {
                     Decision::Lock(reason)
                 }
             },
-            Event::Elapsed | Event::TimeoutChanged(_) => match self.left(now) {
+            // A stir is asked the watcher's own question before it may start
+            // the clock again. After a night shut, whichever of the two gets
+            // here first is the one that finds the time spent.
+            Event::Stirred | Event::Elapsed | Event::TimeoutChanged(_) => match self.left(now) {
                 None => Decision::Nothing,
                 Some(left) if left.is_zero() => {
                     self.since = None;
                     Decision::Lock(Reason::Idle)
+                }
+                Some(_) if event == Event::Stirred => {
+                    self.since = Some(now);
+                    Decision::WaitFor(self.after)
                 }
                 Some(left) => Decision::WaitFor(left),
             },
@@ -288,8 +296,8 @@ mod tests {
         );
     }
 
-    /// The reader moving the mouse moves a deadline. It never makes one, and it
-    /// never locks anything.
+    /// The reader pressing keys moves a deadline. It never makes one, and it
+    /// never locks one that still has time on it.
     #[test]
     fn ten_thousand_stirs_move_one_deadline_and_lock_nothing() {
         let (mut deadline, start) = armed();
@@ -340,6 +348,80 @@ mod tests {
         assert_eq!(
             deadline.on(Event::Elapsed, woken),
             Decision::Lock(Reason::Idle)
+        );
+    }
+
+    /// The same night, with the reader's first key getting there before the
+    /// watcher does. The watcher's wait is counted on the clock that stood
+    /// still, so it has not come back; a stir that restarted the clock here
+    /// handed the vault a fresh timeout at the moment somebody sat down at it.
+    #[test]
+    fn a_stir_that_arrives_first_after_a_long_sleep_locks() {
+        let mut deadline = Deadline::new(MINUTE);
+        let start = Moment::now();
+        deadline.on(Event::Unlocked, start);
+
+        let woken = Moment {
+            steady: start.steady + Duration::from_secs(4),
+            wall: start.wall + Duration::from_secs(3600),
+        };
+        assert_eq!(
+            deadline.on(Event::Stirred, woken),
+            Decision::Lock(Reason::Idle)
+        );
+
+        // The watcher coming round afterwards, and the next key after that,
+        // find nothing left to lock.
+        assert_eq!(deadline.on(Event::Elapsed, woken), Decision::Nothing);
+        assert_eq!(deadline.on(Event::Stirred, woken), Decision::Nothing);
+        assert_eq!(deadline.left(woken), None);
+    }
+
+    /// Exactly on the deadline is due for a stir too, on the same terms as the
+    /// watcher's wake-up: one comparison, not two that could disagree.
+    #[test]
+    fn a_stir_exactly_at_the_deadline_locks() {
+        let (mut deadline, start) = armed();
+
+        assert_eq!(
+            deadline.on(Event::Stirred, later(start, MINUTE)),
+            Decision::Lock(Reason::Idle)
+        );
+        assert_eq!(deadline.left(later(start, MINUTE)), None);
+    }
+
+    /// A millisecond before it, the reader got there in time, and the whole
+    /// timeout starts again from their key rather than from the unlock.
+    #[test]
+    fn a_stir_just_before_the_deadline_starts_it_again() {
+        let (mut deadline, start) = armed();
+        let just = later(start, MINUTE - Duration::from_millis(1));
+
+        assert_eq!(deadline.on(Event::Stirred, just), Decision::WaitFor(MINUTE));
+        assert_eq!(deadline.left(just), Some(MINUTE));
+
+        // Half a minute past the original deadline is half a minute and a
+        // millisecond into the new one.
+        let after = later(start, MINUTE + MINUTE / 2);
+        assert_eq!(
+            deadline.on(Event::Elapsed, after),
+            Decision::WaitFor(MINUTE / 2 - Duration::from_millis(1))
+        );
+    }
+
+    /// Only the clock that moved furthest counts, for a stir as for the watcher.
+    /// A wall clock stepped back an hour is not a night asleep.
+    #[test]
+    fn a_stir_after_the_clock_was_set_back_is_only_a_stir() {
+        let (mut deadline, start) = armed();
+        let stepped = Moment {
+            steady: start.steady + Duration::from_secs(30),
+            wall: start.wall - Duration::from_secs(3600),
+        };
+
+        assert_eq!(
+            deadline.on(Event::Stirred, stepped),
+            Decision::WaitFor(MINUTE)
         );
     }
 

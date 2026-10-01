@@ -36,8 +36,9 @@ is still a password; `empty` says whether there is one to ask for.
 
 | Command | Takes | Answers |
 |---|---|---|
-| `status` | | the chosen database, whether it is open, how many entries, whether it can be written, why it locked, and the unsaved copy sitting beside it |
+| `status` | | the chosen database, whether it is open, how many entries, whether it can be written, why it locked, the unsaved copy sitting beside it, and - when nothing is remembered - a vault found in Coffer's own folder |
 | `choose_database` | | the database the user picked, or nothing if they closed the dialog |
+| `choose_found` | | the vault found in Coffer's own folder, now chosen |
 | `unlock` | the master password, as the raw body | nothing |
 | `lock` | | nothing |
 | `tree` | | the root group, its sections and their entry rows |
@@ -87,8 +88,9 @@ Everything slice 4 added:
 | `settings` | | the two timers, the two switches, the look, and the values each may be set to |
 | `set_settings` | `settings` | what was actually stored, which is not always what was sent |
 | `stirred` | | the seconds the open vault has left, or nothing when none is open |
-| `default_new_database` | | where a first vault goes when nobody has said |
-| `choose_new_database` | | where the reader wants the new vault instead |
+| `default_new_database` | | where a first vault goes when nobody has said, and whether something is already there |
+| `choose_new_database` | | where the reader wants the new vault instead, on the same terms |
+| `choose_existing` | | what already sits where the new vault would go, now chosen |
 | `calibrate` | | how many Argon2id passes a one-second unlock costs here, and what that measured |
 | `create_database` | the master password, as the raw body | nothing |
 
@@ -105,7 +107,40 @@ actions are counted against. It writes nothing; the folder is made at the moment
 the reader commits, where a refusal can still be reported. `choose_new_database`
 is the same answer through a save panel, for a reader who wants it somewhere
 else, and it is the only one of the two that a locked vault guards, because the
-picker is reachable from a screen a vault can be open behind.
+picker is reachable from a screen a vault can be open behind. The folder and the
+name are written down once, in [`home.rs`](../crates/vault-gui/src/home.rs),
+which is also where a launch that remembers nothing looks.
+
+Both answer with a `Target`: the place as a `Database`, the path as the reader
+would write it (`shown`, starting with `~` under the home folder, for the screen
+and never for opening), and `taken`, whether anything at all is already
+at the name. Nothing is ever made over a file - a creation takes no snapshot -
+so the screen says so before a password is typed, and offers `choose_existing`,
+which points the session at what is there. A save panel's own "Replace" does not
+change that. `taken` is advice read off the disk a moment earlier; the creation
+itself takes the name with an exclusive create, and a file that arrived in
+between is answered with the failure of the same name.
+
+**A vault is written down when it opens, not when it is picked.** Every vault
+that opens - by an unlock or by a creation - goes through one function in
+`session.rs`, which is the only place a vault is put into the session and the
+only place the path is written for the next launch; a test reads the source to
+keep it that way. Coffer 0.1.0 wrote the path down in `choose_database`, so a
+vault made in Coffer was never written down and the next launch showed its owner
+the first-run screen. A snapshot and the copy a lock left are never written
+down, however they came to be open: they open with the vault's password and are
+older than it. A write that fails costs the reader a pick next launch and does
+not fail the unlock.
+
+**A launch that remembers nothing looks in `~/Coffer`.** When `status` has no
+database it also answers `found`: the file name of a vault in Coffer's own
+folder, and the folder's name, for the sentence the first-run screen says above
+the offer to make one. The path does not cross; `choose_found` looks again and
+points the session at what it finds, or answers `gone`. What counts is a file
+whose name ends in `.kdbx` - not a snapshot, not a copy a lock left, not a
+folder, not an empty file, not a hidden one - and a link counts when it leads to
+one. With several, `vault.kdbx` wins, then the one written last, then the first
+by name. A folder that cannot be read is one in which nothing was found.
 
 **`settings` sends the lists as well as the values.** What a reader may choose is
 Rust's to decide, and a screen holding its own copy would be a second place the
@@ -126,10 +161,16 @@ what every settings file written before slice 5 reads as. A word this version
 does not know settles on dark rather than being refused: a later Coffer offering
 a fourth look would otherwise take both timers down with its own name.
 
-**`stirred` is how the countdown stays honest, and it is deliberately rare.** The
-window sends it on real input and at most once every fifteen seconds, and ticks
-the number itself in between. A status bar that asked once a second would be an
-idle timer resetting itself, and a vault that never locks.
+**`stirred` is deliberately rare, and it can lock.** The window sends it on real
+input and at most once every fifteen seconds. A status bar that asked once a
+second would be an idle timer resetting itself, and a vault that never locks. A
+stir that arrives after the time has already run out locks the vault rather than
+starting the clock again: the timer's own wait is counted on the clock that
+stops while the Mac sleeps, so after a night shut the reader's first key gets
+there before it does, and a stir that restarted the clock would hand a fresh
+timeout to whoever sat down. The lock runs on the thread that posted the stir, so
+`stirred` is answered off the thread the window is drawn on, like every command
+that can reach the lock.
 
 **A command that changes something answers with what it changed.** A change to
 one entry answers with that entry; a change to the shape of the vault answers
@@ -158,8 +199,10 @@ place a name out of a database is turned into a file name.
 
 Nothing that names a file comes from the webview. `choose_database` opens the
 system's own dialog and keeps the answer; `choose_snapshot` takes a slot number
-and builds the path from the database the user already chose. There is no
-command that opens a path the frontend sends.
+and builds the path from the database the user already chose; `choose_found`
+searches Coffer's folder again and `choose_existing` takes the place the session
+is already holding for a new vault. There is no command that opens a path the
+frontend sends.
 
 `open_url` reads the address out of the entry rather than accepting one, so the
 only thing the webview can ask Coffer to open is an address it can already see -
@@ -173,7 +216,12 @@ the sentence the screen shows, written in `vault-core` so that it never repeats
 a secret and never says which half of a credential was wrong. The code is what
 the screen branches on: `wrongCredentials`, `notADatabase`, `unsupportedFormat`,
 `damaged`, `heldByAnother`, `externalChange`, `readOnly`, `gone`, `tooLarge`,
-`noVault`, `noSuchEntry`, `refused`, `io`, `other`.
+`noVault`, `noSuchEntry`, `refused`, `taken`, `io`, `other`.
+
+`taken` is `create_database` finding a file where the new vault would go. The
+creation screen says so in its own sentence, which names the place and the way
+on, and hands back the two passwords it emptied on submit: this is the one
+refusal that says nothing about them.
 
 `attachmentInHistory` is the one the entry screen has an answer for. Removing a
 file is refused while previous versions of the entry still hold it - the format

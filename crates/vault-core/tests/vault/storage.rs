@@ -658,3 +658,75 @@ fn a_vault_kept_where_nothing_can_be_written_stays_that_way_when_it_is_read_agai
     vault.reload().expect("the file reads again");
     assert!(vault.is_read_only(), "a reload thawed the medium");
 }
+
+/// The screen is told a place is taken before anybody types a password, and the
+/// creation is refused by the reservation. The two answers have to be the same
+/// answer, or the screen offers a place the creation then refuses - or refuses
+/// one it would have taken.
+#[test]
+fn a_name_is_taken_exactly_when_it_cannot_be_reserved() {
+    use vault_core::storage::atomic::{reserve, taken};
+
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let at = |name: &str| scratch.path().join(name);
+
+    write(&at("a-vault.kdbx"), "somebody's vault");
+    write(&at("empty.kdbx"), "");
+    std::fs::create_dir(at("a-folder.kdbx")).expect("the folder is made");
+    std::os::unix::fs::symlink(at("nowhere.kdbx"), at("dangling.kdbx")).expect("a link");
+    std::os::unix::fs::symlink(at("a-vault.kdbx"), at("linked.kdbx")).expect("a link");
+
+    for name in [
+        "a-vault.kdbx",
+        "empty.kdbx",
+        "a-folder.kdbx",
+        "dangling.kdbx",
+        "linked.kdbx",
+    ] {
+        assert!(taken(&at(name)), "{name} is not reported as taken");
+        assert!(reserve(&at(name)).is_err(), "{name} was reserved over");
+    }
+
+    let free = at("free.kdbx");
+    assert!(!taken(&free));
+    reserve(&free).expect("a free name is reserved");
+    assert!(taken(&free), "a reserved name is not reported as taken");
+
+    // A link that led nowhere is still nothing but a link: the reservation did
+    // not follow it and make the file it named.
+    assert!(!at("nowhere.kdbx").exists());
+    assert_eq!(
+        std::fs::read_to_string(at("a-vault.kdbx")).expect("it reads"),
+        "somebody's vault"
+    );
+}
+
+/// The files Coffer keeps beside a vault open with its password and are not
+/// the vault. The shape of the name is the whole of the rule, so it is pinned
+/// here from both sides.
+#[test]
+fn only_the_names_coffer_keeps_beside_a_vault_are_reserved() {
+    use vault_core::storage::reserved;
+
+    for name in [
+        "vault.kdbx.1.bak",
+        "vault.kdbx.10.bak",
+        "personal.7.bak",
+        "vault.kdbx.unsaved.kdbx",
+        "vault.kdbx.1.bak.unsaved.kdbx",
+    ] {
+        assert!(reserved(Path::new(name)), "{name} is not reserved");
+    }
+
+    for name in [
+        "vault.kdbx",
+        "vault.kdbx.11.bak",
+        "vault.kdbx.0.bak",
+        ".unsaved.kdbx",
+        "unsaved.kdbx",
+        "vault.unsaved",
+        "",
+    ] {
+        assert!(!reserved(Path::new(name)), "{name} is reserved");
+    }
+}

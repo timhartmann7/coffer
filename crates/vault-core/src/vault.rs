@@ -19,7 +19,7 @@ use crate::preflight;
 use crate::secret::SecretValue;
 use crate::storage::lock::{Lock, Outcome};
 use crate::storage::watch::{Change, Content, Stamp};
-use crate::storage::{atomic, snapshot, unsaved, watch};
+use crate::storage::{self, atomic, snapshot, unsaved, watch};
 use crate::text;
 use crate::wipe;
 
@@ -264,9 +264,10 @@ impl Vault {
         }
         preflight::acceptable(recipe.work)?;
 
-        // A name of the shape Coffer gives its own snapshots would open like
-        // any other database and refuse every save for good.
-        if snapshot::slot_of(path).is_some() || unsaved::reserved(path) {
+        // A snapshot's name would open like any other database and refuse
+        // every save for good, and a rescue copy's would be written over by the
+        // next lock that had something to keep.
+        if storage::reserved(path) {
             return Err(VaultError::ReservedName);
         }
         // The parent has to be there: a staged write puts its temporary file

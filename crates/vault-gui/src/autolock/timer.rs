@@ -99,6 +99,13 @@ impl Shared {
     /// than whenever a watcher thread gets round to it; and a lock that says the
     /// reader is there, or locks again, must not find a mutex its own caller is
     /// holding.
+    ///
+    /// It also means that whoever posts pays for the lock: the vault is written
+    /// out on the way, which is a key derivation. Anything but an unlock can be
+    /// answered with one - a stir included, once the time is already spent - so
+    /// no command answered on the thread the window is drawn on posts at all.
+    /// The machine's own notifications do, and pay it there on purpose: a Mac
+    /// going to sleep does not wait for a hop onto another thread.
     fn post(&self, event: Event) {
         let decision = {
             let mut held = self.state();
@@ -273,6 +280,53 @@ mod tests {
                 .left()
                 .is_some_and(|left| left > Duration::from_secs(59))
         );
+    }
+
+    /// The watcher slept through the deadline with the Mac, and the reader's
+    /// first key got here before it did. The stir locks, once, and before
+    /// `post` comes back, on the thread that posted it - which is why the
+    /// command carrying it is not answered on the thread the window is drawn
+    /// on.
+    #[test]
+    fn a_stir_that_finds_the_time_spent_locks_on_the_thread_that_posted_it() {
+        let locks = Arc::new(Locks::default());
+        let fired_on = Arc::new(Mutex::new(None));
+
+        // Opened an hour ago by the wall clock and a moment ago by the steady
+        // one, which is a Mac that was shut in between. The watcher has been
+        // told of no wait at all, so it is parked the way one whose relative
+        // wait has not come back yet is.
+        let mut deadline = Deadline::new(Duration::from_secs(60));
+        let now = Moment::now();
+        let opened = Moment {
+            steady: now.steady,
+            wall: now.wall - Duration::from_secs(3600),
+        };
+        assert_eq!(
+            deadline.on(Event::Unlocked, opened),
+            Decision::WaitFor(Duration::from_secs(60))
+        );
+
+        let recording = locks.record();
+        let noting = Arc::clone(&fired_on);
+        let timer = Timer::start(deadline, move |reason| {
+            *noting.lock().unwrap_or_else(|it| it.into_inner()) = Some(std::thread::current().id());
+            recording(reason);
+        });
+
+        timer.post(Event::Stirred);
+        assert_eq!(locks.count(), 1, "the lock did not run inside the post");
+        assert_eq!(locks.last(), Some(Reason::Idle));
+        assert_eq!(
+            *fired_on.lock().unwrap_or_else(|it| it.into_inner()),
+            Some(std::thread::current().id())
+        );
+        assert_eq!(timer.left(), None);
+
+        // Neither the next key nor the watcher finds anything more to lock.
+        timer.post(Event::Stirred);
+        std::thread::sleep(SOON * 5);
+        assert_eq!(locks.count(), 1);
     }
 
     /// A hundred vaults opened and locked. The process ends with the threads it

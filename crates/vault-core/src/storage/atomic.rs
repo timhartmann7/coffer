@@ -102,6 +102,17 @@ pub fn reserve(path: &Path) -> Result<(), io::Error> {
         .map(drop)
 }
 
+/// Whether [`reserve`] would find the name already taken, asked without taking
+/// it.
+///
+/// Anything at the name counts, a link that leads nowhere included, because
+/// that is what an exclusive create refuses. The answer is advice for a screen
+/// and nothing more: anything can arrive between it and a reservation, which is
+/// why a creation takes the name rather than asking about it.
+pub fn taken(path: &Path) -> bool {
+    path.symlink_metadata().is_ok()
+}
+
 /// Fills and commits in one step, for writers with nothing to do in between.
 pub fn write_atomic<E, F>(path: &Path, fill: F) -> Result<(), E>
 where

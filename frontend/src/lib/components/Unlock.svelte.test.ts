@@ -7,6 +7,7 @@ const ipc = vi.hoisted(() => ({
 	unlockTakingOver: vi.fn(),
 	snapshots: vi.fn(),
 	chooseDatabase: vi.fn(),
+	chooseFound: vi.fn(),
 	chooseSnapshot: vi.fn(),
 	chooseRescue: vi.fn(),
 	discardRescue: vi.fn(),
@@ -498,6 +499,111 @@ it('says so when a lock could not write the changes anywhere', () => {
 	flushSync();
 
 	expect(host.textContent).toContain('could not write them anywhere');
+
+	unmount(component);
+});
+
+/** The first-run screen, with nothing remembered and whatever Rust found. */
+function firstRun(found: { name: string; folder: string } | null, onChoose = vi.fn()) {
+	const component = mount(Unlock, {
+		target: host,
+		props: {
+			database: null,
+			found,
+			onChoose,
+			onKeyFile: vi.fn(),
+			onCreate: vi.fn(),
+			onUnlocked: vi.fn()
+		}
+	});
+	flushSync();
+	return component;
+}
+
+/**
+ * Coffer 0.1.0 forgot every vault it made, so its owner comes back to the
+ * screen for somebody with nothing. The vault is still in Coffer's folder, and
+ * the screen says so above the offer to make a second one.
+ */
+it("offers a vault found in Coffer's folder above the offer to make one", async () => {
+	const onChoose = vi.fn();
+	const opened = { path: '/Users/someone/Coffer/vault.kdbx', name: 'vault' };
+	ipc.chooseFound.mockResolvedValue(opened);
+	const component = firstRun({ name: 'vault.kdbx', folder: 'Coffer' }, onChoose);
+
+	expect(reads()).toContain('We found your vault: vault.kdbx in Coffer (your home folder).');
+	expect(reads().indexOf('We found your vault')).toBeLessThan(reads().indexOf('Make a vault'));
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Open it')
+		?.click();
+
+	await vi.waitFor(() => expect(onChoose).toHaveBeenCalledWith(opened));
+	// Rust looks again: nothing this window sends names a file.
+	expect(ipc.chooseFound).toHaveBeenCalledWith();
+
+	unmount(component);
+});
+
+it('says nothing about a vault when none was found', () => {
+	const component = firstRun(null);
+
+	expect(reads()).toContain('Your passwords will live here');
+	expect(reads()).not.toContain('We found your vault');
+	expect(
+		[...host.querySelectorAll('button')].some((each) => each.textContent?.trim() === 'Open it')
+	).toBe(false);
+
+	unmount(component);
+});
+
+/** A vault that went away between the screen being drawn and the press is
+ * reported, and the screen is still the one that can make a vault. */
+it('says so when the vault it found has gone', async () => {
+	const onChoose = vi.fn();
+	ipc.chooseFound.mockRejectedValue({ code: 'gone', message: 'the database file is gone' });
+	const component = firstRun({ name: 'vault.kdbx', folder: 'Coffer' }, onChoose);
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Open it')
+		?.click();
+
+	await vi.waitFor(() => expect(reads()).toContain('the database file is gone'));
+	expect(onChoose).not.toHaveBeenCalled();
+	expect(reads()).toContain('Make a vault');
+
+	unmount(component);
+});
+
+/** A launch that remembers its vault goes straight to the password; the offer
+ * belongs to the first-run screen and nowhere else. */
+it('offers nothing found when there is a vault to unlock', () => {
+	const component = mount(Unlock, {
+		target: host,
+		props: {
+			database,
+			found: { name: 'vault.kdbx', folder: 'Coffer' },
+			onChoose: vi.fn(),
+			onKeyFile: vi.fn(),
+			onCreate: vi.fn(),
+			onUnlocked: vi.fn()
+		}
+	});
+	flushSync();
+
+	expect(reads()).not.toContain('We found your vault');
+	expect(host.querySelector('input[type="password"]')).not.toBeNull();
+
+	unmount(component);
+});
+
+/** The name is whatever somebody called a file, and it is drawn as text. */
+it('draws a found name that holds markup as the characters it is', () => {
+	const hostile = '<img src=x onerror=alert(1)>.kdbx';
+	const component = firstRun({ name: hostile, folder: 'Coffer' });
+
+	expect(host.querySelector('img')).toBeNull();
+	expect(reads()).toContain(`We found your vault: ${hostile} in Coffer`);
 
 	unmount(component);
 });

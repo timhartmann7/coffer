@@ -2,11 +2,12 @@
 	import {
 		asFailure,
 		calibrate,
+		chooseExisting,
 		chooseNewDatabase,
 		createDatabase,
 		defaultNewDatabase
 	} from '$lib/ipc';
-	import type { Calibration, Database } from '$lib/model';
+	import type { Calibration, Database, Target } from '$lib/model';
 	import Icon from './Icon.svelte';
 
 	/**
@@ -16,15 +17,28 @@
 	 * small type and not behind a checkbox: a forgotten password is the end of
 	 * the data and there is no way back from it.
 	 */
-	let { onMade, onCancel }: { onMade: () => Promise<void>; onCancel: () => void } = $props();
+	let {
+		onMade,
+		onCancel,
+		onOpen
+	}: {
+		onMade: () => Promise<void>;
+		onCancel: () => void;
+		/** The reader chose to open what is already at the place instead. */
+		onOpen: (database: Database) => void;
+	} = $props();
 
-	let where = $state<Database | null>(null);
+	let where = $state<Target | null>(null);
 	let first = $state<HTMLInputElement>();
 	let second = $state<HTMLInputElement>();
 	let measured = $state<Calibration | null>(null);
 	let busy = $state(false);
 	let failure = $state<string | null>(null);
 	let mismatch = $state(false);
+
+	/** Nothing can be made before there is somewhere free to put it and a
+	 * measurement to put in it. */
+	const blocked = $derived(busy || !where || where.taken || !measured);
 
 	/**
 	 * The measurement runs as soon as the screen opens, so that it is over by
@@ -72,9 +86,22 @@
 		}
 	}
 
+	/** Opens what already sits at the place rather than making a vault over it.
+	 * Rust is holding the place, so nothing is sent. */
+	async function openInstead() {
+		if (busy) return;
+		failure = null;
+		try {
+			onOpen(await chooseExisting());
+		} catch (thrown) {
+			failure = asFailure(thrown).message;
+		}
+	}
+
 	async function make(event: SubmitEvent) {
 		event.preventDefault();
-		if (busy || !where || !first || !second) return;
+		const place = where;
+		if (blocked || !place || !first || !second) return;
 
 		// Compared as bytes rather than as strings. Two different passwords can
 		// look the same after a lossy conversion, and a vault opened by neither
@@ -94,16 +121,31 @@
 			return;
 		}
 
+		// A second copy, for exactly as long as the call and wiped with the
+		// first. The one refusal that says nothing about the password is a file
+		// that arrived at the place after the screen said it was free, and a
+		// reader who typed a password twice for a vault that belongs somewhere
+		// else gets both fields back rather than a reason to type it again.
+		const typed = wanted.slice();
 		busy = true;
 		failure = null;
 		try {
 			await createDatabase(wanted);
 			await onMade();
 		} catch (thrown) {
-			failure = asFailure(thrown).message;
+			const refused = asFailure(thrown);
+			if (refused.code === 'taken') {
+				where = { ...place, taken: true };
+				const back = new TextDecoder().decode(typed);
+				first.value = back;
+				second.value = back;
+			} else {
+				failure = refused.message;
+			}
 			first.focus();
 		} finally {
 			wanted.fill(0);
+			typed.fill(0);
 			busy = false;
 		}
 	}
@@ -121,7 +163,7 @@
 				>
 					<Icon name="folder" class="h-4 w-4 shrink-0 text-txt4" />
 					<span class="truncate font-mono text-small {where ? 'text-txt' : 'text-txt4'}">
-						{where ? where.path : 'Working out where…'}
+						{where ? where.shown : 'Working out where…'}
 					</span>
 					<button
 						type="button"
@@ -132,6 +174,29 @@
 						Somewhere else
 					</button>
 				</div>
+				<!-- Said before a password is typed rather than after it. Nothing is
+				     ever made over a file, so no vault can go here, and somebody
+				     making one where one already sits most likely wanted the one
+				     they have. -->
+				{#if where?.taken}
+					<div class="mt-3 flex animate-fade gap-3">
+						<Icon name="warn" class="mt-0.5 h-4 w-4 shrink-0 text-warn" />
+						<div class="min-w-0">
+							<p class="text-small leading-relaxed text-txt">
+								A vault already exists at <span class="font-mono">{where.shown}</span>. Open it
+								instead, or pick another place.
+							</p>
+							<button
+								type="button"
+								onclick={openInstead}
+								disabled={busy}
+								class="mt-3 h-9 rounded-full border border-hairline px-4 text-small text-txt transition-colors hover:border-txt3 active:bg-surface2 disabled:cursor-not-allowed"
+							>
+								Open it
+							</button>
+						</div>
+					</div>
+				{/if}
 			</div>
 		</div>
 
@@ -227,10 +292,8 @@
 			</button>
 			<button
 				type="submit"
-				disabled={busy || !where || !measured}
-				class="h-[46px] rounded-full px-7 text-base font-medium transition-colors {busy ||
-				!where ||
-				!measured
+				disabled={blocked}
+				class="h-[46px] rounded-full px-7 text-base font-medium transition-colors {blocked
 					? 'cursor-not-allowed bg-surface2 text-txt4'
 					: 'bg-accent text-canvas hover:bg-accenthi active:bg-accenthi'}"
 			>

@@ -16,9 +16,13 @@ use zeroize::Zeroizing;
 
 use crate::autolock::Reason;
 use crate::error::Failure;
+use crate::recent;
 
 pub struct Session {
     held: Mutex<Held>,
+    /// Where the vault that opened is written down for the next launch, when
+    /// this Mac gave Coffer a configuration directory to write it in.
+    remembering: Option<PathBuf>,
 }
 
 struct Held {
@@ -43,8 +47,8 @@ struct Held {
     key_file: Option<PathBuf>,
     /// Where a vault being made will go, if one is. Kept apart from
     /// `database`, which is the file the unlock screen offers to open: there is
-    /// nothing at this path yet, and pointing the unlock screen at it would be
-    /// offering to open a file that does not exist.
+    /// usually nothing at this path yet, and pointing the unlock screen at it
+    /// would be offering to open a file that does not exist.
     making: Option<PathBuf>,
     /// What a one-second unlock costs on this machine.
     ///
@@ -64,7 +68,9 @@ struct Held {
 }
 
 impl Session {
-    pub fn new(database: Option<PathBuf>) -> Session {
+    /// A session pointed at `database`, writing down in `remembering` every
+    /// vault that opens.
+    pub fn new(database: Option<PathBuf>, remembering: Option<PathBuf>) -> Session {
         Session {
             held: Mutex::new(Held {
                 database,
@@ -76,6 +82,7 @@ impl Session {
                 vault: None,
                 generation: 0,
             }),
+            remembering,
         }
     }
 
@@ -182,19 +189,54 @@ impl Session {
         // than left waiting on a lock this thread is holding.
         let vault = Vault::open(&database, key, policy)?;
 
-        let mut held = self.held();
-        if held.generation != generation {
-            // Somebody chose another database, or locked, while this one was
-            // opening. Dropping the vault here takes the lock file off a
-            // database nobody is asking about any more.
-            return Err(Failure::stale());
-        }
+        self.land(vault, generation, key_file)
+    }
 
-        // The database Coffer opened is the one it followed the links to.
-        held.database = Some(vault.path().to_path_buf());
-        held.vault = Some(vault);
-        held.locked_by = None;
-        held.lost = false;
+    /// Where both ways in end: the vault that has just opened becomes the one
+    /// this session holds, and the file it came from is written down for the
+    /// next launch.
+    ///
+    /// One door, because a vault used to be written down where it was picked
+    /// in a panel, and a vault made here is never picked: the next launch
+    /// greeted its owner as somebody who had nothing. Written down only here,
+    /// because a file that was picked and never opened is not the reader's
+    /// vault either.
+    ///
+    /// `key_file` is the one the vault opened with, which is the one the next
+    /// unlock of it needs.
+    fn land(
+        &self,
+        vault: Vault,
+        generation: u64,
+        key_file: Option<PathBuf>,
+    ) -> Result<(), Failure> {
+        let opened = {
+            let mut held = self.held();
+            if held.generation != generation {
+                // Somebody chose another database, or locked, while this one
+                // was opening. Dropping the vault here takes the lock file off
+                // a database nobody is asking about any more.
+                return Err(Failure::stale());
+            }
+
+            // The database Coffer opened is the one it followed the links to.
+            let opened = vault.path().to_path_buf();
+            held.database = Some(opened.clone());
+            held.vault = Some(vault);
+            held.key_file = key_file;
+            held.making = None;
+            held.locked_by = None;
+            held.lost = false;
+            opened
+        };
+
+        // Outside the lock: nothing about it needs the vault, and a write that
+        // flushes the disk has no business holding up whatever else the window
+        // is asking. A vault Coffer fails to write down is one the reader picks
+        // again next launch, which is not a reason to refuse to open it now.
+        if let Some(directory) = &self.remembering {
+            let _ = recent::remember(directory, &opened);
+        }
         Ok(())
     }
 
@@ -244,6 +286,11 @@ impl Session {
         self.held().making = Some(target);
     }
 
+    /// Where a new vault would go, once somewhere has been settled.
+    pub fn target(&self) -> Option<PathBuf> {
+        self.held().making.clone()
+    }
+
     /// What a one-second unlock costs on this machine, remembered for the
     /// creation that is about to happen.
     pub fn measured(&self, work: Work) {
@@ -259,10 +306,7 @@ impl Session {
         let (target, work, generation) = {
             let mut held = self.held();
             held.vault = None;
-            let target = held
-                .making
-                .clone()
-                .ok_or_else(|| Failure::refused("nowhere has been chosen for the new vault"))?;
+            let target = held.making.clone().ok_or_else(Failure::nowhere_chosen)?;
             let work = held.measured.ok_or_else(|| {
                 Failure::refused("the vault's key derivation has not been measured yet")
             })?;
@@ -287,20 +331,10 @@ impl Session {
             &Recipe { name: &name, work },
         )?;
 
-        let mut held = self.held();
-        if held.generation != generation {
-            return Err(Failure::stale());
-        }
-
-        held.database = Some(vault.path().to_path_buf());
-        held.vault = Some(vault);
-        held.locked_by = None;
-        held.making = None;
         // Coffer never makes a vault that wants a key file, so one chosen for
         // whatever was on the unlock screen before must not follow the new vault
         // into the next unlock.
-        held.key_file = None;
-        Ok(())
+        self.land(vault, generation, None)
     }
 
     pub fn tree(&self) -> Result<Project, Failure> {
@@ -383,7 +417,7 @@ mod tests {
 
     fn unlocked(name: &str) -> (tempfile::TempDir, Session) {
         let (directory, database) = scratch(name);
-        let session = Session::new(Some(database));
+        let session = Session::new(Some(database), None);
         session
             .unlock(password(SECRET), LockPolicy::Respect)
             .expect("the database opens");
@@ -417,7 +451,7 @@ mod tests {
     #[test]
     fn a_locked_session_hands_out_nothing() {
         let (_scratch, database) = scratch(RICH);
-        let session = Session::new(Some(database));
+        let session = Session::new(Some(database), None);
 
         assert!(!session.is_unlocked());
         assert!(session.tree().is_err());
@@ -456,7 +490,7 @@ mod tests {
     #[test]
     fn locking_releases_the_database_for_the_next_unlock() {
         let (_scratch, database) = scratch(RICH);
-        let session = Session::new(Some(database.clone()));
+        let session = Session::new(Some(database.clone()), None);
 
         for _ in 0..3 {
             session
@@ -478,7 +512,7 @@ mod tests {
     #[test]
     fn locking_a_vault_that_cannot_save_writes_it_beside_the_database_first() {
         let (_scratch, database) = scratch(RICH);
-        let session = Session::new(Some(database.clone()));
+        let session = Session::new(Some(database.clone()), None);
         session
             .unlock(password(SECRET), LockPolicy::Respect)
             .expect("the database opens");
@@ -564,7 +598,7 @@ mod tests {
     #[test]
     fn an_unlock_forgets_what_the_last_lock_could_not_write() {
         let (_scratch, database) = scratch(RICH);
-        let session = Session::new(Some(database.clone()));
+        let session = Session::new(Some(database.clone()), None);
         session
             .unlock(password(SECRET), LockPolicy::Respect)
             .expect("the database opens");
@@ -591,7 +625,7 @@ mod tests {
     #[test]
     fn a_wrong_password_leaves_nothing_open() {
         let (_scratch, database) = scratch(RICH);
-        let session = Session::new(Some(database));
+        let session = Session::new(Some(database), None);
 
         for wrong in [b"".as_slice(), b"coffer-tes".as_slice(), &[0xff, 0xfe]] {
             assert!(
@@ -625,7 +659,7 @@ mod tests {
 
     #[test]
     fn there_is_nothing_to_unlock_until_something_is_chosen() {
-        let session = Session::new(None);
+        let session = Session::new(None, None);
         assert!(
             session
                 .unlock(password(SECRET), LockPolicy::Respect)
@@ -643,7 +677,7 @@ mod tests {
         let (_first, one) = scratch(RICH);
         let (_second, two) = scratch(RICH);
 
-        let session = Arc::new(Session::new(Some(one)));
+        let session = Arc::new(Session::new(Some(one), None));
         let unlocking = {
             let session = Arc::clone(&session);
             std::thread::spawn(move || session.unlock(password(SECRET), LockPolicy::Respect))
@@ -669,12 +703,12 @@ mod tests {
     #[test]
     fn a_database_another_process_holds_is_its_own_answer() {
         let (_scratch, database) = scratch(RICH);
-        let holding = Session::new(Some(database.clone()));
+        let holding = Session::new(Some(database.clone()), None);
         holding
             .unlock(password(SECRET), LockPolicy::Respect)
             .expect("the first one opens");
 
-        let second = Session::new(Some(database));
+        let second = Session::new(Some(database), None);
         let failure = second
             .unlock(password(SECRET), LockPolicy::Respect)
             .expect_err("the second one is refused");
@@ -703,7 +737,7 @@ mod tests {
     #[test]
     fn a_change_needs_an_open_vault_and_shows_up_in_the_next_read() {
         let (_scratch, database) = scratch(RICH);
-        let session = Session::new(Some(database));
+        let session = Session::new(Some(database), None);
 
         // Nothing is open, so nothing changes.
         assert!(
@@ -787,7 +821,7 @@ mod tests {
         // Heavy enough that the unlock is still deriving a key when the screen
         // locks. The fixtures open in a few milliseconds, which is too fast to
         // be inside.
-        let session = Arc::new(Session::new(None));
+        let session = Arc::new(Session::new(None, None));
         session.making(target.clone());
         session.measured(Work::at(40));
         session.create(password(SECRET)).expect("the vault is made");
@@ -820,7 +854,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("a scratch directory");
         let target = directory.path().join("Coffer/nested/deeper/vault.kdbx");
 
-        let session = Session::new(None);
+        let session = Session::new(None, None);
         session.making(target.clone());
         session.measured(Work::at(1));
         session.create(password(SECRET)).expect("the vault is made");
@@ -833,7 +867,7 @@ mod tests {
         let blocked = directory.path().join("a-file");
         std::fs::write(&blocked, b"not a folder").expect("the file is written");
 
-        let session = Session::new(None);
+        let session = Session::new(None, None);
         session.making(blocked.join("under/vault.kdbx"));
         session.measured(Work::at(1));
         assert!(session.create(password(SECRET)).is_err());
@@ -855,7 +889,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("a scratch directory");
         let target = directory.path().join("made.kdbx");
 
-        let session = Session::new(None);
+        let session = Session::new(None, None);
         session.making(target.clone());
         session.measured(Work::at(1));
         session.create(password(SECRET)).expect("the vault is made");
@@ -880,7 +914,7 @@ mod tests {
 
         for (round, order) in [true, false].into_iter().enumerate() {
             let target = directory.path().join(format!("either-way-{round}.kdbx"));
-            let session = Session::new(None);
+            let session = Session::new(None, None);
 
             // Both orders, because either is a screen somebody might build and
             // only one of them used to work.
@@ -905,7 +939,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("a scratch directory");
         let target = directory.path().join("made.kdbx");
 
-        let session = Session::new(None);
+        let session = Session::new(None, None);
         assert!(session.create(password(SECRET)).is_err());
 
         session.making(target.clone());
@@ -926,8 +960,9 @@ mod tests {
         let directory = tempfile::tempdir().expect("a scratch directory");
         let target = directory.path().join("made.kdbx");
         let (_other, elsewhere) = scratch(RICH);
+        let config = tempfile::tempdir().expect("a scratch directory");
 
-        let session = Arc::new(Session::new(None));
+        let session = Arc::new(Session::new(None, Some(config.path().to_path_buf())));
         session.making(target.clone());
         // Heavy enough that the creation is still deriving a key when the
         // session is pointed elsewhere. At one pass it would be finished before
@@ -950,6 +985,186 @@ mod tests {
             Some(elsewhere.canonicalize().expect("the copy is there"))
         );
         assert!(!session.is_unlocked());
+        // A vault that did not land is not the one the next launch offers.
+        assert_eq!(recent::remembered(config.path()), None);
+    }
+
+    /// A session writing down what opens into a directory of its own, pointed
+    /// at a copy of a fixture.
+    fn remembering(name: &str) -> (tempfile::TempDir, PathBuf, tempfile::TempDir, Session) {
+        let (directory, database) = scratch(name);
+        let config = tempfile::tempdir().expect("a scratch directory");
+        let session = Session::new(Some(database.clone()), Some(config.path().to_path_buf()));
+        (directory, database, config, session)
+    }
+
+    /// The vault the next launch offers is the one that opened, and only once
+    /// it has. A pick that never opened, and a password that did not fit, write
+    /// nothing down.
+    #[test]
+    fn an_unlock_writes_the_vault_down_for_the_next_launch() {
+        let (_directory, database, config, session) = remembering(RICH);
+
+        assert!(
+            session
+                .unlock(password(b"not it"), LockPolicy::Respect)
+                .is_err()
+        );
+        assert_eq!(recent::remembered(config.path()), None);
+
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the database opens");
+        let opened = database.canonicalize().expect("the copy is there");
+        assert_eq!(recent::remembered(config.path()), Some(opened.clone()));
+
+        let (_elsewhere, other) = scratch(RICH);
+        session.choose(other);
+        assert_eq!(
+            recent::remembered(config.path()),
+            Some(opened),
+            "a file that was only picked was written down"
+        );
+    }
+
+    /// The defect this exists for: a vault made here was never picked in a
+    /// panel, so it was never written down, and the next launch showed its
+    /// owner the screen for somebody who had nothing.
+    #[test]
+    fn a_vault_made_here_is_written_down_for_the_next_launch() {
+        let directory = tempfile::tempdir().expect("a scratch directory");
+        let target = directory.path().join("Coffer/vault.kdbx");
+        let config = tempfile::tempdir().expect("a scratch directory");
+
+        let session = Session::new(None, Some(config.path().to_path_buf()));
+        session.making(target.clone());
+        session.measured(Work::at(1));
+        session.create(password(SECRET)).expect("the vault is made");
+
+        assert_eq!(
+            recent::remembered(config.path()),
+            Some(target.canonicalize().expect("the vault is there"))
+        );
+
+        // And the next launch, which starts from what was written down, is
+        // pointed at it and opens it.
+        session.lock(Reason::Quitting);
+        let next = Session::new(
+            recent::remembered(config.path()),
+            Some(config.path().to_path_buf()),
+        );
+        next.unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the next launch opens the vault it was pointed at");
+    }
+
+    /// A snapshot and the copy a lock left both open with the vault's password
+    /// and are older than it. However one came to be open, the vault that was
+    /// written down stays written down.
+    #[test]
+    fn a_snapshot_or_a_rescue_copy_is_never_written_down() {
+        let (_directory, database, config, session) = remembering(RICH);
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the database opens");
+        session.lock(Reason::ByHand);
+        let vault = database.canonicalize().expect("the copy is there");
+
+        let snapshot = vault_core::storage::snapshot::slot(&vault, 1).expect("a slot has a name");
+        let rescue = vault_core::storage::unsaved::beside(&vault).expect("a sibling path");
+        for sibling in [snapshot, rescue] {
+            std::fs::copy(fixture(RICH), &sibling).expect("the copy is written");
+            session.choose_sibling(sibling.clone());
+            session
+                .unlock(password(SECRET), LockPolicy::Respect)
+                .expect("the sibling opens with the same password");
+            assert_eq!(
+                recent::remembered(config.path()),
+                Some(vault.clone()),
+                "{} was written down as the vault",
+                sibling.display()
+            );
+            session.lock(Reason::ByHand);
+            session.choose(vault.clone());
+        }
+    }
+
+    /// A configuration directory that cannot be written is a vault the reader
+    /// picks again next launch. It is not a vault that refuses to open now,
+    /// by either way in.
+    #[test]
+    fn a_vault_that_cannot_be_written_down_still_opens() {
+        let (directory, database) = scratch(RICH);
+        let blocked = directory.path().join("a-file");
+        std::fs::write(&blocked, b"not a folder").expect("the file is written");
+        let nowhere = blocked.join("Application Support/Coffer");
+
+        let session = Session::new(Some(database), Some(nowhere.clone()));
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the database opens without being written down");
+        assert!(session.is_unlocked());
+
+        let session = Session::new(None, Some(nowhere.clone()));
+        session.making(directory.path().join("made.kdbx"));
+        session.measured(Work::at(1));
+        session
+            .create(password(SECRET))
+            .expect("the vault is made without being written down");
+        assert!(session.is_unlocked());
+        assert_eq!(recent::remembered(&nowhere), None);
+    }
+
+    /// Both ways in end in one door, and that door is the one place a vault is
+    /// put into the session and the one place one is written down. A third way
+    /// in that set the vault itself would be a vault the next launch had
+    /// forgotten, which is exactly the defect the door exists for.
+    ///
+    /// Read out of the source, because nothing else can see a way in that has
+    /// not been written yet.
+    #[test]
+    fn every_way_a_vault_comes_to_be_open_is_written_down() {
+        use crate::source::{functions, shipped};
+
+        let source = shipped(include_str!("session.rs"));
+        let putting: Vec<String> = functions(source)
+            .into_iter()
+            .filter(|body| body.contains("held.vault = Some("))
+            .collect();
+        assert_eq!(putting.len(), 1, "a vault is put into the session twice");
+        assert!(
+            putting
+                .iter()
+                .all(|body| body.contains("fn land(") && body.contains("recent::remember(")),
+            "the vault is put into the session somewhere that does not write it down"
+        );
+
+        let opening: Vec<String> = functions(source)
+            .into_iter()
+            .filter(|body| body.contains("Vault::open(") || body.contains("Vault::create("))
+            .collect();
+        assert_eq!(
+            opening.len(),
+            2,
+            "an unlock and a creation, and nothing else"
+        );
+        for body in opening {
+            assert!(
+                body.contains("self.land("),
+                "a vault is opened without going through the door:\n{}",
+                body.lines().take(3).collect::<Vec<_>>().join("\n")
+            );
+        }
+
+        // And nowhere else writes one down: a pick is not an opening.
+        for (file, other) in [
+            ("commands.rs", shipped(include_str!("commands.rs"))),
+            ("lib.rs", shipped(include_str!("lib.rs"))),
+        ] {
+            assert!(
+                !other.contains("recent::remember("),
+                "{file} writes a vault down that has not opened"
+            );
+        }
     }
 
     /// A database whose owner chose a key file in KeePassXC. `vault-core` has
@@ -958,7 +1173,7 @@ mod tests {
     #[test]
     fn a_key_file_database_opens_once_the_key_file_has_been_chosen() {
         let (directory, database) = scratch("keyfile-kdbx41.kdbx");
-        let session = Session::new(Some(database));
+        let session = Session::new(Some(database), None);
 
         assert!(
             session
@@ -980,7 +1195,7 @@ mod tests {
     #[test]
     fn pointing_the_session_at_another_database_forgets_the_key_file() {
         let (_directory, database) = scratch("keyfile-kdbx41.kdbx");
-        let session = Session::new(Some(database));
+        let session = Session::new(Some(database), None);
         session.use_key_file(Some(fixture("keyfile.key")));
 
         let (_elsewhere, other) = scratch(RICH);
@@ -996,7 +1211,7 @@ mod tests {
     #[test]
     fn opening_a_snapshot_keeps_the_key_file_the_vault_needs() {
         let (_directory, database) = scratch("keyfile-kdbx41.kdbx");
-        let session = Session::new(Some(database.clone()));
+        let session = Session::new(Some(database.clone()), None);
         session.use_key_file(Some(fixture("keyfile.key")));
 
         let mut snapshot = database.into_os_string();
@@ -1025,7 +1240,7 @@ mod tests {
         )
         .expect("the lock file is written");
 
-        let session = Session::new(Some(database));
+        let session = Session::new(Some(database), None);
         let refused = session
             .unlock(password(SECRET), LockPolicy::Respect)
             .expect_err("somebody else's lock is respected");

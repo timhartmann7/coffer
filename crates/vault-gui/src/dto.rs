@@ -25,6 +25,30 @@ pub struct Database {
     pub name: String,
 }
 
+/// Where a new vault would go, as the creation screen draws it.
+#[derive(Serialize)]
+pub struct Target {
+    #[serde(flatten)]
+    pub place: Database,
+    /// The path the way its owner would write it: under the home folder it
+    /// starts with `~`. What the screen shows, and never what anything opens.
+    pub shown: String,
+    /// Whether something is already at the name. Nothing is ever made over
+    /// one, so the screen says so before anybody types a password rather than
+    /// after.
+    pub taken: bool,
+}
+
+/// A vault sitting in Coffer's own folder, offered on a launch that remembers
+/// none. The path does not cross: opening it asks Rust to find it again.
+#[derive(Serialize)]
+pub struct Found {
+    /// The file name, which is what the offer to open it says.
+    pub name: String,
+    /// The folder in the home folder it was found in.
+    pub folder: &'static str,
+}
+
 /// A value revealed out of the vault, on its way to the one screen that asked
 /// for it.
 ///
@@ -72,6 +96,15 @@ impl Snapshot {
     }
 }
 
+impl Found {
+    pub fn of(path: &std::path::Path) -> Found {
+        Found {
+            name: file_name(path),
+            folder: crate::home::FOLDER,
+        }
+    }
+}
+
 impl Rescued {
     pub fn of(kept: &vault_core::storage::unsaved::Kept) -> Rescued {
         Rescued {
@@ -108,6 +141,9 @@ impl Database {
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub database: Option<Database>,
+    /// A vault in Coffer's own folder, when nothing is remembered to open.
+    /// Looked for only then: a launch that knows its vault has nothing to find.
+    pub found: Option<Found>,
     /// The key file the next unlock will use, when the reader has chosen one.
     /// Reported rather than remembered by the window, because a lock destroys
     /// the window and the vault it is about is still the same one.

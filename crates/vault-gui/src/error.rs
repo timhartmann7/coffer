@@ -48,6 +48,10 @@ enum Code {
     /// A code of its own, because the screen has something to offer here that
     /// it has nowhere else: clearing those versions.
     AttachmentInHistory,
+    /// Something already sits where a new vault would go. A code of its own
+    /// for the same reason: the screen offers to open that file instead, and
+    /// keeps the passwords the reader typed for somewhere else.
+    Taken,
     Io,
     Other,
 }
@@ -83,6 +87,12 @@ impl Failure {
     /// places that make the offer.
     pub fn lock_first() -> Failure {
         Failure::refused("lock the vault before opening another")
+    }
+
+    /// A new vault was asked for before anywhere had been settled for it. One
+    /// sentence, because making one and opening what is at the place both ask.
+    pub fn nowhere_chosen() -> Failure {
+        Failure::refused("nowhere has been chosen for the new vault")
     }
 
     /// An unlock finished after the session had been pointed somewhere else.
@@ -123,6 +133,7 @@ impl From<VaultError> for Failure {
             }
             VaultError::Locked(_) => Code::HeldByAnother,
             VaultError::AttachmentInHistory => Code::AttachmentInHistory,
+            VaultError::DatabaseExists => Code::Taken,
             VaultError::ExternalChange => Code::ExternalChange,
             VaultError::ReadOnlyKdb
             | VaultError::ReadOnlyKdbx3Attachments
@@ -137,7 +148,6 @@ impl From<VaultError> for Failure {
             | VaultError::NoSuchVersion => Code::NoSuchEntry,
             VaultError::UnwritableText
             | VaultError::EmptyMasterPassword
-            | VaultError::DatabaseExists
             | VaultError::ReservedName
             | VaultError::PasswordNotUtf8
             | VaultError::AbsurdKeyDerivation
@@ -192,7 +202,7 @@ mod tests {
             (VaultError::NoSuchEntry, "noSuchEntry"),
             (VaultError::UnwritableText, "refused"),
             (VaultError::EmptyMasterPassword, "refused"),
-            (VaultError::DatabaseExists, "refused"),
+            (VaultError::DatabaseExists, "taken"),
             (VaultError::ReservedName, "refused"),
             (VaultError::RandomnessUnavailable, "refused"),
             (VaultError::PasswordNotUtf8, "refused"),

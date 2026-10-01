@@ -8,7 +8,9 @@
 //! Neither of them is observed for waking up. A moment is counted on both of
 //! this machine's clocks, so the time a laptop spent shut is already in the
 //! arithmetic, and re-basing the deadline on wake would hand a full fresh
-//! timeout to a Mac that had been closed all night.
+//! timeout to a Mac that had been closed all night. Whatever reaches the
+//! deadline first after the lid opens - the watcher, or the reader's first key
+//! - finds the time already spent and locks.
 //!
 //! Display sleep is not observed either. It is a couple of minutes on a default
 //! Mac, and a vault that locked on it would be obeying a timer the reader set in

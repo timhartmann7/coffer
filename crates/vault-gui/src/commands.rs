@@ -10,20 +10,23 @@
 //! and a file dialog there deadlocks, because the panel needs the run loop that
 //! the call is blocking.
 //!
-//! The four that are not are the four that never reach the session: the two
-//! that read and write what the reader chose, the one that makes a password out
-//! of the machine's randomness, and the one the window sends on every keypress
-//! to say somebody is there. That last one is why they stay: it is the most
-//! frequent message in the application, it cannot wait on anything, and a hop
-//! onto another thread for it would be latency bought with nothing.
+//! The two that are not are the two that reach neither the session nor the
+//! lock: the one that reads what the reader chose, and the one that makes a
+//! password out of the machine's randomness. Neither can wait on anything, and
+//! a hop onto another thread for them would be latency bought with nothing.
+//!
+//! The message the window sends to say somebody is there is not one of them,
+//! however often it comes. A stir that finds the time already spent - the first
+//! key pressed after a Mac slept through the deadline - locks the vault, and a
+//! lock runs on the thread that asked for it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tauri::ipc::{InvokeBody, Request};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
-use vault_core::storage::{snapshot, unsaved};
+use vault_core::storage::{atomic, snapshot, unsaved};
 use zeroize::Zeroizing;
 
 use vault_core::generate::{Alphabet, Recipe};
@@ -32,10 +35,12 @@ use vault_core::{LockPolicy, NewValue, Vault};
 
 use crate::autolock::timer::Timer;
 use crate::autolock::{Event, Reason};
-use crate::dto::{self, Database, Entry, Group, Made, Revealed, Rival, Snapshot, Status, Version};
+use crate::dto::{
+    self, Database, Entry, Group, Made, Revealed, Rival, Snapshot, Status, Target, Version,
+};
 use crate::error::Failure;
 use crate::session::Session;
-use crate::{clipboard, lock, opener, recent, settings, window};
+use crate::{clipboard, home, lock, opener, settings, window};
 
 /// The session is behind an `Arc` so that a command can take it onto a blocking
 /// thread, which is where key derivation belongs.
@@ -60,6 +65,15 @@ pub fn status(app: AppHandle, session: Held<'_>) -> Status {
     let database = session.database();
 
     Status {
+        // Looked for only when nothing is remembered, which is the launch that
+        // would otherwise greet somebody with a vault as somebody with none.
+        found: database
+            .is_none()
+            .then(|| home_of(&app).ok())
+            .flatten()
+            .and_then(|home| home::found(&home))
+            .as_deref()
+            .map(dto::Found::of),
         // Asked of the filesystem rather than remembered, so that a copy left
         // by a run that has since quit is still offered. A copy that cannot be
         // read is one Coffer does not offer, and the rest of the answer still
@@ -88,6 +102,9 @@ pub fn status(app: AppHandle, session: Held<'_>) -> Status {
 /// The path never comes from the webview: the webview asks for a picker, the
 /// user picks, and Coffer keeps the answer. Nothing the frontend sends can
 /// point Coffer at a file.
+///
+/// Nothing is written down for the next launch here. A file that was picked is
+/// not yet a vault that opened, and the session writes one down when it does.
 #[tauri::command]
 pub async fn choose_database(
     app: AppHandle,
@@ -116,14 +133,48 @@ pub async fn choose_database(
         .map_err(|_| Failure::refused("that file has no path Coffer can open"))?;
 
     session.choose(path.clone());
+    Ok(Some(Database::of(&path)))
+}
 
-    // A database Coffer fails to remember is one the user picks again next
-    // launch. That is not a reason to refuse to open it now.
-    if let Ok(directory) = app.path().app_config_dir() {
-        let _ = recent::remember(&directory, &path);
+/// Points the session at the vault found in Coffer's own folder.
+///
+/// Nothing is sent: the folder is searched again here, so no message from the
+/// window can name a file, and a vault that went away after the screen was
+/// drawn is reported as gone rather than opened as something else.
+#[tauri::command(async)]
+pub fn choose_found(app: AppHandle, session: Held<'_>) -> Result<Database, Failure> {
+    if session.is_unlocked() {
+        return Err(Failure::lock_first());
     }
 
-    Ok(Some(Database::of(&path)))
+    let path = home::found(&home_of(&app)?).ok_or_else(Failure::gone)?;
+    Ok(chosen_now(&session, path))
+}
+
+/// Points the session at whatever already sits where the new vault would go,
+/// for a reader who meant to open it rather than make another.
+///
+/// Nothing is sent here either. The place is the one `default_new_database` or
+/// `choose_new_database` settled, which the session is still holding.
+#[tauri::command(async)]
+pub fn choose_existing(session: Held<'_>) -> Result<Database, Failure> {
+    if session.is_unlocked() {
+        return Err(Failure::lock_first());
+    }
+
+    let target = session.target().ok_or_else(Failure::nowhere_chosen)?;
+    if !target.is_file() {
+        return Err(Failure::gone());
+    }
+
+    Ok(chosen_now(&session, target))
+}
+
+/// Points the session at a file Rust found for itself, and answers with what
+/// the session now holds: the file, with the links on the way to it followed.
+fn chosen_now(session: &Session, path: PathBuf) -> Database {
+    session.choose(path.clone());
+    Database::of(&session.database().unwrap_or(path))
 }
 
 /// Opens the chosen database with the master password.
@@ -253,24 +304,35 @@ fn password_of(body: &InvokeBody) -> Result<Zeroizing<Vec<u8>>, Failure> {
     }
 }
 
-/// Where a first vault goes when nobody has said otherwise.
-///
-/// Not `~/Documents`: a Mac set up with the default answers synchronises that
-/// folder to iCloud, and a vault Coffer put into a sync folder without being
-/// asked is the one thing this application says it does not do.
+/// Where a first vault goes when nobody has said otherwise: see [`home`].
 ///
 /// Nothing is written here. The folder is made at the moment the reader commits,
-/// which is where a refusal can still be reported.
+/// which is where a refusal can still be reported. Whether something is there
+/// already is said now, though, before a password is typed for a vault that
+/// could never be made.
 #[tauri::command(async)]
-pub fn default_new_database(app: AppHandle, session: Held<'_>) -> Result<dto::Database, Failure> {
-    let home = app
-        .path()
-        .home_dir()
-        .map_err(|_| Failure::internal("this account has no home directory"))?;
-    let path = home.join("Coffer").join("vault.kdbx");
+pub fn default_new_database(app: AppHandle, session: Held<'_>) -> Result<Target, Failure> {
+    let home = home_of(&app)?;
+    let path = home::first(&home);
 
     session.making(path.clone());
-    Ok(dto::Database::of(&path))
+    Ok(target(&path, Some(&home)))
+}
+
+/// The reader's home folder, which only the account can lack.
+fn home_of(app: &AppHandle) -> Result<PathBuf, Failure> {
+    app.path()
+        .home_dir()
+        .map_err(|_| Failure::internal("this account has no home directory"))
+}
+
+/// A place for a new vault, as the creation screen draws it.
+fn target(path: &Path, home: Option<&Path>) -> Target {
+    Target {
+        place: Database::of(path),
+        shown: home::shown(path, home),
+        taken: atomic::taken(path),
+    }
 }
 
 /// Asks where a new vault should go instead, with the system's own save panel.
@@ -282,7 +344,7 @@ pub fn default_new_database(app: AppHandle, session: Held<'_>) -> Result<dto::Da
 pub async fn choose_new_database(
     app: AppHandle,
     session: Held<'_>,
-) -> Result<Option<Database>, Failure> {
+) -> Result<Option<Target>, Failure> {
     if session.is_unlocked() {
         return Err(Failure::refused("lock the vault before making another"));
     }
@@ -304,8 +366,12 @@ pub async fn choose_new_database(
         .into_path()
         .map_err(|_| Failure::refused("that place has no path Coffer can write"))?;
 
+    // The panel asks whether to replace a file that is there, and a reader who
+    // says yes is still refused: a creation takes no snapshot, so what was
+    // there would be gone. The screen is told now rather than after the
+    // password.
     session.making(path.clone());
-    Ok(Some(Database::of(&path)))
+    Ok(Some(target(&path, home_of(&app).ok().as_deref())))
 }
 
 /// Measures how many Argon2id passes this machine needs for a one-second
@@ -377,7 +443,14 @@ pub fn lock(app: AppHandle) {
 /// The window sends this on real input and at most once every several seconds.
 /// It is deliberately not something the countdown itself does: an idle timer
 /// that the thing drawing the countdown kept resetting would never fire.
-#[tauri::command]
+///
+/// A stir does not always start the clock again. One that arrives after the
+/// time has run out - the first key after a Mac slept through the deadline,
+/// before the watcher has woken - locks the vault instead, and nothing comes
+/// back because nothing is open. The lock runs right here, on the thread that
+/// posted: it writes the vault out, which is a key derivation, and destroys the
+/// window, so this is answered off the thread the window is drawn on.
+#[tauri::command(async)]
 pub fn stirred(app: AppHandle) -> Option<u64> {
     let timer = app.try_state::<Arc<Timer>>()?;
     timer.post(Event::Stirred);
@@ -973,6 +1046,7 @@ pub async fn rival(session: Held<'_>) -> Result<Rival, Failure> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source::{functions, shipped};
 
     /// The whole point of the raw body. A number array is what Tauri produces
     /// when the custom-protocol IPC is blocked and it falls back to
@@ -998,40 +1072,9 @@ mod tests {
     /// Read out of this file's own source, the way `contract.test.ts` reads it
     /// from the other side. Nothing else connects the two, and a third way in
     /// would be silent.
-    /// Every function in this file, cut at each `fn` that begins a line.
-    ///
-    /// Coarse on purpose. A helper the commands share is a function of its own
-    /// here, which is what the check below needs: two commands now open a vault
-    /// through one door, and the door is where the clock has to be started.
-    fn functions(source: &str) -> Vec<String> {
-        let mut found: Vec<String> = Vec::new();
-
-        for line in source.lines() {
-            let head = line.trim_start();
-            let starts = ["fn ", "pub fn ", "async fn ", "pub async fn "]
-                .iter()
-                .any(|shape| head.starts_with(shape));
-
-            if starts || found.is_empty() {
-                found.push(String::new());
-            }
-            if let Some(body) = found.last_mut() {
-                body.push_str(line);
-                body.push('\n');
-            }
-        }
-
-        found
-    }
-
     #[test]
     fn every_way_a_vault_comes_to_be_open_starts_the_clock() {
-        // Everything above the test module: this test's own source names the
-        // two calls it is looking for, and would count itself.
-        let source = include_str!("commands.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap_or_default();
+        let source = shipped(include_str!("commands.rs"));
 
         let opens: Vec<String> = functions(source)
             .into_iter()
@@ -1093,10 +1136,7 @@ mod tests {
     /// obvious way would be the one that freezes.
     #[test]
     fn nothing_that_waits_for_the_session_runs_where_the_window_is_drawn() {
-        let source = include_str!("commands.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap_or_default();
+        let source = shipped(include_str!("commands.rs"));
 
         for item in drawn_on_the_window_thread(source) {
             let named = item.lines().take(4).collect::<Vec<_>>().join("\n");
@@ -1104,30 +1144,29 @@ mod tests {
                 !item.contains("Held<"),
                 "this command reaches the session from the drawing thread:\n{named}"
             );
-            // Posting one of these is reaching the lock. `Deadline::on`
-            // answers both with `Decision::Lock` - the first always, the second
-            // whenever the new timeout is already spent - and `Shared::post`
-            // fires on the thread that posted. A lock writes the vault out
-            // before wiping it, so that thread pays a key derivation.
-            //
-            // `Event::Stirred` is not one of them and is deliberately left
-            // here: it can only ever move the deadline, it is the most frequent
-            // message in the application, and a hop onto another thread for it
-            // would be latency bought with nothing.
-            for firing in ["Event::Locking", "Event::TimeoutChanged"] {
+            // Posting anything to the timer is reaching the lock.
+            // `Deadline::on` answers every event but an unlock with
+            // `Decision::Lock` when the time is already spent - a stir as well,
+            // since the first key after a Mac slept through the deadline is
+            // what finds it - and `Shared::post` fires on the thread that
+            // posted. A lock writes the vault out before wiping it, so that
+            // thread pays a key derivation.
+            for firing in ["Timer", "Event::"] {
                 assert!(
                     !item.contains(firing),
-                    "this command posts {firing} from the drawing thread:\n{named}"
+                    "this command reaches the timer from the drawing thread:\n{named}"
                 );
             }
         }
 
-        // The two that reach it without naming it. Locking wipes the tree,
-        // which takes the same mutex a save is holding - and writes the vault
-        // out first, so it costs a key derivation as well. Posting to the timer
-        // is reaching the lock: the deadline answers a shortened timeout that
-        // has already gone by locking, on the thread that posted it.
-        for reaching in ["pub fn lock(", "pub fn set_settings("] {
+        // The three that reach it, each of which the check above would catch
+        // anyway, named so that the reason survives a rewrite of their bodies.
+        // Locking wipes the tree, which takes the same mutex a save is holding
+        // - and writes the vault out first, so it costs a key derivation as
+        // well. A shortened timeout that has already gone, and a stir that
+        // arrives after the time ran out, are both answered by a lock on the
+        // thread that posted them.
+        for reaching in ["pub fn lock(", "pub fn set_settings(", "pub fn stirred("] {
             assert!(
                 source.contains(&format!("#[tauri::command(async)]\n{reaching}")),
                 "{reaching} reaches the lock and must not be answered inline"
@@ -1140,10 +1179,7 @@ mod tests {
     /// worth nothing.
     #[test]
     fn only_the_command_a_reader_presses_takes_a_lock_over() {
-        let source = include_str!("commands.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap_or_default();
+        let source = shipped(include_str!("commands.rs"));
 
         let taking: Vec<String> = functions(source)
             .into_iter()

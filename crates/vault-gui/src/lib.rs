@@ -28,11 +28,14 @@ mod clipboard;
 mod commands;
 mod dto;
 mod error;
+mod home;
 mod lock;
 mod opener;
 mod recent;
 mod session;
 mod settings;
+#[cfg(test)]
+mod source;
 mod window;
 
 use std::sync::Arc;
@@ -54,8 +57,8 @@ pub fn run() {
             // Managed before anything that locks is started: the timer and the
             // notification blocks both find the session and the settings by
             // type, and neither may run before they are there.
-            let preferences = Arc::new(settings::Preferences::load(directory));
-            app.manage(Arc::new(Session::new(remembered)));
+            let preferences = Arc::new(settings::Preferences::load(directory.clone()));
+            app.manage(Arc::new(Session::new(remembered, directory)));
             app.manage(Arc::clone(&preferences));
 
             let locking = app.handle().clone();
@@ -89,6 +92,8 @@ pub fn run() {
             commands::settings,
             commands::set_settings,
             commands::choose_database,
+            commands::choose_found,
+            commands::choose_existing,
             commands::choose_new_database,
             commands::default_new_database,
             commands::calibrate,

@@ -2,6 +2,7 @@
 	import {
 		asFailure,
 		chooseDatabase,
+		chooseFound,
 		chooseKeyFile,
 		chooseRescue,
 		chooseSnapshot,
@@ -12,12 +13,13 @@
 		unlockTakingOver
 	} from '$lib/ipc';
 	import { fully } from '$lib/format';
-	import type { Database, Failure, Rescued, Snapshot } from '$lib/model';
+	import type { Database, Failure, Found, Rescued, Snapshot } from '$lib/model';
 	import Icon from './Icon.svelte';
 	import Mark from './Mark.svelte';
 
 	let {
 		database,
+		found = null,
 		keyFile = null,
 		reason = null,
 		rescue = null,
@@ -28,6 +30,13 @@
 		onUnlocked
 	}: {
 		database: Database | null;
+		/**
+		 * A vault Rust found in Coffer's own folder, offered on the first-run
+		 * screen when nothing is remembered. A vault made by Coffer 0.1.0 was
+		 * forgotten by the next launch, and this is how its owner gets back to it
+		 * rather than making a second one.
+		 */
+		found?: Found | null;
 		/**
 		 * The key file this vault needs beside the password, when one has been
 		 * chosen. Rust's answer rather than this window's: a lock destroys the
@@ -146,6 +155,17 @@
 		if (busy) return;
 		try {
 			chose(await chooseRescue(), true);
+		} catch (thrown) {
+			failure = asFailure(thrown);
+		}
+	}
+
+	/** Opens the vault Rust found. Nothing is sent: Rust looks again, so this
+	 * window never names a file. */
+	async function openFound() {
+		if (busy) return;
+		try {
+			chose(await chooseFound());
 		} catch (thrown) {
 			failure = asFailure(thrown);
 		}
@@ -460,10 +480,33 @@
 				All of it goes into one file on this Mac. One password opens it, and that is the one you
 				choose next.
 			</p>
+			<!-- Above the offer to make one, because somebody with a vault already
+			     on this Mac is about to make a second one and wonder where their
+			     passwords went. The same card the copy a lock left is offered in. -->
+			{#if found}
+				<div class="mt-8 rounded-sm border border-hairline bg-surface2 px-4 py-4">
+					<div class="flex items-start gap-2">
+						<Icon name="disk" class="mt-0.5 h-4 w-4 shrink-0 text-txt4" />
+						<p class="text-body leading-relaxed text-txt">
+							We found your vault: <span class="font-mono">{found.name}</span> in {found.folder} (your
+							home folder).
+						</p>
+					</div>
+					<button
+						type="button"
+						onclick={openFound}
+						class="mt-4 h-9 rounded-full border border-hairline px-4 text-small text-txt transition-colors hover:border-txt3 active:bg-surface2"
+					>
+						Open it
+					</button>
+				</div>
+			{/if}
 			<button
 				type="button"
 				onclick={onCreate}
-				class="mx-auto mt-9 block h-[46px] w-full max-w-[300px] rounded-full bg-accent px-6 text-base font-medium text-canvas transition-colors hover:bg-accenthi"
+				class="mx-auto {found
+					? 'mt-6'
+					: 'mt-9'} block h-[46px] w-full max-w-[300px] rounded-full bg-accent px-6 text-base font-medium text-canvas transition-colors hover:bg-accenthi"
 			>
 				Make a vault
 			</button>

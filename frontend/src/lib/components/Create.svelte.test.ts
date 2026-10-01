@@ -6,13 +6,24 @@ const ipc = vi.hoisted(() => ({
 	calibrate: vi.fn(),
 	defaultNewDatabase: vi.fn(),
 	chooseNewDatabase: vi.fn(),
+	chooseExisting: vi.fn(),
 	createDatabase: vi.fn(),
 	asFailure: vi.fn()
 }));
 vi.mock('$lib/ipc', () => ipc);
 
-const HOME = { path: '/Users/someone/Coffer/vault.kdbx', name: 'vault' };
-const WHERE = { path: '/Users/someone/Vault/personal.kdbx', name: 'personal' };
+const HOME = {
+	path: '/Users/someone/Coffer/vault.kdbx',
+	name: 'vault',
+	shown: '~/Coffer/vault.kdbx',
+	taken: false
+};
+const WHERE = {
+	path: '/Users/someone/Vault/personal.kdbx',
+	name: 'personal',
+	shown: '~/Vault/personal.kdbx',
+	taken: false
+};
 
 let host: HTMLElement;
 
@@ -37,7 +48,12 @@ afterEach(() => host.remove());
 function show(over: Record<string, unknown> = {}) {
 	return mount(Create, {
 		target: host,
-		props: { onMade: vi.fn().mockResolvedValue(undefined), onCancel: vi.fn(), ...over }
+		props: {
+			onMade: vi.fn().mockResolvedValue(undefined),
+			onCancel: vi.fn(),
+			onOpen: vi.fn(),
+			...over
+		}
 	});
 }
 
@@ -61,7 +77,7 @@ async function ready(over: Record<string, unknown> = {}) {
 	const component = show(over);
 	flushSync();
 	await vi.waitFor(() => expect(host.textContent).not.toContain('Fitting the lock'));
-	await vi.waitFor(() => expect(host.textContent).toContain(HOME.path));
+	await vi.waitFor(() => expect(host.textContent).toContain(HOME.shown));
 	return component;
 }
 
@@ -95,7 +111,7 @@ it('will not make a vault before it knows where or how hard', async () => {
 	const waiting = show();
 	flushSync();
 	expect(button('Make the vault').disabled).toBe(true);
-	expect(host.textContent).not.toContain(HOME.path);
+	expect(host.textContent).not.toContain(HOME.shown);
 	unmount(waiting);
 
 	place(HOME);
@@ -106,7 +122,7 @@ it('will not make a vault before it knows where or how hard', async () => {
 
 	const component = show();
 	flushSync();
-	await vi.waitFor(() => expect(host.textContent).toContain(HOME.path));
+	await vi.waitFor(() => expect(host.textContent).toContain(HOME.shown));
 	expect(button('Make the vault').disabled).toBe(true);
 
 	measure({ iterations: 122, seconds: 1.004 });
@@ -188,13 +204,12 @@ it('will not make a vault with no password at all', async () => {
 /** The buffer is wiped whether the command worked or not, and the fields are
  * emptied before the call that takes a second even begins. */
 it('empties both fields and wipes the bytes, whatever happens', async () => {
-	ipc.createDatabase.mockRejectedValue({ code: 'refused', message: 'there is already a file' });
 	const component = await ready();
 
 	let sent: Uint8Array | null = null;
 	ipc.createDatabase.mockImplementation((password: Uint8Array) => {
 		sent = password;
-		return Promise.reject({ code: 'refused', message: 'there is already a file' });
+		return Promise.reject({ code: 'io', message: 'No space left on device' });
 	});
 
 	const [first, second] = fields();
@@ -202,7 +217,7 @@ it('empties both fields and wipes the bytes, whatever happens', async () => {
 	second.value = 'a password';
 	submit();
 
-	await vi.waitFor(() => expect(host.textContent).toContain('there is already a file'));
+	await vi.waitFor(() => expect(host.textContent).toContain('No space left on device'));
 	expect(first.value).toBe('');
 	expect(second.value).toBe('');
 	// The real `createDatabase` wipes what it was given; this one is a mock, so
@@ -227,7 +242,7 @@ it('says what Rust refused, and leaves the screen where it was', async () => {
 
 	await vi.waitFor(() => expect(host.textContent).toContain('beside a vault'));
 	expect(onMade).not.toHaveBeenCalled();
-	expect(host.textContent).toContain(HOME.path);
+	expect(host.textContent).toContain(HOME.shown);
 
 	unmount(component);
 });
@@ -271,7 +286,7 @@ it('draws the measuring bar out of a fixed set of widths', async () => {
 it('arrives with a place already chosen, and no panel opened', async () => {
 	const component = await ready();
 
-	expect(host.textContent).toContain(HOME.path);
+	expect(host.textContent).toContain(HOME.shown);
 	expect(ipc.chooseNewDatabase).not.toHaveBeenCalled();
 	expect(button('Make the vault').disabled).toBe(false);
 
@@ -282,8 +297,8 @@ it('still lets the reader put it somewhere else', async () => {
 	const component = await ready();
 
 	button('Somewhere else').click();
-	await vi.waitFor(() => expect(host.textContent).toContain(WHERE.path));
-	expect(host.textContent).not.toContain(HOME.path);
+	await vi.waitFor(() => expect(host.textContent).toContain(WHERE.shown));
+	expect(host.textContent).not.toContain(HOME.shown);
 
 	unmount(component);
 });
@@ -315,6 +330,167 @@ it('does not throw the password away when return is pressed too early', async ()
 	expect(document.activeElement).toBe(second);
 	expect(ipc.createDatabase).not.toHaveBeenCalled();
 	expect(host.textContent).not.toContain('not the same');
+
+	unmount(component);
+});
+
+function reads(): string {
+	return (host.textContent ?? '').replace(/\s+/g, ' ').trim();
+}
+
+const EXISTS =
+	'A vault already exists at ~/Coffer/vault.kdbx. Open it instead, or pick another place.';
+
+/**
+ * Coffer 0.1.0 forgot every vault it made, and its owner came back to "Make a
+ * vault". The place is known to be taken before a password is typed, so the
+ * screen says so then - not after two passwords were typed and thrown away.
+ */
+it('says a vault is already there before a password is typed, and keeps what was typed', async () => {
+	ipc.defaultNewDatabase.mockResolvedValue({ ...HOME, taken: true });
+	const component = show();
+	flushSync();
+	await vi.waitFor(() => expect(reads()).toContain(EXISTS));
+	await vi.waitFor(() => expect(host.textContent).not.toContain('Fitting the lock'));
+
+	expect(button('Make the vault').disabled).toBe(true);
+
+	const [first, second] = fields();
+	first.value = 'a long master password';
+	second.value = 'a long master password';
+	submit();
+	flushSync();
+
+	expect(ipc.createDatabase).not.toHaveBeenCalled();
+	expect(first.value).toBe('a long master password');
+	expect(second.value).toBe('a long master password');
+
+	unmount(component);
+});
+
+/** The way out the sentence names. Nothing is sent: Rust holds the place. */
+it('opens what is already there instead, naming no file', async () => {
+	const existing = { path: HOME.path, name: HOME.name };
+	ipc.defaultNewDatabase.mockResolvedValue({ ...HOME, taken: true });
+	ipc.chooseExisting.mockResolvedValue(existing);
+	const onOpen = vi.fn();
+	const component = show({ onOpen });
+	flushSync();
+	await vi.waitFor(() => expect(reads()).toContain(EXISTS));
+
+	button('Open it').click();
+
+	await vi.waitFor(() => expect(onOpen).toHaveBeenCalledWith(existing));
+	expect(ipc.chooseExisting).toHaveBeenCalledWith();
+	expect(ipc.createDatabase).not.toHaveBeenCalled();
+
+	unmount(component);
+});
+
+/** The other way out. A place that is free takes the sentence away and gives
+ * the button back. */
+it('lets the reader pick another place, and is ready to make the vault there', async () => {
+	ipc.defaultNewDatabase.mockResolvedValue({ ...HOME, taken: true });
+	const component = show();
+	flushSync();
+	await vi.waitFor(() => expect(reads()).toContain(EXISTS));
+	await vi.waitFor(() => expect(host.textContent).not.toContain('Fitting the lock'));
+
+	button('Somewhere else').click();
+
+	await vi.waitFor(() => expect(host.textContent).toContain(WHERE.shown));
+	expect(reads()).not.toContain('already exists');
+	expect(button('Make the vault').disabled).toBe(false);
+
+	unmount(component);
+});
+
+/** A panel the reader answered "Replace" in is still not a place Coffer writes
+ * over: a creation takes no snapshot. */
+it('says so when the place picked in the panel is taken too', async () => {
+	ipc.chooseNewDatabase.mockResolvedValue({ ...WHERE, taken: true });
+	const component = await ready();
+
+	button('Somewhere else').click();
+
+	await vi.waitFor(() =>
+		expect(reads()).toContain(
+			'A vault already exists at ~/Vault/personal.kdbx. Open it instead, or pick another place.'
+		)
+	);
+	expect(button('Make the vault').disabled).toBe(true);
+
+	unmount(component);
+});
+
+/**
+ * A file that arrived at the place after the screen said it was free. The
+ * fields are empty for the whole of the call, exactly as on the way to a vault
+ * that is made; only this refusal hands the two passwords back, because it is
+ * the one that says nothing about them.
+ */
+it('hands both passwords back when the place was taken at the last moment', async () => {
+	let refuse: (why: unknown) => void = () => {};
+	let sent: Uint8Array | null = null;
+	ipc.createDatabase.mockImplementation((password: Uint8Array) => {
+		sent = password;
+		return new Promise((_, reject) => (refuse = reject));
+	});
+	const onMade = vi.fn();
+	const component = await ready({ onMade });
+
+	const [first, second] = fields();
+	first.value = 'correct horse battery staple';
+	second.value = 'correct horse battery staple';
+	submit();
+	await vi.waitFor(() => expect(ipc.createDatabase).toHaveBeenCalledTimes(1));
+
+	expect(first.value).toBe('');
+	expect(second.value).toBe('');
+	expect(new TextDecoder().decode(sent ?? new Uint8Array())).toBe('correct horse battery staple');
+
+	refuse({ code: 'taken', message: 'there is already a file with that name' });
+
+	await vi.waitFor(() => expect(reads()).toContain(EXISTS));
+	expect(first.value).toBe('correct horse battery staple');
+	expect(second.value).toBe('correct horse battery staple');
+	expect(button('Make the vault').disabled).toBe(true);
+	expect(onMade).not.toHaveBeenCalled();
+	// The screen's own sentence, not Rust's: it names the place and the way on.
+	expect(reads()).not.toContain('there is already a file with that name');
+
+	unmount(component);
+});
+
+/** Any other refusal is about something the reader has to act on, and the
+ * password goes as it always did. */
+it('hands nothing back for a refusal that is not about the place', async () => {
+	ipc.createDatabase.mockRejectedValue({ code: 'io', message: 'Permission denied' });
+	const component = await ready();
+
+	const [first, second] = fields();
+	first.value = 'a password';
+	second.value = 'a password';
+	submit();
+
+	await vi.waitFor(() => expect(reads()).toContain('Permission denied'));
+	expect(first.value).toBe('');
+	expect(second.value).toBe('');
+	expect(reads()).not.toContain('already exists');
+
+	unmount(component);
+});
+
+/** A place is whatever the reader typed into a save panel, and it is drawn as
+ * text in both the row and the sentence. */
+it('draws a taken place that holds markup as the characters it is', async () => {
+	const hostile = '~/<img src=x onerror=alert(1)>.kdbx';
+	ipc.defaultNewDatabase.mockResolvedValue({ ...HOME, shown: hostile, taken: true });
+	const component = show();
+	flushSync();
+
+	await vi.waitFor(() => expect(reads()).toContain(`A vault already exists at ${hostile}.`));
+	expect(host.querySelector('img')).toBeNull();
 
 	unmount(component);
 });

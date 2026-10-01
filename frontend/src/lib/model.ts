@@ -14,8 +14,29 @@ export interface Database {
 	name: string;
 }
 
+/** Where a new vault would go, as the creation screen draws it. */
+export interface Target extends Database {
+	/** The path the way its owner would write it: under the home folder it
+	 * starts with `~`. For showing, never for opening. */
+	shown: string;
+	/** Whether something already sits at the name. Nothing is ever made over
+	 * one, so the screen says so before anybody types a password. */
+	taken: boolean;
+}
+
+/** A vault sitting in Coffer's own folder, offered when nothing is remembered.
+ * The path does not cross: opening it asks Rust to find it again. */
+export interface Found {
+	/** The file name, which is what the offer says. */
+	name: string;
+	/** The folder in the home folder it was found in. */
+	folder: string;
+}
+
 export interface Status {
 	database: Database | null;
+	/** A vault in Coffer's own folder, when nothing is remembered to open. */
+	found: Found | null;
 	/** The key file the next unlock will use, when the reader has chosen one.
 	 * It comes from Rust rather than from this window because a lock destroys
 	 * the window and the vault it is about is still the same one. */
@@ -195,6 +216,7 @@ export interface Failure {
 		| 'heldByAnother'
 		| 'externalChange'
 		| 'attachmentInHistory'
+		| 'taken'
 		| 'readOnly'
 		| 'gone'
 		| 'tooLarge'

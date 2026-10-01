@@ -33,6 +33,17 @@ pub(crate) fn sibling(database: &Path, suffix: &str) -> Result<PathBuf, io::Erro
     Ok(database.with_file_name(name))
 }
 
+/// Whether a name is one Coffer gives a file of its own beside a database: one
+/// of its snapshots, or the copy a lock left when it could not save.
+///
+/// Either opens with the vault's password, and neither is the vault. Nothing
+/// makes a vault at such a name, because the next save or the next lock beside
+/// it would write over it without a word; and nothing takes one for the vault
+/// itself, because it is an older copy of it.
+pub fn reserved(path: &Path) -> bool {
+    snapshot::slot_of(path).is_some() || unsaved::reserved(path)
+}
+
 /// Flushes the directory entry itself, so that a rename survives a power cut.
 /// Without this the renamed file can be durable while the name still points at
 /// the old inode.

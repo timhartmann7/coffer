@@ -19,6 +19,7 @@ import type {
 	Settings,
 	Snapshot,
 	Status,
+	Target,
 	Version
 } from './model';
 
@@ -29,6 +30,19 @@ export function status(): Promise<Status> {
 /** Opens the system's file picker. `null` when the user closed it. */
 export function chooseDatabase(): Promise<Database | null> {
 	return invoke('choose_database');
+}
+
+/** Points the session at the vault Rust found in Coffer's own folder. It takes
+ * nothing: Rust looks again, so nothing this window sends can name a file. */
+export function chooseFound(): Promise<Database> {
+	return invoke('choose_found');
+}
+
+/** Points the session at what already sits where the new vault would go, for a
+ * reader who meant to open it. The place is the one Rust settled, so nothing is
+ * sent. */
+export function chooseExisting(): Promise<Database> {
+	return invoke('choose_existing');
 }
 
 /**
@@ -75,13 +89,13 @@ export function forgetKeyFile(): Promise<void> {
 
 /** Where a vault goes when the reader has not said. Chosen without a panel, so
  * that making the first one is a password and nothing else. */
-export function defaultNewDatabase(): Promise<Database> {
+export function defaultNewDatabase(): Promise<Target> {
 	return invoke('default_new_database');
 }
 
 /** Opens the system's save panel and keeps where the reader wants the new vault.
  * `null` when they closed it. */
-export function chooseNewDatabase(): Promise<Database | null> {
+export function chooseNewDatabase(): Promise<Target | null> {
 	return invoke('choose_new_database');
 }
 
@@ -117,6 +131,11 @@ export function lock(): Promise<void> {
 
 /**
  * Says the reader is there, so that the idle timer starts again.
+ *
+ * Unless it had already run out: the first key after a Mac slept through the
+ * deadline arrives before Rust's own timer wakes, and Rust locks the vault
+ * rather than handing it a fresh timeout. This window is destroyed with it, and
+ * the one built in its place says why.
  *
  * Sent on real input and no more than a few times a minute. What comes back is
  * the seconds the open vault has left, which nothing draws: a status bar that

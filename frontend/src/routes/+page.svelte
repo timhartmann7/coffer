@@ -13,9 +13,11 @@
 	} from '$lib/ipc';
 	import { Presence } from '$lib/presence';
 	import { wear } from '$lib/theme';
-	import type { Database, Group, Rescued, Settings as Chosen } from '$lib/model';
+	import type { Database, Found, Group, Rescued, Settings as Chosen } from '$lib/model';
 
 	let database = $state<Database | null>(null);
+	/** A vault Rust found in Coffer's own folder, when nothing was remembered. */
+	let found = $state<Found | null>(null);
 	/** The key file the next unlock will use, when Rust is holding one. */
 	let keyFile = $state<Database | null>(null);
 	let root = $state<Group | null>(null);
@@ -46,6 +48,7 @@
 			try {
 				const opening = await status();
 				database = opening.database;
+				found = opening.found;
 				keyFile = opening.keyFile;
 				reason = opening.lockedBy;
 				rescue = opening.rescue;
@@ -108,14 +111,21 @@
 	 */
 	async function choose() {
 		const picked = await chooseDatabase();
-		if (picked) {
-			database = picked;
-			// Rust forgot the key file when the session was pointed elsewhere,
-			// and the screen has to say the same thing.
-			keyFile = null;
-			showing = 'vault';
-			await chosen_elsewhere();
-		}
+		if (picked) await pointAt(picked);
+	}
+
+	/**
+	 * Takes the reader to the unlock screen for a file chosen away from it: in
+	 * the settings, or on the creation screen, which offers to open what already
+	 * sits where the new vault would have gone.
+	 */
+	async function pointAt(picked: Database) {
+		database = picked;
+		// Rust forgot the key file when the session was pointed elsewhere, and
+		// the screen has to say the same thing.
+		keyFile = null;
+		showing = 'vault';
+		await chosen_elsewhere();
 	}
 
 	/**
@@ -176,6 +186,7 @@
 				await opened();
 			}}
 			onCancel={() => (showing = 'vault')}
+			onOpen={(picked) => void pointAt(picked)}
 		/>
 	{:else if root && database}
 		<!-- An open vault keeps the screen, and the settings go over it. There is
@@ -196,6 +207,7 @@
 	{:else if ready}
 		<Unlock
 			{database}
+			{found}
 			{keyFile}
 			{reason}
 			{rescue}

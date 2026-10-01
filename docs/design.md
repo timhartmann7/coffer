@@ -90,6 +90,29 @@ close goes beside the trash rather than after it: the mockup's own rule is that
 the destructive action stands at the end of a row, so that missing it costs a
 movement.
 
+## A vault that is already there
+
+The mockup's first run is for somebody who has nothing, and its creation screen
+assumes the place is free. Two states answer the reader who already has a vault
+on this Mac, and both are built from states the mockup does draw.
+
+**The first run says what it found.** Above "Make a vault" sits the card the
+unlock screen already offers a lock's rescue copy in: `surface2` behind a
+hairline, `rounded-sm`, the disk icon in `txt4`, the sentence in `body` and the
+file name in mono, and the same bordered `h-9` pill for "Open it". It is not the
+accent: the accent stays on the screen's one call to action, and a reader who
+presses it anyway is told on the next screen that the vault is there.
+
+**The creation screen says the place is taken** under the row that names it,
+before a password is typed: the corrupted-file state's warn icon and its bordered
+pill, with the sentence in `small` rather than `lead`, because the row above it is
+the thing it is about. The make button goes to its disabled look until the place
+is free.
+
+**The place is written from the tilde.** The creation screen's row shows
+`~/Coffer/vault.kdbx` rather than the whole path, which is how the mockup draws
+a place (`~/Vault`), and the sentence about a taken place names it the same way.
+
 ## The settings, and the way in and out of them
 
 The mockup draws the settings as a whole window with a title bar of their own and
