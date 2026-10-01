@@ -90,6 +90,41 @@ close goes beside the trash rather than after it: the mockup's own rule is that
 the destructive action stands at the end of a row, so that missing it costs a
 movement.
 
+## Asking before, and taking back after
+
+The mockup draws one choice, the conflict dialog, and states its rule beside it:
+outcomes named in words and by their result, the destructive one last and the
+only one in red. Everything the window asks before something goes follows that
+rule, in one component, `Confirm.svelte`, and nothing asks any other way.
+
+**The question is asked where the press landed.** A box of the other plane from
+the one around it (`surface` in the folders, `surface2` in the entry pane)
+behind a hairline, `rounded-sm`, `p-3`, the question in `fine` and `txt2`. Under
+it the way out as a plain `h-9` pill in `txt3`, named by what it leaves ("Keep
+it"); a neutral step, when there is one, in the bordered pill the window uses
+for any action that is not the page's one call ("Save a copy first…"); and the
+destructive answer last, in `danger` over `dangerwash`. Asked inside something
+that is already a card - a file's row, a version's - it drops its own box and
+sits under a hairline in the card. Clearing the history used to ask on one line
+without a box; it asks in the box now, like the rest.
+
+**A notice that can be taken back** is the mockup's toast with one thing added:
+the trash in `txt3` where the copy icon is, and a button at the end, "Undo" in
+the accent with `⌘Z` in the search field's own key cap beside it. The button is
+the only part of the notice that takes a press, and the notice stays eight
+seconds rather than five or six, because it is asking for one.
+
+**A destructive icon gets room.** The mockup's icons are sixteen pixels with
+nothing around them, and a trash twelve pixels from an export or a copy is the
+one a press meant for its neighbour lands on. Every trash that removes something
+at once - a file's, a field's, a version's - sits in a 28-pixel box (`h-7`),
+with `dangerwash` behind it on hover and a step more gap than the icons beside
+it; the export next to a file gets the same box with `raised` behind it. A
+version's is drawn into its row's padding, so the row is no taller. A field's
+trash is the last thing in the row and is drawn only while the row is under the
+pointer or holds the focus, so a row that is being read or copied from carries
+no way to lose it.
+
 ## A vault that is already there
 
 The mockup's first run is for somebody who has nothing, and its creation screen

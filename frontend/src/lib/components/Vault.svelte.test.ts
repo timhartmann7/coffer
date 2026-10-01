@@ -18,6 +18,7 @@ const ipc = vi.hoisted(() => ({
 	version: vi.fn(),
 	revealVersion: vi.fn(),
 	restoreVersion: vi.fn(),
+	beforeRemoval: vi.fn(),
 	deleteVersion: vi.fn(),
 	clearHistory: vi.fn(),
 	reveal: vi.fn(),
@@ -555,6 +556,10 @@ it('writes the file after a version is dropped', async () => {
 
 	expect(ipc.save).not.toHaveBeenCalled();
 	host.querySelector<HTMLButtonElement>('[aria-label="Delete this version"]')?.click();
+	flushSync();
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Drop it')
+		?.click();
 	await vi.waitFor(() => expect(ipc.save).toHaveBeenCalledTimes(1));
 
 	return unmount(component);
@@ -996,6 +1001,441 @@ it('keeps saying not saved after a write that only raised a notice', async () =>
 	} finally {
 		vi.useRealTimers();
 	}
+
+	return unmount(component);
+});
+
+/** An entry with a field of the reader's own, and a password for the copy
+ * shortcut to take. */
+function withPin(id: string) {
+	return entry({
+		id,
+		group: root.id,
+		fields: [
+			field({ name: 'Title', kind: 'title', value: 'node-3', empty: false }),
+			field({ name: 'Password', kind: 'password', value: null, empty: false }),
+			field({ name: 'PIN', kind: 'custom', protected: true, value: null, empty: false })
+		]
+	});
+}
+
+/** The notice in the corner, and the button on it. */
+const toast = () => host.querySelector<HTMLElement>('[data-notice]');
+const undo = () => toast()?.querySelector<HTMLButtonElement>('button') ?? null;
+
+function press(key: string, target: EventTarget = window, shiftKey = false): KeyboardEvent {
+	const event = new KeyboardEvent('keydown', {
+		key,
+		metaKey: true,
+		shiftKey,
+		bubbles: true,
+		cancelable: true
+	});
+	target.dispatchEvent(event);
+	return event;
+}
+
+/** Everything the window is waiting on, with the clock standing still. */
+async function settled() {
+	for (let round = 0; round < 10; round += 1) await vi.advanceTimersByTimeAsync(0);
+	flushSync();
+}
+
+/**
+ * Opens node-3, takes its PIN off, and waits for whatever the window then says.
+ * `answer` is what Rust says about the version the removal wrote.
+ */
+async function removePin(answer: number | null) {
+	ipc.entry.mockImplementation((id: string) => Promise.resolve(withPin(id)));
+	ipc.removeField.mockResolvedValue(
+		entry({
+			id: kept.id,
+			group: root.id,
+			fields: withPin(kept.id).fields.filter((each) => each.name !== 'PIN')
+		})
+	);
+	ipc.restoreVersion.mockResolvedValue(withPin(kept.id));
+	ipc.beforeRemoval.mockReset();
+	ipc.beforeRemoval.mockResolvedValue(answer);
+
+	const component = open();
+	flushSync();
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('node-3'))
+		?.click();
+	await settled();
+
+	host.querySelector<HTMLButtonElement>('[aria-label="Remove the field PIN"]')?.click();
+	await settled();
+	return component;
+}
+
+/**
+ * A field of the reader's own used to go on one press with nothing said, and the
+ * way back was a version nobody was told about. The notice says what went and
+ * offers it back, and taking it back is a restore of exactly the version Rust
+ * names - asked once the save is done, because the save is what can prune it,
+ * and asked again at the press, because a position is only an answer for the
+ * history as it stood.
+ */
+it('offers a removed field back and restores the version the removal wrote', async () => {
+	vi.useFakeTimers();
+	try {
+		const component = await removePin(3);
+
+		expect(toast()?.textContent).toContain('Field “PIN” removed');
+		expect(undo()?.textContent).toContain('Undo');
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+		expect(ipc.beforeRemoval).toHaveBeenCalledWith(kept.id, 'PIN');
+		expect(
+			ipc.save.mock.invocationCallOrder[0],
+			'Rust was asked before the save that can prune the version'
+		).toBeLessThan(ipc.beforeRemoval.mock.invocationCallOrder[0]);
+
+		// Heard as well as seen, in a region that was there before the words.
+		const region = host.querySelector('[role="status"]');
+		expect(region?.getAttribute('aria-live')).toBe('polite');
+		expect(region?.textContent).toContain('Field “PIN” removed');
+
+		undo()?.click();
+		await settled();
+
+		expect(ipc.beforeRemoval).toHaveBeenCalledTimes(2);
+		expect(ipc.restoreVersion).toHaveBeenCalledTimes(1);
+		expect(ipc.restoreVersion).toHaveBeenCalledWith(kept.id, 3);
+		// The undo is a change like any other, and reaches the file.
+		expect(ipc.save).toHaveBeenCalledTimes(2);
+
+		await vi.advanceTimersByTimeAsync(1_000);
+		flushSync();
+		expect(toast(), 'the offer stayed up after it was taken').toBeNull();
+
+		await unmount(component);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+/** Eight seconds, and then the offer is gone with the notice: a key pressed
+ * after that is a key pressed about something else. */
+it('withdraws the offer once its eight seconds are up', async () => {
+	vi.useFakeTimers();
+	try {
+		const component = await removePin(3);
+
+		await vi.advanceTimersByTimeAsync(7_900);
+		flushSync();
+		expect(undo(), 'the offer went early').not.toBeNull();
+
+		await vi.advanceTimersByTimeAsync(100);
+		flushSync();
+		expect(press('z').defaultPrevented).toBe(false);
+		await settled();
+		expect(ipc.restoreVersion).not.toHaveBeenCalled();
+
+		await vi.advanceTimersByTimeAsync(1_000);
+		flushSync();
+		expect(toast()).toBeNull();
+
+		await unmount(component);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * Cmd+Z is the offer's key everywhere except where the reader is writing. In a
+ * text field it is the field's own undo - taking back typing - and the window
+ * leaves the key alone for it.
+ */
+it('takes the removal back on Cmd+Z, except in a field being written', async () => {
+	vi.useFakeTimers();
+	try {
+		const component = await removePin(3);
+
+		const typed = press('z', search());
+		await settled();
+		expect(typed.defaultPrevented, 'the search field lost its own undo').toBe(false);
+		expect(ipc.restoreVersion).not.toHaveBeenCalled();
+
+		// Redo is not undo.
+		press('z', window, true);
+		await settled();
+		expect(ipc.restoreVersion).not.toHaveBeenCalled();
+
+		expect(press('z').defaultPrevented).toBe(true);
+		await settled();
+		expect(ipc.restoreVersion).toHaveBeenCalledWith(kept.id, 3);
+
+		await unmount(component);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+/** The button and the key, and the button twice, are one undo. A second would
+ * restore the version the first one just wrote. */
+it('runs an undo once however many ways it is asked for', async () => {
+	vi.useFakeTimers();
+	try {
+		const component = await removePin(3);
+
+		const button = undo();
+		button?.click();
+		press('z');
+		button?.click();
+		await settled();
+		press('z');
+		await settled();
+
+		expect(ipc.restoreVersion).toHaveBeenCalledTimes(1);
+
+		await unmount(component);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * With no versions kept, or a size limit the version does not fit, the save
+ * after the removal prunes the version it wrote. Whatever is newest after that
+ * is older, and restoring it would take back more than the field. The removal
+ * is still reported; nothing is offered.
+ */
+it('offers nothing back when the save pruned the version', async () => {
+	vi.useFakeTimers();
+	try {
+		const component = await removePin(null);
+
+		expect(toast()?.textContent).toContain('Field “PIN” removed');
+		expect(undo()).toBeNull();
+
+		expect(press('z').defaultPrevented).toBe(false);
+		await settled();
+		expect(ipc.restoreVersion).not.toHaveBeenCalled();
+		expect(ipc.beforeRemoval).toHaveBeenCalledTimes(1);
+
+		await unmount(component);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+/** An undo is of something on the screen. Another entry in the pane is a
+ * reader who has moved on, and Cmd+Z there would reach back into one they left. */
+it('withdraws the offer when another entry is opened', async () => {
+	vi.useFakeTimers();
+	try {
+		const component = await removePin(3);
+
+		[...host.querySelectorAll('button')]
+			.find((each) => each.textContent?.includes('Postgres'))
+			?.click();
+		await settled();
+		expect(ipc.entry).toHaveBeenLastCalledWith(other.id);
+
+		await vi.advanceTimersByTimeAsync(1_000);
+		flushSync();
+		expect(toast()).toBeNull();
+		press('z');
+		await settled();
+		expect(ipc.restoreVersion).not.toHaveBeenCalled();
+
+		await unmount(component);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+/** Putting the pane away is moving on as well. */
+it('withdraws the offer when the entry is put away', async () => {
+	vi.useFakeTimers();
+	try {
+		const component = await removePin(3);
+
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		await settled();
+		press('z');
+		await settled();
+		expect(ipc.restoreVersion).not.toHaveBeenCalled();
+
+		await unmount(component);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+/** A newer notice is about something newer. The undo belonged to the sentence
+ * that is no longer on the screen. */
+it('withdraws the offer when a newer notice takes its place', async () => {
+	vi.useFakeTimers();
+	try {
+		const component = await removePin(3);
+
+		press('c');
+		await settled();
+		expect(toast()?.textContent).toContain('Copied.');
+		expect(undo()).toBeNull();
+
+		press('z');
+		await settled();
+		expect(ipc.restoreVersion).not.toHaveBeenCalled();
+
+		await unmount(component);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+/** Another change that reaches the file is newer than the removal. Restoring
+ * the removal's version after it would take that change back as well. */
+it('withdraws the offer when another change reaches the file', async () => {
+	vi.useFakeTimers();
+	try {
+		const component = await removePin(3);
+		ipc.setField.mockResolvedValue(withPin(kept.id));
+
+		const title = host.querySelector('h1 input') as HTMLInputElement;
+		title.value = 'node-4';
+		title.dispatchEvent(new Event('blur'));
+		await settled();
+		expect(ipc.save).toHaveBeenCalledTimes(2);
+
+		press('z');
+		await settled();
+		expect(ipc.restoreVersion).not.toHaveBeenCalled();
+
+		await unmount(component);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * A removal the save refused is in memory and not in the file, and the window
+ * already said so. An offer over that notice would push the one sentence that
+ * matters off the screen.
+ */
+it('offers nothing over a save that failed', async () => {
+	vi.useFakeTimers();
+	try {
+		ipc.save.mockRejectedValue({ code: 'other', message: 'No space left on device' });
+		const component = await removePin(3);
+
+		expect(toast()?.textContent).toContain('No space left on device');
+		expect(undo()).toBeNull();
+		expect(ipc.beforeRemoval).not.toHaveBeenCalled();
+		expect(reads()).toContain('Not saved');
+
+		await unmount(component);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+/** Rust is asked again at the press. A history that moved in between gets a
+ * sentence, and no restore of whatever now sits at the old position. */
+it('restores nothing when the history moved before the undo reached it', async () => {
+	vi.useFakeTimers();
+	try {
+		const component = await removePin(3);
+		ipc.beforeRemoval.mockResolvedValue(null);
+
+		undo()?.click();
+		await settled();
+
+		expect(ipc.restoreVersion).not.toHaveBeenCalled();
+		expect(toast()?.textContent).toContain('can no longer be undone');
+
+		await unmount(component);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+/** A lock takes the window down, and the offer and its clock with it. */
+it('leaves nothing to undo once the window is gone', async () => {
+	vi.useFakeTimers();
+	try {
+		const component = await removePin(3);
+		await unmount(component);
+
+		press('z');
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(ipc.restoreVersion).not.toHaveBeenCalled();
+		expect(vi.getTimerCount(), 'a notice clock outlived the window').toBe(0);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * The folder's own question, now the one every confirmation in the window is.
+ * It asks in words, keeps the folder on the way out and on Escape - without
+ * the Escape reaching the list as well - and deletes only on the red answer.
+ */
+it('asks before a folder goes, and keeps it on the way out', async () => {
+	const work = root.sections[0];
+	ipc.deleteGroup.mockResolvedValue(group({ ...root, sections: [root.sections[1]] }));
+
+	const component = open();
+	flushSync();
+	[...host.querySelectorAll('button')].find((each) => each.textContent?.includes('Work'))?.click();
+	flushSync();
+
+	const trash = () => host.querySelector<HTMLButtonElement>('[aria-label="Delete this folder"]');
+	trash()?.click();
+	flushSync();
+	expect(host.querySelector('[data-confirm]')?.textContent).toContain(
+		'Delete “Work” and everything in it?'
+	);
+	const keep = [...host.querySelectorAll('button')].find(
+		(each) => each.textContent?.trim() === 'Keep it'
+	);
+	expect(document.activeElement).toBe(keep);
+
+	keep?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+	flushSync();
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+	expect(ipc.deleteGroup).not.toHaveBeenCalled();
+	expect(reads(), 'the Escape went on to the list').toContain('1 entry here');
+
+	trash()?.click();
+	flushSync();
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Delete')
+		?.click();
+	await vi.waitFor(() => expect(ipc.deleteGroup).toHaveBeenCalledWith(work.id));
+	await vi.waitFor(() => expect(ipc.save).toHaveBeenCalledTimes(1));
+
+	return unmount(component);
+});
+
+/** Emptying the bin is the one deletion nothing comes back from, and the way
+ * out of the question leaves every entry in it. */
+it('keeps the bin as it is when the reader keeps it', () => {
+	const component = open();
+	flushSync();
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('Recycle Bin'))
+		?.click();
+	flushSync();
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Empty the bin')
+		?.click();
+	flushSync();
+
+	expect(host.querySelector('[data-confirm]')?.textContent).toContain(
+		'This is the one deletion nothing comes back from.'
+	);
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Keep it')
+		?.click();
+	flushSync();
+
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+	expect(ipc.emptyRecycleBin).not.toHaveBeenCalled();
+	expect(host.textContent).toContain('thrown away');
 
 	return unmount(component);
 });

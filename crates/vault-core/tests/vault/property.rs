@@ -349,9 +349,7 @@ proptest! {
                 .set_field(id, "Title", vault_core::NewValue::Open(format!("entry {round}")))
                 .expect("the title is written");
             if round < 2 {
-                vault
-                    .add_attachment(id, &format!("start-{round}.bin"), Zeroizing::new(vec![round; 48]))
-                    .expect("the file is added");
+                support::attach(&mut vault, id, &format!("start-{round}.bin"), &vec![round; 48]);
             }
             if round == 1 {
                 vault

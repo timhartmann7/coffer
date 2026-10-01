@@ -12,6 +12,7 @@
 		setTags
 	} from '$lib/ipc';
 	import type { Entry, Field, Group, Version } from '$lib/model';
+	import Confirm from './Confirm.svelte';
 	import Editable from './Editable.svelte';
 	import Icon from './Icon.svelte';
 	import Mask from './Mask.svelte';
@@ -40,6 +41,7 @@
 		onVersions,
 		onClose,
 		onDelete,
+		onFieldRemoved,
 		onFailure
 	}: {
 		entry: Entry;
@@ -58,6 +60,10 @@
 		 * empty part of either pane to the left of this one. */
 		onClose: () => void;
 		onDelete: () => void;
+		/** One of the reader's own fields came off, and the change has been
+		 * handed to the window like any other. The window is what can offer it
+		 * back, because it is what knows whether the change reached the file. */
+		onFieldRemoved: (entry: string, field: string) => void;
 		onFailure: (thrown: unknown) => void;
 	} = $props();
 
@@ -83,6 +89,15 @@
 	/** Why a file could not be put on the entry, when it is worth saying more
 	 * than the sentence the engine gives. */
 	let blocked = $state<string | null>(null);
+	/**
+	 * The file whose removal is being asked about.
+	 *
+	 * A file is the one thing on an entry that nothing brings back: the format
+	 * keeps files out of an entry's versions, and the vault is written the
+	 * moment it goes. So the press that removes one asks first, in the file's
+	 * own row, and offers the export on the way.
+	 */
+	let asking = $state<string | null>(null);
 
 	// Another entry is another set of answers. A banner about a file on the
 	// entry that was open would otherwise still be on the screen under the next
@@ -96,6 +111,7 @@
 			pinned = null;
 			blocked = null;
 			naming = false;
+			asking = null;
 		};
 	});
 
@@ -138,8 +154,14 @@
 		}
 	}
 
+	/** Writes a file out through the save panel Rust opens. */
+	function writeOut(name: string) {
+		exportAttachment(entry.id, name).catch(onFailure);
+	}
+
 	/** Takes a file off, or says why it cannot go yet. */
 	async function detach(name: string) {
+		asking = null;
 		pinned = null;
 		blocked = null;
 		try {
@@ -172,6 +194,12 @@
 		} catch (thrown) {
 			onFailure(thrown);
 		}
+	}
+
+	/** Takes one of the reader's own fields off, and lets the window say so. */
+	async function dropField(name: string) {
+		const id = entry.id;
+		if (await change(() => removeField(id, name))) onFieldRemoved(id, name);
 	}
 
 	/** The name a standard field carries in the file. An entry that arrived
@@ -423,8 +451,15 @@
 				{/if}
 			</div>
 
+			<!--
+				The trash is the last thing in the row and is there only while the
+				row is under the pointer or holds the focus, in a box the size of a
+				fingertip and a step further off than the gap between the others.
+				It used to sit twelve pixels from Copy at the same size, on every
+				row, and a press meant for the value took the field.
+			-->
 			{#each custom as field (field.name)}
-				<div class="mt-3 flex items-center gap-3">
+				<div class="group mt-3 flex items-center gap-3">
 					<span class="w-24 shrink-0 truncate text-small text-txt2">{field.name}</span>
 					{#if field.value === null && !field.empty}
 						<SecretField
@@ -452,8 +487,8 @@
 					{#if !readOnly}
 						<button
 							type="button"
-							onclick={() => void change(() => removeField(entry.id, field.name))}
-							class="shrink-0 text-txt4 transition-colors hover:text-danger"
+							onclick={() => void dropField(field.name)}
+							class="ml-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-sm text-txt4 opacity-0 transition group-focus-within:opacity-100 group-hover:opacity-100 hover:bg-dangerwash hover:text-danger"
 							aria-label="Remove the field {field.name}"
 						>
 							<Icon name="trash" class="h-4 w-4" />
@@ -498,32 +533,51 @@
 				{/if}
 			</div>
 
+			<!--
+				Writing a file out and removing it used to be two icons of one size
+				twelve pixels apart, and the one that was missed was the one that
+				could not be taken back. Each is now a box a fingertip wide, the two
+				stand a gap further apart, and the removal asks first.
+			-->
 			{#each entry.attachments as attachment (attachment.name)}
-				<div
-					class="mt-3 flex items-center gap-3 rounded-sm border border-hairline bg-surface2 px-3 py-2.5"
-				>
-					<Icon name="file" class="h-4 w-4 shrink-0 text-txt4" />
-					<span class="min-w-0 flex-1">
-						<span class="block truncate font-mono text-fine text-txt">{attachment.name}</span>
-						<span class="block font-mono text-label text-txt4">{size(attachment.size)}</span>
-					</span>
-					<button
-						type="button"
-						onclick={() => exportAttachment(entry.id, attachment.name).catch(onFailure)}
-						class="shrink-0 text-txt4 transition-colors hover:text-txt2"
-						aria-label="Write {attachment.fileName} out"
-					>
-						<Icon name="export" class="h-4 w-4" />
-					</button>
-					{#if !readOnly}
+				<div class="mt-3 rounded-sm border border-hairline bg-surface2 px-3 py-2.5">
+					<div class="flex items-center gap-3">
+						<Icon name="file" class="h-4 w-4 shrink-0 text-txt4" />
+						<span class="min-w-0 flex-1">
+							<span class="block truncate font-mono text-fine text-txt">{attachment.name}</span>
+							<span class="block font-mono text-label text-txt4">{size(attachment.size)}</span>
+						</span>
 						<button
 							type="button"
-							onclick={() => void detach(attachment.name)}
-							class="shrink-0 text-txt4 transition-colors hover:text-danger"
-							aria-label="Remove {attachment.name}"
+							onclick={() => writeOut(attachment.name)}
+							class="flex h-7 w-7 shrink-0 items-center justify-center rounded-sm text-txt4 transition-colors hover:bg-raised hover:text-txt2"
+							aria-label="Write {attachment.fileName} out"
 						>
-							<Icon name="trash" class="h-4 w-4" />
+							<Icon name="export" class="h-4 w-4" />
 						</button>
+						{#if !readOnly && asking !== attachment.name}
+							<button
+								type="button"
+								onclick={() => (asking = attachment.name)}
+								class="ml-3 flex h-7 w-7 shrink-0 items-center justify-center rounded-sm text-txt4 transition-colors hover:bg-dangerwash hover:text-danger"
+								aria-label="Remove {attachment.name}"
+							>
+								<Icon name="trash" class="h-4 w-4" />
+							</button>
+						{/if}
+					</div>
+					{#if asking === attachment.name}
+						<Confirm
+							bare
+							class="mt-3 border-t border-hairline pt-3"
+							question="Remove {attachment.name} ({size(
+								attachment.size
+							)})? Files are not kept in Versions, so this can’t be undone."
+							act="Remove"
+							neutral={{ label: 'Save a copy first…', run: () => writeOut(attachment.name) }}
+							onKeep={() => (asking = null)}
+							onAct={() => void detach(attachment.name)}
+						/>
 					{/if}
 				</div>
 			{:else}
@@ -549,28 +603,14 @@
 		{/if}
 
 		{#if pinned}
-			<div class="mt-3 animate-rise rounded-sm border border-hairline bg-surface2 p-3">
-				<p class="text-fine leading-relaxed text-txt2">
-					{pinned.message}. Removing it drops those versions - the ones here, and any on another
-					entry that are holding it in place. The rest of the history stays.
-				</p>
-				<div class="mt-3 flex flex-wrap gap-2">
-					<button
-						type="button"
-						onclick={() => (pinned = null)}
-						class="h-9 rounded-full px-4 text-small text-txt3 transition-colors hover:text-txt2"
-					>
-						Keep the file
-					</button>
-					<button
-						type="button"
-						onclick={detachWithVersions}
-						class="h-9 rounded-full px-4 text-small text-danger transition-colors hover:bg-dangerwash"
-					>
-						Clear those versions and remove it
-					</button>
-				</div>
-			</div>
+			<Confirm
+				class="mt-3 bg-surface2"
+				question="{pinned.message}. Removing it drops those versions - the ones here, and any on another entry that are holding it in place. The rest of the history stays."
+				keep="Keep the file"
+				act="Clear those versions and remove it"
+				onKeep={() => (pinned = null)}
+				onAct={detachWithVersions}
+			/>
 		{/if}
 
 		<Versions

@@ -72,6 +72,7 @@ Everything slice 3 added:
 | `version` | `entry`, `index` | one version, read like an entry |
 | `reveal_version` | `entry`, `index`, `field` | the value of that field in that version |
 | `restore_version` | `entry`, `index` | the entry |
+| `before_removal` | `entry`, `field` | the version that puts back a field the entry just lost, or nothing |
 | `delete_version` | `entry`, `index` | the versions that are left |
 | `clear_history` | `entry` | the versions that are left, which is none |
 | `generate_password` | `length`, `alphabets`, `similar` | a password |
@@ -189,6 +190,22 @@ the database's limits, so a list read before a save names versions that are no
 longer there. The window reads the list back after the save rather than before
 it, which is why every change is `save` and then `versions` and never the other
 way round.
+
+**A removed field is offered back by the version Rust names.** Removing a field
+writes a version, and restoring it is the undo - but the save that follows may
+prune that version, and whatever is newest after it is older and takes back more
+than the field. So once the removal is written the window asks
+`before_removal`, and offers Undo only on an answer; `null` means no version puts
+back that field and only that field, and the notice then only reports. The undo
+asks again at the press and restores what that second answer names through
+`restore_version`, because a position is an answer about the history as it
+stood when it was given. Nothing crosses but the field's name and a position.
+
+The offer lasts eight seconds, on the notice's own button and on Cmd+Z when the
+key is not aimed at a text field. It is withdrawn by the notice going, by a
+newer notice, by any other change reaching the file, and by the pane showing
+another entry or none, and it runs once however it is asked for. A removal whose
+save failed is not offered back at all: the failure has a notice of its own.
 
 **`add_attachment` and `export_attachment` open their panel in Rust.** The
 bytes of a file never cross in either direction and neither does a path: the

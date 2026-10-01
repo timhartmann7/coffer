@@ -3,6 +3,7 @@
 	import { SvelteSet } from 'svelte/reactivity';
 	import {
 		asFailure,
+		beforeRemoval,
 		copy as copyToClipboard,
 		createEntry,
 		createGroup,
@@ -12,6 +13,7 @@
 		entry as loadEntry,
 		reload,
 		renameGroup,
+		restoreVersion,
 		rival,
 		save,
 		saveCopy,
@@ -24,6 +26,7 @@
 	import type { Database, Entry, EntryRow, Group, Rival, Version } from '$lib/model';
 	import { index, search } from '$lib/search';
 	import { entriesOf, liveEntries, pathTo, recycleBin, shownEntries } from '$lib/tree';
+	import Confirm from './Confirm.svelte';
 	import Conflict from './Conflict.svelte';
 	import Empty from './Empty.svelte';
 	import EntryList from './EntryList.svelte';
@@ -89,7 +92,40 @@
 	 * out: nothing can be reloaded from a file that is gone. */
 	let missing = $state(false);
 	let changedAt = $state<Date | null>(null);
-	let notice = $state<{ message: string; kind: 'copied' | 'failed' } | null>(null);
+
+	type Notice = {
+		message: string;
+		kind: 'copied' | 'failed' | 'removed';
+		/** Takes back what the notice is about, while that is still on offer. */
+		undo?: () => void;
+	};
+
+	/** Something the reader just did, and the way to take it back. */
+	type Offer = {
+		run: () => Promise<void>;
+		/** The entry in the pane when the offer was made, or `null` for none. */
+		entry: string | null;
+	};
+
+	/**
+	 * How long a change can be taken back from the notice that reports it.
+	 *
+	 * Longer than a notice that only reports, because this one asks for a
+	 * decision, and the pointer has the width of the window to cross to reach
+	 * it.
+	 */
+	const UNDOABLE = 8000;
+
+	let notice = $state<Notice | null>(null);
+	/**
+	 * What the notice on the screen offers to take back, while it still can.
+	 *
+	 * Nothing is drawn from it, so it is not state: it is the answer to whether
+	 * the offer still stands, asked by the notice's button, by Cmd+Z and by
+	 * everything that withdraws it. An undo clears it before its first wait, so
+	 * the button and the key pressed together run it once.
+	 */
+	let offered: Offer | null = null;
 	/** The toast's own clock, counting the seconds the clipboard still holds a
 	 * copied value. Not the vault's: that one is Rust's and arrives as a prop. */
 	let ticking: ReturnType<typeof setInterval> | null = null;
@@ -97,9 +133,9 @@
 	/** Whether the notice on the screen is on its way out. Nothing animates an
 	 * element that has already gone, so it says so first and goes after. */
 	let leaving = $state(false);
-	/** Which copy the toast is about. The bar that drains is a CSS animation and
-	 * an animation does not start again on its own, so the toast is rebuilt. */
-	let copies = $state(0);
+	/** Which notice the toast is. Each is drawn afresh, so that a new sentence
+	 * rises into the corner rather than changing its words in place. */
+	let told = $state(0);
 
 	// Timestamps are written against the moment the vault was opened rather than
 	// against a clock that ticks, so that a list of a thousand rows is not
@@ -162,6 +198,10 @@
 	 * the application able to put it anywhere.
 	 */
 	async function persist() {
+		// Any change that reaches the file is a newer thing than whatever the
+		// notice offers to take back, and an undo from before it would take that
+		// back too.
+		retire();
 		saving = true;
 		try {
 			await save();
@@ -358,9 +398,7 @@
 			const beside = await saveCopy();
 			if (!beside) return;
 			conflict = null;
-			notice = { message: `Kept as ${beside.name}`, kind: 'copied' };
-			copies += 1;
-			fade(6000);
+			tell({ message: `Kept as ${beside.name}`, kind: 'copied' }, 6000);
 			// Only where there is a file to take instead. When the vault itself
 			// is gone there is nothing to read back, and the window goes on
 			// holding the version the copy was made from - which is still the
@@ -409,10 +447,15 @@
 	 * corner for a whole minute.
 	 */
 	function announce(seconds: number) {
-		clear();
-		copies += 1;
-		notice = { message: `Copied. The clipboard clears in ${howLong(seconds)}.`, kind: 'copied' };
-		fade(5000);
+		tell({ message: `Copied. The clipboard clears in ${howLong(seconds)}.`, kind: 'copied' }, 5000);
+	}
+
+	function warn(message: string) {
+		tell({ message, kind: 'failed' }, 6000);
+	}
+
+	function failed(thrown: unknown) {
+		warn(asFailure(thrown).message);
 	}
 
 	/**
@@ -420,16 +463,54 @@
 	 *
 	 * The clock of whatever notice was there is stopped first: without that, a
 	 * timer left over from the last one takes this one away early, and the class
-	 * that was fading it out arrives already on it.
+	 * that was fading it out arrives already on it. Whatever that notice offered
+	 * to take back goes with it, because an undo belongs to the sentence that
+	 * says what it undoes.
 	 */
-	function warn(message: string) {
+	function tell(next: Notice, after: number) {
 		clear();
-		notice = { message, kind: 'failed' };
-		fade(6000);
+		told += 1;
+		notice = next;
+		fade(after);
 	}
 
-	function failed(thrown: unknown) {
-		warn(asFailure(thrown).message);
+	/**
+	 * Says what was just done and offers to take it back, for eight seconds.
+	 *
+	 * The offer is withdrawn by whatever makes it stale: the notice going, a
+	 * newer notice, another change reaching the file, and the pane showing
+	 * another entry or none - an undo is of something the reader can still see,
+	 * and Cmd+Z in another entry would reach back into one they have left. A
+	 * lock takes the whole window down, and the offer with it.
+	 */
+	function offer(message: string, undo: () => Promise<void>) {
+		const made: Offer = { run: undo, entry: opened?.id ?? null };
+		tell({ message, kind: 'removed', undo: () => void takeBack(made) }, UNDOABLE);
+		offered = made;
+	}
+
+	/** Runs an undo once, and only while it is still the one on offer. */
+	async function takeBack(which: Offer) {
+		if (offered !== which) return;
+		retire();
+		try {
+			await which.run();
+		} catch (thrown) {
+			failed(thrown);
+		}
+	}
+
+	/**
+	 * Withdraws the offer, and the notice making it.
+	 *
+	 * The notice goes too rather than staying without its button: a sentence
+	 * that ended in "Undo" a moment ago and no longer does reads as though the
+	 * press had been taken.
+	 */
+	function retire() {
+		if (offered === null) return;
+		clear();
+		go();
 	}
 
 	/**
@@ -442,17 +523,23 @@
 	 * stylesheet saying the same number.
 	 */
 	function fade(after: number) {
+		fading = setTimeout(go, after);
+	}
+
+	/** The second of the two waits. A notice that has started going offers
+	 * nothing any more, whatever it said. */
+	function go() {
+		offered = null;
+		leaving = true;
 		fading = setTimeout(() => {
-			leaving = true;
-			fading = setTimeout(() => {
-				notice = null;
-				leaving = false;
-				fading = null;
-			}, span(RISE));
-		}, after);
+			notice = null;
+			leaving = false;
+			fading = null;
+		}, span(RISE));
 	}
 
 	function clear() {
+		offered = null;
 		if (ticking !== null) {
 			clearInterval(ticking);
 			ticking = null;
@@ -467,6 +554,55 @@
 	}
 
 	$effect(() => () => clear());
+
+	const showing = $derived(opened?.id ?? null);
+
+	// The entry in the pane is read before anything else, whether or not an
+	// offer stands: an effect only runs again for what it read, and one that
+	// looked at the offer first and found none would never look at the pane.
+	$effect(() => {
+		const pane = showing;
+		if (offered !== null && offered.entry !== pane) retire();
+	});
+
+	/**
+	 * A field of the reader's own came off the open entry.
+	 *
+	 * It is offered back only once the removal is in the file, and only when
+	 * Rust names the version that holds it: the save may have pruned that
+	 * version, and whatever is newest after that is older, and its restore
+	 * would take back more than the field. A removal the save refused has a
+	 * notice of its own already, and the standing "Not saved" beside it, and an
+	 * offer over that notice would push the one sentence that matters off the
+	 * screen.
+	 *
+	 * The undo asks Rust again rather than keeping the answer: a position is an
+	 * answer about the history as it stood when it was given.
+	 */
+	async function fieldRemoved(entry: string, name: string) {
+		if (unsaved) return;
+		const said = `Field “${name}” removed`;
+		let holding: number | null;
+		try {
+			holding = await beforeRemoval(entry, name);
+		} catch (thrown) {
+			failed(thrown);
+			return;
+		}
+		if (opened?.id !== entry) return;
+		if (holding === null) {
+			tell({ message: said, kind: 'removed' }, 6000);
+			return;
+		}
+		offer(said, async () => {
+			const still = await beforeRemoval(entry, name);
+			if (still === null) {
+				warn('The entry has changed since, so that can no longer be undone.');
+				return;
+			}
+			await changed(await restoreVersion(entry, still));
+		});
+	}
 
 	/** Whether the key went to somewhere the reader is writing. */
 	function typing(target: EventTarget | null): boolean {
@@ -500,6 +636,16 @@
 			event.preventDefault();
 			field?.focus();
 			field?.select();
+			return;
+		}
+
+		// A field's own undo is the field's. Cmd+Z in the search box or in a
+		// value being written takes back typing, and the offer waits for a key
+		// that is not aimed at one.
+		if (event.key.toLowerCase() === 'z' && !event.shiftKey) {
+			if (offered === null || typing(event.target)) return;
+			event.preventDefault();
+			void takeBack(offered);
 			return;
 		}
 
@@ -638,29 +784,13 @@
 			{/if}
 
 			{#if deleting && group !== null}
-				<div
-					class="mx-2 mb-2 shrink-0 animate-rise rounded-sm border border-hairline bg-surface p-3"
-				>
-					<p class="text-fine leading-relaxed text-txt2">
-						Delete “{shown.name}” and everything in it?
-					</p>
-					<div class="mt-3 flex gap-2">
-						<button
-							type="button"
-							onclick={() => (deleting = false)}
-							class="h-9 rounded-full px-3 text-small text-txt3 transition-colors hover:text-txt2"
-						>
-							Keep it
-						</button>
-						<button
-							type="button"
-							onclick={removeFolder}
-							class="h-9 rounded-full px-3 text-small text-danger transition-colors hover:bg-dangerwash"
-						>
-							Delete
-						</button>
-					</div>
-				</div>
+				<Confirm
+					class="mx-2 mb-2 shrink-0 bg-surface"
+					question="Delete “{shown.name}” and everything in it?"
+					act="Delete"
+					onKeep={() => (deleting = false)}
+					onAct={removeFolder}
+				/>
 			{/if}
 
 			<!--
@@ -730,27 +860,13 @@
 
 					{#if inBin && !readOnly && shownEntries(deleted).length > 0}
 						{#if emptying}
-							<div class="mt-2 animate-rise rounded-sm border border-hairline bg-surface p-3">
-								<p class="text-fine leading-relaxed text-txt2">
-									Take all of it out of the file? This is the one deletion nothing comes back from.
-								</p>
-								<div class="mt-3 flex gap-2">
-									<button
-										type="button"
-										onclick={() => (emptying = false)}
-										class="h-9 rounded-full px-3 text-small text-txt3 transition-colors hover:text-txt2"
-									>
-										Keep it
-									</button>
-									<button
-										type="button"
-										onclick={empty}
-										class="h-9 rounded-full px-3 text-small text-danger transition-colors hover:bg-dangerwash"
-									>
-										Empty it
-									</button>
-								</div>
-							</div>
+							<Confirm
+								class="mt-2 bg-surface"
+								question="Take all of it out of the file? This is the one deletion nothing comes back from."
+								act="Empty it"
+								onKeep={() => (emptying = false)}
+								onAct={empty}
+							/>
 						{:else}
 							<button
 								type="button"
@@ -882,6 +998,7 @@
 						onVersions={versionsChanged}
 						onClose={() => (opened = null)}
 						onDelete={removeEntry}
+						onFieldRemoved={(entry, name) => void fieldRemoved(entry, name)}
 						onFailure={failed}
 					/>
 				</div>
@@ -911,11 +1028,17 @@
 		/>
 	{/if}
 
-	{#if notice}
-		{#key copies}
-			<Toast message={notice.message} kind={notice.kind} {leaving} />
-		{/key}
-	{/if}
+	<!-- Always in the document, so that what arrives in it is read out: a
+	     region that comes into being with its words already in it is one a
+	     screen reader may never announce. Polite, because nothing here is worth
+	     interrupting a sentence for. -->
+	<div role="status" aria-live="polite" aria-atomic="true">
+		{#if notice}
+			{#key told}
+				<Toast message={notice.message} kind={notice.kind} {leaving} onUndo={notice.undo} />
+			{/key}
+		{/if}
+	</div>
 </div>
 
 <div

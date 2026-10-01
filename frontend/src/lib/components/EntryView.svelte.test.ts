@@ -61,6 +61,7 @@ function show(entryOver: Parameters<typeof entry>[0]) {
 			onVersions: vi.fn(),
 			onClose: vi.fn(),
 			onDelete: vi.fn(),
+			onFieldRemoved: vi.fn(),
 			onFailure: vi.fn()
 		}
 	});
@@ -504,6 +505,7 @@ it('shows a file under the name the database holds and exports it under a safe o
 			onVersions: vi.fn(),
 			onClose: vi.fn(),
 			onDelete: vi.fn(),
+			onFieldRemoved: vi.fn(),
 			onFailure: vi.fn()
 		}
 	});
@@ -516,6 +518,8 @@ it('shows a file under the name the database holds and exports it under a safe o
 	);
 
 	host.querySelector<HTMLButtonElement>('[aria-label="Remove ../../escape.txt"]')?.click();
+	flushSync();
+	button('Remove').click();
 	await vi.waitFor(() => expect(ipc.removeAttachment).toHaveBeenCalled());
 	expect(onChanged).toHaveBeenCalled();
 
@@ -662,12 +666,15 @@ it('offers to clear the versions that are holding a file back', async () => {
 			onVersions,
 			onClose: vi.fn(),
 			onDelete: vi.fn(),
+			onFieldRemoved: vi.fn(),
 			onFailure
 		}
 	});
 	flushSync();
 
 	host.querySelector<HTMLButtonElement>('[aria-label="Remove id_ed25519"]')?.click();
+	flushSync();
+	button('Remove').click();
 	await vi.waitFor(() => expect(host.textContent).toContain('2 earlier versions still hold'));
 	flushSync();
 
@@ -714,6 +721,7 @@ it('refuses a new field named after one the entry already has', async () => {
 			onVersions: vi.fn(),
 			onClose: vi.fn(),
 			onDelete: vi.fn(),
+			onFieldRemoved: vi.fn(),
 			onFailure
 		}
 	});
@@ -762,12 +770,15 @@ it('says nothing about the entry that was open once another one is', async () =>
 		onVersions: vi.fn(),
 		onClose: vi.fn(),
 		onDelete: vi.fn(),
+		onFieldRemoved: vi.fn(),
 		onFailure: vi.fn()
 	});
 	const component = mount(EntryView, { target: host, props });
 	flushSync();
 
 	host.querySelector<HTMLButtonElement>('[aria-label="Remove id_ed25519"]')?.click();
+	flushSync();
+	button('Remove').click();
 	await vi.waitFor(() => expect(host.textContent).toContain('2 earlier versions still hold'));
 	flushSync();
 
@@ -802,6 +813,7 @@ it('offers no change on a database it cannot write', () => {
 			onVersions: vi.fn(),
 			onClose: vi.fn(),
 			onDelete: vi.fn(),
+			onFieldRemoved: vi.fn(),
 			onFailure: vi.fn()
 		}
 	});
@@ -977,6 +989,7 @@ it('offers a way out of the entry, and it is not the way to delete one', () => {
 			onVersions: vi.fn(),
 			onClose,
 			onDelete,
+			onFieldRemoved: vi.fn(),
 			onFailure: vi.fn()
 		}
 	});
@@ -1017,6 +1030,7 @@ it('still offers the way out when there is nothing else in the header', () => {
 			onVersions: vi.fn(),
 			onClose,
 			onDelete: vi.fn(),
+			onFieldRemoved: vi.fn(),
 			onFailure: vi.fn()
 		}
 	});
@@ -1053,6 +1067,7 @@ it('does not report a change when the file panel was closed without one', async 
 			onVersions: vi.fn(),
 			onClose: vi.fn(),
 			onDelete: vi.fn(),
+			onFieldRemoved: vi.fn(),
 			onFailure
 		}
 	});
@@ -1093,6 +1108,7 @@ it('says what to do when a file cannot be replaced yet', async () => {
 			onVersions: vi.fn(),
 			onClose: vi.fn(),
 			onDelete: vi.fn(),
+			onFieldRemoved: vi.fn(),
 			onFailure
 		}
 	});
@@ -1147,6 +1163,7 @@ it('copies a protected own field through rust rather than off the screen', async
 			onVersions: vi.fn(),
 			onClose: vi.fn(),
 			onDelete: vi.fn(),
+			onFieldRemoved: vi.fn(),
 			onFailure: vi.fn()
 		}
 	});
@@ -1187,6 +1204,7 @@ it('writes a protected own field back only when the reader typed in it', async (
 			onVersions: vi.fn(),
 			onClose: vi.fn(),
 			onDelete: vi.fn(),
+			onFieldRemoved: vi.fn(),
 			onFailure: vi.fn()
 		}
 	});
@@ -1249,6 +1267,7 @@ it('writes nothing when the reader escapes out of a protected own field', async 
 			onVersions: vi.fn(),
 			onClose: vi.fn(),
 			onDelete: vi.fn(),
+			onFieldRemoved: vi.fn(),
 			onFailure: vi.fn()
 		}
 	});
@@ -1291,6 +1310,7 @@ it('offers a look and a copy of a protected own field it cannot write', async ()
 			onVersions: vi.fn(),
 			onClose: vi.fn(),
 			onDelete: vi.fn(),
+			onFieldRemoved: vi.fn(),
 			onFailure: vi.fn()
 		}
 	});
@@ -1306,6 +1326,264 @@ it('offers a look and a copy of a protected own field it cannot write', async ()
 	own('API token').dispatchEvent(new FocusEvent('blur'));
 	flushSync();
 	expect(ipc.setField).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/** The pane with its callbacks as mocks the test can read. */
+function pane(over: Parameters<typeof entry>[0], readOnly = false) {
+	const props = {
+		entry: entry(over),
+		path: [group({ name: 'Work' })],
+		versions: [],
+		now: new Date('2026-08-29T14:30:00Z'),
+		readOnly,
+		onCopy: vi.fn(),
+		onChanged: vi.fn(),
+		onVersions: vi.fn(),
+		onClose: vi.fn(),
+		onDelete: vi.fn(),
+		onFieldRemoved: vi.fn(),
+		onFailure: vi.fn()
+	};
+	const component = mount(EntryView, { target: host, props });
+	flushSync();
+	return { component, ...props };
+}
+
+/**
+ * A file is the one thing on an entry nothing brings back: files are not kept
+ * in an entry's versions and the vault is written the moment one goes. The
+ * trash used to sit beside the export at the same size and take the file on
+ * one press. It asks now, in the file's own row, and says what it is asking
+ * about in size as well as by name.
+ */
+it("asks in the file's row before a file is removed", async () => {
+	ipc.removeAttachment.mockReset();
+	ipc.removeAttachment.mockResolvedValue(entry());
+	const { component, onChanged } = pane({
+		attachments: [
+			attachment({ name: 'passport.pdf', fileName: 'passport.pdf', size: 1.2 * 1024 * 1024 }),
+			attachment({ name: 'id_ed25519' })
+		]
+	});
+
+	icon('Remove passport.pdf').click();
+	flushSync();
+
+	const asked = host.querySelector('[data-confirm]');
+	expect(asked?.textContent).toContain(
+		'Remove passport.pdf (1.2 MB)? Files are not kept in Versions, so this can’t be undone.'
+	);
+	// In the row it is about, and only there.
+	expect(asked?.closest('.bg-surface2')?.textContent).toContain('passport.pdf');
+	expect(asked?.closest('.bg-surface2')?.textContent).not.toContain('id_ed25519');
+	expect(ipc.removeAttachment).not.toHaveBeenCalled();
+
+	button('Keep it').click();
+	flushSync();
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+	expect(ipc.removeAttachment).not.toHaveBeenCalled();
+
+	icon('Remove passport.pdf').click();
+	flushSync();
+	button('Remove').click();
+	await vi.waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+	expect(ipc.removeAttachment).toHaveBeenCalledTimes(1);
+	expect(ipc.removeAttachment).toHaveBeenCalledWith(expect.any(String), 'passport.pdf');
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+
+	return unmount(component);
+});
+
+/**
+ * The way out of losing a file for good is to have a copy of it. Saving one
+ * runs the same export the row offers, and the question stays where it is: the
+ * reader chose to keep a copy, not to change their mind.
+ */
+it('saves a copy first and leaves the question open', async () => {
+	ipc.removeAttachment.mockReset();
+	ipc.removeAttachment.mockResolvedValue(entry());
+	ipc.exportAttachment.mockResolvedValue(undefined);
+	const { component } = pane({
+		attachments: [attachment({ name: '../scan.pdf', fileName: 'scan.pdf', size: 2048 })]
+	});
+
+	icon('Remove ../scan.pdf').click();
+	flushSync();
+	button('Save a copy first…').click();
+	await vi.waitFor(() => expect(ipc.exportAttachment).toHaveBeenCalledTimes(1));
+	// By the name the database holds; Rust turns it into a safe one for the panel.
+	expect(ipc.exportAttachment).toHaveBeenCalledWith(expect.any(String), '../scan.pdf');
+	flushSync();
+
+	expect(host.querySelector('[data-confirm]')?.textContent).toContain(
+		'Remove ../scan.pdf (2.0 KB)?'
+	);
+	expect(ipc.removeAttachment).not.toHaveBeenCalled();
+
+	button('Remove').click();
+	await vi.waitFor(() => expect(ipc.removeAttachment).toHaveBeenCalledTimes(1));
+
+	return unmount(component);
+});
+
+/** A save panel the reader could not use is a failure like any other, and the
+ * file is still there to be asked about. */
+it('keeps the question when the copy could not be saved', async () => {
+	ipc.exportAttachment.mockRejectedValue({ code: 'io', message: 'the disk is full' });
+	const { component, onFailure } = pane({ attachments: [attachment({ name: 'id_ed25519' })] });
+
+	icon('Remove id_ed25519').click();
+	flushSync();
+	button('Save a copy first…').click();
+	await vi.waitFor(() =>
+		expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({ code: 'io' }))
+	);
+	flushSync();
+
+	expect(host.querySelector('[data-confirm]')).not.toBeNull();
+	expect(ipc.removeAttachment).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/** The pane is handed one entry after another. A question about a file on the
+ * entry that was open would otherwise be answered against the next one. */
+it('asks nothing about a file once another entry is open', () => {
+	const props = reactive({
+		entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
+		path: [group({ name: 'Work' })],
+		versions: [],
+		now: new Date('2026-08-29T14:30:00Z'),
+		readOnly: false,
+		onCopy: vi.fn(),
+		onChanged: vi.fn(),
+		onVersions: vi.fn(),
+		onClose: vi.fn(),
+		onDelete: vi.fn(),
+		onFieldRemoved: vi.fn(),
+		onFailure: vi.fn()
+	});
+	const component = mount(EntryView, { target: host, props });
+	flushSync();
+
+	icon('Remove id_ed25519').click();
+	flushSync();
+	expect(host.querySelector('[data-confirm]')).not.toBeNull();
+
+	props.entry = entry({ attachments: [attachment({ name: 'id_ed25519' })] });
+	flushSync();
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+
+	return unmount(component);
+});
+
+/**
+ * The export and the trash were two sixteen-pixel icons twelve pixels apart,
+ * and a press meant for one landed on the other. Each is now a box a fingertip
+ * wide, and the trash stands a further gap away.
+ */
+it('gives the file buttons room, and keeps the trash apart from the export', () => {
+	const { component } = pane({ attachments: [attachment({ name: 'id_ed25519' })] });
+
+	const out = icon('Write id_ed25519 out');
+	const trash = icon('Remove id_ed25519');
+	for (const each of [out, trash]) {
+		expect(each.className).toContain('h-7');
+		expect(each.className).toContain('w-7');
+	}
+	expect(out.nextElementSibling).toBe(trash);
+	expect(trash.className).toContain('ml-3');
+
+	return unmount(component);
+});
+
+/**
+ * Removing a field of the reader's own is a change like any other, and the
+ * window is told which field on which entry once the change has been handed
+ * over - after, because what it offers back depends on what the save did.
+ */
+it('tells the window which field came off, once the change is in', async () => {
+	let settle: () => void = () => {};
+	const onChanged = vi.fn(() => new Promise<void>((resolve) => (settle = resolve)));
+	ipc.removeField.mockResolvedValue(entry());
+	const props = {
+		entry: entry({
+			fields: [field({ name: 'PIN', kind: 'custom', protected: true, value: null, empty: false })]
+		}),
+		path: [group({ name: 'Work' })],
+		versions: [],
+		now: new Date('2026-08-29T14:30:00Z'),
+		readOnly: false,
+		onCopy: vi.fn(),
+		onChanged,
+		onVersions: vi.fn(),
+		onClose: vi.fn(),
+		onDelete: vi.fn(),
+		onFieldRemoved: vi.fn(),
+		onFailure: vi.fn()
+	};
+	const component = mount(EntryView, { target: host, props });
+	flushSync();
+
+	icon('Remove the field PIN').click();
+	await vi.waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+	expect(ipc.removeField).toHaveBeenCalledWith(props.entry.id, 'PIN');
+	expect(props.onFieldRemoved, 'the window heard before the save was done').not.toHaveBeenCalled();
+
+	settle();
+	await vi.waitFor(() => expect(props.onFieldRemoved).toHaveBeenCalledWith(props.entry.id, 'PIN'));
+
+	return unmount(component);
+});
+
+/** A removal the vault refused is nothing to offer back. */
+it('says nothing came off when the removal was refused', async () => {
+	ipc.removeField.mockRejectedValue({ code: 'readOnly', message: 'this database is read only' });
+	const { component, onFieldRemoved, onFailure } = pane({
+		fields: [field({ name: 'PIN', kind: 'custom', value: '1234', empty: false })]
+	});
+
+	icon('Remove the field PIN').click();
+	await vi.waitFor(() => expect(onFailure).toHaveBeenCalled());
+	expect(onFieldRemoved).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/**
+ * The trash on a field's row sat twelve pixels from Copy at the same size, on
+ * every row, and a press meant for the value took the field. It is the last
+ * thing in the row now, a fingertip wide and a step further off, and it is
+ * there only while the row is under the pointer or holds the keyboard's focus.
+ */
+it("keeps a field's trash at the far end of its row, out of sight until it is wanted", () => {
+	const { component } = pane({
+		fields: [
+			field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false }),
+			field({ name: 'Port', kind: 'custom', value: '2202', empty: false })
+		]
+	});
+
+	for (const name of ['API token', 'Port']) {
+		const trash = icon(`Remove the field ${name}`);
+		const row = trash.parentElement;
+		expect(row?.lastElementChild, `the trash is not the last thing on the ${name} row`).toBe(trash);
+		expect(row?.className).toContain('group');
+		for (const rule of [
+			'opacity-0',
+			'group-hover:opacity-100',
+			'group-focus-within:opacity-100',
+			'h-7',
+			'w-7',
+			'ml-2'
+		]) {
+			expect(trash.className, `${name}: ${rule}`).toContain(rule);
+		}
+	}
+	// On the protected row, the button before the trash is the copy.
+	expect(icon('Remove the field API token').previousElementSibling).toBe(icon('Copy API token'));
 
 	return unmount(component);
 });

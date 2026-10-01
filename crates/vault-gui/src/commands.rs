@@ -896,6 +896,23 @@ pub fn restore_version(entry: String, index: usize, session: Held<'_>) -> Result
     entry_of(&session, &entry)
 }
 
+/// The version that puts back a field the entry has just lost, or nothing when
+/// no version does that and only that.
+///
+/// The window asks once the removal has been written, to know whether it may
+/// offer to take the removal back, and again when the reader does, so that the
+/// restore it then asks for is of this version and of no older one. See
+/// [`vault_core::Vault::before_removal`].
+#[tauri::command(async)]
+pub fn before_removal(
+    entry: String,
+    field: String,
+    session: Held<'_>,
+) -> Result<Option<usize>, Failure> {
+    let id = dto::entry_id(&entry)?;
+    session.with(|vault| vault.before_removal(id, &field))
+}
+
 #[tauri::command(async)]
 pub fn delete_version(
     entry: String,

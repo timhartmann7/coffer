@@ -28,13 +28,17 @@ pub mod url;
 
 mod attachment;
 mod blank;
+mod clash;
 mod history;
 mod preflight;
 mod text;
 mod vault;
 mod wipe;
 
+pub use crate::clash::Clash;
 pub use crate::error::VaultError;
 pub use crate::key::MasterKey;
 pub use crate::secret::SecretValue;
-pub use crate::vault::{LockPolicy, MAX_ATTACHMENT_BYTES, NewValue, Recipe, Rescue, Rival, Vault};
+pub use crate::vault::{
+    Attached, LockPolicy, MAX_ATTACHMENT_BYTES, NewValue, Recipe, Rescue, Rival, Vault,
+};

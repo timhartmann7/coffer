@@ -10,7 +10,8 @@ use std::process::{Command, Stdio};
 use keepass::{Database, DatabaseKey};
 use zeroize::Zeroizing;
 
-use vault_core::{LockPolicy, MasterKey, Vault};
+use vault_core::model::EntryId;
+use vault_core::{Attached, LockPolicy, MasterKey, Vault};
 
 /// Set this to run the suite on a machine with no KeePassXC. Everything that
 /// needs an external implementation is skipped, and the round-trip criterion
@@ -44,6 +45,18 @@ pub fn scratch(name: &str) -> (tempfile::TempDir, PathBuf) {
 
 pub fn open(path: &Path, secret: &str) -> Vault {
     Vault::open(path, password(secret), LockPolicy::Respect).expect("the database opens")
+}
+
+/// Puts a file on an entry under a name the entry does not use yet.
+///
+/// Most tests that add a file are about something else, and a name that turned
+/// out to be taken adds nothing at all: the test would go on to prove its point
+/// about a file that is not there.
+pub fn attach(vault: &mut Vault, id: EntryId, name: &str, data: &[u8]) {
+    let attached = vault
+        .add_attachment(id, name, data)
+        .unwrap_or_else(|error| panic!("{name} could not be added: {error}"));
+    assert_eq!(attached, Attached::Added, "{name} was already on the entry");
 }
 
 /// Every entry in the database, flattened, with previous versions excluded the

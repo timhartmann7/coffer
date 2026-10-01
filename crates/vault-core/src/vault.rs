@@ -10,6 +10,7 @@ use zeroize::Zeroizing;
 
 use crate::attachment;
 use crate::blank;
+use crate::clash::{self, Clash};
 use crate::error::VaultError;
 use crate::history::{self, Limits};
 use crate::kdf::Work;
@@ -159,6 +160,18 @@ pub struct Rival {
     /// credentials this vault was opened with. A file somebody else changed is
     /// a file somebody else may have changed the password of.
     pub entries: Option<usize>,
+}
+
+/// What came of a file offered to an entry.
+#[must_use]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Attached {
+    /// It is on the entry, under the name it was offered with.
+    Added,
+    /// The entry already gives that name to a file, and nothing changed. The
+    /// answer is the reader's, through [`Vault::keep_both`] or
+    /// [`Vault::replace_attachment`].
+    Taken(Clash),
 }
 
 /// What a lock did with changes the file has not got.
@@ -351,7 +364,7 @@ impl Vault {
             })
             .collect();
 
-        versions.sort_by_key(|version| (version.modified.is_none(), version.modified));
+        versions.sort_by_key(|version| history::age(version.modified));
         versions
     }
 
@@ -737,7 +750,18 @@ impl Vault {
         }
     }
 
-    /// Puts a file on an entry, replacing one of the same name.
+    /// Puts a file on an entry, unless the entry already gives its name to
+    /// another.
+    ///
+    /// A taken name changes nothing. The answer says how large the file there
+    /// is and what the new one could be called beside it, and which of the two
+    /// ways on is taken - [`Vault::keep_both`] or [`Vault::replace_attachment`]
+    /// - is the reader's to say: a file replaced here is gone for good, and the
+    /// name every phone gives every scan is not a reason to think somebody
+    /// meant it.
+    ///
+    /// The bytes are borrowed, so that a caller told the name is taken still
+    /// has them to offer again with the answer.
     ///
     /// No previous version is written; see [`Vault::remove_attachment`] for why
     /// the files on an entry are not part of its history.
@@ -745,8 +769,55 @@ impl Vault {
         &mut self,
         id: EntryId,
         name: &str,
-        data: Zeroizing<Vec<u8>>,
+        data: &[u8],
+    ) -> Result<Attached, VaultError> {
+        self.offerable(id, name, data)?;
+        if let Some(clash) = clash::clash(&self.database, id, name) {
+            return Ok(Attached::Taken(clash));
+        }
+        self.put(id, name, data)?;
+        Ok(Attached::Added)
+    }
+
+    /// Puts a file on an entry beside the one that already has its name, and
+    /// answers with the name it went under.
+    ///
+    /// That is the name [`Attached::Taken`] offered, worked out again from the
+    /// entry as it is now: a name that has come free since the question was
+    /// asked is simply the file's own.
+    pub fn keep_both(&mut self, id: EntryId, name: &str, data: &[u8]) -> Result<String, VaultError> {
+        self.offerable(id, name, data)?;
+        let free = clash::free(&self.database, id, name);
+        self.put(id, &free, data)?;
+        Ok(free)
+    }
+
+    /// Puts a file on an entry in place of the one that has its name.
+    ///
+    /// The one there goes the way a removal takes it, and is refused for the
+    /// same reasons: a file previous versions hold in place stays, and so does
+    /// everything else, until the reader clears those versions.
+    pub fn replace_attachment(
+        &mut self,
+        id: EntryId,
+        name: &str,
+        data: &[u8],
     ) -> Result<(), VaultError> {
+        self.offerable(id, name, data)?;
+
+        // Replacing a file means removing the old one first. The library's own
+        // replacement takes the bytes of the file it replaces out from under
+        // every previous version that still names them, and leaves a hole in
+        // the pool behind it.
+        if attachment::held(&self.database, id, name) {
+            attachment::detach(&mut self.database, id, name)?;
+        }
+        self.put(id, name, data)
+    }
+
+    /// Whether a file can go on an entry at all, whatever its name turns out
+    /// to be. Asked before anything changes, by every way a file goes on.
+    fn offerable(&self, id: EntryId, name: &str, data: &[u8]) -> Result<(), VaultError> {
         self.writable()?;
         if data.len() > MAX_ATTACHMENT_BYTES {
             return Err(VaultError::AttachmentTooLarge);
@@ -758,15 +829,12 @@ impl Vault {
         if self.database.entry(id).is_none() {
             return Err(VaultError::NoSuchEntry);
         }
+        Ok(())
+    }
 
-        // Replacing a file means removing the old one first. The library's own
-        // replacement takes the bytes of the file it replaces out from under
-        // every previous version that still names them, and leaves a hole in
-        // the pool behind it.
-        if attachment::held(&self.database, id, name) {
-            attachment::detach(&mut self.database, id, name)?;
-        }
-
+    /// Adds a file under a name the entry does not use. Only ever that: the
+    /// library's answer to a name the entry does use is to drop the file there.
+    fn put(&mut self, id: EntryId, name: &str, data: &[u8]) -> Result<(), VaultError> {
         // Added as a protected value: the flag is what KeePassXC writes, and it
         // is what keeps the bytes in a buffer that wipes itself and prints
         // `[REDACTED]` rather than the file.
@@ -908,6 +976,18 @@ impl Vault {
         history::restore(&mut self.database, id, index)?;
         self.changed = true;
         Ok(())
+    }
+
+    /// Which previous version puts back a field that was just taken off the
+    /// entry, when taking it off is the last thing that happened to it.
+    ///
+    /// This is what makes a removal something that can be taken back:
+    /// [`Vault::restore_version`] with this answer is the undo, and with any
+    /// other position it is a restore of something older. It is asked after the
+    /// save that follows the removal, because that save is what may drop the
+    /// version, and asked again at the moment the removal is taken back.
+    pub fn before_removal(&self, id: EntryId, field: &str) -> Option<usize> {
+        history::before_removal(&self.database, id, field)
     }
 
     /// Drops one previous version.

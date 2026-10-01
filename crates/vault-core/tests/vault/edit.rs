@@ -624,13 +624,7 @@ fn a_removal_never_renumbers_a_file_a_version_points_at() {
         let mut ids = Vec::new();
         for (round, size) in sizes.iter().enumerate() {
             let id = vault.create_entry(root).expect("the entry is made");
-            vault
-                .add_attachment(
-                    id,
-                    &format!("file-{round}.bin"),
-                    Zeroizing::new(vec![round as u8; *size]),
-                )
-                .expect("the file is added");
+            support::attach(&mut vault, id, &format!("file-{round}.bin"), &vec![round as u8; *size]);
             ids.push(id);
         }
         vault.save().expect("the database saves");
@@ -713,13 +707,7 @@ fn documents_can_still_be_taken_out_of_a_vault_that_has_been_used() {
             vault
                 .set_field(id, fields::TITLE, NewValue::Open(format!("doc {round}")))
                 .expect("the title is written");
-            vault
-                .add_attachment(
-                    id,
-                    &format!("report-{round}.pdf"),
-                    Zeroizing::new(vec![round as u8; 512]),
-                )
-                .expect("the file is added");
+            support::attach(&mut vault, id, &format!("report-{round}.pdf"), &vec![round as u8; 512]);
             ids.push(id);
         }
         vault.save().expect("the database saves");
@@ -803,13 +791,7 @@ fn the_recycle_bin_empties_once_the_versions_holding_a_file_have_gone() {
         let mut ids = Vec::new();
         for round in 0..3u8 {
             let id = vault.create_entry(root).expect("the entry is made");
-            vault
-                .add_attachment(
-                    id,
-                    &format!("file-{round}.bin"),
-                    Zeroizing::new(vec![round; 64]),
-                )
-                .expect("the file is added");
+            support::attach(&mut vault, id, &format!("file-{round}.bin"), &vec![round; 64]);
             vault
                 .set_field(id, fields::NOTES, NewValue::Open(format!("note {round}")))
                 .expect("the note is written");
@@ -871,9 +853,7 @@ fn a_file_an_earlier_version_still_holds_is_not_taken_away_from_it() {
         let mut vault = open(&path, BUILT_PASSWORD);
         let root = root_of(&vault);
         let id = vault.create_entry(root).expect("the entry is made");
-        vault
-            .add_attachment(id, "key.pem", Zeroizing::new(b"a private key".to_vec()))
-            .expect("the file is added");
+        support::attach(&mut vault, id, "key.pem", b"a private key");
         // A change to the files writes no version. A change to a field does,
         // and that version holds the file the entry had at the time.
         assert!(vault.versions(id).is_empty());
@@ -960,9 +940,7 @@ fn a_file_added_and_taken_away_again_leaves_the_pool_as_it_was() {
     {
         let mut vault = open(&database, SECRET);
         let id = only_entry(&vault, "basic");
-        vault
-            .add_attachment(id, "note.txt", Zeroizing::new(b"temporary".to_vec()))
-            .expect("the file is added");
+        support::attach(&mut vault, id, "note.txt", b"temporary");
         vault.save().expect("the database saves");
     }
 
@@ -1023,9 +1001,7 @@ fn a_name_the_file_can_hold_is_stored_exactly_as_it_was_given() {
         let root = root_of(&vault);
         let id = vault.create_entry(root).expect("the entry is made");
         for (round, name) in awkward.iter().enumerate() {
-            vault
-                .add_attachment(id, name, Zeroizing::new(vec![round as u8; 8]))
-                .expect("the file is added");
+            support::attach(&mut vault, id, name, &vec![round as u8; 8]);
         }
         vault.save().expect("the database saves");
         id
@@ -1789,16 +1765,8 @@ fn a_file_with_no_bytes_in_it_survives_being_added_and_taken_away() {
         let mut vault = open(&path, BUILT_PASSWORD);
         let root = root_of(&vault);
         let id = vault.create_entry(root).expect("the entry is made");
-        vault
-            .add_attachment(id, "nothing.txt", Zeroizing::new(Vec::new()))
-            .expect("the file is added");
-        vault
-            .add_attachment(
-                id,
-                "something.txt",
-                Zeroizing::new(b"a byte or two".to_vec()),
-            )
-            .expect("the file is added");
+        support::attach(&mut vault, id, "nothing.txt", &[]);
+        support::attach(&mut vault, id, "something.txt", b"a byte or two");
         vault.save().expect("the database saves");
         id
     };
@@ -1854,9 +1822,7 @@ fn a_file_replaced_by_one_of_the_same_name_keeps_the_new_bytes_and_the_pool() {
     {
         let mut vault = open(&path, BUILT_PASSWORD);
         let middle = only_entry(&vault, "entry 1");
-        vault
-            .add_attachment(middle, "file 1", Zeroizing::new(b"replaced".to_vec()))
-            .expect("the file is replaced");
+        support::attach(&mut vault, middle, "file 1", b"replaced");
         vault.save().expect("the database saves");
     }
 
@@ -2236,13 +2202,7 @@ fn a_database_that_would_be_too_large_to_open_again_is_not_written() {
     // Five files of a quarter of a gigabyte: each one is inside the limit on a
     // single file, and together they are past the limit on the database.
     for round in 0..5u8 {
-        vault
-            .add_attachment(
-                id,
-                &format!("big-{round}.bin"),
-                Zeroizing::new(vec![round; 256 * 1024 * 1024]),
-            )
-            .expect("each file on its own is allowed");
+        support::attach(&mut vault, id, &format!("big-{round}.bin"), &vec![round; 256 * 1024 * 1024]);
     }
 
     assert!(matches!(vault.save(), Err(VaultError::TooLarge)));
@@ -2283,9 +2243,7 @@ fn dropping_the_versions_to_free_a_file_puts_them_back_when_the_file_still_canno
     // go, so this is a removal that is refused for a reason clearing the
     // versions cannot help with.
     let id = only_entry(&vault, "versioned");
-    vault
-        .add_attachment(id, "one.bin", Zeroizing::new(b"one".to_vec()))
-        .expect("the file is added");
+    support::attach(&mut vault, id, "one.bin", b"one");
     vault.save().expect("the database saves");
     let before = vault.versions(id).len();
     assert_eq!(before, 6, "the fixture carries six versions");
@@ -2343,9 +2301,7 @@ fn only_the_versions_that_hold_a_file_go_with_it() {
     let before = vault.versions(id).len();
     assert_eq!(before, 2, "two edits are two versions");
 
-    vault
-        .add_attachment(id, "held.bin", Zeroizing::new(b"held".to_vec()))
-        .expect("the file is added");
+    support::attach(&mut vault, id, "held.bin", b"held");
 
     // And one after it, whose version does name the file.
     vault
@@ -2402,13 +2358,7 @@ fn a_file_the_versions_kept_by_the_new_arithmetic_still_hold_is_not_taken_away_f
     let id = {
         let mut vault = open(&path, BUILT_PASSWORD);
         let id = vault.tree().entries[0].id;
-        vault
-            .add_attachment(
-                id,
-                "client.p12",
-                Zeroizing::new(vec![0x5a; 5 * 1024 * 1024]),
-            )
-            .expect("the file attaches");
+        support::attach(&mut vault, id, "client.p12", &vec![0x5a; 5 * 1024 * 1024]);
         for round in 0..4 {
             vault
                 .set_field(id, fields::NOTES, NewValue::Open(format!("round {round}")))

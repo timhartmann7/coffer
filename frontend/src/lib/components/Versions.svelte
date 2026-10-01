@@ -2,6 +2,7 @@
 	import { fully } from '$lib/format';
 	import { clearHistory, deleteVersion, restoreVersion, revealVersion, version } from '$lib/ipc';
 	import type { Entry, Version } from '$lib/model';
+	import Confirm from './Confirm.svelte';
 	import Icon from './Icon.svelte';
 	import ProtectedValue from './ProtectedValue.svelte';
 
@@ -39,22 +40,29 @@
 	let open = $state(false);
 	let showing = $state<{ index: number; entry: Entry } | null>(null);
 	let confirming = $state(false);
+	/** The version whose deletion is being asked about. Nothing brings one back
+	 * once the vault is written, and the vault is written straight away. */
+	let dropping = $state<number | null>(null);
 
 	// Another entry is another history. Whatever is on the screen goes with it.
 	$effect(() => {
 		void entry;
 		showing = null;
 		confirming = false;
+		dropping = null;
 	});
 
 	/**
 	 * A version is addressed by its position, and dropping one moves every
 	 * position after it. Anything open when the list changes is showing a
-	 * version by a number that may now name a different one, so it closes.
+	 * version by a number that may now name a different one, so it closes - and
+	 * so does a question about deleting one, which would otherwise delete
+	 * whichever version had moved into the place it asked about.
 	 */
 	$effect(() => {
 		void versions;
 		showing = null;
+		dropping = null;
 	});
 
 	/** Newest first: what a reader looks for is what changed last. */
@@ -83,6 +91,7 @@
 
 	async function drop(index: number) {
 		try {
+			dropping = null;
 			showing = null;
 			onVersions(await deleteVersion(entry, index));
 		} catch (thrown) {
@@ -142,16 +151,30 @@
 							>
 								Restore
 							</button>
+							<!-- A fingertip wide and a step further off than View and
+							     Restore, and drawn into the row's own padding so the row
+							     is no taller for it. -->
 							<button
 								type="button"
-								onclick={() => drop(version.index)}
-								class="text-txt4 transition-colors hover:text-danger"
+								onclick={() => (dropping = version.index)}
+								class="-my-1.5 ml-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-sm text-txt4 transition-colors hover:bg-dangerwash hover:text-danger"
 								aria-label="Delete this version"
 							>
 								<Icon name="trash" class="h-4 w-4" />
 							</button>
 						{/if}
 					</div>
+
+					{#if dropping === version.index}
+						<Confirm
+							bare
+							class="border-t border-hairline px-3 py-3"
+							question="Drop this version? What the entry holds now stays."
+							act="Drop it"
+							onKeep={() => (dropping = null)}
+							onAct={() => drop(version.index)}
+						/>
+					{/if}
 
 					{#if here && showing}
 						{@const at = showing.index}
@@ -191,25 +214,14 @@
 				{#if readOnly}
 					<!-- Nothing to offer: this database is not written back. -->
 				{:else if confirming}
-					<div class="flex animate-rise flex-wrap items-center gap-2">
-						<span class="text-fine text-txt2">
-							Drop all {versions.length} versions? What the entry holds now stays.
-						</span>
-						<button
-							type="button"
-							onclick={() => (confirming = false)}
-							class="h-9 rounded-full px-4 text-small text-txt3 transition-colors hover:text-txt2"
-						>
-							Keep them
-						</button>
-						<button
-							type="button"
-							onclick={clear}
-							class="h-9 rounded-full px-4 text-small text-danger transition-colors hover:bg-dangerwash"
-						>
-							Clear the history
-						</button>
-					</div>
+					<Confirm
+						class="bg-surface2"
+						question="Drop all {versions.length} versions? What the entry holds now stays."
+						keep="Keep them"
+						act="Clear the history"
+						onKeep={() => (confirming = false)}
+						onAct={clear}
+					/>
 				{:else}
 					<button
 						type="button"

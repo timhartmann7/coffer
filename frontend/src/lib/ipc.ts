@@ -310,6 +310,16 @@ export function restoreVersion(entry: string, index: number): Promise<Entry> {
 	return invoke('restore_version', { entry, index });
 }
 
+/**
+ * Which version puts back a field the entry has just lost, or `null` when no
+ * version does that and only that - because the save pruned it, or because the
+ * entry changed again since. Restoring this position is the undo of the
+ * removal, and restoring any other would take back more than the field.
+ */
+export function beforeRemoval(entry: string, field: string): Promise<number | null> {
+	return invoke('before_removal', { entry, field });
+}
+
 export function deleteVersion(entry: string, index: number): Promise<Version[]> {
 	return invoke('delete_version', { entry, index });
 }

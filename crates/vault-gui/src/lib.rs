@@ -130,6 +130,7 @@ pub fn run() {
             commands::version,
             commands::reveal_version,
             commands::restore_version,
+            commands::before_removal,
             commands::delete_version,
             commands::clear_history,
             commands::generate_password,

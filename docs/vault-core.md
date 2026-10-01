@@ -73,7 +73,21 @@ versions oldest first and the parser preserves that order, while
 `history::prune` sorts by `last_modification` and rebuilds oldest first, which
 is what KeePassXC writes, so a database Coffer saved looks like one KeePassXC
 saved. The rebuild is the only way to prune at all: `History::entries` is
-private and `add_entry` is the only way in.
+private and `add_entry` is the only way in. The order itself - by
+`last_modification`, a version nobody dated after every dated one - is
+`history::age`, and the version list, the prune and the question below all sort
+by it, so none of them can call a different version the newest.
+
+**Taking a removal back is a restore, and only of one version.** Removing a
+field writes a version like any other edit, and restoring that version is the
+undo. But the save after the removal prunes, and a database that keeps no
+versions, or a size limit the version does not fit, drops it there and then.
+What is newest after that is something older, and restoring it would take back
+every change since as well. `Vault::before_removal` answers which version puts
+back exactly the field and nothing else: the newest, and only when it is the
+entry as it stands with that field put back. Anything else - a pruned version,
+an undated one a prune kept, a change made since - is `None`, never the position
+of some other version that happens to hold a field of that name.
 
 **Key derivation runs on unauthenticated parameters.** `format/kdbx4/parse.rs`
 derives the key from the KDF dictionary in the outer header before it checks the

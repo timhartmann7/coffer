@@ -14,9 +14,25 @@
 	 * can animate an element that has already been taken out of the document, so
 	 * a notice that is going has to still be here while it goes. `leaving` is
 	 * what says it is, and the window takes it away once it has.
+	 *
+	 * A notice about something that can be taken back carries the one button
+	 * that does it. The notice lets the pointer through everywhere else, because
+	 * it sits over the corner of the list and a sentence is not something to
+	 * click on; the button is the one part that takes a press.
 	 */
-	let { message, kind, leaving }: { message: string; kind: 'copied' | 'failed'; leaving: boolean } =
-		$props();
+	let {
+		message,
+		kind,
+		leaving,
+		onUndo
+	}: {
+		message: string;
+		kind: 'copied' | 'failed' | 'removed';
+		leaving: boolean;
+		/** Takes back what the notice is about. The window decides for how long
+		 * that is on offer, and takes the notice away when it no longer is. */
+		onUndo?: () => void;
+	} = $props();
 </script>
 
 <div
@@ -28,9 +44,26 @@
 	<div class="flex items-center gap-3 px-4 py-3">
 		{#if kind === 'copied'}
 			<Icon name="copy" class="h-4 w-4 shrink-0 text-accent" />
+		{:else if kind === 'removed'}
+			<Icon name="trash" class="h-4 w-4 shrink-0 text-txt3" />
 		{:else}
 			<Icon name="warn" class="h-4 w-4 shrink-0 text-warn" />
 		{/if}
-		<span class="flex-1 text-small text-txt">{message}</span>
+		<!-- A field's name is a value out of somebody's database and can be a
+		     megabyte long, so the sentence that names one is bounded. -->
+		<span class="line-clamp-3 min-w-0 flex-1 text-small break-words text-txt">{message}</span>
+		{#if onUndo}
+			<button
+				type="button"
+				onclick={onUndo}
+				aria-keyshortcuts="Meta+Z"
+				class="pointer-events-auto -my-1 flex h-7 shrink-0 items-center gap-2 rounded-full px-2.5 text-small text-accent transition-colors hover:text-accenthi"
+			>
+				Undo
+				<kbd class="rounded-xs border border-hairline px-1.5 py-0.5 font-mono text-label text-txt4">
+					⌘Z
+				</kbd>
+			</button>
+		{/if}
 	</div>
 </div>

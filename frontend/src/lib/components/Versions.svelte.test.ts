@@ -1,6 +1,7 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { entry, field, version } from '$lib/fixtures';
+import { reactive } from '$lib/props.svelte';
 import Versions from './Versions.svelte';
 
 const ipc = vi.hoisted(() => ({
@@ -123,6 +124,8 @@ it('views, restores and deletes a version by its position', async () => {
 	expect(onChanged).toHaveBeenCalled();
 
 	host.querySelectorAll<HTMLButtonElement>('[aria-label="Delete this version"]')[2]?.click();
+	flushSync();
+	button('Drop it').click();
 	await vi.waitFor(() => expect(ipc.deleteVersion).toHaveBeenCalledWith('an-entry', 0));
 	expect(onVersions).toHaveBeenCalledWith([]);
 
@@ -234,6 +237,8 @@ it('closes an open version when the list underneath it changes', async () => {
 	flushSync();
 
 	host.querySelectorAll<HTMLButtonElement>('[aria-label="Delete this version"]')[2]?.click();
+	flushSync();
+	button('Drop it').click();
 	await vi.waitFor(() => expect(ipc.deleteVersion).toHaveBeenCalled());
 	flushSync();
 
@@ -253,6 +258,72 @@ it('offers nothing but a look on a database it cannot write', () => {
 	expect(named).not.toContain('Restore');
 	expect(named).not.toContain('Clear the history');
 	expect(host.querySelector('[aria-label="Delete this version"]')).toBeNull();
+
+	return unmount(component);
+});
+
+/**
+ * A version is the one record of what an entry held before, and dropping one
+ * is written to the file at once. It asks first, the way clearing all of them
+ * does, and it asks about the version whose trash was pressed.
+ */
+it('asks before it drops one version', async () => {
+	const onVersions = vi.fn();
+	ipc.deleteVersion.mockResolvedValue([listed[0], listed[2]]);
+
+	const component = show({ onVersions });
+	open();
+
+	const trash = () =>
+		host.querySelectorAll<HTMLButtonElement>('[aria-label="Delete this version"]');
+	// Newest first, so the second row is the version at index 1.
+	trash()[1]?.click();
+	flushSync();
+	expect(ipc.deleteVersion).not.toHaveBeenCalled();
+	expect(host.textContent).toContain('Drop this version?');
+	expect(host.querySelectorAll('[data-confirm]')).toHaveLength(1);
+
+	button('Keep it').click();
+	flushSync();
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+	expect(ipc.deleteVersion).not.toHaveBeenCalled();
+
+	trash()[1]?.click();
+	flushSync();
+	button('Drop it').click();
+	await vi.waitFor(() => expect(ipc.deleteVersion).toHaveBeenCalledWith('an-entry', 1));
+	expect(ipc.deleteVersion).toHaveBeenCalledTimes(1);
+	expect(onVersions).toHaveBeenCalledWith([listed[0], listed[2]]);
+
+	return unmount(component);
+});
+
+/**
+ * A question about a version names it by its position, and a list that changed
+ * under it may have put another version in that place. The answer would then
+ * drop a version nobody asked about, so the question goes with the list.
+ */
+it('takes a question about a version away when the list underneath it changes', () => {
+	const props = reactive({
+		entry: 'an-entry',
+		versions: listed,
+		now: new Date('2026-08-29T14:30:00Z'),
+		readOnly: false,
+		onVersions: vi.fn(),
+		onChanged: vi.fn(),
+		onFailure: vi.fn()
+	});
+	const component = mount(Versions, { target: host, props });
+	open();
+
+	host.querySelectorAll<HTMLButtonElement>('[aria-label="Delete this version"]')[0]?.click();
+	flushSync();
+	expect(host.textContent).toContain('Drop this version?');
+
+	props.versions = [listed[1], listed[2]];
+	flushSync();
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+	expect(ipc.deleteVersion).not.toHaveBeenCalled();
 
 	return unmount(component);
 });
