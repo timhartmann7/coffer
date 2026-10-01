@@ -93,6 +93,46 @@ it('puts the focus on the way out', () => {
 });
 
 /**
+ * A neutral answer can be the one a reader means most often - keeping both of
+ * two files that share a name - and then the focus is there, so Return gives
+ * it. Never the destructive one, and Escape is still the way out.
+ */
+it('puts the focus on the neutral answer when asked to, and never on the destructive one', () => {
+	const run = vi.fn();
+	const { component, onKeep, onAct } = ask({
+		keep: 'Don’t add it',
+		neutral: { label: 'Keep both', run },
+		focus: 'neutral',
+		act: 'Replace'
+	});
+
+	expect(document.activeElement).toBe(button('Keep both'));
+
+	button('Keep both').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+	expect(onKeep).toHaveBeenCalledTimes(1);
+	expect(run).not.toHaveBeenCalled();
+	expect(onAct).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/** Asked again after its destructive answer was refused, the question keeps
+ * the answers that are still open and nothing in the danger colour. */
+it('asks again without the destructive answer when there is none to give', () => {
+	const { component } = ask({
+		act: undefined,
+		neutral: { label: 'Keep both', run: vi.fn() },
+		focus: 'neutral'
+	});
+
+	expect(buttons().map((each) => each.textContent?.trim())).toEqual(['Keep it', 'Keep both']);
+	expect(buttons().filter((each) => each.className.includes('text-danger'))).toEqual([]);
+	expect(document.activeElement).toBe(button('Keep both'));
+
+	return unmount(component);
+});
+
+/**
  * Escape is the way out here too, and it stops here. The window reads the same
  * key as "put the entry away", and a question answered by the pane vanishing
  * from under it is one the reader never saw answered.

@@ -5,12 +5,10 @@
 //! fixtures. This proves it against shapes nobody thought of, which is where the
 //! cases nobody thought of live.
 
+use crate::support::{self, BUILT_PASSWORD, built, open};
 use keepass::Database;
 use keepass::db::Value;
 use proptest::prelude::*;
-use zeroize::Zeroizing;
-
-use crate::support::{BUILT_PASSWORD, built, open};
 
 /// Text a KeePass file can carry.
 ///
@@ -243,6 +241,9 @@ proptest! {
 #[derive(Debug, Clone)]
 enum Act {
     Add(usize, u8),
+    /// A file offered under a name the entry already gives another, and what
+    /// the reader answers when they are asked about it.
+    AddAgain(usize, usize, u8, Answer),
     Remove(usize, usize),
     RemoveWithVersions(usize, usize),
     /// Any ordinary edit, which is what writes a version - and a version is what
@@ -253,9 +254,24 @@ enum Act {
     EmptyBin,
 }
 
+/// What a reader can say when a file's name is taken.
+#[derive(Debug, Clone, Copy)]
+enum Answer {
+    Neither,
+    Both,
+    Replace,
+}
+
 fn act() -> impl Strategy<Value = Act> {
+    let answer = prop_oneof![
+        Just(Answer::Neither),
+        Just(Answer::Both),
+        Just(Answer::Replace)
+    ];
     prop_oneof![
         (0usize..8, any::<u8>()).prop_map(|(entry, byte)| Act::Add(entry, byte)),
+        (0usize..8, 0usize..4, any::<u8>(), answer)
+            .prop_map(|(entry, file, byte, answer)| Act::AddAgain(entry, file, byte, answer)),
         (0usize..8, 0usize..4).prop_map(|(entry, file)| Act::Remove(entry, file)),
         (0usize..8, 0usize..4).prop_map(|(entry, file)| Act::RemoveWithVersions(entry, file)),
         (0usize..8).prop_map(Act::Edit),
@@ -349,7 +365,7 @@ proptest! {
                 .set_field(id, "Title", vault_core::NewValue::Open(format!("entry {round}")))
                 .expect("the title is written");
             if round < 2 {
-                support::attach(&mut vault, id, &format!("start-{round}.bin"), &vec![round; 48]);
+                support::attach(&mut vault, id, &format!("start-{round}.bin"), &[round; 48]);
             }
             if round == 1 {
                 vault
@@ -376,11 +392,50 @@ proptest! {
                     let id = pick(*entry);
                     let name = format!("added-{step}.bin");
                     let bytes = vec![*byte; 32 + step];
-                    let done = vault.add_attachment(id, &name, Zeroizing::new(bytes.clone()));
-                    if done.is_ok() {
+                    let done = vault.add_attachment(id, &name, &bytes);
+                    if matches!(done, Ok(vault_core::Attached::Added)) {
                         expected.entry(id.to_string()).or_default().insert(name, bytes);
                     }
-                    done
+                    done.map(drop)
+                }
+                Act::AddAgain(entry, file, byte, answer) => {
+                    let id = pick(*entry);
+                    let held: Vec<String> = before
+                        .get(&id.to_string())
+                        .map(|files| files.keys().cloned().collect())
+                        .unwrap_or_default();
+                    if held.is_empty() {
+                        continue;
+                    }
+                    let name = held[*file % held.len()].clone();
+                    let bytes = vec![*byte; 16 + step];
+
+                    // Asked, and nothing changes until the answer.
+                    let asked = vault
+                        .add_attachment(id, &name, &bytes)
+                        .expect("a file of a size and name the entry holds is offerable");
+                    let vault_core::Attached::Taken(clash) = asked else {
+                        panic!("step {step} put {name:?} over the file of that name without asking");
+                    };
+                    prop_assert_eq!(&files(&vault), &before, "the question alone changed the files");
+
+                    match answer {
+                        Answer::Neither => Ok(()),
+                        Answer::Both => {
+                            let done = vault.keep_both(id, &name, &bytes);
+                            if done.is_ok() {
+                                expected.entry(id.to_string()).or_default().insert(clash.free, bytes);
+                            }
+                            done
+                        }
+                        Answer::Replace => {
+                            let done = vault.replace_attachment(id, &name, &bytes);
+                            if done.is_ok() {
+                                expected.entry(id.to_string()).or_default().insert(name, bytes);
+                            }
+                            done
+                        }
+                    }
                 }
                 Act::Remove(entry, file) | Act::RemoveWithVersions(entry, file) => {
                     let id = pick(*entry);

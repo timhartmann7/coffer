@@ -9,6 +9,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
 	Alphabet,
+	Attached,
 	Calibration,
 	Database,
 	Entry,
@@ -265,11 +266,34 @@ export function setTags(entry: string, tags: string[]): Promise<Entry> {
 	return invoke('set_tags', { entry, tags });
 }
 
-/** Opens the system's file picker and puts what it chose on the entry. The
- * bytes are read in Rust and never come near here. */
-/** Nothing comes back when the reader closed the panel without choosing a file. */
-export function addAttachment(entry: string): Promise<Entry | null> {
+/**
+ * Opens the system's file picker and puts what it chose on the entry. The bytes
+ * are read in Rust and never come near here.
+ *
+ * Nothing comes back when the reader closed the panel without choosing a file.
+ * A name the entry already gives a file changes nothing: Rust holds the file
+ * and answers `taken`, and one of the three calls below is the reader's answer.
+ */
+export function addAttachment(entry: string): Promise<Attached | null> {
 	return invoke('add_attachment', { entry });
+}
+
+/** Puts the file waiting on this entry beside the one that has its name. */
+export function keepBothAttachments(entry: string): Promise<Entry> {
+	return invoke('keep_both_attachments', { entry });
+}
+
+/** Puts the file waiting on this entry in place of the one that has its name.
+ * Rejects with `attachmentInHistory` while earlier versions hold that one, and
+ * the file goes on waiting. */
+export function replaceAttachment(entry: string): Promise<Entry> {
+	return invoke('replace_attachment', { entry });
+}
+
+/** Lets go of the file waiting on this entry. Only this entry's: one chosen for
+ * another entry since stays where it is. */
+export function withdrawAttachment(entry: string): Promise<void> {
+	return invoke('withdraw_attachment', { entry });
 }
 
 /** Opens the system's save panel and writes the file out from Rust. */

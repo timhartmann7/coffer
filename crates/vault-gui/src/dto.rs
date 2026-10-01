@@ -470,6 +470,47 @@ impl Entry {
     }
 }
 
+/// What came of a file the reader chose for an entry.
+///
+/// Not a failure when the name is taken: nothing went wrong, and nothing has
+/// happened yet. The file is held in Rust and the window has a question to
+/// ask, which is a different thing from a sentence to show.
+#[derive(Serialize)]
+#[serde(tag = "outcome", rename_all = "camelCase")]
+pub enum Attached {
+    /// It is on the entry, and this is the entry now.
+    Added { entry: Entry },
+    /// The entry already gives that name to a file, and nothing changed.
+    Taken { clash: Clash },
+}
+
+/// A name the entry already gives a file, and what the reader is asked to
+/// decide about it. Sizes and names only: neither file's bytes cross.
+#[derive(Serialize)]
+pub struct Clash {
+    /// The name both files go by, exactly as the entry holds it.
+    pub name: String,
+    /// How large the file already there is.
+    pub size: usize,
+    /// How large the file just chosen is. Two files by one name are told apart
+    /// by size before anything else, and a reader who picked the same file
+    /// twice sees two numbers that agree.
+    pub chosen: usize,
+    /// The name the file just chosen goes under if both are kept.
+    pub free: String,
+}
+
+impl Clash {
+    pub fn of(name: String, chosen: usize, clash: vault_core::Clash) -> Clash {
+        Clash {
+            name,
+            size: clash.size,
+            chosen,
+            free: clash.free,
+        }
+    }
+}
+
 /// The value when the database does not protect it, and nothing at all when it
 /// does.
 fn shown(value: &FieldValue) -> Option<String> {
@@ -772,6 +813,39 @@ mod tests {
         }
 
         assert_eq!(stamp(None), None);
+    }
+
+    /// The window branches on one key, and a name that is taken crosses as a
+    /// question: two sizes and two names, the first exactly as the entry holds
+    /// it whatever is in it, and not a byte of either file.
+    #[test]
+    fn a_taken_name_crosses_as_a_question_with_no_bytes_in_it() {
+        let hostile = "../../<b>scan</b>\u{202e}fdp.pdf";
+        let taken = serde_json::to_value(Attached::Taken {
+            clash: Clash::of(
+                hostile.to_owned(),
+                3,
+                vault_core::Clash {
+                    size: 7,
+                    free: "scan 2.pdf".to_owned(),
+                },
+            ),
+        })
+        .expect("the payload serialises");
+        assert_eq!(
+            taken,
+            serde_json::json!({
+                "outcome": "taken",
+                "clash": { "name": hostile, "size": 7, "chosen": 3, "free": "scan 2.pdf" }
+            })
+        );
+
+        let added = serde_json::to_value(Attached::Added {
+            entry: Entry::of(&entry_of(Vec::new())),
+        })
+        .expect("the payload serialises");
+        assert_eq!(added["outcome"], "added");
+        assert_eq!(added["entry"]["id"], uuid::Uuid::nil().to_string());
     }
 
     #[test]

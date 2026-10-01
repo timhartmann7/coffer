@@ -6,6 +6,7 @@
 #![deny(dead_code, unused_imports, unused_variables, unused_mut)]
 
 mod adversarial;
+mod clash;
 mod create;
 mod edit;
 mod generate;

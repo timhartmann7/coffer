@@ -6,7 +6,7 @@ use vault_core::model::{EntryId, Field, FieldValue, GroupId};
 use vault_core::{NewValue, Vault, VaultError};
 use zeroize::Zeroizing;
 
-use crate::support::{self, BUILT_PASSWORD, RICH, SECRET, built, entry_titled, open};
+use crate::support::{self, BUILT_PASSWORD, RICH, SECRET, built, entry_titled, files, open};
 
 /// A database with three entries in the root, each carrying one file, saved and
 /// closed so that it comes back the way a database from disk comes back.
@@ -37,32 +37,6 @@ fn three_files(directory: &std::path::Path) -> std::path::PathBuf {
     let mut vault = open(&path, BUILT_PASSWORD);
     vault.save().expect("the database saves");
     path
-}
-
-/// Every entry's file, by the title of the entry that holds it.
-fn files(vault: &Vault) -> Vec<(String, String, Vec<u8>)> {
-    let mut found = Vec::new();
-    for summary in support::all_entries(vault) {
-        let entry = vault.entry(summary.id).expect("the entry is there");
-        let title = entry
-            .field(fields::TITLE)
-            .and_then(|field| field.value.open())
-            .unwrap_or_default()
-            .to_owned();
-
-        for attachment in &entry.attachments {
-            let bytes = vault
-                .attachment(entry.id, &attachment.name)
-                .expect("the file is there");
-            found.push((
-                title.clone(),
-                attachment.name.clone(),
-                bytes.expose().to_vec(),
-            ));
-        }
-    }
-    found.sort();
-    found
 }
 
 fn only_entry(vault: &Vault, title: &str) -> EntryId {
@@ -485,8 +459,17 @@ fn a_value_a_keepass_file_cannot_hold_is_refused_wherever_it_is_offered() {
         vault.set_tags(id, vec![hostile.to_owned()]),
         Err(VaultError::UnwritableText)
     ));
+    // Every way a file goes on, including the two a taken name leads to.
     assert!(matches!(
-        vault.add_attachment(id, hostile, Zeroizing::new(b"x".to_vec())),
+        vault.add_attachment(id, hostile, b"x"),
+        Err(VaultError::UnwritableText)
+    ));
+    assert!(matches!(
+        vault.keep_both(id, hostile, b"x"),
+        Err(VaultError::UnwritableText)
+    ));
+    assert!(matches!(
+        vault.replace_attachment(id, hostile, b"x"),
         Err(VaultError::UnwritableText)
     ));
 }
@@ -624,7 +607,12 @@ fn a_removal_never_renumbers_a_file_a_version_points_at() {
         let mut ids = Vec::new();
         for (round, size) in sizes.iter().enumerate() {
             let id = vault.create_entry(root).expect("the entry is made");
-            support::attach(&mut vault, id, &format!("file-{round}.bin"), &vec![round as u8; *size]);
+            support::attach(
+                &mut vault,
+                id,
+                &format!("file-{round}.bin"),
+                &vec![round as u8; *size],
+            );
             ids.push(id);
         }
         vault.save().expect("the database saves");
@@ -707,7 +695,12 @@ fn documents_can_still_be_taken_out_of_a_vault_that_has_been_used() {
             vault
                 .set_field(id, fields::TITLE, NewValue::Open(format!("doc {round}")))
                 .expect("the title is written");
-            support::attach(&mut vault, id, &format!("report-{round}.pdf"), &vec![round as u8; 512]);
+            support::attach(
+                &mut vault,
+                id,
+                &format!("report-{round}.pdf"),
+                &vec![round as u8; 512],
+            );
             ids.push(id);
         }
         vault.save().expect("the database saves");
@@ -791,7 +784,7 @@ fn the_recycle_bin_empties_once_the_versions_holding_a_file_have_gone() {
         let mut ids = Vec::new();
         for round in 0..3u8 {
             let id = vault.create_entry(root).expect("the entry is made");
-            support::attach(&mut vault, id, &format!("file-{round}.bin"), &vec![round; 64]);
+            support::attach(&mut vault, id, &format!("file-{round}.bin"), &[round; 64]);
             vault
                 .set_field(id, fields::NOTES, NewValue::Open(format!("note {round}")))
                 .expect("the note is written");
@@ -981,11 +974,30 @@ fn a_file_larger_than_a_vault_holds_is_refused_before_it_is_read_in() {
     // gigabytes is written truncated and the database cannot be opened again.
     // Coffer stops long before that, because the whole database is read into
     // memory to be opened at all.
-    let huge = Zeroizing::new(vec![0u8; (256 * 1024 * 1024) + 1]);
+    let huge = vec![0u8; (256 * 1024 * 1024) + 1];
     assert!(matches!(
-        vault.add_attachment(id, "huge.bin", huge),
+        vault.add_attachment(id, "huge.bin", &huge),
         Err(VaultError::AttachmentTooLarge)
     ));
+
+    // The same ceiling behind the two answers to a name that is taken, so that
+    // a file nobody could open again cannot come in by the side door.
+    support::attach(&mut vault, id, "huge.bin", b"small");
+    assert!(matches!(
+        vault.keep_both(id, "huge.bin", &huge),
+        Err(VaultError::AttachmentTooLarge)
+    ));
+    assert!(matches!(
+        vault.replace_attachment(id, "huge.bin", &huge),
+        Err(VaultError::AttachmentTooLarge)
+    ));
+    assert_eq!(
+        vault
+            .attachment(id, "huge.bin")
+            .expect("the small one is there")
+            .expose(),
+        b"small"
+    );
 }
 
 #[test]
@@ -1001,7 +1013,7 @@ fn a_name_the_file_can_hold_is_stored_exactly_as_it_was_given() {
         let root = root_of(&vault);
         let id = vault.create_entry(root).expect("the entry is made");
         for (round, name) in awkward.iter().enumerate() {
-            support::attach(&mut vault, id, name, &vec![round as u8; 8]);
+            support::attach(&mut vault, id, name, &[round as u8; 8]);
         }
         vault.save().expect("the database saves");
         id
@@ -1686,6 +1698,9 @@ fn a_snapshot_is_opened_to_read_and_never_written_back() {
         vault.set_field(id, fields::NOTES, NewValue::Open("x".to_owned())),
         vault.delete_entry(id),
         vault.clear_history(id),
+        vault.add_attachment(id, "x", b"x").map(drop),
+        vault.keep_both(id, "x", b"x"),
+        vault.replace_attachment(id, "x", b"x"),
         vault.save(),
         vault.save_over(),
     ] {
@@ -1822,7 +1837,9 @@ fn a_file_replaced_by_one_of_the_same_name_keeps_the_new_bytes_and_the_pool() {
     {
         let mut vault = open(&path, BUILT_PASSWORD);
         let middle = only_entry(&vault, "entry 1");
-        support::attach(&mut vault, middle, "file 1", b"replaced");
+        vault
+            .replace_attachment(middle, "file 1", b"replaced")
+            .expect("the file is replaced");
         vault.save().expect("the database saves");
     }
 
@@ -2202,7 +2219,12 @@ fn a_database_that_would_be_too_large_to_open_again_is_not_written() {
     // Five files of a quarter of a gigabyte: each one is inside the limit on a
     // single file, and together they are past the limit on the database.
     for round in 0..5u8 {
-        support::attach(&mut vault, id, &format!("big-{round}.bin"), &vec![round; 256 * 1024 * 1024]);
+        support::attach(
+            &mut vault,
+            id,
+            &format!("big-{round}.bin"),
+            &vec![round; 256 * 1024 * 1024],
+        );
     }
 
     assert!(matches!(vault.save(), Err(VaultError::TooLarge)));

@@ -132,6 +132,26 @@ export interface Attachment {
 	fileName: string;
 }
 
+/**
+ * A name the entry already gives a file, offered again with another file.
+ * Sizes and names: neither file's bytes are here, and the one just chosen is
+ * held in Rust until the reader answers.
+ */
+export interface Clash {
+	/** The name both files go by, exactly as the entry holds it. */
+	name: string;
+	/** How large the file already there is. */
+	size: number;
+	/** How large the file just chosen is. */
+	chosen: number;
+	/** What the file just chosen is called if both are kept. */
+	free: string;
+}
+
+/** What came of a file the reader chose: it went on, or its name is taken and
+ * nothing has happened yet. */
+export type Attached = { outcome: 'added'; entry: Entry } | { outcome: 'taken'; clash: Clash };
+
 export interface Entry {
 	id: string;
 	group: string;

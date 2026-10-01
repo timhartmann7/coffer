@@ -344,6 +344,28 @@ surprising:
   impossible to take off again. What a version records is the entry's fields,
   tags, notes, colours, icon and expiry date.
 
+**A file never goes on an entry over one of the same name.** An entry keys its
+files by name, and the library's `EntryMut::add_attachment` drops whatever the
+name held before - which is how the second page of a passport, scanned by a
+phone that calls every scan `Scanned Document.pdf`, used to take the first with
+it and leave no version to find it in. `Vault::add_attachment` now changes
+nothing when the name is taken and answers `Attached::Taken(Clash)`: the size of
+the file there and the name the new one could go by. The caller decides, through
+`Vault::keep_both`, which puts it beside the old one under that name worked out
+again at that moment, or `Vault::replace_attachment`, which is a removal by this
+module's rules followed by an add, and is refused exactly when a removal would
+be. Both take the bytes by reference, so a caller told the name is taken still
+has them to answer with.
+
+The free name is [`clash.rs`](../crates/vault-core/src/clash.rs): a number before
+the last extension, or at the end of a name that has none - a dotfile, a
+trailing dot, and a dot followed by a space are not one - counting from 2 past
+every name on the entry that matches it with letter case ignored. Whether a name
+is taken at all is exact, because the format and the library both tell
+`Scan.pdf` from `scan.pdf` and adding the second loses nothing. Only the files
+the entry has now count: a name only an earlier version gives a file is free,
+and the version keeps its bytes.
+
 `unbroken` runs before every write. It has never fired, and it is the last thing
 between a mistake in this module and a database that hands out the wrong file.
 

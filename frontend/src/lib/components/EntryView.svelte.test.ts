@@ -1,6 +1,7 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { attachment, entry, field, group } from '$lib/fixtures';
+import type { Attached, Clash } from '$lib/model';
 import { reactive } from '$lib/props.svelte';
 import EntryView from './EntryView.svelte';
 
@@ -11,6 +12,9 @@ const ipc = vi.hoisted(() => ({
 	removeField: vi.fn(),
 	setTags: vi.fn(),
 	addAttachment: vi.fn(),
+	keepBothAttachments: vi.fn(),
+	replaceAttachment: vi.fn(),
+	withdrawAttachment: vi.fn(),
 	exportAttachment: vi.fn(),
 	removeAttachment: vi.fn(),
 	generatePassword: vi.fn(),
@@ -40,6 +44,7 @@ beforeEach(() => {
 	document.body.appendChild(host);
 	ipc.reveal.mockResolvedValue(SECRET);
 	ipc.openUrl.mockResolvedValue(undefined);
+	ipc.withdrawAttachment.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -1082,43 +1087,397 @@ it('does not report a change when the file panel was closed without one', async 
 	return unmount(component);
 });
 
+const SCAN = 'Scanned Document.pdf';
+
+/** What Rust answers when the entry already gives the chosen file's name to
+ * another: a question, and nothing on the entry yet. */
+function taken(over: Partial<Clash> = {}): Attached {
+	return {
+		outcome: 'taken',
+		clash: {
+			name: SCAN,
+			size: 1.2 * 1024 * 1024,
+			chosen: 840 * 1024,
+			free: 'Scanned Document 2.pdf',
+			...over
+		}
+	};
+}
+
+/** A pane whose entry has a scan, with the question about a second one open. */
+async function asked(over: Partial<Clash> = {}) {
+	ipc.addAttachment.mockReset();
+	ipc.addAttachment.mockResolvedValue(taken(over));
+	const name = over.name ?? SCAN;
+	const opened = pane({ attachments: [attachment({ name, fileName: name })] });
+
+	icon('Add a file').click();
+	await vi.waitFor(() => expect(host.querySelector('[data-confirm]')).not.toBeNull());
+	flushSync();
+	return opened;
+}
+
+function question(): string {
+	return host.querySelector('[data-confirm]')?.textContent ?? '';
+}
+
 /**
- * A file under a name the entry already has replaces the one there, and the one
- * there can be held in place by previous versions like any other. The two
- * cannot be one step: the bytes the reader chose are gone by the time the
- * refusal comes back, so a bare error message left them with nothing to do.
+ * Every phone calls every scan the same thing, and the second page of a
+ * passport used to take the place of the first without a word. Now nothing is
+ * on the entry until the reader has been asked, in sizes as well as names, and
+ * the answer that loses nothing is the one the focus is on.
  */
-it('says what to do when a file cannot be replaced yet', async () => {
-	const onFailure = vi.fn();
-	ipc.addAttachment.mockRejectedValue({
+it('asks before a file goes on under a name the entry already has', async () => {
+	const { component, onChanged, onFailure } = await asked();
+
+	expect(question()).toContain(`This entry already has “${SCAN}” (1.2 MB).`);
+	expect(question()).toContain(
+		'Keep both to add the new one (840 KB) as “Scanned Document 2.pdf”.'
+	);
+	expect(question()).toContain('can’t be undone');
+
+	// Asked, not reported, and nothing has changed to be written.
+	expect(onChanged).not.toHaveBeenCalled();
+	expect(onFailure).not.toHaveBeenCalled();
+
+	// The way out, the answer that loses nothing, and the destructive one last
+	// and the only one in red.
+	const answers = [...host.querySelectorAll('[data-confirm] button')];
+	expect(answers.map((each) => each.textContent?.trim())).toEqual([
+		'Don’t add it',
+		'Keep both',
+		'Replace'
+	]);
+	expect(answers.filter((each) => each.className.includes('text-danger'))).toEqual([
+		button('Replace')
+	]);
+	expect(document.activeElement).toBe(button('Keep both'));
+
+	return unmount(component);
+});
+
+/** The default answer puts the file beside the one there, through Rust, and
+ * the entry that comes back is the change the window writes. */
+it('keeps both files on the answer that loses nothing', async () => {
+	const both = entry({
+		attachments: [attachment({ name: SCAN }), attachment({ name: 'Scanned Document 2.pdf' })]
+	});
+	ipc.keepBothAttachments.mockResolvedValue(both);
+	const { component, entry: shown, onChanged } = await asked();
+
+	button('Keep both').click();
+	await vi.waitFor(() => expect(onChanged).toHaveBeenCalledWith(both));
+	flushSync();
+
+	expect(ipc.keepBothAttachments).toHaveBeenCalledWith(shown.id);
+	expect(ipc.replaceAttachment).not.toHaveBeenCalled();
+	expect(ipc.withdrawAttachment).not.toHaveBeenCalled();
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+
+	return unmount(component);
+});
+
+it('replaces the file there only on the destructive answer', async () => {
+	const replaced = entry({ attachments: [attachment({ name: SCAN })] });
+	ipc.replaceAttachment.mockResolvedValue(replaced);
+	const { component, entry: shown, onChanged } = await asked();
+
+	button('Replace').click();
+	await vi.waitFor(() => expect(onChanged).toHaveBeenCalledWith(replaced));
+
+	expect(ipc.replaceAttachment).toHaveBeenCalledWith(shown.id);
+	expect(ipc.keepBothAttachments).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/** The way out, by its button or by Escape, lets the file waiting in Rust go
+ * and changes nothing. */
+it('lets the file go when the reader does not add it', async () => {
+	for (const way of ['button', 'escape']) {
+		const { component, entry: shown, onChanged } = await asked();
+
+		if (way === 'button') button('Don’t add it').click();
+		else
+			button('Keep both').dispatchEvent(
+				new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+			);
+		flushSync();
+
+		expect(host.querySelector('[data-confirm]'), way).toBeNull();
+		expect(ipc.withdrawAttachment, way).toHaveBeenCalledWith(shown.id);
+		expect(ipc.keepBothAttachments).not.toHaveBeenCalled();
+		expect(ipc.replaceAttachment).not.toHaveBeenCalled();
+		expect(onChanged).not.toHaveBeenCalled();
+
+		unmount(component);
+		ipc.withdrawAttachment.mockClear();
+	}
+});
+
+/**
+ * Replacing is a removal first, and earlier versions can hold the file there in
+ * place the way they hold any other. That used to end in a sentence and a
+ * button called "Right you are", with the chosen file already gone. The file is
+ * still waiting now, so the question comes back without the answer that was
+ * refused, saying why in words, and keeping both is still one press away.
+ */
+it('asks again without the refused answer when earlier versions hold the file', async () => {
+	ipc.replaceAttachment.mockRejectedValue({
 		code: 'attachmentInHistory',
 		message: 'earlier versions of an entry still hold that file in place'
 	});
+	const both = entry({ attachments: [attachment({ name: SCAN })] });
+	ipc.keepBothAttachments.mockResolvedValue(both);
+	const { component, entry: shown, onChanged, onFailure } = await asked();
 
-	const component = mount(EntryView, {
-		target: host,
-		props: {
-			entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
-			path: [group({ name: 'Work' })],
-			versions: [],
-			now: new Date('2026-08-29T14:30:00Z'),
-			readOnly: false,
-			onCopy: vi.fn(),
-			onChanged: vi.fn(),
-			onVersions: vi.fn(),
-			onClose: vi.fn(),
-			onDelete: vi.fn(),
-			onFieldRemoved: vi.fn(),
-			onFailure
-		}
-	});
+	button('Replace').click();
+	await vi.waitFor(() => expect(question()).toContain('Earlier versions are holding'));
 	flushSync();
 
-	host.querySelector<HTMLButtonElement>('[aria-label="Add a file"]')?.click();
-	await vi.waitFor(() => expect(host.textContent).toContain('Take that one off first'));
-
-	// A refusal the reader can act on is not an error message.
+	expect(question()).toContain(`“${SCAN}” that is here in place, so it can’t be replaced.`);
+	expect(question()).toContain('its trash offers to clear the versions in the way');
+	expect(host.textContent).not.toContain('Right you are');
 	expect(onFailure).not.toHaveBeenCalled();
+	expect(ipc.withdrawAttachment).not.toHaveBeenCalled();
+
+	const answers = [...host.querySelectorAll('[data-confirm] button')];
+	expect(answers.map((each) => each.textContent?.trim())).toEqual(['Don’t add it', 'Keep both']);
+	expect(document.activeElement).toBe(button('Keep both'));
+
+	button('Keep both').click();
+	await vi.waitFor(() => expect(onChanged).toHaveBeenCalledWith(both));
+	expect(ipc.keepBothAttachments).toHaveBeenCalledWith(shown.id);
+
+	return unmount(component);
+});
+
+/**
+ * The refusal says to take the file there off first, and its trash does that
+ * without closing the question. Once it has gone there is nothing to keep both
+ * of or to replace, and the question says so rather than offering either.
+ */
+it('offers the name itself once the file there has gone', async () => {
+	ipc.replaceAttachment.mockRejectedValue({
+		code: 'attachmentInHistory',
+		message: 'earlier versions of an entry still hold that file in place'
+	});
+	const only = entry({ attachments: [attachment({ name: SCAN })] });
+	ipc.keepBothAttachments.mockResolvedValue(only);
+	ipc.addAttachment.mockReset();
+	ipc.addAttachment.mockResolvedValue(taken());
+	const first = entry({ attachments: [attachment({ name: SCAN })] });
+	const props = reactive({
+		entry: first,
+		path: [group({ name: 'Work' })],
+		versions: [],
+		now: new Date('2026-08-29T14:30:00Z'),
+		readOnly: false,
+		onCopy: vi.fn(),
+		onChanged: vi.fn(),
+		onVersions: vi.fn(),
+		onClose: vi.fn(),
+		onDelete: vi.fn(),
+		onFieldRemoved: vi.fn(),
+		onFailure: vi.fn()
+	});
+	const component = mount(EntryView, { target: host, props });
+	flushSync();
+
+	icon('Add a file').click();
+	await vi.waitFor(() => expect(host.querySelector('[data-confirm]')).not.toBeNull());
+	button('Replace').click();
+	await vi.waitFor(() => expect(question()).toContain('Earlier versions are holding'));
+
+	// The file there, and the versions holding it, taken off by its own trash.
+	props.entry = { ...first, attachments: [] };
+	flushSync();
+
+	expect(question()).toContain(`“${SCAN}” is no longer on this entry`);
+	const answers = [...host.querySelectorAll('[data-confirm] button')];
+	expect(answers.map((each) => each.textContent?.trim())).toEqual(['Don’t add it', 'Add it']);
+
+	button('Add it').click();
+	await vi.waitFor(() => expect(props.onChanged).toHaveBeenCalledWith(only));
+	expect(ipc.keepBothAttachments).toHaveBeenCalledWith(first.id);
+	expect(ipc.withdrawAttachment).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/** Any other refusal is an error to read, and the question goes - so the file
+ * it was about goes too, rather than waiting in Rust on nobody. */
+it('lets the file go when an answer is refused for any other reason', async () => {
+	for (const answer of ['Replace', 'Keep both'] as const) {
+		ipc.replaceAttachment.mockRejectedValue({ code: 'io', message: 'the disk is full' });
+		ipc.keepBothAttachments.mockRejectedValue({ code: 'io', message: 'the disk is full' });
+		const { component, entry: shown, onFailure, onChanged } = await asked();
+
+		button(answer).click();
+		await vi.waitFor(() =>
+			expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({ code: 'io' }))
+		);
+		await vi.waitFor(() => expect(ipc.withdrawAttachment).toHaveBeenCalledWith(shown.id));
+		flushSync();
+
+		expect(host.querySelector('[data-confirm]'), answer).toBeNull();
+		expect(onChanged).not.toHaveBeenCalled();
+
+		unmount(component);
+		ipc.withdrawAttachment.mockClear();
+	}
+});
+
+/**
+ * The pane is handed one entry after another. A question about the entry that
+ * was open goes with it, and the file it was about is let go by that entry's
+ * id - never answered against the next one.
+ */
+it('lets the file go when the pane shows another entry or none', async () => {
+	ipc.addAttachment.mockReset();
+	ipc.addAttachment.mockResolvedValue(taken());
+	const first = entry({ attachments: [attachment({ name: SCAN })] });
+	const props = reactive({
+		entry: first,
+		path: [group({ name: 'Work' })],
+		versions: [],
+		now: new Date('2026-08-29T14:30:00Z'),
+		readOnly: false,
+		onCopy: vi.fn(),
+		onChanged: vi.fn(),
+		onVersions: vi.fn(),
+		onClose: vi.fn(),
+		onDelete: vi.fn(),
+		onFieldRemoved: vi.fn(),
+		onFailure: vi.fn()
+	});
+	const component = mount(EntryView, { target: host, props });
+	flushSync();
+
+	icon('Add a file').click();
+	await vi.waitFor(() => expect(host.querySelector('[data-confirm]')).not.toBeNull());
+
+	props.entry = entry({ attachments: [attachment({ name: SCAN })] });
+	flushSync();
+
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+	expect(ipc.withdrawAttachment).toHaveBeenCalledTimes(1);
+	expect(ipc.withdrawAttachment).toHaveBeenCalledWith(first.id);
+
+	// And a pane that goes away altogether, which is how a lock and a close
+	// both look from here.
+	icon('Add a file').click();
+	await vi.waitFor(() => expect(host.querySelector('[data-confirm]')).not.toBeNull());
+	const second = props.entry.id;
+	unmount(component);
+	expect(ipc.withdrawAttachment).toHaveBeenLastCalledWith(second);
+	expect(ipc.keepBothAttachments).not.toHaveBeenCalled();
+	expect(ipc.replaceAttachment).not.toHaveBeenCalled();
+});
+
+/**
+ * The same entry drawn again after a change - a title written while the
+ * question was open - is still the entry the question is about. The pane used
+ * to take every answer it was waiting on away with any change at all, and the
+ * reader's file with it.
+ */
+it('keeps the question while the entry it is about changes', async () => {
+	ipc.addAttachment.mockReset();
+	ipc.addAttachment.mockResolvedValue(taken());
+	const first = entry({ attachments: [attachment({ name: SCAN })] });
+	const props = reactive({
+		entry: first,
+		path: [group({ name: 'Work' })],
+		versions: [],
+		now: new Date('2026-08-29T14:30:00Z'),
+		readOnly: false,
+		onCopy: vi.fn(),
+		onChanged: vi.fn(),
+		onVersions: vi.fn(),
+		onClose: vi.fn(),
+		onDelete: vi.fn(),
+		onFieldRemoved: vi.fn(),
+		onFailure: vi.fn()
+	});
+	const component = mount(EntryView, { target: host, props });
+	flushSync();
+
+	icon('Add a file').click();
+	await vi.waitFor(() => expect(host.querySelector('[data-confirm]')).not.toBeNull());
+
+	props.entry = { ...first, fields: [field({ name: 'Title', value: 'Passport', empty: false })] };
+	flushSync();
+
+	expect(question()).toContain(`This entry already has “${SCAN}”`);
+	expect(ipc.withdrawAttachment).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/** An answer that arrives for an entry the pane has left is not drawn over
+ * the next one, and the file it was about is let go. */
+it('asks nothing when the pane has moved on by the time the answer comes', async () => {
+	let answer: (value: Attached) => void = () => {};
+	ipc.addAttachment.mockReset();
+	ipc.addAttachment.mockReturnValue(new Promise<Attached>((resolve) => (answer = resolve)));
+	const first = entry({ attachments: [attachment({ name: SCAN })] });
+	const props = reactive({
+		entry: first,
+		path: [group({ name: 'Work' })],
+		versions: [],
+		now: new Date('2026-08-29T14:30:00Z'),
+		readOnly: false,
+		onCopy: vi.fn(),
+		onChanged: vi.fn(),
+		onVersions: vi.fn(),
+		onClose: vi.fn(),
+		onDelete: vi.fn(),
+		onFieldRemoved: vi.fn(),
+		onFailure: vi.fn()
+	});
+	const component = mount(EntryView, { target: host, props });
+	flushSync();
+
+	icon('Add a file').click();
+	props.entry = entry({ attachments: [attachment({ name: SCAN })] });
+	flushSync();
+	answer(taken());
+
+	await vi.waitFor(() => expect(ipc.withdrawAttachment).toHaveBeenCalledWith(first.id));
+	flushSync();
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+
+	return unmount(component);
+});
+
+/** A file whose name is free is simply on the entry, and the entry that comes
+ * back is the change the window writes. Pressing the button again takes away a
+ * question still open from the last press. */
+it('puts a file whose name is free straight on, and a new press starts over', async () => {
+	const { component, onChanged } = await asked();
+
+	const added = entry({ attachments: [attachment({ name: 'passport-2.pdf' })] });
+	ipc.addAttachment.mockResolvedValue({ outcome: 'added', entry: added });
+	icon('Add a file').click();
+	flushSync();
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+
+	await vi.waitFor(() => expect(onChanged).toHaveBeenCalledWith(added));
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+
+	return unmount(component);
+});
+
+/** The names in the question are out of somebody's database and off their
+ * disk, and they are written as text whatever they hold. */
+it('writes the names in the question as text and never as markup', async () => {
+	const hostile = '<img src=x onerror="alert(1)">.pdf';
+	const { component } = await asked({ name: hostile, free: '<script>alert(1)</script> 2.pdf' });
+
+	expect(host.querySelector('img')).toBeNull();
+	expect(host.querySelector('script')).toBeNull();
+	expect(question()).toContain(hostile);
+	expect(question()).toContain('<script>alert(1)</script> 2.pdf');
 
 	return unmount(component);
 });

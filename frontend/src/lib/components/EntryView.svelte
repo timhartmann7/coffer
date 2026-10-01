@@ -4,14 +4,17 @@
 		addAttachment,
 		asFailure,
 		exportAttachment,
+		keepBothAttachments,
 		openUrl,
 		removeAttachment,
 		removeAttachmentAndVersions,
 		removeField,
+		replaceAttachment,
 		setField,
-		setTags
+		setTags,
+		withdrawAttachment
 	} from '$lib/ipc';
-	import type { Entry, Field, Group, Version } from '$lib/model';
+	import type { Clash, Entry, Field, Group, Version } from '$lib/model';
 	import Confirm from './Confirm.svelte';
 	import Editable from './Editable.svelte';
 	import Icon from './Icon.svelte';
@@ -86,9 +89,27 @@
 	 * and nobody else's.
 	 */
 	let pinned = $state<{ name: string; message: string } | null>(null);
-	/** Why a file could not be put on the entry, when it is worth saying more
-	 * than the sentence the engine gives. */
-	let blocked = $state<string | null>(null);
+	/**
+	 * A file the reader chose under a name the entry already gives another,
+	 * while they say which of the two to keep.
+	 *
+	 * The file itself waits in Rust, so that an answer never means choosing it
+	 * again; this is only what the question says about it. Nothing is on the
+	 * entry until the answer is in, and a phone that calls every scan by the
+	 * same name no longer takes the first page of a passport with the second.
+	 */
+	let clash = $state<Clash | null>(null);
+	/** Whether the reader asked to replace the file there and earlier versions
+	 * are holding it in place. The question is asked again without that answer,
+	 * because keeping both needs nothing to go. */
+	let held = $state(false);
+	/** Whether the file the question is about has left the entry since it was
+	 * asked: its own trash is what the question says to use when versions hold
+	 * it. There is nothing left to keep both of or to replace, and the new file
+	 * goes on under the name itself. */
+	const freed = $derived(
+		clash !== null && !entry.attachments.some((file) => file.name === clash?.name)
+	);
 	/**
 	 * The file whose removal is being asked about.
 	 *
@@ -99,17 +120,32 @@
 	 */
 	let asking = $state<string | null>(null);
 
+	/**
+	 * Which entry the pane is showing.
+	 *
+	 * Its own value rather than a read of `entry`, which is a new object after
+	 * every change: an effect that read the entry itself ran again for an edit
+	 * to the title, and took the reader's unanswered question away with it.
+	 */
+	const showing = $derived(entry.id);
+
 	// Another entry is another set of answers. A banner about a file on the
 	// entry that was open would otherwise still be on the screen under the next
 	// one, offering to clear the wrong entry's history.
 	$effect(() => {
-		void entry.id;
+		const id = showing;
 		// Cleared on the way out rather than on the way in: a write inside the
 		// body of an effect is a read of what was there, and an effect that
 		// reads what it writes runs again the moment anything sets it.
 		return () => {
+			// A question nobody can see any more is not one anybody will answer,
+			// and the file it was about is the reader's, waiting in Rust. It goes
+			// with the question, and Rust lets go of it only for this entry, so a
+			// file chosen for the next one since is left alone.
+			if (clash) letGo(id);
 			pinned = null;
-			blocked = null;
+			clash = null;
+			held = false;
 			naming = false;
 			asking = null;
 		};
@@ -131,27 +167,98 @@
 	}
 
 	/**
-	 * Puts a file on the entry, or says what stands in the way.
+	 * Puts a file on the entry, or asks about the one already under its name.
 	 *
-	 * A file under a name the entry already has replaces the one there, and the
-	 * one there can be held in place by previous versions the way any other file
-	 * can. That cannot be offered as one step: the bytes the reader chose are
-	 * already gone by the time the refusal comes back, so what they are told is
-	 * which of the two things to do first.
+	 * A new press is a new question, so whatever was being asked goes first;
+	 * Rust lets go of the file it was about before the panel opens.
 	 */
 	async function attach() {
+		const id = entry.id;
+		clash = null;
+		held = false;
 		try {
-			const held = await addAttachment(entry.id);
-			if (held) await onChanged(held);
-		} catch (thrown) {
-			const failure = asFailure(thrown);
-			if (failure.code === 'attachmentInHistory') {
-				blocked =
-					'A file of that name is already here, and earlier versions are holding it. Take that one off first - the offer beside it clears the versions in the way - then add the new one.';
-			} else {
-				onFailure(thrown);
+			const answer = await addAttachment(id);
+			if (answer === null) return;
+			if (answer.outcome === 'added') {
+				await onChanged(answer.entry);
+				return;
 			}
+			// The pane moved on while the panel was open, so there is nobody
+			// left to ask. The file is let go rather than kept for a question
+			// that is never drawn.
+			if (entry.id !== id) {
+				letGo(id);
+				return;
+			}
+			clash = answer.clash;
+		} catch (thrown) {
+			onFailure(thrown);
 		}
+	}
+
+	/** The answer that loses nothing: the file waiting goes on beside the one
+	 * already there. */
+	async function keepBoth() {
+		const id = entry.id;
+		clash = null;
+		held = false;
+		// A refusal takes the question away, so it takes the file too: a file
+		// waiting on a question nobody can see is one nobody can answer.
+		if (!(await change(() => keepBothAttachments(id)))) letGo(id);
+	}
+
+	/**
+	 * The destructive answer: the file waiting takes the place of the one there.
+	 *
+	 * Refused while earlier versions hold the one there, which is the reader's
+	 * to act on rather than an error to read: the file is still waiting in Rust,
+	 * so the question comes back without the answer that was refused.
+	 */
+	async function replace() {
+		const id = entry.id;
+		const asked = clash;
+		clash = null;
+		try {
+			await onChanged(await replaceAttachment(id));
+		} catch (thrown) {
+			if (asFailure(thrown).code === 'attachmentInHistory' && entry.id === id) {
+				clash = asked;
+				held = true;
+				return;
+			}
+			onFailure(thrown);
+			letGo(id);
+		}
+	}
+
+	/** What the question about a taken name says, as the entry stands now. */
+	function said(offer: Clash): string {
+		if (freed) {
+			return `“${offer.name}” is no longer on this entry, so the new one (${size(offer.chosen)}) can go on under that name.`;
+		}
+		if (held) {
+			return `Earlier versions are holding the “${offer.name}” that is here in place, so it can’t be replaced. Keep both, or remove that one first - its trash offers to clear the versions in the way.`;
+		}
+		return `This entry already has “${offer.name}” (${size(offer.size)}). Keep both to add the new one (${size(offer.chosen)}) as “${offer.free}”. A replaced file is not kept in Versions, so replacing can’t be undone.`;
+	}
+
+	/** The way out: the file waiting is let go, and the entry is as it was. */
+	function dismiss() {
+		clash = null;
+		held = false;
+		letGo(entry.id);
+	}
+
+	/**
+	 * Tells Rust to let go of the file waiting on this entry.
+	 *
+	 * Nothing waits on the answer and nothing is said when it fails. The file
+	 * goes anyway at the next pick and at the next lock, and a sentence about
+	 * letting go of something the reader already said no to is not one worth
+	 * putting in front of them.
+	 */
+	function letGo(id: string) {
+		void withdrawAttachment(id).catch(() => {});
 	}
 
 	/** Writes a file out through the save panel Rust opens. */
@@ -163,7 +270,6 @@
 	async function detach(name: string) {
 		asking = null;
 		pinned = null;
-		blocked = null;
 		try {
 			await onChanged(await removeAttachment(entry.id, name));
 		} catch (thrown) {
@@ -534,6 +640,25 @@
 			</div>
 
 			<!--
+				The question about a name that is taken, under the button that asked
+				for the file. "Keep both" is where the focus lands and what Return
+				gives, because it is what somebody adding the second page of a
+				scan means; replacing is the destructive answer and stands last.
+			-->
+			{#if clash}
+				<Confirm
+					class="mt-3 bg-surface2"
+					question={said(clash)}
+					keep="Don’t add it"
+					neutral={{ label: freed ? 'Add it' : 'Keep both', run: () => void keepBoth() }}
+					focus="neutral"
+					act={held || freed ? undefined : 'Replace'}
+					onKeep={dismiss}
+					onAct={() => void replace()}
+				/>
+			{/if}
+
+			<!--
 				Writing a file out and removing it used to be two icons of one size
 				twelve pixels apart, and the one that was missed was the one that
 				could not be taken back. Each is now a box a fingertip wide, the two
@@ -586,21 +711,6 @@
 				</p>
 			{/each}
 		</div>
-
-		{#if blocked}
-			<div class="mt-3 animate-rise rounded-sm border border-hairline bg-surface2 p-3">
-				<p class="text-fine leading-relaxed text-txt2">{blocked}</p>
-				<div class="mt-3 flex flex-wrap gap-2">
-					<button
-						type="button"
-						onclick={() => (blocked = null)}
-						class="h-9 rounded-full px-4 text-small text-txt3 transition-colors hover:text-txt2"
-					>
-						Right you are
-					</button>
-				</div>
-			</div>
-		{/if}
 
 		{#if pinned}
 			<Confirm

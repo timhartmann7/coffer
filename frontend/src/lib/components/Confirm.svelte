@@ -8,21 +8,28 @@
 	 *
 	 * - the question in words, naming what goes and whether it comes back;
 	 * - the way out first, named by what it leaves rather than by "Cancel";
-	 * - a neutral step in the middle when there is one worth taking first, which
-	 *   leaves the question where it is;
+	 * - a neutral answer in the middle when there is one: a step worth taking
+	 *   first, which leaves the question where it is, or a way on that loses
+	 *   nothing;
 	 * - the destructive answer last, and the only one in the danger colour.
 	 *
-	 * The way out is where the focus lands, and Escape is the way out as well, so
-	 * that a second press of Return or Space - or a key meant for the pane - is
-	 * never the one that destroys. The Escape stops here: the window reads the
-	 * same key as "close the entry", and a question answered by taking the pane
-	 * away is a question nobody saw answered.
+	 * A question whose destructive answer was given and refused can be asked
+	 * again without it, when something that loses nothing is still open to the
+	 * reader: the same box and the same keys, one button fewer.
+	 *
+	 * The focus lands on an answer that loses nothing - the way out, or the
+	 * neutral answer when that is the one a reader means most often - and Escape
+	 * is the way out, so that a second press of Return or Space, or a key meant
+	 * for the pane, is never the one that destroys. The Escape stops here: the
+	 * window reads the same key as "close the entry", and a question answered by
+	 * taking the pane away is a question nobody saw answered.
 	 */
 	let {
 		question,
 		keep = 'Keep it',
 		act,
 		neutral,
+		focus = 'keep',
 		bare = false,
 		class: classes = '',
 		onKeep,
@@ -31,9 +38,13 @@
 		question: string;
 		/** The way out, named by its result. */
 		keep?: string;
-		/** The destructive answer, named by what it does. */
-		act: string;
+		/** The destructive answer, named by what it does. Left out only when it
+		 * has been refused and the question is asked again without it. */
+		act?: string;
 		neutral?: { label: string; run: () => void };
+		/** Which answer the focus lands on, and so which one Return gives. Never
+		 * the destructive one. */
+		focus?: 'keep' | 'neutral';
 		/** Without a box of its own, for a question asked inside a card that is
 		 * one already: a file's row, a version's. */
 		bare?: boolean;
@@ -46,8 +57,9 @@
 
 	const id = $props.id();
 	let safe = $state<HTMLButtonElement>();
+	let middle = $state<HTMLButtonElement>();
 
-	$effect(() => safe?.focus());
+	$effect(() => (focus === 'neutral' && middle ? middle : safe)?.focus());
 
 	function keys(event: KeyboardEvent) {
 		if (event.key !== 'Escape') return;
@@ -75,6 +87,7 @@
 		</button>
 		{#if neutral}
 			<button
+				bind:this={middle}
 				type="button"
 				onclick={neutral.run}
 				onkeydown={keys}
@@ -83,13 +96,15 @@
 				{neutral.label}
 			</button>
 		{/if}
-		<button
-			type="button"
-			onclick={onAct}
-			onkeydown={keys}
-			class="h-9 rounded-full px-3 text-small text-danger transition-colors hover:bg-dangerwash"
-		>
-			{act}
-		</button>
+		{#if act !== undefined}
+			<button
+				type="button"
+				onclick={onAct}
+				onkeydown={keys}
+				class="h-9 rounded-full px-3 text-small text-danger transition-colors hover:bg-dangerwash"
+			>
+				{act}
+			</button>
+		{/if}
 	</div>
 </div>

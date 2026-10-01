@@ -64,7 +64,10 @@ Everything slice 3 added:
 | `set_field` | `entry`, `field`, `value`, `protect` | the entry |
 | `remove_field` | `entry`, `field` | the entry |
 | `set_tags` | `entry`, `tags` | the entry |
-| `add_attachment` | `entry` | the entry |
+| `add_attachment` | `entry` | the entry, or what already has the file's name, or nothing if the panel was closed |
+| `keep_both_attachments` | `entry` | the entry |
+| `replace_attachment` | `entry` | the entry |
+| `withdraw_attachment` | `entry` | nothing |
 | `export_attachment` | `entry`, `name` | nothing |
 | `remove_attachment` | `entry`, `name` | the entry |
 | `remove_attachment_and_versions` | `entry`, `name` | the entry |
@@ -214,6 +217,47 @@ is offered comes from
 [`Attachment::file_name`](../crates/vault-core/src/model.rs), which is the one
 place a name out of a database is turned into a file name.
 
+**A name the entry already gives a file is asked about, not written over.**
+`add_attachment` answers `{ outcome: 'added', entry }` when the name is free and
+`{ outcome: 'taken', clash }` when it is not, and in the second case nothing has
+changed: no file has moved, no version has been written, and the vault has
+nothing new to save. `clash` is the name as the entry holds it, `size` of the
+file already there, `chosen`, the size of the one just picked, and `free`, the
+name the new one goes under if both are kept. A taken name is an answer rather
+than a failure because nothing failed: the window has a question to ask, and
+a failure is a sentence to show.
+
+The reader answers with one of three commands, each naming only the entry:
+`keep_both_attachments` puts the file beside the one there under `free` (worked
+out again when the answer arrives, so a name that came free or was taken in
+between is honoured), `replace_attachment` takes the one there off the way a
+removal would and puts the new one in its place, and `withdraw_attachment` lets
+the file go. Replacing is refused with `attachmentInHistory` exactly as a
+removal is, and the file goes on waiting, so the reader can still keep both.
+
+The file waits in Rust, beside the vault, until then - its bytes rather than its
+path. A path is a question asked again later of a disk that has moved on: the
+file can be renamed, rewritten by the scanner that made it, or on a stick that
+was pulled out before the reader answered. The bytes are what they chose, they
+cost what the pick had already paid to read them, and they are wiped the way the
+vault is. The file is tied to the entry it was picked for: an answer naming any
+other entry is refused and leaves it alone, and `withdraw_attachment` lets go of
+it only for the entry it names, because the window sends that about the entry it
+is leaving and the message can arrive after a file was picked for the next one.
+It goes with the vault on a lock or when another database is chosen, when the
+button is pressed again, when another file is picked for any entry, and when the
+window stops showing the question.
+
+A name that differs only in letter case is not taken. The format and every
+KeePass client keep `Scan.pdf` and `scan.pdf` apart, so adding the second loses
+nothing. The name Coffer makes up for keeping both avoids one that differs only
+in case, because a Mac's disk would not let the reader write the two out side by
+side. The number goes before the last extension - `archive.tar 2.gz`,
+`id_ed25519 2`, `.env 2` - and after whatever the name already says rather than
+counting on from a number in it, because `Tax return 2025.pdf` is a year. A name
+held only by an earlier version is free on the entry: the version keeps its
+bytes, and the question is about what the entry has now.
+
 Nothing that names a file comes from the webview. `choose_database` opens the
 system's own dialog and keeps the answer; `choose_snapshot` takes a slot number
 and builds the path from the database the user already chose; `choose_found`
@@ -247,6 +291,8 @@ to clear those versions and remove the file, which is the only sequence that
 works and is the reader's to choose. That offer is `remove_attachment_and_versions`
 rather than the two commands one after the other: a removal can be refused for
 more than one reason, and the versions go back if the file still cannot go.
+`replace_attachment` answers with the same code for the same reason, and the
+entry screen asks its question again without the answer that was refused.
 
 `externalChange` is the one the conflict dialog is built on. `save` answers with
 it when the file is not the one the vault was opened from, and nothing has been

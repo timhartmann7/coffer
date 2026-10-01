@@ -11,7 +11,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use vault_core::kdf::Work;
 use vault_core::model::{Entry, EntryId, Project};
-use vault_core::{LockPolicy, MasterKey, Recipe, Rescue, SecretValue, Vault};
+use vault_core::{Attached, LockPolicy, MasterKey, Recipe, Rescue, SecretValue, Vault, VaultError};
 use zeroize::Zeroizing;
 
 use crate::autolock::Reason;
@@ -58,13 +58,65 @@ struct Held {
     /// be thrown away by the question that comes next - and the vault could
     /// never be made at all.
     measured: Option<Work>,
-    /// The open database. Dropping it wipes the decrypted tree and removes the
-    /// lock file beside the database.
-    vault: Option<Vault>,
+    /// The open database, and the file waiting on the reader's word about one
+    /// of its entries. Dropping it wipes the decrypted tree and the file, and
+    /// removes the lock file beside the database.
+    open: Option<Open>,
     /// Bumped every time the session is pointed somewhere else or emptied. Key
     /// derivation takes a second and does not hold the lock, so an unlock that
     /// started before such a change must not finish over it.
     generation: u64,
+}
+
+/// An open vault, and the file the reader chose for one of its entries while
+/// they are asked about a name that entry already gives another.
+///
+/// One value rather than two fields, so that nothing can take the vault away
+/// and leave the file behind. A lock, another database chosen, an unlock over
+/// the top: every way the vault goes, the file goes with it, wiped, and no
+/// path through here has to remember to say so.
+struct Open {
+    vault: Vault,
+    offered: Option<Offered>,
+}
+
+impl Open {
+    fn of(vault: Vault) -> Open {
+        Open {
+            vault,
+            offered: None,
+        }
+    }
+}
+
+/// A file offered to an entry under a name the entry already gives another,
+/// held until the reader says which of the two to keep.
+///
+/// The bytes rather than the path they were read from. A path is a question
+/// asked again later of a disk that has moved on: the file can be renamed,
+/// rewritten by the scanner that made it, or on a stick that has been pulled
+/// out by the time the reader answers, and what went on the entry would not be
+/// what they were asked about, or would be nothing at all. The bytes are the
+/// file they chose, as it was when they chose it. They cost what the offer had
+/// already paid to read them - no more than the largest file a vault takes -
+/// and they are held the way the vault holds everything else: wiped when they
+/// go, and gone whenever the vault is.
+///
+/// Tied to the entry the file was picked for. An answer about any other entry
+/// does not reach it, so a file is never put on an entry it was not chosen for.
+struct Offered {
+    entry: EntryId,
+    name: String,
+    data: Zeroizing<Vec<u8>>,
+}
+
+impl std::fmt::Debug for Offered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Offered")
+            .field("entry", &self.entry)
+            .field("file", &"[redacted]")
+            .finish()
+    }
 }
 
 impl Session {
@@ -79,7 +131,7 @@ impl Session {
                 key_file: None,
                 making: None,
                 measured: None,
-                vault: None,
+                open: None,
                 generation: 0,
             }),
             remembering,
@@ -112,7 +164,7 @@ impl Session {
     pub fn choose(&self, database: PathBuf) {
         let database = database.canonicalize().unwrap_or(database);
         let mut held = self.held();
-        held.vault = None;
+        held.open = None;
         held.database = Some(database);
         // A key file belongs to the vault it opens. Carrying one over to a
         // different file would turn a right password into a wrong one, with
@@ -125,7 +177,7 @@ impl Session {
     }
 
     pub fn is_unlocked(&self) -> bool {
-        self.held().vault.is_some()
+        self.held().open.is_some()
     }
 
     /// The key file the next unlock will use, if one has been chosen.
@@ -166,7 +218,7 @@ impl Session {
             // Anything already open is dropped before the new one is opened, so
             // that reopening the same file does not find Coffer's own lock
             // beside it and refuse.
-            held.vault = None;
+            held.open = None;
             (
                 held.database.clone().ok_or_else(Failure::no_vault)?,
                 held.key_file.clone(),
@@ -222,7 +274,7 @@ impl Session {
             // The database Coffer opened is the one it followed the links to.
             let opened = vault.path().to_path_buf();
             held.database = Some(opened.clone());
-            held.vault = Some(vault);
+            held.open = Some(Open::of(vault));
             held.key_file = key_file;
             held.making = None;
             held.locked_by = None;
@@ -255,8 +307,8 @@ impl Session {
         // copy of anything that never reached the file, and a vault is dirty
         // exactly when saving is the thing that failed - so a wipe on its own
         // is a session's work ended by a timer nobody was watching.
-        let rescue = held.vault.as_mut().map(Vault::rescue);
-        held.vault = None;
+        let rescue = held.open.as_mut().map(|open| open.vault.rescue());
+        held.open = None;
         held.generation += 1;
 
         let Some(rescue) = rescue else { return false };
@@ -305,7 +357,7 @@ impl Session {
     pub fn create(&self, password: Zeroizing<Vec<u8>>) -> Result<(), Failure> {
         let (target, work, generation) = {
             let mut held = self.held();
-            held.vault = None;
+            held.open = None;
             let target = held.making.clone().ok_or_else(Failure::nowhere_chosen)?;
             let work = held.measured.ok_or_else(|| {
                 Failure::refused("the vault's key derivation has not been measured yet")
@@ -365,8 +417,8 @@ impl Session {
     /// vault past a lock that was supposed to wipe it.
     pub fn with<T>(&self, read: impl FnOnce(&Vault) -> T) -> Result<T, Failure> {
         let held = self.held();
-        let vault = held.vault.as_ref().ok_or_else(Failure::no_vault)?;
-        Ok(read(vault))
+        let open = held.open.as_ref().ok_or_else(Failure::no_vault)?;
+        Ok(read(&open.vault))
     }
 
     /// Borrows the open vault to change it.
@@ -378,8 +430,77 @@ impl Session {
     /// never true.
     pub fn with_mut<T>(&self, change: impl FnOnce(&mut Vault) -> T) -> Result<T, Failure> {
         let mut held = self.held();
-        let vault = held.vault.as_mut().ok_or_else(Failure::no_vault)?;
-        Ok(change(vault))
+        let open = held.open.as_mut().ok_or_else(Failure::no_vault)?;
+        Ok(change(&mut open.vault))
+    }
+
+    /// Offers a file to an entry, and holds on to it when the entry already
+    /// gives its name to another, until the reader says which to keep.
+    ///
+    /// Whatever was waiting before is let go first, whichever entry it was for:
+    /// a file picked is a new question, and the last one is no longer being
+    /// asked.
+    pub fn offer(
+        &self,
+        entry: EntryId,
+        name: String,
+        data: Zeroizing<Vec<u8>>,
+    ) -> Result<Attached, Failure> {
+        let mut held = self.held();
+        let open = held.open.as_mut().ok_or_else(Failure::no_vault)?;
+        open.offered = None;
+
+        let attached = open.vault.add_attachment(entry, &name, &data)?;
+        if matches!(attached, Attached::Taken(_)) {
+            open.offered = Some(Offered { entry, name, data });
+        }
+        Ok(attached)
+    }
+
+    /// Puts the file waiting on `entry` where the reader said: `answer` is
+    /// [`Vault::keep_both`] or [`Vault::replace_attachment`].
+    ///
+    /// Only the file picked for this entry answers to it. One waiting on any
+    /// other entry is refused and left where it is, and none waiting at all -
+    /// the reader said no, or picked again - is refused as well, so an answer
+    /// that arrives late can never put anything anywhere.
+    ///
+    /// The file is let go once the answer is in, and kept when the answer is
+    /// refused: a replacement the versions stand in the way of leaves keeping
+    /// both still open to the reader, without choosing the file again.
+    pub fn answer(
+        &self,
+        entry: EntryId,
+        answer: impl FnOnce(&mut Vault, EntryId, &str, &[u8]) -> Result<(), VaultError>,
+    ) -> Result<(), Failure> {
+        let mut held = self.held();
+        let open = held.open.as_mut().ok_or_else(Failure::no_vault)?;
+        let offered = open
+            .offered
+            .as_ref()
+            .filter(|offered| offered.entry == entry)
+            .ok_or_else(|| Failure::refused("no file is waiting to go on that entry"))?;
+
+        answer(&mut open.vault, entry, &offered.name, &offered.data)?;
+        open.offered = None;
+        Ok(())
+    }
+
+    /// Lets go of the file waiting on `entry`, when there is one.
+    ///
+    /// Only that entry's. The window says this about the entry it is leaving,
+    /// and the message can arrive after a file has been picked for the next
+    /// one, which is not the window's to throw away.
+    pub fn withdraw(&self, entry: EntryId) {
+        let mut held = self.held();
+        if let Some(open) = held.open.as_mut()
+            && open
+                .offered
+                .as_ref()
+                .is_some_and(|offered| offered.entry == entry)
+        {
+            open.offered = None;
+        }
     }
 }
 
@@ -1128,7 +1249,7 @@ mod tests {
         let source = shipped(include_str!("session.rs"));
         let putting: Vec<String> = functions(source)
             .into_iter()
-            .filter(|body| body.contains("held.vault = Some("))
+            .filter(|body| body.contains("held.open = Some("))
             .collect();
         assert_eq!(putting.len(), 1, "a vault is put into the session twice");
         assert!(
@@ -1165,6 +1286,254 @@ mod tests {
                 "{file} writes a vault down that has not opened"
             );
         }
+    }
+
+    /// Every file on an entry, with its bytes, as the session hands them out.
+    fn files_of(session: &Session, id: EntryId) -> Vec<(String, Vec<u8>)> {
+        let entry = session.entry(id).expect("the entry comes back");
+        let mut found: Vec<(String, Vec<u8>)> = entry
+            .attachments
+            .iter()
+            .map(|attachment| {
+                let bytes = session
+                    .with(|vault| vault.attachment(id, &attachment.name))
+                    .expect("the session is open")
+                    .expect("the file is there");
+                (attachment.name.clone(), bytes.expose().to_vec())
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    fn code_of(failure: &Failure) -> String {
+        serde_json::to_value(failure).expect("a failure serialises")["code"]
+            .as_str()
+            .expect("a code is a string")
+            .to_owned()
+    }
+
+    const KEY: &str = "id_ed25519";
+
+    /// The file that was chosen goes on once, when the reader answers, and not
+    /// before and not twice.
+    #[test]
+    fn a_file_whose_name_is_taken_waits_for_the_answer_and_goes_on_once() {
+        let (_scratch, session) = unlocked(RICH);
+        let id = entry_titled(&session, "ssh key").id;
+        let before = files_of(&session, id);
+
+        let asked = session
+            .offer(id, KEY.to_owned(), Zeroizing::new(b"a new key".to_vec()))
+            .expect("the file is offered");
+        assert!(matches!(asked, Attached::Taken(_)));
+        assert_eq!(
+            files_of(&session, id),
+            before,
+            "the offer alone changed the entry"
+        );
+
+        session.answer(id, Vault::keep_both).expect("both are kept");
+        let mut wanted = before.clone();
+        wanted.push((format!("{KEY} 2"), b"a new key".to_vec()));
+        wanted.sort();
+        assert_eq!(files_of(&session, id), wanted);
+
+        // The same answer again, as a second press or a message that arrived
+        // twice would send it: there is nothing left waiting to put anywhere.
+        let again = session
+            .answer(id, Vault::keep_both)
+            .expect_err("the file went on once");
+        assert_eq!(code_of(&again), "refused");
+        assert_eq!(files_of(&session, id), wanted);
+    }
+
+    /// The window names the entry the question was about, and only the file
+    /// chosen for that entry answers to it. A message about any other entry -
+    /// an answer or a withdrawal - leaves the file where it is.
+    #[test]
+    fn a_file_chosen_for_one_entry_never_goes_on_another() {
+        let (_scratch, session) = unlocked(RICH);
+        let key = entry_titled(&session, "ssh key").id;
+        let other = entry_titled(&session, "basic").id;
+        let (theirs, mine) = (files_of(&session, other), files_of(&session, key));
+
+        let _ = session
+            .offer(key, KEY.to_owned(), Zeroizing::new(b"a new key".to_vec()))
+            .expect("the file is offered");
+
+        for answer in [Vault::keep_both, Vault::replace_attachment] {
+            assert!(session.answer(other, answer).is_err());
+        }
+        session.withdraw(other);
+        assert_eq!(
+            files_of(&session, other),
+            theirs,
+            "it went on the wrong entry"
+        );
+        assert_eq!(files_of(&session, key), mine);
+
+        session
+            .answer(key, Vault::replace_attachment)
+            .expect("the file is still waiting on the entry it was chosen for");
+        assert!(
+            files_of(&session, key).contains(&(KEY.to_owned(), b"a new key".to_vec())),
+            "the replacement did not go on"
+        );
+    }
+
+    /// Every way the vault goes takes the file with it. A lock in particular:
+    /// the question alone must not make the lock write the vault, and after it
+    /// an answer from the window that was drawn before finds nothing to put.
+    #[test]
+    fn the_file_waiting_goes_whenever_the_vault_does() {
+        type Going = fn(&Session, &Path);
+        let ways: [(&str, Going); 3] = [
+            ("a lock", |session, _| {
+                assert!(session.lock(Reason::Idle));
+            }),
+            ("another unlock", |_, _| {}),
+            ("the database chosen again", |session, database| {
+                session.choose(database.to_path_buf());
+            }),
+        ];
+
+        for (way, going) in ways {
+            let (_scratch, database) = scratch(RICH);
+            let session = Session::new(Some(database.clone()), None);
+            session
+                .unlock(password(SECRET), LockPolicy::Respect)
+                .expect("the database opens");
+            let id = entry_titled(&session, "ssh key").id;
+            let before = files_of(&session, id);
+
+            let _ = session
+                .offer(id, KEY.to_owned(), Zeroizing::new(b"a new key".to_vec()))
+                .expect("the file is offered");
+            going(&session, &database);
+
+            let snapshot =
+                vault_core::storage::snapshot::slot(&database, 1).expect("a slot has a name");
+            assert!(
+                !snapshot.exists(),
+                "{way}: an unanswered question left the vault something to write"
+            );
+
+            session
+                .unlock(password(SECRET), LockPolicy::Respect)
+                .expect("the database opens again");
+            for answer in [Vault::keep_both, Vault::replace_attachment] {
+                let refused = session
+                    .answer(id, answer)
+                    .expect_err("nothing is waiting any more");
+                assert_eq!(code_of(&refused), "refused", "{way}");
+            }
+            assert_eq!(files_of(&session, id), before, "{way}");
+        }
+    }
+
+    /// A file picked is a new question. The last one is let go, whichever entry
+    /// it was for and whether or not the new one is asked about at all.
+    #[test]
+    fn choosing_another_file_lets_go_of_the_last_one() {
+        let (_scratch, session) = unlocked(RICH);
+        let key = entry_titled(&session, "ssh key").id;
+        let other = entry_titled(&session, "basic").id;
+
+        let _ = session
+            .offer(key, KEY.to_owned(), Zeroizing::new(b"first pick".to_vec()))
+            .expect("the file is offered");
+        let _ = session
+            .offer(key, KEY.to_owned(), Zeroizing::new(b"second pick".to_vec()))
+            .expect("the file is offered");
+        session
+            .answer(key, Vault::keep_both)
+            .expect("both are kept");
+        assert!(
+            files_of(&session, key).contains(&(format!("{KEY} 2"), b"second pick".to_vec())),
+            "the answer put the file that was chosen first"
+        );
+
+        let _ = session
+            .offer(key, KEY.to_owned(), Zeroizing::new(b"third pick".to_vec()))
+            .expect("the file is offered");
+        let added = session
+            .offer(other, "fresh.txt".to_owned(), Zeroizing::new(b"x".to_vec()))
+            .expect("the file is offered");
+        assert!(matches!(added, Attached::Added));
+        assert!(
+            session.answer(key, Vault::keep_both).is_err(),
+            "a pick for another entry left the last one waiting"
+        );
+    }
+
+    /// A replacement the versions stand in the way of is refused with the code
+    /// the entry screen answers, and the file stays waiting, so the reader can
+    /// still keep both without choosing it again.
+    #[test]
+    fn a_refused_replacement_leaves_the_file_waiting() {
+        let (_scratch, session) = unlocked(RICH);
+        let id = entry_titled(&session, "basic").id;
+        let _ = session
+            .offer(id, "held.pem".to_owned(), Zeroizing::new(b"old".to_vec()))
+            .expect("the file is offered");
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    id,
+                    fields::NOTES,
+                    vault_core::NewValue::Open("a version that holds the file".to_owned()),
+                )
+            })
+            .expect("the session is open")
+            .expect("the note is written");
+        let before = files_of(&session, id);
+
+        let _ = session
+            .offer(id, "held.pem".to_owned(), Zeroizing::new(b"new".to_vec()))
+            .expect("the file is offered");
+        let refused = session
+            .answer(id, Vault::replace_attachment)
+            .expect_err("the version holds the old one in place");
+        assert_eq!(code_of(&refused), "attachmentInHistory");
+        assert_eq!(files_of(&session, id), before);
+
+        session
+            .answer(id, Vault::keep_both)
+            .expect("the file was still waiting");
+        assert!(files_of(&session, id).contains(&("held 2.pem".to_owned(), b"new".to_vec())));
+    }
+
+    /// Nothing is open, so nothing is waiting and nothing can be answered - and
+    /// letting go of nothing is not a failure.
+    #[test]
+    fn a_locked_session_has_no_file_waiting() {
+        let (_scratch, database) = scratch(RICH);
+        let session = Session::new(Some(database), None);
+        let nobody = EntryId::from_uuid(uuid::Uuid::nil());
+
+        session.withdraw(nobody);
+        assert!(
+            session
+                .offer(nobody, KEY.to_owned(), Zeroizing::new(b"x".to_vec()))
+                .is_err()
+        );
+        assert!(session.answer(nobody, Vault::keep_both).is_err());
+    }
+
+    /// The file waiting is the reader's file, and printing it prints neither
+    /// its bytes nor its name.
+    #[test]
+    fn the_file_waiting_prints_nothing_of_itself() {
+        let offered = Offered {
+            entry: EntryId::from_uuid(uuid::Uuid::nil()),
+            name: "passport scan.pdf".to_owned(),
+            data: Zeroizing::new(b"-----BEGIN OPENSSH PRIVATE KEY-----".to_vec()),
+        };
+        let printed = format!("{offered:?}");
+        assert!(printed.contains("[redacted]"), "{printed}");
+        assert!(!printed.contains("passport"), "{printed}");
+        assert!(!printed.contains("OPENSSH"), "{printed}");
     }
 
     /// A database whose owner chose a key file in KeePassXC. `vault-core` has

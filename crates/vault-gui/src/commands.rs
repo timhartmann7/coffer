@@ -751,13 +751,23 @@ pub fn set_tags(entry: String, tags: Vec<String>, session: Held<'_>) -> Result<E
 /// of every file in the database, and one of the ten snapshots - the oldest,
 /// pushed off the end of the only chain that leads back to a version of the
 /// vault from an hour ago.
+///
+/// A name the entry already gives a file is not written over. Nothing changes,
+/// the file just read is held beside the vault, and the window is told what is
+/// there so that it can ask; the answer is one of the three commands below, and
+/// the reader never has to find the file again to give it.
 #[tauri::command]
 pub async fn add_attachment(
     app: AppHandle,
     entry: String,
     session: Held<'_>,
-) -> Result<Option<Entry>, Failure> {
+) -> Result<Option<dto::Attached>, Failure> {
     let id = dto::entry_id(&entry)?;
+
+    // A press of the button is a new question, so the last one about this entry
+    // is let go before the panel opens: a panel closed without a choice leaves
+    // nothing waiting that the window has stopped asking about.
+    session.withdraw(id);
 
     let Some(chosen) = app
         .dialog()
@@ -786,9 +796,44 @@ pub async fn add_attachment(
     }
 
     let data = Zeroizing::new(std::fs::read(&path).map_err(Failure::io)?);
+    let chosen = data.len();
 
-    session.with_mut(|vault| vault.add_attachment(id, &name, data))??;
-    entry_of(&session, &entry).map(Some)
+    match session.offer(id, name.clone(), data)? {
+        vault_core::Attached::Added => Ok(Some(dto::Attached::Added {
+            entry: entry_of(&session, &entry)?,
+        })),
+        vault_core::Attached::Taken(clash) => Ok(Some(dto::Attached::Taken {
+            clash: dto::Clash::of(name, chosen, clash),
+        })),
+    }
+}
+
+/// Keeps both: the file waiting on this entry goes on beside the one that has
+/// its name, under the next name free.
+#[tauri::command(async)]
+pub fn keep_both_attachments(entry: String, session: Held<'_>) -> Result<Entry, Failure> {
+    let id = dto::entry_id(&entry)?;
+    session.answer(id, Vault::keep_both)?;
+    entry_of(&session, &entry)
+}
+
+/// Puts the file waiting on this entry in place of the one that has its name.
+///
+/// Refused on the same terms as a removal, because it is one: while earlier
+/// versions hold the file that is there, it stays, and so does the one waiting.
+#[tauri::command(async)]
+pub fn replace_attachment(entry: String, session: Held<'_>) -> Result<Entry, Failure> {
+    let id = dto::entry_id(&entry)?;
+    session.answer(id, Vault::replace_attachment)?;
+    entry_of(&session, &entry)
+}
+
+/// Lets go of the file waiting on this entry: the reader said not to add it,
+/// or stopped looking at the entry it was chosen for.
+#[tauri::command(async)]
+pub fn withdraw_attachment(entry: String, session: Held<'_>) -> Result<(), Failure> {
+    session.withdraw(dto::entry_id(&entry)?);
+    Ok(())
 }
 
 /// Writes one of an entry's files out to wherever the reader says.

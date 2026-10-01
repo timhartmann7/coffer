@@ -59,6 +59,34 @@ pub fn attach(vault: &mut Vault, id: EntryId, name: &str, data: &[u8]) {
     assert_eq!(attached, Attached::Added, "{name} was already on the entry");
 }
 
+/// Every entry's file, by the title of the entry that holds it, with the bytes
+/// behind it. Byte for byte, because the failure the pool is prone to is not a
+/// file that vanishes but one that comes back on somebody else's entry.
+pub fn files(vault: &Vault) -> Vec<(String, String, Vec<u8>)> {
+    let mut found = Vec::new();
+    for summary in all_entries(vault) {
+        let entry = vault.entry(summary.id).expect("the entry is there");
+        let title = entry
+            .field(vault_core::model::fields::TITLE)
+            .and_then(|field| field.value.open())
+            .unwrap_or_default()
+            .to_owned();
+
+        for attachment in &entry.attachments {
+            let bytes = vault
+                .attachment(entry.id, &attachment.name)
+                .expect("the file is there");
+            found.push((
+                title.clone(),
+                attachment.name.clone(),
+                bytes.expose().to_vec(),
+            ));
+        }
+    }
+    found.sort();
+    found
+}
+
 /// Every entry in the database, flattened, with previous versions excluded the
 /// way the tree excludes them.
 pub fn all_entries(vault: &Vault) -> Vec<vault_core::model::EntrySummary> {

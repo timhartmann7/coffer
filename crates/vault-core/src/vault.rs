@@ -754,11 +754,11 @@ impl Vault {
     /// another.
     ///
     /// A taken name changes nothing. The answer says how large the file there
-    /// is and what the new one could be called beside it, and which of the two
-    /// ways on is taken - [`Vault::keep_both`] or [`Vault::replace_attachment`]
-    /// - is the reader's to say: a file replaced here is gone for good, and the
-    /// name every phone gives every scan is not a reason to think somebody
-    /// meant it.
+    /// is and what the new one could be called beside it, and the way on is
+    /// the reader's to choose, through [`Vault::keep_both`] or
+    /// [`Vault::replace_attachment`]: a file replaced here is gone for good,
+    /// and the name every phone gives every scan is not a reason to think
+    /// somebody meant it.
     ///
     /// The bytes are borrowed, so that a caller told the name is taken still
     /// has them to offer again with the answer.
@@ -779,17 +779,16 @@ impl Vault {
         Ok(Attached::Added)
     }
 
-    /// Puts a file on an entry beside the one that already has its name, and
-    /// answers with the name it went under.
+    /// Puts a file on an entry beside the one that already has its name.
     ///
-    /// That is the name [`Attached::Taken`] offered, worked out again from the
-    /// entry as it is now: a name that has come free since the question was
-    /// asked is simply the file's own.
-    pub fn keep_both(&mut self, id: EntryId, name: &str, data: &[u8]) -> Result<String, VaultError> {
+    /// It goes under the name [`Attached::Taken`] offered, worked out again
+    /// from the entry as it is now: a name that has come free since the
+    /// question was asked is simply the file's own, and one taken since is
+    /// passed over for the next.
+    pub fn keep_both(&mut self, id: EntryId, name: &str, data: &[u8]) -> Result<(), VaultError> {
         self.offerable(id, name, data)?;
         let free = clash::free(&self.database, id, name);
-        self.put(id, &free, data)?;
-        Ok(free)
+        self.put(id, &free, data)
     }
 
     /// Puts a file on an entry in place of the one that has its name.

@@ -108,6 +108,20 @@ that is already a card - a file's row, a version's - it drops its own box and
 sits under a hairline in the card. Clearing the history used to ask on one line
 without a box; it asks in the box now, like the rest.
 
+**A file whose name is taken is asked about in that box,** under the
+Attachments label and the plus that asked for the file: "This entry already has
+“Scanned Document.pdf” (1.2 MB)", what the new one would be called, and that a
+replacement cannot be undone. It is the one question whose focus is not on the
+way out. "Keep both" is the neutral pill in the middle and it is where the focus
+lands, so Return gives it, because it is what somebody adding the second page
+of a scan means; "Don’t add it" is the way out and Escape still gives it, and
+"Replace" stands last in `danger`. When a replacement is refused because earlier
+versions hold the file there, the same box asks again with the sentence saying
+why and without "Replace": the same keys, one button fewer. Once the file there
+has gone - its own trash is the way the sentence points to - the box says so and
+offers "Add it" in the same place. The banner that used to answer a refusal
+ended in a button called "Right you are", with the chosen file already gone.
+
 **A notice that can be taken back** is the mockup's toast with one thing added:
 the trash in `txt3` where the copy icon is, and a button at the end, "Undo" in
 the accent with `⌘Z` in the search field's own key cap beside it. The button is

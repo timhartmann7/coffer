@@ -81,11 +81,16 @@ fn beside(name: &str, names: &[&str]) -> String {
 }
 
 /// A name cut before its last extension: `archive.tar.gz` is `archive.tar`
-/// and `.gz`, the way the Finder counts a name it keeps both of.
+/// and `.gz`. The last one, because that is the one that says what opens the
+/// file, and a copy that no longer opens in the same application is not the
+/// same document kept twice.
 ///
-/// A dot the name starts with is part of the name - `.env` is a file called
-/// `.env`, not an empty one of type `env` - and so is a dot with nothing after
-/// it. Either way the number goes at the end.
+/// Three kinds of dot do not start one, and the number goes at the end of the
+/// name instead. The dot a name starts with is part of the name - `.env` is a file
+/// called `.env`, not an empty one of type `env`. A dot with nothing after it
+/// ends the name. And a dot followed by a space is punctuation: in
+/// `Dr. Smith letter` there is no type called ` Smith letter`, and cutting
+/// there would put the number in the middle of a sentence.
 fn split(name: &str) -> (&str, &str) {
     let Some(at) = name.rfind('.') else {
         return (name, "");
@@ -93,7 +98,10 @@ fn split(name: &str) -> (&str, &str) {
     let Some((stem, extension)) = name.split_at_checked(at) else {
         return (name, "");
     };
-    if stem.trim_start_matches('.').is_empty() || extension == "." {
+    let dotfile = stem.trim_start_matches('.').is_empty();
+    let ending = extension == ".";
+    let punctuation = extension.chars().any(char::is_whitespace);
+    if dotfile || ending || punctuation {
         return (name, "");
     }
     (stem, extension)
@@ -108,7 +116,11 @@ mod tests {
     #[test]
     fn a_second_file_is_numbered_before_its_last_extension() {
         for (held, offered, wanted) in [
-            (vec!["Scanned Document.pdf"], "Scanned Document.pdf", "Scanned Document 2.pdf"),
+            (
+                vec!["Scanned Document.pdf"],
+                "Scanned Document.pdf",
+                "Scanned Document 2.pdf",
+            ),
             // No extension at all: an SSH key.
             (vec!["id_ed25519"], "id_ed25519", "id_ed25519 2"),
             // A dotfile is a name, not an extension.
@@ -119,16 +131,39 @@ mod tests {
             // Only the last extension counts.
             (vec!["archive.tar.gz"], "archive.tar.gz", "archive.tar 2.gz"),
             (vec!["a.b.c.d"], "a.b.c.d", "a.b.c 2.d"),
-            // A trailing dot is not an extension.
+            // A trailing dot is not an extension, and neither is a sentence.
             (vec!["file."], "file.", "file. 2"),
+            (
+                vec!["Dr. Smith letter"],
+                "Dr. Smith letter",
+                "Dr. Smith letter 2",
+            ),
+            (vec!["v1.2 notes.txt"], "v1.2 notes.txt", "v1.2 notes 2.txt"),
+            (vec!["tab.\there"], "tab.\there", "tab.\there 2"),
             // A number already there is part of the name, and a year stays one.
             (vec!["Scan 2.pdf"], "Scan 2.pdf", "Scan 2 2.pdf"),
-            (vec!["Tax return 2025.pdf"], "Tax return 2025.pdf", "Tax return 2025 2.pdf"),
+            (
+                vec!["Tax return 2025.pdf"],
+                "Tax return 2025.pdf",
+                "Tax return 2025 2.pdf",
+            ),
             // A name out of another client's database, which is text and not a
             // path: nothing about it is cleaned here.
-            (vec!["../../escape.txt"], "../../escape.txt", "../../escape 2.txt"),
-            (vec!["ユニコード 🔐.txt"], "ユニコード 🔐.txt", "ユニコード 🔐 2.txt"),
-            (vec!["evil\u{202e}fdp.exe"], "evil\u{202e}fdp.exe", "evil\u{202e}fdp 2.exe"),
+            (
+                vec!["../../escape.txt"],
+                "../../escape.txt",
+                "../../escape 2.txt",
+            ),
+            (
+                vec!["ユニコード 🔐.txt"],
+                "ユニコード 🔐.txt",
+                "ユニコード 🔐 2.txt",
+            ),
+            (
+                vec!["evil\u{202e}fdp.exe"],
+                "evil\u{202e}fdp.exe",
+                "evil\u{202e}fdp 2.exe",
+            ),
         ] {
             assert_eq!(beside(offered, &held), wanted, "{offered:?}");
         }
@@ -138,10 +173,19 @@ mod tests {
     /// differs from it only in letter case.
     #[test]
     fn a_free_name_that_is_taken_is_passed_over() {
-        assert_eq!(beside("Scan.pdf", &["Scan.pdf", "Scan 2.pdf"]), "Scan 3.pdf");
-        assert_eq!(beside("Scan.pdf", &["Scan.pdf", "scan 2.pdf"]), "Scan 3.pdf");
         assert_eq!(
-            beside("Scan.pdf", &["Scan.pdf", "SCAN 2.PDF", "Scan 3.pdf", "Scan 5.pdf"]),
+            beside("Scan.pdf", &["Scan.pdf", "Scan 2.pdf"]),
+            "Scan 3.pdf"
+        );
+        assert_eq!(
+            beside("Scan.pdf", &["Scan.pdf", "scan 2.pdf"]),
+            "Scan 3.pdf"
+        );
+        assert_eq!(
+            beside(
+                "Scan.pdf",
+                &["Scan.pdf", "SCAN 2.PDF", "Scan 3.pdf", "Scan 5.pdf"]
+            ),
             "Scan 4.pdf"
         );
     }
