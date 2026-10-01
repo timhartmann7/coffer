@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { fully, size, when } from './format';
+import { entry, field } from './fixtures';
+import { ago, at, called, day, fully, quoted, size, when } from './format';
 
 /** The suite runs with TZ pinned to UTC, so the local clock the screen writes
  * in is the same one the database keeps. */
@@ -29,7 +30,25 @@ describe('a date as the list writes it', () => {
 	it('says "today" on the entry screen and the full date everywhere else', () => {
 		expect(fully('2026-08-29T13:08:00Z', now)).toBe('today at 13:08');
 		expect(fully('2024-03-12T18:42:00Z', now)).toBe('12 Mar 2024');
+		// The year even for this one, which the list and a sentence leave out.
+		expect(fully('2026-03-12T18:42:00Z', now)).toBe('12 Mar 2026');
 		expect(fully(null, now)).toBe('unknown');
+	});
+});
+
+describe('a moment two files are compared by', () => {
+	/** A copy and the vault it was taken from are usually hours apart on the
+	 * same day, so the minute is always there and the day is said as a day. */
+	it('always gives the minute, and the day the way a sentence says it', () => {
+		expect(at('2026-08-29T14:05:00Z', now)).toBe('today at 14:05');
+		expect(at('2026-08-28T09:07:00Z', now)).toBe('on 28 Aug at 9:07');
+		expect(at('2025-12-31T23:59:00Z', now)).toBe('on 31 Dec 2025 at 23:59');
+		expect(at('3000-01-01T00:00:00Z', now)).toBe('on 1 Jan 3000 at 0:00');
+	});
+
+	it('writes nothing for a time the filesystem did not keep', () => {
+		expect(at(null, now)).toBe('');
+		expect(at('not a date', now)).toBe('');
 	});
 });
 
@@ -44,5 +63,119 @@ describe('an attachment size', () => {
 		expect(size(3 * 1024 * 1024)).toBe('3.0 MB');
 		expect(size(100 * 1024 * 1024)).toBe('100 MB');
 		expect(size(2 * 1024 * 1024 * 1024)).toBe('2.0 GB');
+	});
+});
+
+describe('a day as a sentence says it', () => {
+	it('says today, the day this year, and the year as well for any other', () => {
+		expect(day('2026-08-29T01:00:00Z', now)).toBe('today');
+		expect(day('2026-08-27T10:00:00Z', now)).toBe('27 Aug');
+		expect(day('2025-09-30T10:00:00Z', now)).toBe('30 Sep 2025');
+		expect(day(null, now)).toBe('');
+		expect(day('not a date', now)).toBe('');
+	});
+
+	/** Counted between midnights: an evening is yesterday the next morning,
+	 * however few hours ago it was. */
+	it('counts days back the way a person does', () => {
+		const morning = new Date('2026-08-29T00:10:00Z');
+		expect(ago('2026-08-28T23:50:00Z', morning)).toBe('yesterday');
+		expect(ago('2026-08-29T00:00:00Z', morning)).toBe('today');
+		expect(ago('2026-08-26T09:00:00Z', now)).toBe('3 days ago');
+		expect(ago('2026-08-23T09:00:00Z', now)).toBe('6 days ago');
+		expect(ago('2026-08-22T09:00:00Z', now)).toBe('on 22 Aug');
+		expect(ago('2024-03-04T10:00:00Z', now)).toBe('on 4 Mar 2024');
+		expect(ago(null, now)).toBe('');
+	});
+
+	/** A date after today is somebody else's clock, and the edges of what the
+	 * format holds are dates like any other. Neither is counted into nonsense. */
+	it('writes a date in the future or at the edge of the format as the day', () => {
+		expect(ago('2026-08-30T09:00:00Z', now)).toBe('on 30 Aug');
+		expect(ago('3000-12-31T23:59:59Z', now)).toBe('on 31 Dec 3000');
+		expect(ago('1600-01-01T00:00:00Z', now)).toBe('on 1 Jan 1600');
+		expect(ago('0050-06-01T00:00:00Z', now)).toBe('on 1 Jun 50');
+	});
+});
+
+describe('what a sentence calls an entry', () => {
+	const titled = (value: string | null) =>
+		entry({ fields: [field({ name: 'Title', kind: 'title', value, empty: value === '' })] });
+
+	it('quotes the title, and says "this entry" when there is none to show', () => {
+		expect(called(titled('Bank'))).toBe('“\u2068Bank\u2069”');
+		expect(called(titled(''))).toBe('this entry');
+		// Protected: the value is not here, and a notice is no reason to fetch it.
+		expect(called(titled(null))).toBe('this entry');
+		expect(called(entry({ fields: [] }))).toBe('this entry');
+	});
+});
+
+describe('a name in running text', () => {
+	/** What UAX #9 counts as the end of a paragraph, written out again rather
+	 * than taken from the code under test. */
+	const SEPARATORS = ['\n', '\r', '\u001C', '\u001D', '\u001E', '\u0085', '\u2029'];
+	const OVERRIDES = /[‪-‮]/u;
+
+	/**
+	 * What a mark opened inside a name can reach, by the rules of UAX #9: an
+	 * override or embedding lasts until the isolate around it closes, a closing
+	 * mark with nothing open is ignored, and anything left open lasts to the
+	 * end of the paragraph, where a paragraph separator closes every isolate
+	 * there is. Answers with the text outside every isolate, and fails when
+	 * the sentence ends with one still open or an override stands outside them
+	 * all.
+	 */
+	function outside(sentence: string): string {
+		let depth = 0;
+		let left = '';
+		for (const char of sentence) {
+			if (['⁦', '⁧', '⁨'].includes(char)) depth += 1;
+			else if (char === '⁩') depth = Math.max(0, depth - 1);
+			else if (SEPARATORS.includes(char)) depth = 0;
+			else if (depth === 0) {
+				expect(char, `an override reaches ${JSON.stringify(sentence)}`).not.toMatch(OVERRIDES);
+				left += char;
+			}
+		}
+		expect(depth, 'an isolate runs on past the sentence').toBe(0);
+		return left;
+	}
+
+	it('keeps a right-to-left override in a name off the rest of the sentence', () => {
+		const sentence = `This entry already has ${quoted('evil‮fdp.exe')} (1.2 MB). Keep both to add the new one (840 KB) as ${quoted('evil‮fdp 2.exe')}. A replaced file can’t be brought back.`;
+
+		expect(quoted('evil‮fdp.exe')).toBe('“⁨evil‮fdp.exe⁩”');
+		expect(outside(sentence)).toBe(
+			'This entry already has “” (1.2 MB). Keep both to add the new one (840 KB) as “”. A replaced file can’t be brought back.'
+		);
+	});
+
+	it('does not let a name close the isolate early, or leave one of its own open', () => {
+		for (const name of ['a⁩‮b', '⁩⁩‭c', '⁧‮open', '⁦⁨‮nested', '⁧ok⁩⁩‮']) {
+			expect(outside(`Delete ${quoted(name)} forever? This can’t be undone.`), name).toBe(
+				'Delete “” forever? This can’t be undone.'
+			);
+		}
+	});
+
+	/** A paragraph separator ends every isolate along with the paragraph, so an
+	 * override after one in a name from another client ran on through the rest
+	 * of the question. */
+	it('does not let a paragraph separator in a name end the isolate', () => {
+		for (const separator of SEPARATORS) {
+			const name = `a${separator}\u202Efdp.exe`;
+			expect(
+				outside(`This entry already has ${quoted(name)} (1.2 MB). Keep both?`),
+				JSON.stringify(separator)
+			).toBe('This entry already has \u201C\u201D (1.2 MB). Keep both?');
+			expect(quoted(name)).toBe('\u201C\u2068a \u202Efdp.exe\u2069\u201D');
+		}
+	});
+
+	it('leaves a name that needs nothing as it was, between the marks', () => {
+		expect(quoted('Bank')).toBe('“⁨Bank⁩”');
+		expect(quoted('בנק ⁧x⁩')).toBe('“⁨בנק ⁧x⁩⁩”');
+		expect(quoted('')).toBe('“⁨⁩”');
 	});
 });

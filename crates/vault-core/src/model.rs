@@ -24,6 +24,11 @@ pub struct Project {
     /// True for the group the database nominates as its recycle bin. Deleted
     /// entries live there, and the tree shows it apart from the rest.
     pub is_recycle_bin: bool,
+    /// When the group is in the recycle bin, what is known about how it got
+    /// there. Nothing for the bin itself and for everything outside it.
+    pub binned: Option<Binned>,
+    /// What deleting the group would do.
+    pub deletion: Deletion,
     /// The groups nested directly inside this one.
     pub sections: Vec<Project>,
     /// The entries held directly by this group. Entry history is not here: a
@@ -56,6 +61,9 @@ pub struct EntrySummary {
     pub attachments: usize,
     /// How many previous versions the entry keeps.
     pub versions: usize,
+    /// When the entry is in the recycle bin, what is known about how it got
+    /// there. A row in the bin says when and where from.
+    pub binned: Option<Binned>,
 }
 
 /// An entry, as much of it as can be looked at without a reveal.
@@ -73,12 +81,73 @@ pub struct Entry {
     pub times: Timestamps,
     /// How many previous versions this entry keeps.
     pub versions: usize,
+    /// When the entry is in the recycle bin, what is known about how it got
+    /// there.
+    pub binned: Option<Binned>,
+    /// What deleting the entry would do.
+    pub deletion: Deletion,
+}
+
+/// What deleting something does, known before anybody asks for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Deletion {
+    /// It moves to the recycle bin, and can be put back from there.
+    Bin,
+    /// It goes out of the file for good: it is in the bin already, the
+    /// database keeps no bin, or it is a folder the bin itself is inside.
+    Forever,
+}
+
+/// What is known about something in the recycle bin.
+///
+/// Dates and a folder, none of it the reader's data, so it prints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Binned {
+    /// When it went in. A folder takes everything in it along, so what sits
+    /// inside a deleted folder went in when the folder did.
+    pub since: Option<NaiveDateTime>,
+    /// The deleted folder it went in with, the one the bin holds, or nothing
+    /// for something deleted on its own.
+    pub within: Option<GroupId>,
+    /// Where putting it back takes it: the folder it was deleted from, or for
+    /// something that went in with a folder, the one that folder was deleted
+    /// from. Nothing when that is not known, is not there any more, or is in
+    /// the bin itself, and putting it back takes it to the top of the vault
+    /// instead.
+    pub from: Option<GroupId>,
 }
 
 /// The KeePass field names Coffer treats as standard. Every other field an
 /// entry carries is a custom field.
 pub mod fields {
     pub use keepass::db::fields::{NOTES, PASSWORD, TITLE, URL, USERNAME};
+
+    /// One of the five. Every entry is drawn with all of them whether or not
+    /// the file gives it each one, so each is a field that can be written into
+    /// on any entry.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Standard {
+        Title,
+        Username,
+        Password,
+        Url,
+        Notes,
+    }
+
+    impl Standard {
+        /// Which of the five a name is, or nothing for a custom field. The
+        /// match is exact, as KeePass's is: `title` is a custom field.
+        pub fn of(name: &str) -> Option<Standard> {
+            match name {
+                TITLE => Some(Standard::Title),
+                USERNAME => Some(Standard::Username),
+                PASSWORD => Some(Standard::Password),
+                URL => Some(Standard::Url),
+                NOTES => Some(Standard::Notes),
+                _ => None,
+            }
+        }
+    }
 }
 
 impl Entry {
@@ -95,6 +164,7 @@ impl Entry {
             has_password: self.has_password(),
             attachments: self.attachments.len(),
             versions: self.versions,
+            binned: self.binned,
         }
     }
 
@@ -142,14 +212,31 @@ pub struct Field {
 
 impl Field {
     /// Whether the field holds nothing. True for a protected field whose value
-    /// is empty, which is the one thing about a protected value that may be
-    /// known without revealing it.
+    /// is empty, which is one of the two things about a protected value that
+    /// may be known without revealing it.
     pub fn is_empty(&self) -> bool {
         match &self.value {
             FieldValue::Open(text) => text.is_empty(),
-            FieldValue::Protected { empty } => *empty,
+            FieldValue::Protected { empty, .. } => *empty,
         }
     }
+
+    /// Whether the value is written in lines, which is the other.
+    pub fn in_lines(&self) -> bool {
+        match &self.value {
+            FieldValue::Open(text) => in_lines(text),
+            FieldValue::Protected { lines, .. } => *lines,
+        }
+    }
+}
+
+/// Whether a value has a line break in it.
+///
+/// The format has no multi-line flag. Ten recovery codes are in lines because
+/// there is a break between each of them, and a CR on its own is one as much
+/// as a line feed is, the way a text area reads it.
+pub(crate) fn in_lines(text: &str) -> bool {
+    text.contains(['\n', '\r'])
 }
 
 /// A field's value, or the fact that it has one.
@@ -164,6 +251,11 @@ pub enum FieldValue {
         /// Whether the protected value is empty. The screen needs to know
         /// whether there is anything to reveal.
         empty: bool,
+        /// Whether the protected value has a line break in it. The screen
+        /// needs to know how a new one is written: ten recovery codes are
+        /// replaced in lines, where Return starts the next one rather than
+        /// saving the first over all ten.
+        lines: bool,
     },
 }
 
@@ -186,7 +278,9 @@ impl fmt::Debug for FieldValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FieldValue::Open(_) => f.write_str("Open([redacted])"),
-            FieldValue::Protected { empty } => write!(f, "Protected {{ empty: {empty} }}"),
+            FieldValue::Protected { empty, lines } => {
+                write!(f, "Protected {{ empty: {empty}, lines: {lines} }}")
+            }
         }
     }
 }

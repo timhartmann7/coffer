@@ -10,7 +10,8 @@ use std::process::{Command, Stdio};
 use keepass::{Database, DatabaseKey};
 use zeroize::Zeroizing;
 
-use vault_core::{LockPolicy, MasterKey, Vault};
+use vault_core::model::EntryId;
+use vault_core::{Attached, LockPolicy, MasterKey, Vault};
 
 /// Set this to run the suite on a machine with no KeePassXC. Everything that
 /// needs an external implementation is skipped, and the round-trip criterion
@@ -46,6 +47,46 @@ pub fn open(path: &Path, secret: &str) -> Vault {
     Vault::open(path, password(secret), LockPolicy::Respect).expect("the database opens")
 }
 
+/// Puts a file on an entry under a name the entry does not use yet.
+///
+/// Most tests that add a file are about something else, and a name that turned
+/// out to be taken adds nothing at all: the test would go on to prove its point
+/// about a file that is not there.
+pub fn attach(vault: &mut Vault, id: EntryId, name: &str, data: &[u8]) {
+    let attached = vault
+        .add_attachment(id, name, data)
+        .unwrap_or_else(|error| panic!("{name} could not be added: {error}"));
+    assert_eq!(attached, Attached::Added, "{name} was already on the entry");
+}
+
+/// Every entry's file, by the title of the entry that holds it, with the bytes
+/// behind it. Byte for byte, because the failure the pool is prone to is not a
+/// file that vanishes but one that comes back on somebody else's entry.
+pub fn files(vault: &Vault) -> Vec<(String, String, Vec<u8>)> {
+    let mut found = Vec::new();
+    for summary in all_entries(vault) {
+        let entry = vault.entry(summary.id).expect("the entry is there");
+        let title = entry
+            .field(vault_core::model::fields::TITLE)
+            .and_then(|field| field.value.open())
+            .unwrap_or_default()
+            .to_owned();
+
+        for attachment in &entry.attachments {
+            let bytes = vault
+                .attachment(entry.id, &attachment.name)
+                .expect("the file is there");
+            found.push((
+                title.clone(),
+                attachment.name.clone(),
+                bytes.expose().to_vec(),
+            ));
+        }
+    }
+    found.sort();
+    found
+}
+
 /// Every entry in the database, flattened, with previous versions excluded the
 /// way the tree excludes them.
 pub fn all_entries(vault: &Vault) -> Vec<vault_core::model::EntrySummary> {
@@ -77,6 +118,31 @@ pub fn entry_titled(vault: &Vault, title: &str) -> vault_core::model::Entry {
     vault
         .entry(found.remove(0).id)
         .expect("the entry the tree named is in the database")
+}
+
+/// The one folder with this name, wherever it sits.
+pub fn only_group(vault: &Vault, name: &str) -> vault_core::model::GroupId {
+    fn walk(
+        group: &vault_core::model::Project,
+        name: &str,
+        into: &mut Vec<vault_core::model::GroupId>,
+    ) {
+        if group.name == name {
+            into.push(group.id);
+        }
+        for section in &group.sections {
+            walk(section, name, into);
+        }
+    }
+
+    let mut found = Vec::new();
+    walk(&vault.tree(), name, &mut found);
+    assert_eq!(
+        found.len(),
+        1,
+        "expected exactly one folder called {name:?}"
+    );
+    found.remove(0)
 }
 
 /// Builds a database in the scratch directory with a deliberately cheap key

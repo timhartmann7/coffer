@@ -11,7 +11,7 @@
 
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize, Serializer};
-use vault_core::model::{self, FieldValue, fields};
+use vault_core::model::{self, FieldValue, fields::Standard};
 use zeroize::Zeroizing;
 
 use crate::settings;
@@ -23,6 +23,35 @@ pub struct Database {
     pub path: String,
     /// The file name without its extension: what the window calls the vault.
     pub name: String,
+}
+
+/// Where a new vault would go, as the creation screen draws it. Only what it
+/// draws: the place itself stays in the session, and nothing the window sends
+/// names it.
+#[derive(Serialize)]
+pub struct Target {
+    /// The path the way its owner would write it: under the home folder it
+    /// starts with `~`. What the screen shows, and never what anything opens.
+    pub shown: String,
+    /// What is already at the name. Nothing is ever made over anything, so
+    /// the screen says so before anybody types a password rather than after,
+    /// and says what it is, because only a vault can be opened instead.
+    pub standing: crate::home::Standing,
+}
+
+/// A vault sitting in Coffer's own folder, offered on a launch that remembers
+/// none. The path does not cross: the session keeps the one it named, and
+/// opening it opens that file or answers `gone`.
+#[derive(Serialize)]
+pub struct Found {
+    /// The file name, which is what the offer to open it says.
+    pub name: String,
+    /// The folder in the home folder it was found in.
+    pub folder: &'static str,
+    /// Whether nothing is at the name any more, and what was found is the copy
+    /// a lock left of the vault beside it. The offer must not say it found a
+    /// file that is not there.
+    pub copy: bool,
 }
 
 /// A value revealed out of the vault, on its way to the one screen that asked
@@ -44,6 +73,16 @@ impl Serialize for Revealed {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.0)
     }
+}
+
+/// The part of a value a reader selected on the screen, from one position to
+/// another, counted the way the text node showing it counts: in UTF-16 code
+/// units. Two numbers and nothing of the value; whether they name a part of it
+/// at all is [`vault_core::SecretValue::part`]'s to say.
+#[derive(Deserialize, Clone, Copy)]
+pub struct Span {
+    pub from: usize,
+    pub to: usize,
 }
 
 /// The entry an id names, or nothing at all. An id that does not parse is not
@@ -72,11 +111,86 @@ impl Snapshot {
     }
 }
 
+impl Found {
+    pub fn of(path: &std::path::Path) -> Found {
+        Found {
+            name: file_name(path),
+            folder: crate::home::FOLDER,
+            copy: crate::home::standing(path) == crate::home::Standing::Copy,
+        }
+    }
+}
+
 impl Rescued {
     pub fn of(kept: &vault_core::storage::unsaved::Kept) -> Rescued {
         Rescued {
             name: file_name(&kept.path),
             written: kept.written.and_then(moment),
+        }
+    }
+}
+
+/// A file as the disk has it now, for the sentences that say what a lock left:
+/// what survived a lock that could write nothing, and whether a copy has a
+/// vault to go over or an empty name to go back into.
+#[derive(Serialize)]
+pub struct OnDisk {
+    /// Whether anything at all is at the name.
+    pub there: bool,
+    /// When it was last written, when it is there and the filesystem keeps the
+    /// time.
+    pub written: Option<String>,
+}
+
+impl OnDisk {
+    pub fn of(found: vault_core::storage::OnDisk) -> OnDisk {
+        match found {
+            vault_core::storage::OnDisk::Gone => OnDisk {
+                there: false,
+                written: None,
+            },
+            vault_core::storage::OnDisk::Written(written) => OnDisk {
+                there: true,
+                written: written.and_then(moment),
+            },
+        }
+    }
+}
+
+/// The vault a chosen database was copied from, when it is the copy a lock
+/// left: what the screen says about the copy and about what making it the vault
+/// would do. Names and times only; the paths stay in Rust.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyOf {
+    /// The vault's file name, which is the file the copy would go over.
+    pub vault: String,
+    /// When the copy was last written, as the filesystem has it.
+    pub saved: Option<String>,
+    /// What the vault's file is called once the copy has gone over it: the
+    /// newest snapshot.
+    pub kept_as: String,
+    /// The vault's file as it stands, which the copy would go over or, when
+    /// it has gone, take the name of.
+    pub vault_file: OnDisk,
+}
+
+impl CopyOf {
+    pub fn of(
+        vault: &std::path::Path,
+        copy: vault_core::storage::OnDisk,
+        vault_file: vault_core::storage::OnDisk,
+    ) -> CopyOf {
+        CopyOf {
+            vault: file_name(vault),
+            saved: match copy {
+                vault_core::storage::OnDisk::Written(written) => written.and_then(moment),
+                vault_core::storage::OnDisk::Gone => None,
+            },
+            kept_as: vault_core::storage::snapshot::slot(vault, 1)
+                .map(|slot| file_name(&slot))
+                .unwrap_or_default(),
+            vault_file: OnDisk::of(vault_file),
         }
     }
 }
@@ -108,6 +222,9 @@ impl Database {
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub database: Option<Database>,
+    /// A vault in Coffer's own folder, when nothing is remembered to open.
+    /// Looked for only then: a launch that knows its vault has nothing to find.
+    pub found: Option<Found>,
     /// The key file the next unlock will use, when the reader has chosen one.
     /// Reported rather than remembered by the window, because a lock destroys
     /// the window and the vault it is about is still the same one.
@@ -126,6 +243,23 @@ pub struct Status {
     /// could not put it anywhere at all. There is no file to point at, which is
     /// why this is a flag and not a path.
     pub lost: bool,
+    /// The chosen database's own file as it stands. Read off the disk each
+    /// time, because it is what a lock left and what the reader may since have
+    /// moved.
+    pub file: Option<OnDisk>,
+    /// The vault the chosen database was copied from, when it is the copy a
+    /// lock left.
+    pub copy: Option<CopyOf>,
+    /// Whether the last lock found text the reader was still typing and saved
+    /// it into the vault with everything else. Which entry is not said: after a
+    /// lock nothing of the vault is left to say it with.
+    pub typed: bool,
+    /// Whether some of what it saved was a new value typed in a Change field
+    /// and kept in a field of its own beside the value it was for, which the
+    /// field still holds. Said apart, because "saved" alone reads as the new
+    /// value being the field's now. Which field is not said, for the same
+    /// reason.
+    pub typed_beside: bool,
     /// Why the vault that was open is not open any more, when it is worth
     /// saying. A lock the reader asked for has nothing to explain.
     pub locked_by: Option<&'static str>,
@@ -221,6 +355,24 @@ impl Version {
     }
 }
 
+/// An entry's previous versions, oldest first, with the revision of the vault
+/// they were listed at. Every position taken from the list goes back to Rust
+/// with that revision; see [`crate::session::Session::at`].
+#[derive(Serialize)]
+pub struct Versions {
+    pub revision: u64,
+    pub versions: Vec<Version>,
+}
+
+impl Versions {
+    pub fn of(revision: u64, versions: &[model::Version]) -> Versions {
+        Versions {
+            revision,
+            versions: versions.iter().map(Version::of).collect(),
+        }
+    }
+}
+
 /// What a command that changed the shape of the vault hands back: the tree as
 /// it is now, and the entry the change was about.
 #[derive(Serialize)]
@@ -265,6 +417,11 @@ pub struct Group {
     pub id: String,
     pub name: String,
     pub is_recycle_bin: bool,
+    /// When the group is in the recycle bin, when it went in and where it goes
+    /// back to. `null` for the bin itself and for everything outside it.
+    pub binned: Option<Binned>,
+    /// What deleting the group would do.
+    pub deletion: Deletion,
     pub sections: Vec<Group>,
     pub entries: Vec<EntryRow>,
 }
@@ -275,8 +432,69 @@ impl Group {
             id: project.id.to_string(),
             name: project.name.clone(),
             is_recycle_bin: project.is_recycle_bin,
+            binned: project.binned.map(Binned::of),
+            deletion: Deletion::of(project.deletion),
             sections: project.sections.iter().map(Group::of).collect(),
             entries: project.entries.iter().map(EntryRow::of).collect(),
+        }
+    }
+}
+
+/// What deleting something does, said before the reader asks for it.
+///
+/// It travels with the tree and with the entry rather than in `status`,
+/// because both are read again after every change and after a reload, and a
+/// file another client rewrote can have stopped keeping a bin: a flag read
+/// once at unlock would go on promising a bin to a deletion that erases.
+///
+/// It comes back with a deletion, as the one the reader was shown, and Rust
+/// refuses a deletion that would now do something else.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum Deletion {
+    /// It moves to the recycle bin, and can be put back.
+    Bin,
+    /// It goes out of the file for good.
+    Forever,
+}
+
+impl Deletion {
+    fn of(deletion: model::Deletion) -> Deletion {
+        match deletion {
+            model::Deletion::Bin => Deletion::Bin,
+            model::Deletion::Forever => Deletion::Forever,
+        }
+    }
+
+    pub fn shown(self) -> model::Deletion {
+        match self {
+            Deletion::Bin => model::Deletion::Bin,
+            Deletion::Forever => model::Deletion::Forever,
+        }
+    }
+}
+
+/// What is known about something in the recycle bin.
+#[derive(Serialize)]
+pub struct Binned {
+    /// When it went in: its own move, or that of the folder it went in with.
+    pub since: Option<String>,
+    /// The deleted folder it went in with, or `null` for something deleted on
+    /// its own.
+    pub within: Option<String>,
+    /// Where putting it back takes it: the folder it was deleted from, or the
+    /// one the folder it went in with was deleted from. `null` when that is not
+    /// known, has gone, or is in the bin too, and putting it back takes it to
+    /// the top of the vault.
+    pub from: Option<String>,
+}
+
+impl Binned {
+    fn of(binned: model::Binned) -> Binned {
+        Binned {
+            since: stamp(binned.since),
+            within: binned.within.map(|group| group.to_string()),
+            from: binned.from.map(|group| group.to_string()),
         }
     }
 }
@@ -296,6 +514,8 @@ pub struct EntryRow {
     pub modified: Option<String>,
     pub has_password: bool,
     pub attachments: usize,
+    /// When the entry is in the recycle bin, when it went in and where from.
+    pub binned: Option<Binned>,
 }
 
 impl EntryRow {
@@ -310,6 +530,7 @@ impl EntryRow {
             modified: stamp(summary.times.modified),
             has_password: summary.has_password,
             attachments: summary.attachments,
+            binned: summary.binned.map(Binned::of),
         }
     }
 }
@@ -328,16 +549,17 @@ pub enum FieldKind {
 }
 
 impl FieldKind {
-    /// The names live in `vault-core`, which is the only place that knows what
-    /// KeePass calls a field.
+    /// Which names are standard is decided in `vault-core`, which is the only
+    /// place that knows what KeePass calls a field, and the one a lock asks
+    /// before it writes a draft into a field the entry does not hold yet.
     fn of(name: &str) -> FieldKind {
-        match name {
-            fields::TITLE => FieldKind::Title,
-            fields::USERNAME => FieldKind::Username,
-            fields::PASSWORD => FieldKind::Password,
-            fields::URL => FieldKind::Url,
-            fields::NOTES => FieldKind::Notes,
-            _ => FieldKind::Custom,
+        match Standard::of(name) {
+            Some(Standard::Title) => FieldKind::Title,
+            Some(Standard::Username) => FieldKind::Username,
+            Some(Standard::Password) => FieldKind::Password,
+            Some(Standard::Url) => FieldKind::Url,
+            Some(Standard::Notes) => FieldKind::Notes,
+            None => FieldKind::Custom,
         }
     }
 }
@@ -361,6 +583,11 @@ pub struct Field {
     /// Only ever true for a URL field: the rule is in
     /// [`vault_core::url`], and this is the screen's copy of the answer.
     pub openable: bool,
+    /// Whether the value has a line break in it. One fact about a value that
+    /// does not cross, the way `empty` is, and nothing of what it says: ten
+    /// recovery codes are replaced in a field written in lines, where Return
+    /// starts the next code rather than saving the first over all ten.
+    pub lines: bool,
 }
 
 impl Field {
@@ -380,6 +607,7 @@ impl Field {
                     .is_some_and(|text| vault_core::url::openable(text).is_some()),
             value,
             empty: field.is_empty(),
+            lines: field.in_lines(),
         }
     }
 }
@@ -409,6 +637,11 @@ pub struct Entry {
     pub tags: Vec<String>,
     pub created: Option<String>,
     pub modified: Option<String>,
+    /// When the entry is in the recycle bin, when it went in and where it goes
+    /// back to. The screen shows such an entry read only.
+    pub binned: Option<Binned>,
+    /// What deleting the entry would do.
+    pub deletion: Deletion,
 }
 
 impl Entry {
@@ -430,6 +663,49 @@ impl Entry {
             tags: entry.tags.clone(),
             created: stamp(entry.times.created),
             modified: stamp(entry.times.modified),
+            binned: entry.binned.map(Binned::of),
+            deletion: Deletion::of(entry.deletion),
+        }
+    }
+}
+
+/// What came of a file the reader chose for an entry.
+///
+/// Not a failure when the name is taken: nothing went wrong, and nothing has
+/// happened yet. The file is held in Rust and the window has a question to
+/// ask, which is a different thing from a sentence to show.
+#[derive(Serialize)]
+#[serde(tag = "outcome", rename_all = "camelCase")]
+pub enum Attached {
+    /// It is on the entry, and this is the entry now.
+    Added { entry: Entry },
+    /// The entry already gives that name to a file, and nothing changed.
+    Taken { clash: Clash },
+}
+
+/// A name the entry already gives a file, and what the reader is asked to
+/// decide about it. Sizes and names only: neither file's bytes cross.
+#[derive(Serialize)]
+pub struct Clash {
+    /// The name both files go by, exactly as the entry holds it.
+    pub name: String,
+    /// How large the file already there is.
+    pub size: usize,
+    /// How large the file just chosen is. Two files by one name are told apart
+    /// by size before anything else, and a reader who picked the same file
+    /// twice sees two numbers that agree.
+    pub chosen: usize,
+    /// The name the file just chosen goes under if both are kept.
+    pub free: String,
+}
+
+impl Clash {
+    pub fn of(name: String, chosen: usize, clash: vault_core::Clash) -> Clash {
+        Clash {
+            name,
+            size: clash.size,
+            chosen,
+            free: clash.free,
         }
     }
 }
@@ -460,13 +736,15 @@ pub(crate) fn moment(time: std::time::SystemTime) -> Option<String> {
         i64::try_from(since.as_secs()).ok()?,
         since.subsec_nanos(),
     )?;
-    Some(moment.naive_utc().format("%Y-%m-%dT%H:%M:%SZ").to_string())
+    stamp(Some(moment.naive_utc()))
 }
 
 #[cfg(test)]
 mod tests {
     use chrono::NaiveDate;
-    use vault_core::model::{Attachment, EntryId, EntrySummary, Field, GroupId, Timestamps};
+    use vault_core::model::{
+        Attachment, EntryId, EntrySummary, Field, GroupId, Timestamps, fields,
+    };
 
     use super::*;
 
@@ -480,7 +758,10 @@ mod tests {
     fn protected(name: &str, empty: bool) -> Field {
         Field {
             name: name.to_owned(),
-            value: FieldValue::Protected { empty },
+            value: FieldValue::Protected {
+                empty,
+                lines: false,
+            },
         }
     }
 
@@ -493,6 +774,8 @@ mod tests {
             tags: Vec::new(),
             times: Timestamps::default(),
             versions: 0,
+            binned: None,
+            deletion: model::Deletion::Bin,
         }
     }
 
@@ -523,6 +806,41 @@ mod tests {
         ));
     }
 
+    /// Whether a value is in lines crosses for every field, as one bit beside
+    /// `empty`, and the value it is about still does not: ten recovery codes
+    /// are replaced in lines without a word of them reaching the window.
+    #[test]
+    fn a_value_in_lines_says_so_and_nothing_more() {
+        let entry = Entry::of(&entry_of(vec![
+            Field {
+                name: "Recovery codes".to_owned(),
+                value: FieldValue::Protected {
+                    empty: false,
+                    lines: true,
+                },
+            },
+            protected(fields::PASSWORD, false),
+            open(fields::NOTES, "first\r\nsecond"),
+            open(fields::URL, "https://example.com"),
+        ]));
+
+        let payload = json(&entry);
+        for (name, lines) in [
+            ("Recovery codes", true),
+            ("Password", false),
+            ("Notes", true),
+            ("URL", false),
+        ] {
+            let field = entry
+                .fields
+                .iter()
+                .find(|field| field.name == name)
+                .expect("the field crosses");
+            assert_eq!(field.lines, lines, "{name}");
+        }
+        assert!(payload.contains(r#""name":"Recovery codes","kind":"custom","protected":true,"value":null,"empty":false,"openable":false,"lines":true"#), "{payload}");
+    }
+
     #[test]
     fn a_row_carries_the_four_things_a_list_filters_on_and_nothing_else() {
         let row = EntryRow::of(&EntrySummary {
@@ -530,7 +848,10 @@ mod tests {
             group: GroupId::from_uuid(uuid::Uuid::nil()),
             title: FieldValue::Open("node-3".to_owned()),
             username: FieldValue::Open("deploy".to_owned()),
-            url: FieldValue::Protected { empty: false },
+            url: FieldValue::Protected {
+                empty: false,
+                lines: false,
+            },
             tags: vec!["prod".to_owned(), "ssh".to_owned()],
             times: Timestamps {
                 created: None,
@@ -541,11 +862,12 @@ mod tests {
             has_password: true,
             attachments: 2,
             versions: 7,
+            binned: None,
         });
 
         assert_eq!(
             json(&row),
-            r#"{"id":"00000000-0000-0000-0000-000000000000","group":"00000000-0000-0000-0000-000000000000","title":"node-3","username":"deploy","url":null,"tags":["prod","ssh"],"modified":"2026-03-12T18:42:00Z","hasPassword":true,"attachments":2}"#
+            r#"{"id":"00000000-0000-0000-0000-000000000000","group":"00000000-0000-0000-0000-000000000000","title":"node-3","username":"deploy","url":null,"tags":["prod","ssh"],"modified":"2026-03-12T18:42:00Z","hasPassword":true,"attachments":2,"binned":null}"#
         );
     }
 
@@ -704,6 +1026,83 @@ mod tests {
         );
     }
 
+    /// A row in the bin says when it went in, the deleted folder it went in
+    /// with, and where it goes back, and each folder crosses as its id: the
+    /// name is the tree's to give, so a folder
+    /// renamed since is called what it is called now. Nothing known crosses as
+    /// `null` rather than as a guess, and the screen says the top of the vault.
+    #[test]
+    fn an_entry_in_the_bin_crosses_with_when_it_went_and_where_it_goes_back() {
+        let from = GroupId::from_uuid(uuid::Uuid::from_u128(7));
+        let within = GroupId::from_uuid(uuid::Uuid::from_u128(8));
+        let mut entry = entry_of(vec![open(fields::TITLE, "Bank")]);
+        entry.binned = Some(model::Binned {
+            since: NaiveDate::from_ymd_opt(2026, 9, 27).and_then(|day| day.and_hms_opt(12, 0, 0)),
+            within: Some(within),
+            from: Some(from),
+        });
+        entry.deletion = model::Deletion::Forever;
+
+        let whole = serde_json::to_value(Entry::of(&entry)).expect("the entry serialises");
+        assert_eq!(
+            whole["binned"],
+            serde_json::json!({
+                "since": "2026-09-27T12:00:00Z",
+                "within": within.to_string(),
+                "from": from.to_string(),
+            })
+        );
+        assert_eq!(whole["deletion"], "forever");
+
+        let row = serde_json::to_value(EntryRow::of(&entry.summary())).expect("the row serialises");
+        assert_eq!(row["binned"], whole["binned"]);
+
+        entry.binned = Some(model::Binned {
+            since: None,
+            within: None,
+            from: None,
+        });
+        let unknown = serde_json::to_value(Entry::of(&entry)).expect("the entry serialises");
+        assert_eq!(
+            unknown["binned"],
+            serde_json::json!({ "since": null, "within": null, "from": null })
+        );
+
+        entry.binned = None;
+        entry.deletion = model::Deletion::Bin;
+        let live = serde_json::to_value(Entry::of(&entry)).expect("the entry serialises");
+        assert_eq!(live["binned"], serde_json::Value::Null);
+        assert_eq!(live["deletion"], "bin");
+    }
+
+    /// A folder says what deleting it would do, and so does every folder in
+    /// it: the answer is Rust's for each one, never inferred by the screen from
+    /// the folder above.
+    #[test]
+    fn every_folder_says_what_deleting_it_would_do() {
+        let folder = |name: &str, deletion, sections| model::Project {
+            id: GroupId::from_uuid(uuid::Uuid::new_v4()),
+            name: name.to_owned(),
+            notes: None,
+            is_recycle_bin: false,
+            binned: None,
+            deletion,
+            sections,
+            entries: Vec::new(),
+        };
+        let tree = folder(
+            "Root",
+            model::Deletion::Forever,
+            vec![folder("Personal", model::Deletion::Bin, Vec::new())],
+        );
+
+        let payload = serde_json::to_value(Group::of(&tree)).expect("the tree serialises");
+        assert_eq!(payload["deletion"], "forever");
+        assert_eq!(payload["binned"], serde_json::Value::Null);
+        assert_eq!(payload["sections"][0]["deletion"], "bin");
+        assert_eq!(payload["sections"][0]["isRecycleBin"], false);
+    }
+
     #[test]
     fn a_million_characters_of_title_cross_whole() {
         let long = "a".repeat(1_000_000);
@@ -736,6 +1135,39 @@ mod tests {
         }
 
         assert_eq!(stamp(None), None);
+    }
+
+    /// The window branches on one key, and a name that is taken crosses as a
+    /// question: two sizes and two names, the first exactly as the entry holds
+    /// it whatever is in it, and not a byte of either file.
+    #[test]
+    fn a_taken_name_crosses_as_a_question_with_no_bytes_in_it() {
+        let hostile = "../../<b>scan</b>\u{202e}fdp.pdf";
+        let taken = serde_json::to_value(Attached::Taken {
+            clash: Clash::of(
+                hostile.to_owned(),
+                3,
+                vault_core::Clash {
+                    size: 7,
+                    free: "scan 2.pdf".to_owned(),
+                },
+            ),
+        })
+        .expect("the payload serialises");
+        assert_eq!(
+            taken,
+            serde_json::json!({
+                "outcome": "taken",
+                "clash": { "name": hostile, "size": 7, "chosen": 3, "free": "scan 2.pdf" }
+            })
+        );
+
+        let added = serde_json::to_value(Attached::Added {
+            entry: Entry::of(&entry_of(Vec::new())),
+        })
+        .expect("the payload serialises");
+        assert_eq!(added["outcome"], "added");
+        assert_eq!(added["entry"]["id"], uuid::Uuid::nil().to_string());
     }
 
     #[test]
@@ -794,5 +1226,47 @@ mod tests {
         ] {
             assert!(entry_id(text).is_err(), "{text:?}");
         }
+    }
+
+    /// What the screen is told about a copy and the vault it would go over is
+    /// file names and times, never a path: the paths stay in Rust, which is
+    /// where the move is made. The file it would go over is named as the
+    /// snapshot it becomes, so the sentence that promises it is Rust's rule
+    /// for snapshot names and not a second one in the window.
+    #[test]
+    fn a_copy_crosses_with_names_and_times_and_no_path() {
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_000_000);
+        let vault = std::path::Path::new("/Users/someone/Vault/work <b>.kdbx");
+
+        let copy = serde_json::to_value(CopyOf::of(
+            vault,
+            vault_core::storage::OnDisk::Written(Some(at)),
+            vault_core::storage::OnDisk::Gone,
+        ))
+        .expect("the copy serialises");
+        assert_eq!(copy["vault"], "work <b>.kdbx");
+        assert_eq!(copy["keptAs"], "work <b>.kdbx.1.bak");
+        assert_eq!(copy["saved"], "2026-09-21T14:13:20Z");
+        assert_eq!(copy["vaultFile"]["there"], false);
+        assert!(!copy.to_string().contains("/Users"), "{copy}");
+
+        let gone = serde_json::to_value(CopyOf::of(
+            vault,
+            vault_core::storage::OnDisk::Gone,
+            vault_core::storage::OnDisk::Written(Some(at)),
+        ))
+        .expect("the copy serialises");
+        assert_eq!(gone["saved"], serde_json::Value::Null);
+        assert_eq!(gone["vaultFile"]["written"], "2026-09-21T14:13:20Z");
+
+        let there = serde_json::to_value(OnDisk::of(vault_core::storage::OnDisk::Written(None)))
+            .expect("the file serialises");
+        assert_eq!(there, serde_json::json!({ "there": true, "written": null }));
+        let missing = serde_json::to_value(OnDisk::of(vault_core::storage::OnDisk::Gone))
+            .expect("the file serialises");
+        assert_eq!(
+            missing,
+            serde_json::json!({ "there": false, "written": null })
+        );
     }
 }

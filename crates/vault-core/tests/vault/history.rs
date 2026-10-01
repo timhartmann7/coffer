@@ -2,7 +2,7 @@
 //! survive a save.
 
 use keepass::db::{Value, fields};
-use vault_core::{NewValue, model::FieldValue};
+use vault_core::{NewValue, VaultError, model::FieldValue};
 
 use crate::support::{self, BUILT_PASSWORD, RICH, SECRET, built, entry_titled, open};
 
@@ -113,7 +113,10 @@ fn changing_a_field_from_open_to_protected_counts_as_a_change() {
             .expect("the entry is there")
             .field(fields::USERNAME)
             .map(|field| field.value.clone()),
-        Some(FieldValue::Protected { empty: false })
+        Some(FieldValue::Protected {
+            empty: false,
+            lines: false
+        })
     );
 }
 
@@ -550,13 +553,7 @@ fn a_file_on_an_entry_does_not_take_the_versions_of_that_entry_with_it() {
     }
     assert_eq!(vault.versions(id).len(), 10);
 
-    vault
-        .add_attachment(
-            id,
-            "client.p12",
-            zeroize::Zeroizing::new(vec![0x5a; 5 * 1024 * 1024]),
-        )
-        .expect("the file attaches");
+    support::attach(&mut vault, id, "client.p12", &vec![0x5a; 5 * 1024 * 1024]);
     vault.save().expect("the database saves");
     assert_eq!(
         vault.versions(id).len(),
@@ -577,13 +574,7 @@ fn a_file_on_an_entry_does_not_take_the_versions_of_that_entry_with_it() {
 
     // A second file, larger on its own than the fallback limit. This is the
     // case that used to leave the entry with no history at all, for good.
-    vault
-        .add_attachment(
-            id,
-            "scan.tiff",
-            zeroize::Zeroizing::new(vec![0x17; 7 * 1024 * 1024]),
-        )
-        .expect("the file attaches");
+    support::attach(&mut vault, id, "scan.tiff", &vec![0x17; 7 * 1024 * 1024]);
     vault.save().expect("the database saves");
     drop(vault);
 
@@ -611,13 +602,7 @@ fn the_size_limit_still_prunes_an_entry_that_carries_a_file() {
 
     let mut vault = open(&database, BUILT_PASSWORD);
     let id = vault.tree().entries[0].id;
-    vault
-        .add_attachment(
-            id,
-            "report.pdf",
-            zeroize::Zeroizing::new(vec![0x2b; 3 * 1024 * 1024]),
-        )
-        .expect("the file attaches");
+    support::attach(&mut vault, id, "report.pdf", &vec![0x2b; 3 * 1024 * 1024]);
 
     for round in 0..20 {
         vault
@@ -653,13 +638,7 @@ fn a_hundred_saves_of_an_entry_that_carries_a_file_leave_it_bounded() {
 
     let mut vault = open(&database, BUILT_PASSWORD);
     let id = vault.tree().entries[0].id;
-    vault
-        .add_attachment(
-            id,
-            "attached.bin",
-            zeroize::Zeroizing::new(vec![0x3c; 3 * 1024]),
-        )
-        .expect("the file attaches");
+    support::attach(&mut vault, id, "attached.bin", &vec![0x3c; 3 * 1024]);
     vault.save().expect("the database saves");
 
     let settled = std::fs::metadata(&database)
@@ -709,13 +688,7 @@ fn an_entry_with_a_file_and_no_item_limit_is_bounded_by_size_and_not_emptied() {
 
     let mut vault = open(&database, BUILT_PASSWORD);
     let id = vault.tree().entries[0].id;
-    vault
-        .add_attachment(
-            id,
-            "client.p12",
-            zeroize::Zeroizing::new(vec![0x5a; 5 * 1024 * 1024]),
-        )
-        .expect("the file attaches");
+    support::attach(&mut vault, id, "client.p12", &vec![0x5a; 5 * 1024 * 1024]);
 
     // Sixty kilobytes a version, just inside what a field may hold, so that a
     // hundred and fifty of them are half again the six-megabyte fallback and the
@@ -740,4 +713,681 @@ fn an_entry_with_a_file_and_no_item_limit_is_bounded_by_size_and_not_emptied() {
         kept < rounds,
         "the size limit bounded nothing: {kept} versions of sixty kilobytes survived 6 MB"
     );
+}
+
+/// An entry with a protected field of the reader's own, and one version behind
+/// it, under whatever limits `limits` sets.
+fn with_a_pin(
+    directory: &std::path::Path,
+    limits: impl FnOnce(&mut keepass::Database),
+) -> std::path::PathBuf {
+    with_a_pin_dated(directory, stamp(0), limits)
+}
+
+/// [`with_a_pin`], with the one version behind the entry dated `dated`.
+fn with_a_pin_dated(
+    directory: &std::path::Path,
+    dated: chrono::NaiveDateTime,
+    limits: impl FnOnce(&mut keepass::Database),
+) -> std::path::PathBuf {
+    built(directory, "pin.kdbx", |db| {
+        limits(db);
+        let id = db
+            .root_mut()
+            .add_entry()
+            .edit(|entry| {
+                entry.set_unprotected(fields::TITLE, "bank");
+                entry.set_protected("PIN", "4321");
+                entry.set_unprotected(fields::NOTES, "then");
+            })
+            .id();
+
+        let mut entry = db.entry_mut(id).expect("the entry is there");
+        entry.times.last_modification = Some(dated);
+        entry.edit_tracking(|entry| entry.set(fields::NOTES, Value::unprotected("now")));
+    })
+}
+
+/// The first moment of a year, for versions another client dated far from now.
+fn new_year(year: i32) -> chrono::NaiveDateTime {
+    chrono::NaiveDate::from_ymd_opt(year, 1, 1)
+        .and_then(|day| day.and_hms_opt(0, 0, 0))
+        .expect("the moment is valid")
+}
+
+fn pin(vault: &vault_core::Vault, id: keepass::db::EntryId) -> Option<FieldValue> {
+    vault
+        .entry(id)
+        .expect("the entry is there")
+        .field("PIN")
+        .map(|field| field.value.clone())
+}
+
+/// What an undo of a removal is: the version the removal wrote, restored, and
+/// the entry exactly as it was - the value, its protection and every other
+/// field - after a save and a fresh open.
+#[test]
+fn a_removal_is_taken_back_by_the_version_it_wrote() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = with_a_pin(scratch.path(), |_| {});
+    let mut vault = open(&database, BUILT_PASSWORD);
+    let id = entry_titled(&vault, "bank").id;
+
+    assert!(
+        matches!(
+            vault.undo_removal(id, "PIN"),
+            Err(VaultError::RemovalSuperseded)
+        ),
+        "a field the entry still has was put back"
+    );
+
+    vault
+        .remove_field(id, "PIN", false)
+        .expect("the field comes off");
+    vault.save().expect("the database saves");
+    let before = vault.versions(id).len();
+
+    vault
+        .undo_removal(id, "PIN")
+        .expect("the removal is taken back");
+    assert_eq!(
+        vault.versions(id).len(),
+        before + 1,
+        "the undo kept no version of the state it replaced"
+    );
+    vault.save().expect("the database saves");
+    drop(vault);
+
+    let vault = open(&database, BUILT_PASSWORD);
+    assert_eq!(
+        pin(&vault, id),
+        Some(FieldValue::Protected {
+            empty: false,
+            lines: false
+        })
+    );
+    assert_eq!(
+        vault
+            .reveal(id, "PIN")
+            .expect("the value is back")
+            .expose_str(),
+        Some("4321")
+    );
+    assert_eq!(
+        notes(&vault, id),
+        "now",
+        "the undo took back more than the field"
+    );
+}
+
+/// A removal the database's limits leave no version of: nothing is done until
+/// the reader agrees it is for good, and once they have, nothing takes it back
+/// or brings back anything else in its place.
+fn is_asked_about_first_and_then_for_good(limits: impl FnOnce(&mut keepass::Database)) {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = with_a_pin(scratch.path(), limits);
+    let mut vault = open(&database, BUILT_PASSWORD);
+    let id = entry_titled(&vault, "bank").id;
+    let versions = vault.versions(id).len();
+
+    assert!(matches!(
+        vault.remove_field(id, "PIN", false),
+        Err(VaultError::RemovalForGood)
+    ));
+    assert_eq!(
+        pin(&vault, id),
+        Some(FieldValue::Protected {
+            empty: false,
+            lines: false
+        }),
+        "the field went before anybody agreed"
+    );
+    assert_eq!(
+        vault.versions(id).len(),
+        versions,
+        "a refusal wrote a version"
+    );
+
+    vault
+        .remove_field(id, "PIN", true)
+        .expect("the field comes off once the reader agreed");
+    vault.save().expect("the database saves");
+    assert!(matches!(
+        vault.undo_removal(id, "PIN"),
+        Err(VaultError::RemovalSuperseded)
+    ));
+    assert_eq!(pin(&vault, id), None, "the field came back on its own");
+    assert_eq!(notes(&vault, id), "now", "a refused undo changed the entry");
+}
+
+/// A database that keeps no versions at all prunes the one a removal wrote on
+/// the very next save.
+#[test]
+fn a_removal_in_a_vault_that_keeps_no_versions_is_asked_about_first() {
+    is_asked_about_first_and_then_for_good(|db| db.meta.history_max_items = Some(0));
+}
+
+/// A size limit one version does not fit drops every version, the removal's
+/// with the rest.
+#[test]
+fn a_removal_whose_version_is_over_the_size_limit_is_asked_about_first() {
+    is_asked_about_first_and_then_for_good(|db| db.meta.history_max_size = Some(8));
+}
+
+/// Whether a removal asks first is the save's own arithmetic, so the two agree
+/// at every limit and at the very edge of one. The entry weighs 24: its title,
+/// its PIN and its notes, names and values. A limit it fits lets the removal go
+/// at once and the undo work after the save; a limit one byte short asks, and
+/// after the save nothing is left to take back.
+#[test]
+fn a_removal_asks_first_exactly_when_the_save_would_drop_its_version() {
+    let mut asked = 0;
+    let mut went = 0;
+    for (items, size) in [
+        (Some(0), None),
+        (Some(1), None),
+        (Some(-1), Some(-1)),
+        (None, Some(0)),
+        (None, Some(23)),
+        (None, Some(24)),
+        (None, Some(25)),
+        (Some(1), Some(24)),
+        (Some(0), Some(-1)),
+    ] {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let database = with_a_pin(scratch.path(), |db| {
+            db.meta.history_max_items = items;
+            db.meta.history_max_size = size;
+        });
+        let mut vault = open(&database, BUILT_PASSWORD);
+        let id = entry_titled(&vault, "bank").id;
+        let limits = format!("items {items:?}, size {size:?}");
+
+        match vault.remove_field(id, "PIN", false) {
+            Ok(()) => {
+                went += 1;
+                vault.save().expect("the database saves");
+                vault
+                    .undo_removal(id, "PIN")
+                    .unwrap_or_else(|error| panic!("{limits}: no undo after all: {error}"));
+                assert_eq!(
+                    pin(&vault, id),
+                    Some(FieldValue::Protected {
+                        empty: false,
+                        lines: false
+                    })
+                );
+            }
+            Err(VaultError::RemovalForGood) => {
+                asked += 1;
+                vault
+                    .remove_field(id, "PIN", true)
+                    .expect("the field comes off once the reader agreed");
+                vault.save().expect("the database saves");
+                assert!(
+                    matches!(
+                        vault.undo_removal(id, "PIN"),
+                        Err(VaultError::RemovalSuperseded)
+                    ),
+                    "{limits}: asked about a removal the save kept the version of"
+                );
+            }
+            Err(error) => panic!("{limits}: {error}"),
+        }
+    }
+    assert_eq!(
+        (asked, went),
+        (4, 5),
+        "the limits above are not the edges they claim"
+    );
+}
+
+/// The newest version in the list is not always the newest one written. A
+/// version another client left undated sorts after every dated one, so it is
+/// the one a prune keeps - and this one holds the field. Restoring it would
+/// bring the field back and take the notes back to what they were before that,
+/// which is a restore of something older dressed as an undo.
+#[test]
+fn an_older_version_holding_the_field_is_never_restored_in_its_place() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = built(scratch.path(), "undated.kdbx", |db| {
+        db.meta.history_max_items = Some(1);
+        let id = db
+            .root_mut()
+            .add_entry()
+            .edit(|entry| {
+                entry.set_unprotected(fields::TITLE, "bank");
+                entry.set_protected("PIN", "4321");
+                entry.set_unprotected(fields::NOTES, "then");
+            })
+            .id();
+
+        let mut entry = db.entry_mut(id).expect("the entry is there");
+        entry.times.last_modification = None;
+        entry.edit_tracking(|entry| entry.set(fields::NOTES, Value::unprotected("now")));
+    });
+
+    let mut vault = open(&database, BUILT_PASSWORD);
+    let id = entry_titled(&vault, "bank").id;
+    // With one version kept and an undated one in front of it, the removal's
+    // is the one the save throws away.
+    assert!(matches!(
+        vault.remove_field(id, "PIN", false),
+        Err(VaultError::RemovalForGood)
+    ));
+    vault
+        .remove_field(id, "PIN", true)
+        .expect("the field comes off");
+    vault.save().expect("the database saves");
+
+    let survivor = vault
+        .versions(id)
+        .last()
+        .map(|version| version.index)
+        .expect("the undated version survived the prune");
+    assert!(
+        vault.reveal_version(id, survivor, "PIN").is_some(),
+        "the premise is a surviving version that holds the field"
+    );
+    assert!(matches!(
+        vault.undo_removal(id, "PIN"),
+        Err(VaultError::RemovalSuperseded)
+    ));
+    assert_eq!(pin(&vault, id), None);
+    assert_eq!(notes(&vault, id), "now");
+}
+
+/// Anything done after the removal writes a newer version, and restoring the
+/// removal's version from there would undo that as well. It is refused, before
+/// the save and after it, and changes nothing.
+#[test]
+fn a_change_after_a_removal_means_it_can_no_longer_be_taken_back() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = with_a_pin(scratch.path(), |_| {});
+    let mut vault = open(&database, BUILT_PASSWORD);
+    let id = entry_titled(&vault, "bank").id;
+
+    vault
+        .remove_field(id, "PIN", false)
+        .expect("the field comes off");
+    vault
+        .set_field(id, fields::NOTES, NewValue::Open("later".to_owned()))
+        .expect("the notes change");
+    let versions = vault.versions(id).len();
+
+    for saved in [false, true] {
+        if saved {
+            vault.save().expect("the database saves");
+        }
+        assert!(
+            matches!(
+                vault.undo_removal(id, "PIN"),
+                Err(VaultError::RemovalSuperseded)
+            ),
+            "saved: {saved}"
+        );
+        assert_eq!(pin(&vault, id), None);
+        assert_eq!(
+            notes(&vault, id),
+            "later",
+            "the later change was taken back"
+        );
+        assert_eq!(
+            vault.versions(id).len(),
+            versions,
+            "a refusal wrote a version"
+        );
+    }
+
+    // Nor is it an undo of the other field: the name decides what is taken
+    // back.
+    vault
+        .remove_field(id, fields::NOTES, false)
+        .expect("the notes come off");
+    assert!(matches!(
+        vault.undo_removal(id, "PIN"),
+        Err(VaultError::RemovalSuperseded)
+    ));
+    vault
+        .undo_removal(id, fields::NOTES)
+        .expect("the notes come back");
+    assert_eq!(notes(&vault, id), "later");
+    assert_eq!(pin(&vault, id), None);
+}
+
+/// A name the entry never had and an entry that is not in this database are
+/// both nothing to take back, and neither changes anything.
+#[test]
+fn nothing_is_put_back_for_a_field_or_an_entry_that_was_never_there() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = with_a_pin(scratch.path(), |_| {});
+    let (_other, elsewhere) = support::scratch("minimal-kdbx41.kdbx");
+    let absent = open(&elsewhere, SECRET).tree().entries[0].id;
+
+    let mut vault = open(&database, BUILT_PASSWORD);
+    let id = entry_titled(&vault, "bank").id;
+    vault
+        .remove_field(id, "PIN", false)
+        .expect("the field comes off");
+    let versions = vault.versions(id).len();
+
+    assert!(matches!(
+        vault.undo_removal(id, "no such field"),
+        Err(VaultError::RemovalSuperseded)
+    ));
+    assert!(matches!(
+        vault.undo_removal(absent, "PIN"),
+        Err(VaultError::NoSuchEntry)
+    ));
+    assert!(matches!(
+        vault.remove_field(absent, "PIN", true),
+        Err(VaultError::NoSuchEntry)
+    ));
+    assert_eq!(pin(&vault, id), None);
+    assert_eq!(vault.versions(id).len(), versions);
+}
+
+/// A version another client dated in the year 3000 is the newest one in every
+/// order Coffer puts versions in, so it stands where the removal's version
+/// would. It holds the field, and restoring it would take the notes back as
+/// well, so the undo is refused, before the save or after it.
+///
+/// Whether the removal's own version survives the save is for the limits to
+/// decide, and so is whether the removal asks first. The default keeps it, and
+/// the save moves it in front of the version from the future, which renumbers
+/// both. A limit of one prunes it first, because next to the year 3000 it is
+/// the older of the two, and that removal is asked about.
+#[test]
+fn a_version_from_the_far_future_is_never_taken_for_the_removals() {
+    for (limit, kept) in [(None, 2), (Some(1), 1)] {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let database = with_a_pin_dated(scratch.path(), new_year(3000), |db| {
+            db.meta.history_max_items = limit;
+        });
+        let mut vault = open(&database, BUILT_PASSWORD);
+        let id = entry_titled(&vault, "bank").id;
+
+        let asked = matches!(
+            vault.remove_field(id, "PIN", false),
+            Err(VaultError::RemovalForGood)
+        );
+        assert_eq!(asked, kept == 1, "limit {limit:?}");
+        if asked {
+            vault
+                .remove_field(id, "PIN", true)
+                .expect("the field comes off once the reader agreed");
+        }
+        assert_eq!(
+            vault
+                .versions(id)
+                .iter()
+                .map(|version| version.index)
+                .collect::<Vec<_>>(),
+            vec![1, 0],
+            "the removal's version is not listed before the one from the future"
+        );
+        assert!(
+            matches!(
+                vault.undo_removal(id, "PIN"),
+                Err(VaultError::RemovalSuperseded)
+            ),
+            "limit {limit:?}"
+        );
+
+        vault.save().expect("the database saves");
+        assert!(
+            matches!(
+                vault.undo_removal(id, "PIN"),
+                Err(VaultError::RemovalSuperseded)
+            ),
+            "limit {limit:?}"
+        );
+        assert_eq!(pin(&vault, id), None, "the field came back on its own");
+        assert_eq!(notes(&vault, id), "now", "a refused undo changed the entry");
+
+        let listed = vault.versions(id);
+        assert_eq!(listed.len(), kept, "limit {limit:?}");
+        assert_eq!(
+            listed
+                .last()
+                .map(|version| (version.index, version.modified)),
+            Some((kept - 1, Some(new_year(3000)))),
+            "the version from the future went, or kept its old position"
+        );
+        if kept == 2 {
+            assert_eq!(
+                vault
+                    .reveal_version(id, 0, fields::NOTES)
+                    .and_then(|notes| notes.expose_str().map(str::to_owned)),
+                Some("now".to_owned()),
+                "the removal's version is not where the save put it"
+            );
+        }
+    }
+}
+
+/// A version dated 1600 is older than anything Coffer writes, and changes
+/// nothing about which version a removal wrote. It keeps its date through a
+/// save and a fresh open, and the removal is still taken back after both.
+#[test]
+fn a_version_from_the_distant_past_leaves_a_removal_its_undo() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = with_a_pin_dated(scratch.path(), new_year(1600), |db| {
+        db.meta.history_max_items = Some(1);
+    });
+    let mut vault = open(&database, BUILT_PASSWORD);
+    let id = entry_titled(&vault, "bank").id;
+
+    // One version kept, and the one from 1600 is the one that goes.
+    vault
+        .remove_field(id, "PIN", false)
+        .expect("the field comes off without a question");
+    vault.save().expect("the database saves");
+    drop(vault);
+
+    let mut vault = open(&database, BUILT_PASSWORD);
+    assert!(
+        vault
+            .versions(id)
+            .iter()
+            .all(|version| version.modified != Some(new_year(1600))),
+        "the version from 1600 outlived a limit of one"
+    );
+    vault
+        .undo_removal(id, "PIN")
+        .expect("the removal is taken back");
+    assert_eq!(
+        pin(&vault, id),
+        Some(FieldValue::Protected {
+            empty: false,
+            lines: false
+        })
+    );
+    assert_eq!(
+        notes(&vault, id),
+        "now",
+        "the undo took back more than the field"
+    );
+}
+
+/// The same version from 1600 under no limit stays, with its date, beside the
+/// removal's, which is still the one an undo restores.
+#[test]
+fn a_version_from_the_distant_past_keeps_its_date_beside_the_removals() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = with_a_pin_dated(scratch.path(), new_year(1600), |_| {});
+    let mut vault = open(&database, BUILT_PASSWORD);
+    let id = entry_titled(&vault, "bank").id;
+
+    vault
+        .remove_field(id, "PIN", false)
+        .expect("the field comes off");
+    vault.save().expect("the database saves");
+    drop(vault);
+
+    let mut vault = open(&database, BUILT_PASSWORD);
+    assert_eq!(
+        vault
+            .versions(id)
+            .first()
+            .and_then(|version| version.modified),
+        Some(new_year(1600)),
+        "the date did not survive the file"
+    );
+    vault
+        .undo_removal(id, "PIN")
+        .expect("the removal is taken back");
+    assert_eq!(
+        pin(&vault, id),
+        Some(FieldValue::Protected {
+            empty: false,
+            lines: false
+        })
+    );
+    assert_eq!(
+        notes(&vault, id),
+        "now",
+        "the undo took back more than the field"
+    );
+}
+
+/// Versions written in one second share a date, because the format keeps no
+/// finer one. Here every version of the entry holds the field, the entry and
+/// all three versions behind it were last changed in the same second, and the
+/// removal writes a version dated that second too. Only the last one written
+/// is the removal's, and it is the only one whose restore takes back nothing
+/// but the field - before the save and after it.
+#[test]
+fn edits_and_a_removal_in_one_second_are_taken_back_by_the_removals_version() {
+    for saved in [false, true] {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let database = built(scratch.path(), "second.kdbx", |db| {
+            let id = db
+                .root_mut()
+                .add_entry()
+                .edit(|entry| {
+                    entry.set_unprotected(fields::TITLE, "bank");
+                    entry.set_protected("PIN", "4321");
+                    entry.set_unprotected(fields::NOTES, "one");
+                })
+                .id();
+            for notes in ["two", "three", "now"] {
+                let mut entry = db.entry_mut(id).expect("the entry is there");
+                entry.times.last_modification = Some(stamp(0));
+                entry.edit_tracking(|entry| entry.set(fields::NOTES, Value::unprotected(notes)));
+            }
+            db.entry_mut(id)
+                .expect("the entry is there")
+                .times
+                .last_modification = Some(stamp(0));
+        });
+        let mut vault = open(&database, BUILT_PASSWORD);
+        let id = entry_titled(&vault, "bank").id;
+
+        vault
+            .remove_field(id, "PIN", false)
+            .expect("the field comes off");
+        assert!(
+            vault
+                .versions(id)
+                .iter()
+                .all(|version| version.modified == Some(stamp(0))),
+            "the premise is four versions dated the same second"
+        );
+        if saved {
+            vault.save().expect("the database saves");
+        }
+
+        vault
+            .undo_removal(id, "PIN")
+            .expect("the removal is taken back");
+        assert_eq!(
+            notes(&vault, id),
+            "now",
+            "the undo took back an edit made in the same second (saved: {saved})"
+        );
+        assert_eq!(
+            pin(&vault, id),
+            Some(FieldValue::Protected {
+                empty: false,
+                lines: false
+            })
+        );
+    }
+}
+
+/// The same thing done the way a reader does it: two edits and a removal in
+/// Coffer, one after the other. They land in one second nearly every time, and
+/// the undo restores the removal's version whether they do or not.
+#[test]
+fn two_edits_and_a_removal_are_taken_back_to_just_before_the_removal() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = with_a_pin(scratch.path(), |_| {});
+    let mut vault = open(&database, BUILT_PASSWORD);
+    let id = entry_titled(&vault, "bank").id;
+
+    for notes in ["first", "second"] {
+        vault
+            .set_field(id, fields::NOTES, NewValue::Open(notes.to_owned()))
+            .expect("the notes change");
+    }
+    vault
+        .remove_field(id, "PIN", false)
+        .expect("the field comes off");
+    vault.save().expect("the database saves");
+
+    vault
+        .undo_removal(id, "PIN")
+        .expect("the removal is taken back");
+    assert_eq!(
+        notes(&vault, id),
+        "second",
+        "the undo took back one of the edits before the removal"
+    );
+    assert_eq!(
+        pin(&vault, id),
+        Some(FieldValue::Protected {
+            empty: false,
+            lines: false
+        })
+    );
+}
+
+/// A database Coffer will not write back takes no removal and no undo of one.
+#[test]
+fn a_snapshot_takes_neither_a_removal_nor_its_undo() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = with_a_pin(scratch.path(), |_| {});
+    let mut vault = open(&database, BUILT_PASSWORD);
+    let id = entry_titled(&vault, "bank").id;
+    vault
+        .set_field(id, fields::NOTES, NewValue::Open("saved".to_owned()))
+        .expect("the notes change");
+    vault.save().expect("the database saves, taking a snapshot");
+    drop(vault);
+
+    let snapshot = vault_core::storage::snapshot::slot(&database, 1).expect("the slot has a path");
+    let mut vault = open(&snapshot, BUILT_PASSWORD);
+    assert!(matches!(
+        vault.remove_field(id, "PIN", true),
+        Err(VaultError::ReadOnlySnapshot)
+    ));
+    assert!(matches!(
+        vault.undo_removal(id, "PIN"),
+        Err(VaultError::ReadOnlySnapshot)
+    ));
+    assert_eq!(
+        pin(&vault, id),
+        Some(FieldValue::Protected {
+            empty: false,
+            lines: false
+        })
+    );
+}
+
+fn notes(vault: &vault_core::Vault, id: keepass::db::EntryId) -> String {
+    vault
+        .reveal(id, fields::NOTES)
+        .and_then(|notes| notes.expose_str().map(str::to_owned))
+        .unwrap_or_default()
 }

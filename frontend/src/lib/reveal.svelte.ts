@@ -7,6 +7,7 @@
  * it or a crash could write it down. What is state here is how long is left.
  */
 
+import { SvelteMap } from 'svelte/reactivity';
 import { reveal } from './ipc';
 
 /** How long a revealed value stays on the screen. The bar that drains beside
@@ -16,17 +17,31 @@ const SECONDS = 30;
 /**
  * Writes a value into the node that shows it, and wipes it again with `''`.
  *
- * A field being edited is an input and a field being read is a span. Either
- * way the value is a property of one DOM node and of nothing else. Every screen
- * that puts a secret on the screen goes through here, so there is one place
- * that knows what "on the screen and nowhere else" means.
+ * The node is text to read and never a field: a value written into a field was
+ * a value one stray key could change. It is one text node inside one element
+ * and nothing else, which is also what lets a selection in it be counted
+ * without reading it (see `guard.ts`). Every screen that puts a secret on the
+ * screen goes through here, so there is one place that knows what "on the
+ * screen and nowhere else" means.
  */
 export function place(node: HTMLElement, value: string): void {
-	if (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement) {
-		node.value = value;
-	} else {
-		node.textContent = value;
-	}
+	node.textContent = value;
+}
+
+/** Every value on the screen, by the entry it is a value of. */
+const shown = new SvelteMap<Revealed, string>();
+
+/**
+ * Takes every value of an entry off the screen: the entry has come back
+ * changed.
+ *
+ * A value shown before a change is not what the entry holds after it. Left up,
+ * it was the old password read out to a guest under the label of the new one,
+ * for the rest of its half minute - and a part of it selected and copied was
+ * cut out of the new value in Rust at positions counted on the old text.
+ */
+export function conceal(entry: string): void {
+	for (const [revealed, of] of shown) if (of === entry) revealed.hide();
 }
 
 export class Revealed {
@@ -66,6 +81,7 @@ export class Revealed {
 		this.#asked = asked;
 		place(node, value);
 		this.#node = node;
+		shown.set(this, entry);
 		this.showing = true;
 		this.left = SECONDS;
 
@@ -73,25 +89,6 @@ export class Revealed {
 			this.left -= 1;
 			if (this.left <= 0) this.hide();
 		}, 1000);
-	}
-
-	/**
-	 * Lets go of the value without taking it off the screen, and stops the
-	 * clock.
-	 *
-	 * For a field the reader has started writing in: what is in it is theirs
-	 * now, not the vault's, and wiping it half way through would take away what
-	 * they had typed. Whoever calls this owns the wipe from then on.
-	 */
-	release(): void {
-		this.#asked += 1;
-		if (this.#countdown !== null) {
-			clearInterval(this.#countdown);
-			this.#countdown = null;
-		}
-		this.#node = null;
-		this.showing = false;
-		this.left = 0;
 	}
 
 	/**
@@ -109,6 +106,7 @@ export class Revealed {
 			place(this.#node, '');
 			this.#node = null;
 		}
+		shown.delete(this);
 		this.showing = false;
 		this.left = 0;
 	}

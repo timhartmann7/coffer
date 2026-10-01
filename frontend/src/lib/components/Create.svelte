@@ -2,11 +2,13 @@
 	import {
 		asFailure,
 		calibrate,
+		chooseExisting,
 		chooseNewDatabase,
 		createDatabase,
-		defaultNewDatabase
+		defaultNewDatabase,
+		target
 	} from '$lib/ipc';
-	import type { Calibration, Database } from '$lib/model';
+	import type { Calibration, Database, Target } from '$lib/model';
 	import Icon from './Icon.svelte';
 
 	/**
@@ -16,15 +18,32 @@
 	 * small type and not behind a checkbox: a forgotten password is the end of
 	 * the data and there is no way back from it.
 	 */
-	let { onMade, onCancel }: { onMade: () => Promise<void>; onCancel: () => void } = $props();
+	let {
+		onMade,
+		onCancel,
+		onOpen
+	}: {
+		onMade: () => Promise<void>;
+		onCancel: () => void;
+		/** The reader chose to open what is already at the place instead. */
+		onOpen: (database: Database) => void;
+	} = $props();
 
-	let where = $state<Database | null>(null);
+	let where = $state<Target | null>(null);
 	let first = $state<HTMLInputElement>();
 	let second = $state<HTMLInputElement>();
 	let measured = $state<Calibration | null>(null);
 	let busy = $state(false);
 	let failure = $state<string | null>(null);
 	let mismatch = $state(false);
+
+	/** Nothing can be made before there is somewhere free to put it and a
+	 * measurement to put in it. */
+	const blocked = $derived(busy || !where || where.standing !== 'free' || !measured);
+
+	/** Whether what is at the place can be opened instead: a vault, or the
+	 * copy a lock left of one, whose unlock screen puts it back. */
+	const openable = $derived(where?.standing === 'vault' || where?.standing === 'copy');
 
 	/**
 	 * The measurement runs as soon as the screen opens, so that it is over by
@@ -72,9 +91,50 @@
 		}
 	}
 
+	/**
+	 * Reads what is at the place again, and keeps what the screen said when it
+	 * cannot be read. A place picked while this was on its way is the later
+	 * word, and is kept.
+	 */
+	async function look() {
+		const asked = where;
+		const now = await target().catch(() => asked);
+		if (where === asked) where = now;
+	}
+
+	/**
+	 * A place the screen points past is one the reader can clear in the Finder,
+	 * and nothing they could press here reads it again: Make is disabled, and
+	 * only a vault or a copy offers Open it. So coming back to the window reads
+	 * it again.
+	 */
+	function returned() {
+		if (where && where.standing !== 'free' && !busy) void look();
+	}
+
+	/** Opens what already sits at the place rather than making a vault over it.
+	 * Rust is holding the place, so nothing is sent. Something other than what
+	 * the screen said is there is a fact about the disk, so the place is read
+	 * again and the screen says what is there now. */
+	async function openInstead() {
+		if (busy) return;
+		busy = true;
+		failure = null;
+		try {
+			onOpen(await chooseExisting());
+		} catch (thrown) {
+			const refused = asFailure(thrown);
+			failure = refused.message;
+			if (refused.code === 'gone') await look();
+		} finally {
+			busy = false;
+		}
+	}
+
 	async function make(event: SubmitEvent) {
 		event.preventDefault();
-		if (busy || !where || !first || !second) return;
+		const place = where;
+		if (blocked || !place || !first || !second) return;
 
 		// Compared as bytes rather than as strings. Two different passwords can
 		// look the same after a lossy conversion, and a vault opened by neither
@@ -94,20 +154,43 @@
 			return;
 		}
 
+		// A second copy, for exactly as long as the call. The one refusal that
+		// says nothing about the password is a place that stopped being free
+		// after the screen said it was, and a reader who typed a password twice
+		// for a vault that has to go somewhere else gets both fields back rather
+		// than a reason to type it again.
+		const typed = wanted.slice();
 		busy = true;
 		failure = null;
 		try {
 			await createDatabase(wanted);
+			typed.fill(0);
 			await onMade();
 		} catch (thrown) {
-			failure = asFailure(thrown).message;
+			const refused = asFailure(thrown);
+			if (refused.code === 'taken') {
+				// The price of handing them back: the bytes become a string again,
+				// which nothing can wipe. Paid only here, where something has to
+				// arrive at the place within the second a creation takes, and the
+				// bytes go at once.
+				const back = new TextDecoder().decode(typed);
+				typed.fill(0);
+				first.value = back;
+				second.value = back;
+				await look();
+			} else {
+				failure = refused.message;
+			}
 			first.focus();
 		} finally {
 			wanted.fill(0);
+			typed.fill(0);
 			busy = false;
 		}
 	}
 </script>
+
+<svelte:window onfocus={returned} />
 
 <div class="flex flex-1 items-center justify-center overflow-y-auto px-10 py-10">
 	<form onsubmit={make} class="w-full max-w-[620px] animate-rise">
@@ -121,7 +204,7 @@
 				>
 					<Icon name="folder" class="h-4 w-4 shrink-0 text-txt4" />
 					<span class="truncate font-mono text-small {where ? 'text-txt' : 'text-txt4'}">
-						{where ? where.path : 'Working out where…'}
+						{where ? where.shown : 'Working out where…'}
 					</span>
 					<button
 						type="button"
@@ -132,6 +215,45 @@
 						Somewhere else
 					</button>
 				</div>
+				<!-- Said before a password is typed rather than after it. Nothing is
+				     ever made over anything, so no vault can go here, and somebody
+				     making one where a vault already sits most likely wanted the
+				     one they have. Only a vault, or the copy a lock left of one, can
+				     be opened instead; anything else is named for what it is. -->
+				{#if where && where.standing !== 'free'}
+					<div class="mt-3 flex animate-fade gap-3">
+						<Icon name="warn" class="mt-0.5 h-4 w-4 shrink-0 text-warn" />
+						<div class="min-w-0">
+							<p class="text-small leading-relaxed text-txt">
+								{#if where.standing === 'vault'}
+									A vault already exists at <bdi class="font-mono">{where.shown}</bdi>. Open it
+									instead, or pick another place.
+								{:else if where.standing === 'copy'}
+									The vault that was at <bdi class="font-mono">{where.shown}</bdi> is gone, and the copy
+									a lock saved of it is beside that name. Open it to put the copy back, or pick another
+									place.
+								{:else if where.standing === 'empty'}
+									An empty file is at <bdi class="font-mono">{where.shown}</bdi>, left by a vault
+									that was never finished. Nothing is made over a file: move it away in the Finder,
+									or pick Somewhere else.
+								{:else}
+									Something that is not a vault is at <bdi class="font-mono">{where.shown}</bdi>: a
+									folder, or a link that leads nowhere. Pick Somewhere else.
+								{/if}
+							</p>
+							{#if openable}
+								<button
+									type="button"
+									onclick={openInstead}
+									disabled={busy}
+									class="mt-3 h-9 rounded-full border border-hairline px-4 text-small text-txt transition-colors hover:border-txt3 active:bg-surface2 disabled:cursor-not-allowed"
+								>
+									Open it
+								</button>
+							{/if}
+						</div>
+					</div>
+				{/if}
 			</div>
 		</div>
 
@@ -227,10 +349,8 @@
 			</button>
 			<button
 				type="submit"
-				disabled={busy || !where || !measured}
-				class="h-[46px] rounded-full px-7 text-base font-medium transition-colors {busy ||
-				!where ||
-				!measured
+				disabled={blocked}
+				class="h-[46px] rounded-full px-7 text-base font-medium transition-colors {blocked
 					? 'cursor-not-allowed bg-surface2 text-txt4'
 					: 'bg-accent text-canvas hover:bg-accenthi active:bg-accenthi'}"
 			>

@@ -658,3 +658,33 @@ fn a_vault_kept_where_nothing_can_be_written_stays_that_way_when_it_is_read_agai
     vault.reload().expect("the file reads again");
     assert!(vault.is_read_only(), "a reload thawed the medium");
 }
+
+/// The files Coffer keeps beside a vault open with its password and are not
+/// the vault. The shape of the name is the whole of the rule, so it is pinned
+/// here from both sides.
+#[test]
+fn only_the_names_coffer_keeps_beside_a_vault_are_reserved() {
+    use vault_core::storage::reserved;
+
+    for name in [
+        "vault.kdbx.1.bak",
+        "vault.kdbx.10.bak",
+        "personal.7.bak",
+        "vault.kdbx.unsaved.kdbx",
+        "vault.kdbx.1.bak.unsaved.kdbx",
+    ] {
+        assert!(reserved(Path::new(name)), "{name} is not reserved");
+    }
+
+    for name in [
+        "vault.kdbx",
+        "vault.kdbx.11.bak",
+        "vault.kdbx.0.bak",
+        ".unsaved.kdbx",
+        "unsaved.kdbx",
+        "vault.unsaved",
+        "",
+    ] {
+        assert!(!reserved(Path::new(name)), "{name} is reserved");
+    }
+}

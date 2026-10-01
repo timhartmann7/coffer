@@ -113,6 +113,11 @@ pub enum VaultError {
     #[error("a folder cannot be moved inside itself")]
     CannotMoveIntoItself,
 
+    /// Only what is in the recycle bin can be put back out of it. The bin
+    /// itself is not in the bin, and neither is anything already put back.
+    #[error("that is not in the recycle bin")]
+    NotInRecycleBin,
+
     /// What is open is one of Coffer's own snapshots. It opens like any other
     /// database and is not written back: the next save of the database it was
     /// taken from would rotate it away.
@@ -130,6 +135,32 @@ pub enum VaultError {
     #[error("that entry has no such field")]
     NoSuchField,
 
+    /// Taking the field off would be for good. The version the removal writes
+    /// is the only way back, and the database's own limits drop it at the next
+    /// save, so the removal waits until the reader has said that is what they
+    /// want.
+    #[error("this vault keeps no version to bring that field back from")]
+    RemovalForGood,
+
+    /// The removal asked to be taken back is no longer the last thing that
+    /// happened to its entry, and restoring what is newest now would take back
+    /// more than the field.
+    #[error("the entry has changed since that field came off")]
+    RemovalSuperseded,
+
+    /// A deletion would no longer do what the reader was shown before they
+    /// asked for it: what was going to the bin would now go for good, because
+    /// a folder around it went into the bin first, or the other way round.
+    /// Nothing was deleted.
+    #[error("that deletion would no longer do what was shown, so nothing was deleted")]
+    DeletionChanged,
+
+    /// Part of a value was asked for that the value does not have: an empty
+    /// or backwards range, an end past the last character, or an end between
+    /// the two halves of a character outside the basic plane.
+    #[error("that part of the value is not there")]
+    NoSuchPart,
+
     /// The file offered is larger than Coffer will put into a database.
     #[error("that file is too large to keep in a vault")]
     AttachmentTooLarge,
@@ -143,6 +174,26 @@ pub enum VaultError {
     /// A copy has to go somewhere other than the database it is a copy of.
     #[error("a copy cannot be written over the database it came from")]
     CopyOntoItself,
+
+    /// Only the copy a lock left beside a vault can become that vault again,
+    /// and what was asked of is not one: its name names no vault.
+    #[error("this is not a copy a lock left beside a vault")]
+    NotACopy,
+
+    /// The copy cannot go into the vault's empty name without a password, on
+    /// a filesystem that keeps no second name for a file: there is no way to
+    /// put a whole file at a name there that is refused if something arrived
+    /// first. Opened, the copy becomes the vault through an ordinary save.
+    /// The window says that in words about the screen it was pressed on.
+    #[error("no move on this disk is refused at a name in use")]
+    NoExclusiveMove,
+
+    /// The vault's file is not as it stood when the reader was last told how
+    /// it stood, and making the copy the vault would push a change they were
+    /// never shown into the snapshots. The window says that in words about
+    /// what it showed.
+    #[error("the vault file is not as it stood when it was shown")]
+    VaultFileChanged,
 
     /// A password with no characters to choose from is not a password.
     #[error("a password needs at least one kind of character")]
@@ -174,6 +225,13 @@ pub enum VaultError {
     /// lock leaves when it could not save, which the next such lock overwrites.
     #[error("that name belongs to a file Coffer keeps beside a vault")]
     ReservedName,
+
+    /// The copy a lock left of a vault by the new vault's name is beside it.
+    /// It opens with that vault's password, not the new one's, and would be
+    /// offered as the new vault's unsaved work and written over by its next
+    /// lock that had something to keep.
+    #[error("the copy a lock left of a vault by that name is beside it")]
+    CopyBeside,
 
     /// The master password bytes are not UTF-8, and KeePass hashes passwords as
     /// UTF-8 text.

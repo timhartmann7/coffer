@@ -26,13 +26,19 @@ mod autolock;
 mod buttons;
 mod clipboard;
 mod commands;
+mod drafts;
 mod dto;
 mod error;
+mod home;
 mod lock;
+mod menu;
+mod offered;
 mod opener;
 mod recent;
 mod session;
 mod settings;
+#[cfg(test)]
+mod source;
 mod window;
 
 use std::sync::Arc;
@@ -47,6 +53,9 @@ use crate::session::Session;
 pub fn run() {
     let application = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Tauri draws a bar of its own for an application that names none, and
+        // that one carries Services (see `menu.rs`).
+        .menu(menu::bar)
         .setup(|app| {
             let directory = app.path().app_config_dir().ok();
             let remembered = directory.as_deref().and_then(recent::remembered);
@@ -54,8 +63,8 @@ pub fn run() {
             // Managed before anything that locks is started: the timer and the
             // notification blocks both find the session and the settings by
             // type, and neither may run before they are there.
-            let preferences = Arc::new(settings::Preferences::load(directory));
-            app.manage(Arc::new(Session::new(remembered)));
+            let preferences = Arc::new(settings::Preferences::load(directory.clone()));
+            app.manage(Arc::new(Session::new(remembered, directory)));
             app.manage(Arc::clone(&preferences));
 
             let locking = app.handle().clone();
@@ -89,8 +98,11 @@ pub fn run() {
             commands::settings,
             commands::set_settings,
             commands::choose_database,
+            commands::choose_found,
+            commands::choose_existing,
             commands::choose_new_database,
             commands::default_new_database,
+            commands::target,
             commands::calibrate,
             commands::create_database,
             commands::unlock,
@@ -108,22 +120,33 @@ pub fn run() {
             commands::choose_snapshot,
             commands::choose_rescue,
             commands::discard_rescue,
+            commands::put_back_rescue,
+            commands::promote_rescue,
+            commands::leave_rescue,
             commands::create_entry,
             commands::delete_entry,
             commands::create_group,
             commands::rename_group,
             commands::delete_group,
+            commands::put_back_entry,
+            commands::put_back_group,
             commands::empty_recycle_bin,
             commands::set_field,
+            commands::draft,
             commands::remove_field,
+            commands::undo_removal,
             commands::set_tags,
             commands::add_attachment,
+            commands::keep_both_attachments,
+            commands::replace_attachment,
+            commands::withdraw_attachment,
             commands::export_attachment,
             commands::remove_attachment,
             commands::remove_attachment_and_versions,
             commands::versions,
             commands::version,
             commands::reveal_version,
+            commands::copy_version,
             commands::restore_version,
             commands::delete_version,
             commands::clear_history,

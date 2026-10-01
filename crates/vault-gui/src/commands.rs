@@ -10,32 +10,39 @@
 //! and a file dialog there deadlocks, because the panel needs the run loop that
 //! the call is blocking.
 //!
-//! The four that are not are the four that never reach the session: the two
-//! that read and write what the reader chose, the one that makes a password out
-//! of the machine's randomness, and the one the window sends on every keypress
-//! to say somebody is there. That last one is why they stay: it is the most
-//! frequent message in the application, it cannot wait on anything, and a hop
-//! onto another thread for it would be latency bought with nothing.
+//! The two that are not are the two that reach neither the session nor the
+//! lock: the one that reads what the reader chose, and the one that makes a
+//! password out of the machine's randomness. Neither can wait on anything, and
+//! a hop onto another thread for them would be latency bought with nothing.
+//!
+//! The message the window sends to say somebody is there is not one of them,
+//! however often it comes. A stir that finds the time already spent - the first
+//! key pressed after a Mac slept through the deadline - locks the vault, and a
+//! lock runs on the thread that asked for it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tauri::ipc::{InvokeBody, Request};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
-use vault_core::storage::{snapshot, unsaved};
+use vault_core::storage::{self, snapshot, unsaved};
 use zeroize::Zeroizing;
 
 use vault_core::generate::{Alphabet, Recipe};
 use vault_core::kdf;
-use vault_core::{LockPolicy, NewValue, Vault};
+use vault_core::{LockPolicy, NewValue, Typing, Vault};
 
 use crate::autolock::timer::Timer;
 use crate::autolock::{Event, Reason};
-use crate::dto::{self, Database, Entry, Group, Made, Revealed, Rival, Snapshot, Status, Version};
+use crate::drafts::{Over, Typed};
+use crate::dto::{
+    self, Database, Entry, Group, Made, Revealed, Rival, Snapshot, Status, Target, Versions,
+};
 use crate::error::Failure;
+use crate::home::Standing;
 use crate::session::Session;
-use crate::{clipboard, lock, opener, recent, settings, window};
+use crate::{clipboard, home, lock, opener, settings, window};
 
 /// The session is behind an `Arc` so that a command can take it onto a blocking
 /// thread, which is where key derivation belongs.
@@ -60,6 +67,9 @@ pub fn status(app: AppHandle, session: Held<'_>) -> Status {
     let database = session.database();
 
     Status {
+        found: looked_home(&session, home_of(&app).ok().as_deref())
+            .as_deref()
+            .map(dto::Found::of),
         // Asked of the filesystem rather than remembered, so that a copy left
         // by a run that has since quit is still offered. A copy that cannot be
         // read is one Coffer does not offer, and the rest of the answer still
@@ -70,6 +80,19 @@ pub fn status(app: AppHandle, session: Held<'_>) -> Status {
             .as_ref()
             .map(dto::Rescued::of),
         lost: session.lost(),
+        // Read off the disk each time as well: what a lock left behind is
+        // what the reader may have moved since.
+        file: database
+            .as_deref()
+            .map(|chosen| dto::OnDisk::of(storage::on_disk(chosen))),
+        // What is said here about the vault's file is what "Make this my
+        // vault" is then held to, so it is the session that reads it.
+        copy: database.as_deref().and_then(|copy| {
+            let (vault, vault_file) = session.telling()?;
+            Some(dto::CopyOf::of(&vault, storage::on_disk(copy), vault_file))
+        }),
+        typed: session.typed(),
+        typed_beside: session.typed_beside(),
         database: database.as_deref().map(Database::of),
         key_file: session.key_file().as_deref().map(Database::of),
         unlocked: session.is_unlocked(),
@@ -83,11 +106,30 @@ pub fn status(app: AppHandle, session: Held<'_>) -> Status {
     }
 }
 
+/// The vault in Coffer's own folder, for the first-run screen to offer, kept
+/// in the session so that the offer opens that file and no other.
+///
+/// Looked for only when nothing is remembered, which is the launch that would
+/// otherwise greet somebody with a vault as somebody with none.
+fn looked_home(session: &Session, home: Option<&Path>) -> Option<PathBuf> {
+    let found = session
+        .database()
+        .is_none()
+        .then_some(home)
+        .flatten()
+        .and_then(home::found);
+    session.finding(found.clone());
+    found
+}
+
 /// Asks for a database with the system's own file dialog.
 ///
 /// The path never comes from the webview: the webview asks for a picker, the
 /// user picks, and Coffer keeps the answer. Nothing the frontend sends can
 /// point Coffer at a file.
+///
+/// Nothing is written down for the next launch here. A file that was picked is
+/// not yet a vault that opened, and the session writes one down when it does.
 #[tauri::command]
 pub async fn choose_database(
     app: AppHandle,
@@ -99,7 +141,8 @@ pub async fn choose_database(
         .set_title("Open a vault")
         .add_filter(KDBX, &["kdbx"]);
 
-    if let Some(directory) = session.database().as_deref().and_then(Path::parent) {
+    let home = home_of(&app).ok();
+    if let Some(directory) = home::opening_in(session.database().as_deref(), home.as_deref()) {
         picker = picker.set_directory(directory);
     }
 
@@ -116,14 +159,63 @@ pub async fn choose_database(
         .map_err(|_| Failure::refused("that file has no path Coffer can open"))?;
 
     session.choose(path.clone());
+    Ok(Some(Database::of(&path)))
+}
 
-    // A database Coffer fails to remember is one the user picks again next
-    // launch. That is not a reason to refuse to open it now.
-    if let Ok(directory) = app.path().app_config_dir() {
-        let _ = recent::remember(&directory, &path);
+/// Points the session at the vault found in Coffer's own folder.
+///
+/// Nothing is sent: the file is the one `status` last named, which the session
+/// is holding, so no message from the window can name a file. It is asked
+/// again by the rule the search used, and one that went away or stopped being
+/// a vault after the screen was drawn is answered with `gone` rather than
+/// opened, or swapped for another file the folder holds.
+#[tauri::command(async)]
+pub fn choose_found(session: Held<'_>) -> Result<Database, Failure> {
+    found_chosen(&session)
+}
+
+fn found_chosen(session: &Session) -> Result<Database, Failure> {
+    if session.is_unlocked() {
+        return Err(Failure::lock_first());
     }
 
-    Ok(Some(Database::of(&path)))
+    let path = session
+        .found()
+        .filter(|path| home::offered(path))
+        .ok_or_else(Failure::gone)?;
+    Ok(chosen_now(session, path))
+}
+
+/// Points the session at whatever already sits where the new vault would go,
+/// for a reader who meant to open it rather than make another.
+///
+/// Nothing is sent here either. The place is the one `default_new_database` or
+/// `choose_new_database` settled, which the session is still holding. Only a
+/// vault, or the copy a lock left of one whose file has gone, is opened: the
+/// unlock screen for that name is where such a copy is put back. Anything else
+/// is answered with `gone`, and the screen reads the place again with `target`.
+#[tauri::command(async)]
+pub fn choose_existing(session: Held<'_>) -> Result<Database, Failure> {
+    existing_chosen(&session)
+}
+
+fn existing_chosen(session: &Session) -> Result<Database, Failure> {
+    if session.is_unlocked() {
+        return Err(Failure::lock_first());
+    }
+
+    let target = session.target().ok_or_else(Failure::nowhere_chosen)?;
+    match home::standing(&target) {
+        Standing::Vault | Standing::Copy => Ok(chosen_now(session, target)),
+        Standing::Free | Standing::Empty | Standing::Other => Err(Failure::gone()),
+    }
+}
+
+/// Points the session at a file Rust found for itself, and answers with what
+/// the session now holds: the file, with the links on the way to it followed.
+fn chosen_now(session: &Session, path: PathBuf) -> Database {
+    session.choose(path.clone());
+    Database::of(&session.database().unwrap_or(path))
 }
 
 /// Opens the chosen database with the master password.
@@ -253,24 +345,43 @@ fn password_of(body: &InvokeBody) -> Result<Zeroizing<Vec<u8>>, Failure> {
     }
 }
 
-/// Where a first vault goes when nobody has said otherwise.
-///
-/// Not `~/Documents`: a Mac set up with the default answers synchronises that
-/// folder to iCloud, and a vault Coffer put into a sync folder without being
-/// asked is the one thing this application says it does not do.
+/// Where a first vault goes when nobody has said otherwise: see [`home`].
 ///
 /// Nothing is written here. The folder is made at the moment the reader commits,
-/// which is where a refusal can still be reported.
+/// which is where a refusal can still be reported. Whether something is there
+/// already is said now, though, before a password is typed for a vault that
+/// could never be made.
 #[tauri::command(async)]
-pub fn default_new_database(app: AppHandle, session: Held<'_>) -> Result<dto::Database, Failure> {
-    let home = app
-        .path()
-        .home_dir()
-        .map_err(|_| Failure::internal("this account has no home directory"))?;
-    let path = home.join("Coffer").join("vault.kdbx");
+pub fn default_new_database(app: AppHandle, session: Held<'_>) -> Result<Target, Failure> {
+    let home = home_of(&app)?;
+    let path = home::first(&home);
 
     session.making(path.clone());
-    Ok(dto::Database::of(&path))
+    Ok(target_of(&path, Some(&home)))
+}
+
+/// What is at the place a new vault would go, read again: after the offer to
+/// open what was there found something else, and after a creation found the
+/// place taken. The place stays the one the session holds.
+#[tauri::command(async)]
+pub fn target(app: AppHandle, session: Held<'_>) -> Result<Target, Failure> {
+    let path = session.target().ok_or_else(Failure::nowhere_chosen)?;
+    Ok(target_of(&path, home_of(&app).ok().as_deref()))
+}
+
+/// The reader's home folder, which only the account can lack.
+fn home_of(app: &AppHandle) -> Result<PathBuf, Failure> {
+    app.path()
+        .home_dir()
+        .map_err(|_| Failure::internal("this account has no home directory"))
+}
+
+/// A place for a new vault, as the creation screen draws it.
+fn target_of(path: &Path, home: Option<&Path>) -> Target {
+    Target {
+        shown: home::shown(path, home),
+        standing: home::standing(path),
+    }
 }
 
 /// Asks where a new vault should go instead, with the system's own save panel.
@@ -282,7 +393,7 @@ pub fn default_new_database(app: AppHandle, session: Held<'_>) -> Result<dto::Da
 pub async fn choose_new_database(
     app: AppHandle,
     session: Held<'_>,
-) -> Result<Option<Database>, Failure> {
+) -> Result<Option<Target>, Failure> {
     if session.is_unlocked() {
         return Err(Failure::refused("lock the vault before making another"));
     }
@@ -304,8 +415,12 @@ pub async fn choose_new_database(
         .into_path()
         .map_err(|_| Failure::refused("that place has no path Coffer can write"))?;
 
+    // The panel asks whether to replace a file that is there, and a reader who
+    // says yes is still refused: a creation takes no snapshot, so what was
+    // there would be gone. The screen is told now rather than after the
+    // password.
     session.making(path.clone());
-    Ok(Some(Database::of(&path)))
+    Ok(Some(target_of(&path, home_of(&app).ok().as_deref())))
 }
 
 /// Measures how many Argon2id passes this machine needs for a one-second
@@ -360,10 +475,16 @@ pub async fn create_database(
 /// it, which is what every other way of locking does too.
 #[tauri::command(async)]
 pub fn lock(app: AppHandle) {
+    by_hand(&app);
+}
+
+/// The lock a reader's press asks for, through the timer so that the deadline
+/// it was keeping is cleared by the same message that takes the window down.
+fn by_hand(app: &AppHandle) {
     match app.try_state::<Arc<Timer>>() {
         Some(timer) => timer.post(Event::Locking(Reason::ByHand)),
         // Nothing is keeping a deadline, so there is none to clear.
-        None => lock::lock(&app, Reason::ByHand),
+        None => lock::lock(app, Reason::ByHand),
     }
 }
 
@@ -377,7 +498,14 @@ pub fn lock(app: AppHandle) {
 /// The window sends this on real input and at most once every several seconds.
 /// It is deliberately not something the countdown itself does: an idle timer
 /// that the thing drawing the countdown kept resetting would never fire.
-#[tauri::command]
+///
+/// A stir does not always start the clock again. One that arrives after the
+/// time has run out - the first key after a Mac slept through the deadline,
+/// before the watcher has woken - locks the vault instead, and nothing comes
+/// back because nothing is open. The lock runs right here, on the thread that
+/// posted: it writes the vault out, which is a key derivation, and destroys the
+/// window, so this is answered off the thread the window is drawn on.
+#[tauri::command(async)]
 pub fn stirred(app: AppHandle) -> Option<u64> {
     let timer = app.try_state::<Arc<Timer>>()?;
     timer.post(Event::Stirred);
@@ -402,19 +530,50 @@ pub fn reveal(entry: String, field: String, session: Held<'_>) -> Result<Reveale
     Ok(Revealed::new(text(&secret)?))
 }
 
-/// Copies one field's value to the clipboard. Nothing comes back but the number
-/// of seconds until Coffer takes it off again.
+/// Copies one field's value to the clipboard, or the part of it the reader
+/// selected on the screen. Nothing comes back but the number of seconds until
+/// Coffer takes it off again.
 #[tauri::command(async)]
 pub fn copy(
     entry: String,
     field: String,
+    range: Option<dto::Span>,
     app: AppHandle,
     session: Held<'_>,
 ) -> Result<u64, Failure> {
     let secret = session.reveal(dto::entry_id(&entry)?, &field)?;
-    let after = chosen(&app).clipboard();
+    copied(&app, &secret, range)
+}
 
-    clipboard::copy(text(&secret)?, after);
+/// Copies one field's value out of a previous version, on the same terms as
+/// [`copy`]. A version is read on the screen like the entry is, and a value
+/// selected there is as much a secret as one selected in the entry.
+#[tauri::command(async)]
+pub fn copy_version(
+    entry: String,
+    index: usize,
+    revision: u64,
+    field: String,
+    range: Option<dto::Span>,
+    app: AppHandle,
+    session: Held<'_>,
+) -> Result<u64, Failure> {
+    let secret = session.reveal_version(dto::entry_id(&entry)?, index, revision, &field)?;
+    copied(&app, &secret, range)
+}
+
+/// Puts a value on the pasteboard, whole or the part that was asked for, and
+/// answers with how long it stays there.
+fn copied(
+    app: &AppHandle,
+    secret: &vault_core::SecretValue,
+    range: Option<dto::Span>,
+) -> Result<u64, Failure> {
+    let after = chosen(app).clipboard();
+    match range {
+        None => clipboard::copy(text(secret)?, after),
+        Some(span) => clipboard::copy(text(&secret.part(span.from, span.to)?)?, after),
+    }
     Ok(after.as_secs())
 }
 
@@ -556,7 +715,8 @@ pub fn choose_rescue(session: Held<'_>) -> Result<Database, Failure> {
     Ok(Database::of(&path))
 }
 
-/// Takes that copy off the disk.
+/// Takes that copy off the disk, and the snapshots saves inside it left
+/// beside it (see [`unsaved::discard`]).
 ///
 /// Only ever from a press. The copy holds the one version of work the vault has
 /// not got, so nothing in Coffer removes it on its own initiative: the reader is
@@ -569,6 +729,58 @@ pub fn discard_rescue(session: Held<'_>) -> Result<(), Failure> {
 
     let database = session.database().ok_or_else(Failure::no_vault)?;
     unsaved::discard(&database).map_err(Failure::io)
+}
+
+/// Moves the copy a lock left into the name of a vault whose file has gone:
+/// see [`unsaved::put_back`].
+///
+/// Nothing is sent and no password is asked for. The copy is moved rather than
+/// opened, and only into a name that holds nothing, so a vault that is there -
+/// or came back since the screen was drawn - is answered with `taken` and left
+/// alone.
+#[tauri::command(async)]
+pub fn put_back_rescue(session: Held<'_>) -> Result<Database, Failure> {
+    if session.is_unlocked() {
+        return Err(Failure::lock_first());
+    }
+
+    let database = session.database().ok_or_else(Failure::no_vault)?;
+    unsaved::put_back(&database)?;
+    Ok(Database::of(&database))
+}
+
+/// Makes the open copy a lock left the vault it was taken from, with the
+/// vault's file as it stood kept as the newest snapshot: see
+/// [`Vault::promote`]. Answers with the vault, which is what is open now.
+///
+/// A save's worth of work - a key derivation and the whole file encrypted - so
+/// it happens on a thread that is allowed to block.
+#[tauri::command]
+pub async fn promote_rescue(session: Held<'_>) -> Result<Database, Failure> {
+    let session = Arc::clone(&session);
+    let vault = tauri::async_runtime::spawn_blocking(move || session.promote())
+        .await
+        .map_err(|_| Failure::internal("the copy could not be made the vault"))??;
+
+    Ok(Database::of(&vault))
+}
+
+/// Goes back from the copy a lock left to the vault it was taken from, and
+/// answers with what is chosen afterwards.
+///
+/// A copy that is open is locked on the way, which is how any open vault is
+/// left: what it holds is written out into the copy, its window goes, and the
+/// window that comes back asks for the vault's password - or for the copy's,
+/// when the lock had to keep the copy's work somewhere else or lost it, so
+/// that the screen saying so is the one about the copy (see
+/// [`Session::back_to_vault`]). A copy that is only chosen is simply not
+/// chosen any more, and nothing is locked.
+#[tauri::command(async)]
+pub fn leave_rescue(app: AppHandle, session: Held<'_>) -> Result<Database, Failure> {
+    session.back_to_vault()?;
+    by_hand(&app);
+    let chosen = session.database().ok_or_else(Failure::no_vault)?;
+    Ok(Database::of(&chosen))
 }
 
 /// The whole tree, as it is now. Every command that changes the shape of the
@@ -593,10 +805,24 @@ pub fn create_entry(group: String, session: Held<'_>) -> Result<Made, Failure> {
     })
 }
 
+/// Deletes an entry, and lets go of anything typed into it that the window
+/// said before it asked: the pane it was typed in goes with the entry.
+///
+/// `deletion` is what the window showed the deletion would do. Two deletions
+/// can wait behind one save, and the thread that takes the session first is
+/// not the one that asked first, so an entry whose folder went into the bin
+/// ahead of it is refused with `deletionChanged` rather than erased.
 #[tauri::command(async)]
-pub fn delete_entry(entry: String, session: Held<'_>) -> Result<Group, Failure> {
+pub fn delete_entry(
+    entry: String,
+    deletion: dto::Deletion,
+    sequence: u64,
+    session: Held<'_>,
+) -> Result<Group, Failure> {
     let id = dto::entry_id(&entry)?;
-    session.with_mut(|vault| vault.delete_entry(id))??;
+    session.overtaking(Over::Entry(id), sequence, |vault| {
+        vault.delete_entry(id, deletion.shown())
+    })??;
     tree_of(&session)
 }
 
@@ -614,10 +840,34 @@ pub fn rename_group(group: String, name: String, session: Held<'_>) -> Result<Gr
     tree_of(&session)
 }
 
+/// Deletes a folder, on the terms [`delete_entry`] gives.
 #[tauri::command(async)]
-pub fn delete_group(group: String, session: Held<'_>) -> Result<Group, Failure> {
+pub fn delete_group(
+    group: String,
+    deletion: dto::Deletion,
+    session: Held<'_>,
+) -> Result<Group, Failure> {
     let group = dto::group_id(&group)?;
-    session.with_mut(|vault| vault.delete_group(group))??;
+    session.with_mut(|vault| vault.delete_group(group, deletion.shown()))??;
+    tree_of(&session)
+}
+
+/// Takes an entry out of the recycle bin, back to the folder it was deleted
+/// from, or to the top of the vault when that folder is nowhere to go. The
+/// undo of a move to the bin, and the bin's own way out.
+#[tauri::command(async)]
+pub fn put_back_entry(entry: String, session: Held<'_>) -> Result<Group, Failure> {
+    let id = dto::entry_id(&entry)?;
+    session.with_mut(|vault| vault.put_back_entry(id))??;
+    tree_of(&session)
+}
+
+/// Takes a folder out of the recycle bin with everything in it, on the same
+/// terms.
+#[tauri::command(async)]
+pub fn put_back_group(group: String, session: Held<'_>) -> Result<Group, Failure> {
+    let group = dto::group_id(&group)?;
+    session.with_mut(|vault| vault.put_back_group(group))??;
     tree_of(&session)
 }
 
@@ -632,12 +882,17 @@ pub fn empty_recycle_bin(session: Held<'_>) -> Result<Group, Failure> {
 /// `protect` is what the screen read off the field it is editing, so a value
 /// the database keeps protected goes back protected. Getting that wrong would
 /// write a password into the file as plain text inside the encrypted body.
+///
+/// `sequence` is the window's number for the write, from the count its drafts
+/// carry (see [`draft`]). A draft of this field said before it is finished by
+/// it, and is let go under the same lock.
 #[tauri::command(async)]
 pub fn set_field(
     entry: String,
     field: String,
     value: String,
     protect: bool,
+    sequence: u64,
     session: Held<'_>,
 ) -> Result<Entry, Failure> {
     let id = dto::entry_id(&entry)?;
@@ -647,14 +902,82 @@ pub fn set_field(
         NewValue::Open(value)
     };
 
-    session.with_mut(|vault| vault.set_field(id, &field, written))??;
+    session.overtaking(Over::Field(id, &field), sequence, |vault| {
+        vault.set_field(id, &field, written)
+    })??;
     entry_of(&session, &entry)
 }
 
+/// Holds what the reader is typing into a field and has not finished, so that
+/// a lock can write it.
+///
+/// A value is written when its field is left, and until then it was only in
+/// the window, which a lock destroys - on triggers that arrive on the thread
+/// the window is drawn on and cannot wait for the page to answer. So the window
+/// sends what is in the field a moment after the last key, and at once when it
+/// loses focus, and the lock writes the last of it into the vault through the
+/// same edit a commit makes. `value` is nothing when the typing was taken back:
+/// Escape, Cancel, Discard, or a field left as it was.
+///
+/// `beside` is true for a new value typed in a Change field of its own rather
+/// than into the field itself. The reader has not saved it, so a lock keeps it
+/// beside the value it was for and never writes it over one.
+///
+/// The text travels the way `set_field`'s does and is wrapped the moment it
+/// arrives. `sequence` only goes up in any one window; a word about a field
+/// that is not newer than the last one heard about the field, its entry or
+/// the whole vault is dropped, because Tauri runs these side by side and a
+/// draft sent before a commit can arrive after it.
 #[tauri::command(async)]
-pub fn remove_field(entry: String, field: String, session: Held<'_>) -> Result<Entry, Failure> {
+pub fn draft(
+    entry: String,
+    field: String,
+    value: Option<String>,
+    protect: bool,
+    beside: bool,
+    sequence: u64,
+    session: Held<'_>,
+) -> Result<(), Failure> {
+    let typed = value.map(|value| Typed {
+        value: Zeroizing::new(value),
+        protect,
+        typing: if beside {
+            Typing::Beside
+        } else {
+            Typing::InPlace
+        },
+    });
+    session.draft(dto::entry_id(&entry)?, &field, typed, sequence)
+}
+
+/// Takes a field of the reader's own off an entry.
+///
+/// Refused with `forGood` when the vault's limits leave no version to bring
+/// the field back from, until the window sends `forever` to say the reader
+/// agreed: see [`vault_core::Vault::remove_field`]. The question and the
+/// removal are one call, so the answer the reader gave is about the entry the
+/// removal acts on.
+#[tauri::command(async)]
+pub fn remove_field(
+    entry: String,
+    field: String,
+    forever: bool,
+    session: Held<'_>,
+) -> Result<Entry, Failure> {
     let id = dto::entry_id(&entry)?;
-    session.with_mut(|vault| vault.remove_field(id, &field))??;
+    session.with_mut(|vault| vault.remove_field(id, &field, forever))??;
+    entry_of(&session, &entry)
+}
+
+/// Puts back a field that just came off, when its removal is still the last
+/// thing that happened to the entry, and refuses with `superseded` when it is
+/// not. The window sends the field's name and nothing else: which version puts
+/// it back is decided under the same lock the restore runs in. See
+/// [`vault_core::Vault::undo_removal`].
+#[tauri::command(async)]
+pub fn undo_removal(entry: String, field: String, session: Held<'_>) -> Result<Entry, Failure> {
+    let id = dto::entry_id(&entry)?;
+    session.with_mut(|vault| vault.undo_removal(id, &field))??;
     entry_of(&session, &entry)
 }
 
@@ -678,13 +1001,23 @@ pub fn set_tags(entry: String, tags: Vec<String>, session: Held<'_>) -> Result<E
 /// of every file in the database, and one of the ten snapshots - the oldest,
 /// pushed off the end of the only chain that leads back to a version of the
 /// vault from an hour ago.
+///
+/// A name the entry already gives a file is not written over. Nothing changes,
+/// the file just read is held beside the vault, and the window is told what is
+/// there so that it can ask; the answer is one of the three commands below, and
+/// the reader never has to find the file again to give it.
 #[tauri::command]
 pub async fn add_attachment(
     app: AppHandle,
     entry: String,
     session: Held<'_>,
-) -> Result<Option<Entry>, Failure> {
+) -> Result<Option<dto::Attached>, Failure> {
     let id = dto::entry_id(&entry)?;
+
+    // A press of the button is a new question, so the last one about this entry
+    // is let go before the panel opens: a panel closed without a choice leaves
+    // nothing waiting that the window has stopped asking about.
+    session.withdraw(id);
 
     let Some(chosen) = app
         .dialog()
@@ -713,9 +1046,44 @@ pub async fn add_attachment(
     }
 
     let data = Zeroizing::new(std::fs::read(&path).map_err(Failure::io)?);
+    let chosen = data.len();
 
-    session.with_mut(|vault| vault.add_attachment(id, &name, data))??;
-    entry_of(&session, &entry).map(Some)
+    match session.offer(id, name.clone(), data)? {
+        vault_core::Attached::Added => Ok(Some(dto::Attached::Added {
+            entry: entry_of(&session, &entry)?,
+        })),
+        vault_core::Attached::Taken(clash) => Ok(Some(dto::Attached::Taken {
+            clash: dto::Clash::of(name, chosen, clash),
+        })),
+    }
+}
+
+/// Keeps both: the file waiting on this entry goes on beside the one that has
+/// its name, under the next name free.
+#[tauri::command(async)]
+pub fn keep_both_attachments(entry: String, session: Held<'_>) -> Result<Entry, Failure> {
+    let id = dto::entry_id(&entry)?;
+    session.answer(id, Vault::keep_both)?;
+    entry_of(&session, &entry)
+}
+
+/// Puts the file waiting on this entry in place of the one that has its name.
+///
+/// Refused on the same terms as a removal, because it is one: while earlier
+/// versions hold the file that is there, it stays, and so does the one waiting.
+#[tauri::command(async)]
+pub fn replace_attachment(entry: String, session: Held<'_>) -> Result<Entry, Failure> {
+    let id = dto::entry_id(&entry)?;
+    session.answer(id, Vault::replace_attachment)?;
+    entry_of(&session, &entry)
+}
+
+/// Lets go of the file waiting on this entry: the reader said not to add it,
+/// or stopped looking at the entry it was chosen for.
+#[tauri::command(async)]
+pub fn withdraw_attachment(entry: String, session: Held<'_>) -> Result<(), Failure> {
+    session.withdraw(dto::entry_id(&entry)?);
+    Ok(())
 }
 
 /// Writes one of an entry's files out to wherever the reader says.
@@ -784,17 +1152,28 @@ pub fn remove_attachment_and_versions(
     entry_of(&session, &entry)
 }
 
+/// The previous versions of an entry, with the revision of the vault they
+/// were listed at.
+///
+/// Every command below that names a version by its position takes that
+/// revision back, and refuses with `versionsChanged` when the vault has
+/// changed since: see [`Session::at`].
 #[tauri::command(async)]
-pub fn versions(entry: String, session: Held<'_>) -> Result<Vec<Version>, Failure> {
+pub fn versions(entry: String, session: Held<'_>) -> Result<Versions, Failure> {
     let id = dto::entry_id(&entry)?;
-    let found = session.with(|vault| vault.versions(id))?;
-    Ok(found.iter().map(Version::of).collect())
+    let (revision, found) = session.listing(|vault| vault.versions(id))?;
+    Ok(Versions::of(revision, &found))
 }
 
 #[tauri::command(async)]
-pub fn version(entry: String, index: usize, session: Held<'_>) -> Result<Entry, Failure> {
+pub fn version(
+    entry: String,
+    index: usize,
+    revision: u64,
+    session: Held<'_>,
+) -> Result<Entry, Failure> {
     let id = dto::entry_id(&entry)?;
-    let found = session.with(|vault| vault.version(id, index))?;
+    let found = session.at(revision, |vault| vault.version(id, index))?;
     found
         .as_ref()
         .map(Entry::of)
@@ -807,19 +1186,23 @@ pub fn version(entry: String, index: usize, session: Held<'_>) -> Result<Entry, 
 pub fn reveal_version(
     entry: String,
     index: usize,
+    revision: u64,
     field: String,
     session: Held<'_>,
 ) -> Result<Revealed, Failure> {
-    let id = dto::entry_id(&entry)?;
-    let secret = session.with(|vault| vault.reveal_version(id, index, &field))?;
-    let secret = secret.ok_or_else(|| Failure::refused("that version has no such field"))?;
+    let secret = session.reveal_version(dto::entry_id(&entry)?, index, revision, &field)?;
     Ok(Revealed::new(text(&secret)?))
 }
 
 #[tauri::command(async)]
-pub fn restore_version(entry: String, index: usize, session: Held<'_>) -> Result<Entry, Failure> {
+pub fn restore_version(
+    entry: String,
+    index: usize,
+    revision: u64,
+    session: Held<'_>,
+) -> Result<Entry, Failure> {
     let id = dto::entry_id(&entry)?;
-    session.with_mut(|vault| vault.restore_version(id, index))??;
+    session.at_mut(revision, |vault| vault.restore_version(id, index))??;
     entry_of(&session, &entry)
 }
 
@@ -827,15 +1210,16 @@ pub fn restore_version(entry: String, index: usize, session: Held<'_>) -> Result
 pub fn delete_version(
     entry: String,
     index: usize,
+    revision: u64,
     session: Held<'_>,
-) -> Result<Vec<Version>, Failure> {
+) -> Result<Versions, Failure> {
     let id = dto::entry_id(&entry)?;
-    session.with_mut(|vault| vault.delete_version(id, index))??;
+    session.at_mut(revision, |vault| vault.delete_version(id, index))??;
     versions(entry, session)
 }
 
 #[tauri::command(async)]
-pub fn clear_history(entry: String, session: Held<'_>) -> Result<Vec<Version>, Failure> {
+pub fn clear_history(entry: String, session: Held<'_>) -> Result<Versions, Failure> {
     let id = dto::entry_id(&entry)?;
     session.with_mut(|vault| vault.clear_history(id))??;
     versions(entry, session)
@@ -939,12 +1323,13 @@ pub async fn save_copy(app: AppHandle, session: Held<'_>) -> Result<Option<Datab
     Ok(Some(Database::of(&path)))
 }
 
-/// Throws away what is in the window and reads the file again.
+/// Throws away what is in the window and reads the file again, typing that
+/// was never finished included.
 #[tauri::command]
-pub async fn reload(session: Held<'_>) -> Result<Group, Failure> {
+pub async fn reload(sequence: u64, session: Held<'_>) -> Result<Group, Failure> {
     let reading = Arc::clone(&session);
     tauri::async_runtime::spawn_blocking(move || -> Result<(), Failure> {
-        reading.with_mut(Vault::reload)??;
+        reading.overtaking(Over::Everything, sequence, Vault::reload)??;
         Ok(())
     })
     .await
@@ -972,7 +1357,10 @@ pub async fn rival(session: Held<'_>) -> Result<Rival, Failure> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::symlink;
+
     use super::*;
+    use crate::source::{functions, shipped};
 
     /// The whole point of the raw body. A number array is what Tauri produces
     /// when the custom-protocol IPC is blocked and it falls back to
@@ -998,40 +1386,9 @@ mod tests {
     /// Read out of this file's own source, the way `contract.test.ts` reads it
     /// from the other side. Nothing else connects the two, and a third way in
     /// would be silent.
-    /// Every function in this file, cut at each `fn` that begins a line.
-    ///
-    /// Coarse on purpose. A helper the commands share is a function of its own
-    /// here, which is what the check below needs: two commands now open a vault
-    /// through one door, and the door is where the clock has to be started.
-    fn functions(source: &str) -> Vec<String> {
-        let mut found: Vec<String> = Vec::new();
-
-        for line in source.lines() {
-            let head = line.trim_start();
-            let starts = ["fn ", "pub fn ", "async fn ", "pub async fn "]
-                .iter()
-                .any(|shape| head.starts_with(shape));
-
-            if starts || found.is_empty() {
-                found.push(String::new());
-            }
-            if let Some(body) = found.last_mut() {
-                body.push_str(line);
-                body.push('\n');
-            }
-        }
-
-        found
-    }
-
     #[test]
     fn every_way_a_vault_comes_to_be_open_starts_the_clock() {
-        // Everything above the test module: this test's own source names the
-        // two calls it is looking for, and would count itself.
-        let source = include_str!("commands.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap_or_default();
+        let source = shipped(include_str!("commands.rs"));
 
         let opens: Vec<String> = functions(source)
             .into_iter()
@@ -1093,10 +1450,7 @@ mod tests {
     /// obvious way would be the one that freezes.
     #[test]
     fn nothing_that_waits_for_the_session_runs_where_the_window_is_drawn() {
-        let source = include_str!("commands.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap_or_default();
+        let source = shipped(include_str!("commands.rs"));
 
         for item in drawn_on_the_window_thread(source) {
             let named = item.lines().take(4).collect::<Vec<_>>().join("\n");
@@ -1104,33 +1458,84 @@ mod tests {
                 !item.contains("Held<"),
                 "this command reaches the session from the drawing thread:\n{named}"
             );
-            // Posting one of these is reaching the lock. `Deadline::on`
-            // answers both with `Decision::Lock` - the first always, the second
-            // whenever the new timeout is already spent - and `Shared::post`
-            // fires on the thread that posted. A lock writes the vault out
-            // before wiping it, so that thread pays a key derivation.
-            //
-            // `Event::Stirred` is not one of them and is deliberately left
-            // here: it can only ever move the deadline, it is the most frequent
-            // message in the application, and a hop onto another thread for it
-            // would be latency bought with nothing.
-            for firing in ["Event::Locking", "Event::TimeoutChanged"] {
+            // Posting anything to the timer is reaching the lock.
+            // `Deadline::on` answers every event but an unlock with
+            // `Decision::Lock` when the time is already spent - a stir as well,
+            // since the first key after a Mac slept through the deadline is
+            // what finds it - and `Shared::post` fires on the thread that
+            // posted. A lock writes the vault out before wiping it, so that
+            // thread pays a key derivation.
+            for firing in ["Timer", "Event::"] {
                 assert!(
                     !item.contains(firing),
-                    "this command posts {firing} from the drawing thread:\n{named}"
+                    "this command reaches the timer from the drawing thread:\n{named}"
                 );
             }
         }
 
-        // The two that reach it without naming it. Locking wipes the tree,
-        // which takes the same mutex a save is holding - and writes the vault
-        // out first, so it costs a key derivation as well. Posting to the timer
-        // is reaching the lock: the deadline answers a shortened timeout that
-        // has already gone by locking, on the thread that posted it.
-        for reaching in ["pub fn lock(", "pub fn set_settings("] {
+        // The four that reach it, each of which the check above would catch
+        // anyway, named so that the reason survives a rewrite of their bodies.
+        // Locking wipes the tree, which takes the same mutex a save is holding
+        // - and writes the vault out first, so it costs a key derivation as
+        // well - and going back from an open copy to its vault is a lock. A
+        // shortened timeout that has already gone, and a stir that arrives
+        // after the time ran out, are both answered by a lock on the thread
+        // that posted them.
+        for reaching in [
+            "pub fn lock(",
+            "pub fn leave_rescue(",
+            "pub fn set_settings(",
+            "pub fn stirred(",
+        ] {
             assert!(
                 source.contains(&format!("#[tauri::command(async)]\n{reaching}")),
                 "{reaching} reaches the lock and must not be answered inline"
+            );
+        }
+    }
+
+    /// A version is named by its position, and a position is an answer about
+    /// the vault as it stood when the list was read. Every command that takes
+    /// one takes the revision it was read at as well, and reaches the vault
+    /// only through the doors that check it under the lock the action runs in.
+    /// A command added the obvious way - `session.with` and an index - would
+    /// act on whichever version a save had moved into the place.
+    ///
+    /// Read out of this file's own source, because the check is about which
+    /// door a command goes through, and no running command can be asked that.
+    #[test]
+    fn every_command_that_names_a_version_by_position_checks_the_revision() {
+        let source = shipped(include_str!("commands.rs"));
+
+        let naming: Vec<String> = functions(source)
+            .into_iter()
+            .filter(|body| body.contains("index: usize"))
+            .collect();
+        assert_eq!(
+            naming.len(),
+            5,
+            "a version is read, revealed, copied, restored and dropped by position"
+        );
+
+        for body in naming {
+            let named = body.lines().take(2).collect::<Vec<_>>().join("\n");
+            assert!(
+                body.contains("revision: u64"),
+                "this command takes a position without its revision:\n{named}"
+            );
+            assert!(
+                [
+                    "session.at(revision,",
+                    "session.at_mut(revision,",
+                    "index, revision,"
+                ]
+                .iter()
+                .any(|door| body.contains(door)),
+                "this command does not check the revision it is sent:\n{named}"
+            );
+            assert!(
+                !body.contains("session.with(") && !body.contains("session.with_mut("),
+                "this command reaches the vault past the check:\n{named}"
             );
         }
     }
@@ -1140,10 +1545,7 @@ mod tests {
     /// worth nothing.
     #[test]
     fn only_the_command_a_reader_presses_takes_a_lock_over() {
-        let source = include_str!("commands.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap_or_default();
+        let source = shipped(include_str!("commands.rs"));
 
         let taking: Vec<String> = functions(source)
             .into_iter()
@@ -1157,6 +1559,235 @@ mod tests {
                 .is_some_and(|body| body.contains("fn unlock_over")),
             "something other than the reader's own press takes a lock over"
         );
+    }
+
+    /// A home folder with Coffer's folder in it, empty.
+    fn home() -> (tempfile::TempDir, PathBuf) {
+        let home = tempfile::tempdir().expect("a scratch directory");
+        let folder = home.path().join(home::FOLDER);
+        std::fs::create_dir(&folder).expect("the folder is made");
+        (home, folder)
+    }
+
+    /// A file that is a vault by the folder's rule: something in it.
+    fn vault(at: &Path) {
+        std::fs::write(at, b"not empty").expect("the file is written");
+    }
+
+    fn code_of(failure: Failure) -> String {
+        serde_json::to_value(failure).expect("a failure serialises")["code"]
+            .as_str()
+            .expect("a code")
+            .to_owned()
+    }
+
+    /// A session with a vault open, made with the cheapest key derivation.
+    fn unlocked(at: &Path) -> Session {
+        let session = Session::new(None, None);
+        session.making(at.to_path_buf());
+        session.measured(kdf::Work::at(1));
+        session
+            .create(Zeroizing::new(b"coffer-test".to_vec()))
+            .expect("the vault is made");
+        session
+    }
+
+    /// The card named `vault.kdbx`, and the reader moved it away before
+    /// pressing. A second search would find `old.kdbx` and open that under a
+    /// card that named another file: the reader would type their password into
+    /// a stale vault.
+    #[test]
+    fn the_offer_opens_the_file_the_card_named_or_nothing() {
+        let (home, folder) = home();
+        vault(&folder.join("vault.kdbx"));
+        vault(&folder.join("old.kdbx"));
+        let session = Session::new(None, None);
+
+        assert_eq!(
+            looked_home(&session, Some(home.path())),
+            Some(folder.join("vault.kdbx"))
+        );
+        std::fs::rename(folder.join("vault.kdbx"), home.path().join("moved.kdbx"))
+            .expect("the vault is moved away");
+
+        let refused = found_chosen(&session)
+            .err()
+            .expect("the named file is gone");
+        assert_eq!(code_of(refused), "gone");
+        assert_eq!(session.database(), None, "something else was chosen");
+
+        // What the screen reads next names what is there now.
+        assert_eq!(
+            looked_home(&session, Some(home.path())),
+            Some(folder.join("old.kdbx"))
+        );
+        let chosen = found_chosen(&session).expect("the file now named opens");
+        assert_eq!(
+            Some(PathBuf::from(chosen.path)),
+            folder.join("old.kdbx").canonicalize().ok()
+        );
+    }
+
+    /// The file the card named stopped being a vault between the screen and
+    /// the press. Each is answered `gone` and nothing is chosen. A vault put at
+    /// the same name is the file the card named, and is what opens.
+    #[test]
+    fn an_offer_whose_file_became_something_else_is_gone() {
+        type Replace = fn(&Path);
+        let replacements: [(&str, Replace); 4] = [
+            ("a folder", |at| {
+                std::fs::create_dir(at).expect("the folder is made")
+            }),
+            ("a link to nothing", |at| {
+                symlink(at.with_file_name("nowhere.kdbx"), at).expect("a link")
+            }),
+            ("an empty file", |at| {
+                std::fs::write(at, b"").expect("the file is written")
+            }),
+            ("nothing at all", |_| {}),
+        ];
+
+        for (what, replace) in replacements {
+            let (home, folder) = home();
+            let named = folder.join("vault.kdbx");
+            vault(&named);
+            let session = Session::new(None, None);
+            assert_eq!(
+                looked_home(&session, Some(home.path())),
+                Some(named.clone())
+            );
+
+            std::fs::remove_file(&named).expect("the vault goes");
+            replace(&named);
+
+            let refused = found_chosen(&session).err();
+            assert_eq!(refused.map(code_of).as_deref(), Some("gone"), "{what}");
+            assert_eq!(session.database(), None, "{what} was chosen");
+        }
+
+        let (home, folder) = home();
+        let named = folder.join("vault.kdbx");
+        vault(&named);
+        let session = Session::new(None, None);
+        looked_home(&session, Some(home.path()));
+        std::fs::write(&named, b"written again since").expect("the file is replaced");
+
+        assert!(found_chosen(&session).is_ok());
+        assert_eq!(session.database(), named.canonicalize().ok());
+    }
+
+    /// A launch that remembers a vault offers nothing from the folder, and a
+    /// press that arrives anyway opens nothing.
+    #[test]
+    fn nothing_is_offered_over_a_remembered_vault() {
+        let (home, folder) = home();
+        vault(&folder.join("vault.kdbx"));
+        let remembered = home.path().join("old.kdbx");
+        vault(&remembered);
+        let session = Session::new(Some(remembered.clone()), None);
+
+        assert_eq!(looked_home(&session, Some(home.path())), None);
+        assert_eq!(
+            found_chosen(&session).err().map(code_of).as_deref(),
+            Some("gone")
+        );
+        assert_eq!(session.database(), Some(remembered));
+    }
+
+    /// Only a copy a lock left is in the folder: its vault's file went while it
+    /// was open. The offer opens the vault's name, whose unlock screen puts the
+    /// copy back.
+    #[test]
+    fn a_copy_whose_vault_has_gone_is_offered_under_the_vault_s_name() {
+        let (home, folder) = home();
+        vault(&folder.join("vault.kdbx.unsaved.kdbx"));
+        let session = Session::new(None, None);
+
+        let named = folder.join("vault.kdbx");
+        assert_eq!(
+            looked_home(&session, Some(home.path())),
+            Some(named.clone())
+        );
+        assert!(
+            dto::Found::of(&named).copy,
+            "the offer says it found a vault that is not there"
+        );
+        assert!(found_chosen(&session).is_ok());
+        assert_eq!(session.database(), Some(named.clone()));
+
+        // The vault back at its name is a vault found, whatever is beside it.
+        vault(&named);
+        assert!(!dto::Found::of(&named).copy);
+    }
+
+    /// Choosing either way would lock the open vault, and a press on a screen
+    /// that should not be showing is not the reader asking for that.
+    #[test]
+    fn neither_offer_opens_anything_while_a_vault_is_open() {
+        let (home, folder) = home();
+        let open = home.path().join("open.kdbx");
+        let session = unlocked(&open);
+        vault(&folder.join("vault.kdbx"));
+        session.finding(Some(folder.join("vault.kdbx")));
+        session.making(folder.join("vault.kdbx"));
+
+        assert_eq!(
+            found_chosen(&session).err().map(code_of).as_deref(),
+            Some("refused")
+        );
+        assert_eq!(
+            existing_chosen(&session).err().map(code_of).as_deref(),
+            Some("refused")
+        );
+        assert!(session.is_unlocked(), "the open vault was locked");
+        assert_eq!(session.database(), open.canonicalize().ok());
+    }
+
+    /// What sits where the new vault would go is opened only when it is a
+    /// vault, or the copy a lock left of one whose file has gone. Anything
+    /// else is answered `gone`, and nothing is chosen.
+    #[test]
+    fn only_a_vault_is_opened_instead_of_making_one() {
+        let (home, folder) = home();
+        let at = |name: &str| folder.join(name);
+
+        let session = Session::new(None, None);
+        assert_eq!(
+            existing_chosen(&session).err().map(code_of).as_deref(),
+            Some("refused"),
+            "nothing was settled, and something was chosen"
+        );
+
+        std::fs::create_dir(at("folder.kdbx")).expect("the folder is made");
+        symlink(at("nowhere.kdbx"), at("dangling.kdbx")).expect("a link");
+        std::fs::write(at("empty.kdbx"), b"").expect("the file is written");
+        vault(&at("vanished.kdbx"));
+        std::fs::remove_file(at("vanished.kdbx")).expect("the file goes");
+
+        for name in [
+            "folder.kdbx",
+            "dangling.kdbx",
+            "empty.kdbx",
+            "vanished.kdbx",
+        ] {
+            session.making(at(name));
+            let refused = existing_chosen(&session).err();
+            assert_eq!(refused.map(code_of).as_deref(), Some("gone"), "{name}");
+            assert_eq!(session.database(), None, "{name} was chosen");
+        }
+
+        // A link to a vault is followed to the file, which is what opens.
+        let kept = home.path().join("kept.kdbx");
+        vault(&kept);
+        symlink(&kept, at("linked.kdbx")).expect("a link");
+        session.making(at("linked.kdbx"));
+        let chosen = existing_chosen(&session).expect("the vault is chosen");
+        assert_eq!(Some(PathBuf::from(chosen.path)), kept.canonicalize().ok());
+
+        vault(&at("gone.kdbx.unsaved.kdbx"));
+        session.making(at("gone.kdbx"));
+        assert!(existing_chosen(&session).is_ok());
+        assert_eq!(session.database(), Some(at("gone.kdbx")));
     }
 
     #[test]

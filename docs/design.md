@@ -80,15 +80,404 @@ bottom inside of the field and the words are shortened to the clock. The sentenc
 is still there for anything that reads the screen aloud, where three hundred and
 eighty-four pixels is not the constraint.
 
-**The three password buttons keep a line of their own.** The mockup gives the row
-two buttons and Coffer has three, which in a pane this narrow wrapped anyway —
-and which line they landed on depended on how long the value was.
+**The password buttons keep a line of their own.** The mockup gives the row two
+buttons and Coffer has four - Show, Copy, Change and Make one - which in a pane
+this narrow wrapped anyway, and which line they landed on depended on how long
+the value was. On their own line the last of them may take a second one, and it
+does so whether or not anything is revealed. Change is the same bordered `h-7`
+pill as the others, in words and without an icon, because the mockup's sprite has
+no pencil; it reads "Set one" on an entry with no password, and while its field
+is open it takes the pressed look Make one takes while the generator is open.
 
-**There is a way out of the pane.** The mockup's header carries one button and it
-is the trash. Escape has always closed the pane and nothing else did, so the
-close goes beside the trash rather than after it: the mockup's own rule is that
-the destructive action stands at the end of a row, so that missing it costs a
-movement.
+**A revealed value is text, not a field.** The mockup draws it as a line of mono
+text, and that is what it is again: selectable, and nothing a key can reach. A
+value on one line stays on one line however long it is and scrolls sideways
+with no scrollbar drawn, the way the field it used to be shown in did, so
+revealing it still moves nothing. A value with line breaks takes the lines it
+has, because ten recovery codes on one line are not what the vault holds; a
+protected note and a previous version's value wrap their long lines as well. The
+field's own countdown now runs under a protected note too. Whatever is revealed
+goes the moment the entry comes back changed, however the change arrived: the
+password shown before a new one was saved is not the password any more.
+
+**A new value is written in a field of its own.** Change opens, under the row's
+buttons, the mockup's field with a text area in mono `small`: one line tall
+until the value has more, then growing with it up to twenty lines. A value
+already in lines - which Rust says without saying what they are - and a field
+the reader named to be written in lines open it four lines tall instead, the
+way Notes is, where Return starts a line and Cmd+Return saves. Under it the
+two answers in the order every question in the window uses: Cancel, the way out,
+as a plain `h-7` pill in `txt3`, then Save as the bordered `h-7` pill beside it.
+Neither takes the focus. While the field is empty Save is drawn the way the
+password's Copy is on an entry with none - `txt4`, the hairline kept under the
+pointer, the not-allowed cursor - and Return does nothing: nothing typed is no
+new password. The old value stays where it was, and so does anything shown of
+it, until the new one is saved. Save, Cancel and Escape give the focus back to
+the Change that opened the field; a field closed because the reader clicked
+somewhere else leaves the focus there.
+
+**Leaving that field with something typed asks, in the same place.** The Cancel
+and Save line gives way to the window's question box on `surface2`: "Save the
+new password?", with "Keep typing" as the way out, Save as the neutral pill and
+Discard last, as the red answer. The way out, and so Escape, goes back into the
+field and loses nothing: Escape is what a reader presses again when the pane
+did not close, and a way out that discarded threw away a password just set on
+a website on that second press, with nothing said. Discard takes nothing out of
+the vault, but it throws away the one copy of what was typed, which is why it
+is the red one and never what a key gives. The box does not take the focus
+when the reader put it somewhere else. Going back into the field takes the
+question away. The pressed Change pill, pressed again with something typed,
+asks the same question.
+
+**The pane stays while that field holds something.** A row pressed, Escape,
+the header's close, "+ Entry", a folder chosen, the bin emptied, "Move to
+Recycle Bin" or the settings opened over it would each take a new password the
+reader just set on a website away with the pane. None of them does anything
+then: the pane stays, and the field's question rises again where it is - the
+same box, drawn afresh so that it moves where the reader is looking - with the
+focus on Save, the answer that loses nothing. Once it is answered, the press
+works. While the new value is on its way to the vault the pane waits for it
+without asking, since there is nothing left to answer. A state the mockup does
+not draw, built from the question it already has.
+
+**A protected field of the reader's own has its Change on the line under it.**
+Its row keeps the mockup's shape - name, value, eye - and has no room for a word
+more, so "Change" sits under the value, where the value starts, in `fine` and
+`txt3` like the Versions block's View and Restore. The row is two columns, the
+name's `w-24` and the value's, and Change is in the value's column: it starts
+where the value starts because it is in the same column, not because a margin
+was worked out to match the name. Pressed, it gives way to the
+same field and answers as the password's. A login or an address another client
+protected gets the same line under its value. A protected note and a previous
+version get a copy beside their eye and no Change: a note Coffer never protects
+is read and copied, and a version cannot be written into.
+
+**The step that names a new field offers "Multi-line".** Beside the name, the
+generator's own toggle pill - hairline, `meta` mono, the check in `txt2` and
+`surface2` behind it when it is on - because it is the same kind of choice. The
+format has no such flag, so it decides the fields the value is written in for as
+long as the entry is open: a text area four lines tall, where Return starts a
+line - the first value's, and a Change's after that.
+
+**A field holding typing that is not written yet carries a dot.** There is no
+save button, and a value is written when its field is left, so a note half
+written has nothing to say that it is not in the vault yet. From the first key
+until the field is left, put back with Escape, or its Change answered, a dot
+sits at the end of the field, inside its box: the `1.5` step of the spacing
+scale, `rounded-full`, in `warn` - the colour the status bar says "Not saved"
+in - with "Not saved yet" under the pointer and for anything that reads the
+screen aloud. It is centred on a value on one line and level with the first
+line of a value in lines. The mockup draws a finished entry and so no such
+state; nothing here is a value it does not contain. What the dot marks is also
+what a lock writes before it wipes the window, so the unlock screen after one
+says "What you were typing was saved before locking." in the place and the type
+of the line about work a lock could not write - `small`, centred, `mt-6` - in
+`txt2` rather than `danger`, and names no entry. A new value in a Change field
+is written beside the value it was for rather than over it, in a protected
+field of its own called after it - "Password (typed before locking)" - where it
+is found under Own fields; into the field itself only when that held nothing.
+A lock that kept one so adds a second sentence to the same line, naming no
+entry and no field either: "A new value you had not saved yet was kept in a
+field of its own, beside the old one, which is unchanged." A
+Change field emptied again has no dot and nothing to write. A box that holds a
+name rather than a value - a tag being typed, the name of a new field, a
+folder's name - has no dot either: a lock does not write a name the reader has
+not finished, so there is nothing for the dot to promise (`docs/ipc.md`, "Only
+values are drafted, not names").
+
+**A value of the reader's own in lines is written in lines.** Any value with a
+line break is edited in a text area that grows with it, up to twenty lines and
+then scrolling, where Return starts a line and Cmd+Return finishes. A field of
+the reader's own is one from the start, one line tall and scrolling sideways
+until it has a second, so that a paste keeps its breaks.
+
+**The header is the way out of the pane, and nothing else.** The mockup's
+header carries one button and it is the trash. Escape had always closed the pane
+and nothing else did, and a close put beside that trash - sixteen pixels away,
+the same size, the same grey - was a press meant for one landing on the other.
+So the header carries the close alone, and deleting is a labelled action at the
+foot of the pane, after the versions, where no press aimed at anything else
+lands: the trash and "Move to Recycle Bin" in a plain `h-9` pill in `txt3`,
+taking `dangerwash` and `danger` under the pointer the way every trash in the
+window does. A deletion that would be final - a vault that keeps no bin - reads
+"Delete forever…" and asks first.
+
+**An entry is in the pane the moment its row is pressed.** Rust answers one
+command at a time, and a save holds it for the second a key derivation takes, so
+an entry chosen right after an edit is read only after that save. The mockup
+draws no entry that is on its way, and the pane used to go on showing the last
+one, versions and all, for that second. Now the heading and the login's box are
+drawn at once from the row that was pressed - the name in the title's own type,
+the login in the mockup's field, a protected one as the mask - and under them
+"Opening…" in `fine` and `txt4`, the colour of something that is not there yet.
+The name sits in the title field's own box and the empty ones say "Untitled" and
+"No login", the same component and the same words the entry is drawn with. A
+row in the bin already says so, and the bin's card stands above the login at
+once with its buttons drawn and disabled, so the login does not drop by the
+card's height when the entry arrives.
+It arrives on the fade, so an entry Rust answers for within the frame replaces
+it before it is seen; nothing pulses or spins, because a loop is none of the
+window's three movements. Nothing in it can be pressed but the close. The rest
+of the entry fills in under the name and the login when it comes, and the pane
+fades in only when it opens from nothing, not when it moves from one entry to
+the next. The Versions block counts only a list of its own entry's, and has no
+number while that list is being read.
+
+**An edit takes the versions off the screen until its save is back.** The save
+prunes, and a list drawn through it offered a trash that dropped the neighbour
+of the version on its row. So from the moment an edit to the entry lands until
+the list read after its save arrives, the block is its heading alone -
+"Versions" with no number and no rows, the same state as an entry still being
+read - and a question or a version open in it closes. A list asked for before
+the latest such edit is dropped when it answers, since saves overlap and it can
+answer after that edit. While a restore, a drop or a clear is on its way, a
+press on the block is let go. A press Rust still finds out of date does
+nothing, and is said in the notice a failure gets, with the warning in `warn`:
+"The versions changed while you were choosing, so nothing was done. Choose
+again from the list as it is now." The list is read again under it.
+
+## Asking before, and taking back after
+
+The mockup draws one choice, the conflict dialog, and states its rule beside it:
+outcomes named in words and by their result, the destructive one last and the
+only one in red. Everything the window asks before something goes follows that
+rule, in one component, `Confirm.svelte`, and nothing asks any other way.
+
+**The question is asked where the press landed.** A box of the other plane from
+the one around it (`surface` in the folders, `surface2` in the entry pane)
+behind a hairline, `rounded-sm`, `p-3`, the question in `fine` and `txt2`. Under
+it the way out as a plain `h-9` pill in `txt3`, named by what it leaves ("Keep
+it"); a neutral step, when there is one, in the bordered pill the window uses
+for any action that is not the page's one call ("Save a copy first…"); and the
+destructive answer last, in `danger` over `dangerwash`. Asked inside something
+that is already a card - a file's row, a version's - it drops its own box and
+sits under a hairline in the card. Clearing the history used to ask on one line
+without a box; it asks in the box now, like the rest.
+
+**A name in a sentence is set apart from it.** Questions, notices, the bin's
+lines and the banners about a lock's copy put the reader's names into running
+text: an entry's title, a field's, a file's or a folder's name. Each one is
+bidi-isolated - a `<bdi>` in markup, and in a sentence built as a string the
+quotes from `quoted()` in `format.ts`, which put the name between U+2068 and
+U+2069, close whatever isolate it leaves open, and show a paragraph separator
+in it (a line feed, U+2029 and the others UAX #9 counts) as a space, since one
+ends the isolate along with the paragraph. A name is the reader's or
+another client's and may hold right-to-left text or an override; bare, a U+202E
+in "This entry already has “…” (1.2 MB)" ran on to the end of the paragraph and
+drew the sizes and the warning backwards. Nothing changes on the screen for a
+name without one. The mockup draws no such name.
+
+**A file whose name is taken is asked about in that box,** under the
+Attachments label and the plus that asked for the file: "This entry already has
+“Scanned Document.pdf” (1.2 MB)", what the new one would be called, and that a
+replacement cannot be undone. It is the one question whose focus is not on the
+way out. "Keep both" is the neutral pill in the middle and it is where the focus
+lands, so Return gives it, because it is what somebody adding the second page
+of a scan means; "Don’t add it" is the way out and Escape still gives it, and
+"Replace" stands last in `danger`. When a replacement is refused because earlier
+versions hold the file there, the same box asks again with the sentence saying
+why and without "Replace": the same keys, one button fewer. Once the file there
+has gone - its own trash is the way the sentence points to - the box says so and
+offers "Add it" in the same place. The banner that used to answer a refusal
+ended in a button called "Right you are", with the chosen file already gone.
+
+**A field whose removal nothing could take back is asked about in its row.**
+A field's trash takes it at once, and the notice offers it back - except in a
+vault whose limits keep no version for the undo to restore, where Rust refuses
+the press. The question then opens under the field's row in the same box as
+the others, the trash gone from the row while it is open: "Remove “PIN”? This
+vault keeps no version to bring it back from, so this can’t be undone.", with
+"Keep it" where the focus lands and "Remove" last in `danger`. After it the
+notice reads "Field “PIN” removed forever", without the button, the way an
+entry deleted for good does.
+
+**A notice that can be taken back** is the mockup's toast with one thing added:
+the trash in `txt3` where the copy icon is, and a button at the end, "Undo" in
+the accent with `⌘Z` in the search field's own key cap beside it. The button is
+the only part of the notice that takes a press, and the press does not move the
+focus, so a field holding typing keeps it. The notice stays eight seconds
+rather than five or six, because it is asking for one, and it stays when the
+reader opens another entry: the undo is about the thing it names, not about the
+pane.
+
+**Edit ▸ Undo in the menu bar is not the notice's.** Cmd+Z reaches the page as a
+key before AppKit looks for it in the menu, so the window takes it while an offer
+stands and the focus is not in a field. The same item chosen with the pointer
+never reaches the page as a key: AppKit sends it to WebKit's own undo, which is
+about typing in fields, and the removal stays removed. Making the item the
+notice's would mean an Undo of Coffer's own in place of the system's, and that
+one would take Cmd+Z away from every field in the window. So the item stays the
+system's, the key cap on the notice names the key rather than the menu, and the
+button is how the pointer takes a removal back.
+
+**A destructive icon gets room.** The mockup's icons are sixteen pixels with
+nothing around them, and a trash twelve pixels from an export or a copy is the
+one a press meant for its neighbour lands on. Every trash that removes something
+at once - a file's, a field's, a version's - sits in a 28-pixel box (`h-7`),
+with `dangerwash` behind it on hover and a step more gap than the icons beside
+it; the export next to a file gets the same box with `raised` behind it. The
+folder's trash in the header of the folders pane only asks, and gets the same
+box all the same: it is the last icon there, a step further from Rename and New
+folder, and its box is drawn into the header's padding so the header is no
+taller. A version's is drawn into its row's padding, so the row is no taller. A
+field's trash is the last thing in the row and is drawn only while the row is
+under the pointer or holds the focus, so a row that is being read or copied from
+carries no way to lose it.
+
+## The recycle bin
+
+The mockup draws the bin as a row at the foot of the folders and as an empty
+state, and nothing of what is in it. Everything below is built from states it
+does draw.
+
+**What is in the bin is read, not edited.** An entry opened there is drawn the
+way the pane draws a vault Coffer will not write back, every value as text, with
+a card at the top of the pane: `surface2` behind a hairline, `rounded-sm`,
+`p-3`, the trash in `txt4`, and the sentence in `fine` and `txt2` - "In the
+Recycle Bin since 30 Sep · was in “Personal”". Where nothing says where it came
+from, the sentence says where it goes instead ("goes back to the top of the
+vault") rather than making up a past. Under it "Put back" is the one accent
+pill, the unlock button's fill at `h-9`, because putting back is what the card
+is for; "Delete forever…" beside it is a plain pill in `txt3` that takes
+`dangerwash` and `danger` only under the pointer, and asks in the same card
+before anything goes, the red answer last. A vault Coffer will not write back
+gets the sentence and no buttons.
+
+**A folder in the bin is a folder.** The bin used to pour a deleted folder out
+into itself, its entries mixed in with everything else. The folders in the part
+of the bin being shown are now rows above its entries, in the language of the
+list they sit at the top of - a band with a hairline under it in the wide list, a
+card beside an open entry - with the folder icon at the size of the list's key,
+the name in `body` and `txt2`, and the line the narrow list gives a login under
+it. Opening one shows what it holds, with the same card at the top of the list
+and the folder's name as its heading in `body` and `txt`. The bin's row in the
+folders pane stays lit while anything inside the bin is shown, since nothing
+else there is.
+
+**A row in the bin says when and where from** - "Deleted 3 days ago · from
+“Banking”" - on a second line in `sub` mono `txt4`. Something that went in
+with a deleted folder names that folder instead - "Deleted 3 days ago · with
+“Banking”" - and its card reads "… · deleted with “Banking” · goes back to
+“Personal”", the folder's way back, since its own last move says nothing about
+the deletion. A search in the bin looks inside the deleted folders as well, and
+that line is how a row it found further down says where it is; the folders'
+own rows come back with the empty query. Beside an open entry that
+line takes the place of the login and the address. In the wide list it sits
+under the name in the first column, which makes those rows taller than the
+mockup's rows; nowhere else in the list is.
+
+**A move to the bin is taken back from its notice**, the one described above,
+for eight seconds and on Cmd+Z: "Moved “Bank” to the Recycle Bin". A folder
+moved there is offered back the same way after its question. A deletion that
+was final gets the notice without the button - "Deleted “Bank” forever" -
+because nothing can take it back.
+
+**The empty bin tells the truth.** The mockup's sentence promises that deleted
+entries stay until the bin is emptied by hand, which stopped being all of it
+once one thing could be put back or deleted on its own. It now reads "Anything
+moved here waits until it is put back or deleted forever." A folder in the bin
+with nothing left in it has an empty state of its own, the folder icon over
+the same two lines. Emptying the bin asks in the same box as before, and says
+what it is: everything in the bin deleted forever, with nothing to put back
+afterwards.
+
+## A vault that is already there
+
+The mockup's first run is for somebody who has nothing, and its creation screen
+assumes the place is free. Two states answer the reader who already has a vault
+on this Mac, and both are built from states the mockup does draw.
+
+**The first run says what it found.** Above "Make a vault" sits the card the
+unlock screen already offers a lock's rescue copy in: `surface2` behind a
+hairline, `rounded-sm`, the disk icon in `txt4`, the sentence in `body` and the
+file name in mono, and the same bordered `h-9` pill for "Open it". It is not the
+accent: the accent stays on the screen's one call to action, and a reader who
+presses it anyway is told on the next screen that the vault is there. When what
+was found is the copy a lock left of a vault whose file has gone, the sentence
+says it found a copy of that vault, kept when it last locked, that the vault's
+own file is not there, and that opening it is how the copy goes back.
+
+**The creation screen says the place is taken** under the row that names it,
+before a password is typed: the corrupted-file state's warn icon and its bordered
+pill, with the sentence in `small` rather than `lead`, because the row above it is
+the thing it is about. The make button goes to its disabled look until the place
+is free.
+
+The sentence says what is there, in the same box. A vault, or the copy a lock
+left of one whose file has gone, gets the "Open it" pill. An empty file a killed
+creation left, a folder or a link to nothing gets a sentence that names it and
+points at "Somewhere else" in the row above, and no pill: there is nothing there
+to open. A press that finds the place changed redraws the box from what is there
+now, with the refusal in `danger` at the foot of the form where every other one
+on this screen goes. So does coming back to the window while the place is not
+free: a reader sent to the Finder to clear it returns to a box that says what
+they left there, and to a make button that is ready once they have.
+
+**The place is written from the tilde.** The creation screen's row shows
+`~/Coffer/vault.kdbx` rather than the whole path, which is how the mockup draws
+a place (`~/Vault`), and the sentence about a taken place names it the same way.
+
+## Work a lock could not save
+
+The mockup draws no lock at all, so nothing of what one leaves behind. The
+unlock screen already had a card for the copy a lock writes beside the vault -
+`surface2` behind a hairline, `rounded-sm`, the warn icon and a heading in
+`body` - and everything below is that card, the question box, and the
+mockup's own warning plane.
+
+**The card offers one way back, and which one depends on the vault's file.**
+While the file is there, the card's call is "Open the copy to look" in the
+bordered `h-9` pill, because the vault itself can still simply be unlocked and
+the accent stays on Unlock. When the file has gone, there is nothing to unlock:
+the password field is not drawn, the sentence says the file is not there any
+more, and "Put this copy back as my vault" is the accent pill at `h-9`, the way
+"Put back" is in the recycle bin's card - on this screen it is the one call
+there is. A move that is refused is said under the card in `small` and
+`danger`, in words about the move. On a disk that cannot take the copy back
+unopened, the card's sentence says the copy opens with the same password and
+becomes the vault from inside, and "Open the copy to look" takes the accent
+pill's place, because opening it is then the call.
+
+**Removing the copy asks.** "Remove it…" is the plain `txt3` pill that takes
+`dangerwash` and `danger` under the pointer, like "Delete forever…", and it
+opens the question in the card, under a hairline: "Remove the only copy of those
+changes?", with "Keep it" first and focused and "Remove" last in red. When the
+vault's file has gone, the copy is the whole vault, and the question is "Remove
+the only copy of your vault?" in the same box. When the chosen file is itself a
+copy a lock left - the reader was in one, and the lock that closed it kept
+their work in a copy of that copy - it is that copy's file that went, not the
+vault's: the card says "This copy is not there any more", and the question is
+"Remove the only copy of what this copy held?".
+
+**A lock that could write nothing says what survived.** Under the red line, in
+the same `small` and centred, in `txt2`: "Your vault file is as it was today at
+14:02.", or that it is not where it was either. On a copy's own screen - the
+lock that lost the work was of a copy opened to look - the sentence is about the
+copy: "This copy is as it was …". Times of files a reader is comparing are
+always said to the minute.
+
+**The copy's own unlock screen says what it is.** The same card, headed "A
+copy, not your vault", with when the lock saved it and the vault's file name in
+mono, and "Back to my vault" in the bordered pill. Before, only the file panel
+led back.
+
+**An open copy says so across the top of the window.** A strip under the title
+bar, the full width of the window, on the mockup's warning plane - `warnwash`
+behind a `warn/35` hairline at its foot, the plane the creation screen's
+password warning is drawn on - with the warn icon. The first line, in `small`
+and `txt`, says it is the copy and when it was saved, and that what is changed
+here changes the copy and not the vault. The second, in `fine` and `txt2`, says
+what "Make this my vault" does to the vault's file: which file it goes over,
+when that file last changed - which is how a reader sees that somebody wrote it
+after the copy was made - and the snapshot name it is kept under until later
+saves push it out of the snapshots, file names in mono. At the end, "Back to my
+vault" in the bordered `h-9` pill and "Make this my vault" in the accent pill,
+which is what the copy was opened to decide; while it writes, it takes the
+Unlock button's busy look and reads "Making it your vault…". A refusal is said
+under the second line in `danger`. When the vault's file changed after the
+banner said when it last changed, the window reads it again, the second line
+says how it stands now, and the refusal says nothing was replaced and points at
+that line. The strip is not part of the panes, so the settings do not cover it.
 
 ## The settings, and the way in and out of them
 
@@ -101,9 +490,9 @@ button that opened them stays where the hand left it and closes them.
 
 **What is under them is inert, not merely covered.** An opaque sheet hides a
 pane; it does not take it out of the tab order, out of hit testing or out of the
-accessibility tree. Every value in an entry is a live field that commits what is
-in it when focus leaves, so a covered pane is an entry that can be rewritten by
-keys aimed at something else.
+accessibility tree. Every value in an entry the database does not protect is a
+live field that commits what the reader wrote in it when focus leaves, so a
+covered pane is an entry that can be rewritten by keys aimed at something else.
 
 ## Motion
 
@@ -130,8 +519,8 @@ track, so an entry is never laid out at a width nobody asked for on its way in.
 do.** Nothing animates an element that has already been taken out of the
 document, so a notice that is going stays until it has gone. That is the only
 motion in the window whose length is written down twice — once in the
-stylesheet, once in the window that removes it. `motion.svelte.test.ts` keeps
-the two saying the same number.
+stylesheet, once in the script that removes it (`notices.svelte.ts`).
+`motion.svelte.test.ts` keeps the two saying the same number.
 
 ## The application icon
 

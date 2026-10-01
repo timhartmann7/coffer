@@ -31,7 +31,9 @@ enum Code {
     /// Another process has this database open.
     HeldByAnother,
     /// The file changed on disk after Coffer opened it, and the screen has to
-    /// ask which version to keep before anything is written.
+    /// ask which version to keep before anything is written. Also the vault's
+    /// file changing after the copy's banner said how it stood: the banner
+    /// reads it again before the copy goes over it.
     ExternalChange,
     /// The database cannot be written back at all: a snapshot, or a format
     /// Coffer reads and does not write.
@@ -48,6 +50,33 @@ enum Code {
     /// A code of its own, because the screen has something to offer here that
     /// it has nowhere else: clearing those versions.
     AttachmentInHistory,
+    /// Something already sits where a new vault would go, or the copy a lock
+    /// left of a vault by that name sits beside it. A code of its own for the
+    /// same reason: the screen says what is there, offers to open it when it
+    /// can be opened, and keeps the passwords the reader typed for somewhere
+    /// else.
+    Taken,
+    /// A previous version was named by a position read before the vault last
+    /// changed, where it may name another version now. Nothing was done, and
+    /// the screen reads the list again rather than showing a failure.
+    VersionsChanged,
+    /// Removing the field would be for good: the vault keeps no version to
+    /// bring it back from. Nothing was done, and the screen asks the reader
+    /// whether they mean it.
+    ForGood,
+    /// A removal the reader asked to take back is no longer the last thing
+    /// that happened to its entry. Nothing was done, and the screen says the
+    /// removal can no longer be undone.
+    Superseded,
+    /// A deletion would no longer do what the window showed before the reader
+    /// asked for it: a move to the bin would now erase, or the other way round,
+    /// because something around it was deleted first. Nothing was done, and the
+    /// screen says so and reads the tree again.
+    DeletionChanged,
+    /// The copy a lock left cannot be put back without a password on this
+    /// disk. Nothing was done, and the screen offers to open the copy, which
+    /// is the way it can still become the vault.
+    NeedsOpening,
     Io,
     Other,
 }
@@ -85,12 +114,27 @@ impl Failure {
         Failure::refused("lock the vault before opening another")
     }
 
+    /// A new vault was asked for before anywhere had been settled for it. One
+    /// sentence, because making one and opening what is at the place both ask.
+    pub fn nowhere_chosen() -> Failure {
+        Failure::refused("nowhere has been chosen for the new vault")
+    }
+
     /// An unlock finished after the session had been pointed somewhere else.
     /// Nothing is open, which is what the code says; the message says why.
     pub fn stale() -> Failure {
         Failure {
             code: Code::NoVault,
             message: "the database changed while it was opening".to_owned(),
+        }
+    }
+
+    /// A version named by a position from a list the vault has changed since.
+    /// See [`crate::session::Session::at`].
+    pub fn versions_changed() -> Failure {
+        Failure {
+            code: Code::VersionsChanged,
+            message: "the versions changed after they were listed".to_owned(),
         }
     }
 
@@ -123,7 +167,9 @@ impl From<VaultError> for Failure {
             }
             VaultError::Locked(_) => Code::HeldByAnother,
             VaultError::AttachmentInHistory => Code::AttachmentInHistory,
-            VaultError::ExternalChange => Code::ExternalChange,
+            VaultError::DatabaseExists | VaultError::CopyBeside => Code::Taken,
+            VaultError::ExternalChange | VaultError::VaultFileChanged => Code::ExternalChange,
+            VaultError::NoExclusiveMove => Code::NeedsOpening,
             VaultError::ReadOnlyKdb
             | VaultError::ReadOnlyKdbx3Attachments
             | VaultError::ReadOnlySnapshot
@@ -137,7 +183,6 @@ impl From<VaultError> for Failure {
             | VaultError::NoSuchVersion => Code::NoSuchEntry,
             VaultError::UnwritableText
             | VaultError::EmptyMasterPassword
-            | VaultError::DatabaseExists
             | VaultError::ReservedName
             | VaultError::PasswordNotUtf8
             | VaultError::AbsurdKeyDerivation
@@ -147,9 +192,15 @@ impl From<VaultError> for Failure {
             | VaultError::UnreadableAttachments
             | VaultError::CannotMoveRoot
             | VaultError::CannotMoveIntoItself
+            | VaultError::NotInRecycleBin
+            | VaultError::NoSuchPart
             | VaultError::CopyOntoItself
+            | VaultError::NotACopy
             | VaultError::NothingToGenerateFrom
             | VaultError::RandomnessUnavailable => Code::Refused,
+            VaultError::RemovalForGood => Code::ForGood,
+            VaultError::RemovalSuperseded => Code::Superseded,
+            VaultError::DeletionChanged => Code::DeletionChanged,
             VaultError::Io(_) => Code::Io,
             _ => Code::Other,
         };
@@ -192,7 +243,8 @@ mod tests {
             (VaultError::NoSuchEntry, "noSuchEntry"),
             (VaultError::UnwritableText, "refused"),
             (VaultError::EmptyMasterPassword, "refused"),
-            (VaultError::DatabaseExists, "refused"),
+            (VaultError::DatabaseExists, "taken"),
+            (VaultError::CopyBeside, "taken"),
             (VaultError::ReservedName, "refused"),
             (VaultError::RandomnessUnavailable, "refused"),
             (VaultError::PasswordNotUtf8, "refused"),
@@ -202,13 +254,21 @@ mod tests {
             (VaultError::ReadOnlySnapshot, "readOnly"),
             (VaultError::ReadOnlyPlace, "readOnly"),
             (VaultError::ExternalChange, "externalChange"),
+            (VaultError::VaultFileChanged, "externalChange"),
+            (VaultError::NoExclusiveMove, "needsOpening"),
             (VaultError::NoSuchGroup, "noSuchEntry"),
             (VaultError::NoSuchVersion, "noSuchEntry"),
             (VaultError::AttachmentInHistory, "attachmentInHistory"),
             (VaultError::AttachmentPinned, "refused"),
             (VaultError::AttachmentTooLarge, "refused"),
             (VaultError::CannotMoveRoot, "refused"),
+            (VaultError::NotInRecycleBin, "refused"),
+            (VaultError::NoSuchPart, "refused"),
+            (VaultError::NotACopy, "refused"),
             (VaultError::NothingToGenerateFrom, "refused"),
+            (VaultError::RemovalForGood, "forGood"),
+            (VaultError::RemovalSuperseded, "superseded"),
+            (VaultError::DeletionChanged, "deletionChanged"),
             (VaultError::Io(io::Error::other("a disk")), "io"),
         ] {
             let message = error.to_string();
@@ -229,5 +289,9 @@ mod tests {
 
         let stale = serde_json::to_string(&Failure::stale()).expect("a failure serialises");
         assert!(stale.contains(r#""code":"noVault""#), "{stale}");
+
+        let moved =
+            serde_json::to_string(&Failure::versions_changed()).expect("a failure serialises");
+        assert!(moved.contains(r#""code":"versionsChanged""#), "{moved}");
     }
 }

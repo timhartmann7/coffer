@@ -1,18 +1,18 @@
 <script lang="ts">
+	import { copying, typing } from '$lib/keys';
+	import type { Span } from '$lib/model';
 	import { Revealed } from '$lib/reveal.svelte';
-	import Field from './Field.svelte';
 	import Icon from './Icon.svelte';
-	import Mask from './Mask.svelte';
+	import Shown from './Shown.svelte';
 
 	/**
-	 * A value the database protects, where looking at it is all there is: a
-	 * mask, and an eye to see it for half a minute.
+	 * A value the database protects that is not the entry's password: a field of
+	 * the reader's own, a login or an address a foreign database protects, a
+	 * protected note, or any of them as a previous version held it. A mask, an
+	 * eye to read it for half a minute, and a copy that goes through Rust.
 	 *
-	 * The reading half of a pair. A value that can also be copied and changed is
-	 * `SecretField.svelte`; this is for the two places where it cannot be. A
-	 * previous version is a reading and the format gives no way to write into
-	 * one, and a note a foreign client protected is a textarea rather than the
-	 * single line the other rows share.
+	 * Reading only. Changing one is a press of its own beside the row, which the
+	 * entry draws (`Change.svelte`); a version cannot be changed at all.
 	 *
 	 * One of these per value on the screen. Each holds the node its own value
 	 * goes into, which is what keeps the value of the field that was asked for
@@ -21,33 +21,57 @@
 	let {
 		entry,
 		field,
-		label = `${field}`,
+		label = field,
 		read,
 		bare = false,
+		lines = false,
+		onCopy,
 		onFailure
 	}: {
 		entry: string;
 		field: string;
-		/** What the eye is called, when the value is not the entry's own. */
+		/** What the eye and the copy are called, when the value is not the
+		 * entry's own. */
 		label?: string;
 		/** Where the value comes from: the entry as it is, or one of its
 		 * previous versions. */
 		read?: (entry: string, field: string) => Promise<string>;
-		/** Drawn without {@link Field}'s box. A previous version is a reading and
+		/** Drawn without the field's box. A previous version is a reading and
 		 * not a field: nothing in that list can be written into, and a row of
 		 * boxes there would offer an edit the format has no way to take. */
 		bare?: boolean;
+		/** A value that is prose in lines, a note. */
+		lines?: boolean;
+		/** Copies the value in Rust, whole or the part of it that was selected. */
+		onCopy: (range: Span | null) => void;
 		onFailure: (thrown: unknown) => void;
 	} = $props();
 
 	const revealed = new Revealed();
 	let node = $state<HTMLElement>();
+	let eye = $state<HTMLButtonElement>();
 
+	/** Which entry the row is on: its own value, because the pane hands the id
+	 * on from an entry that is a new object after every change, and a change
+	 * that lands hides what is shown by itself (`conceal`). */
+	const showing = $derived(entry);
+
+	// A different entry is a different secret. `field` is not read: the lists
+	// this row is drawn in are keyed by the field's name, so a rename destroys
+	// the row rather than changing it under itself.
 	$effect(() => {
-		void entry;
+		void showing;
 		return () => revealed.hide();
 	});
 
+	/**
+	 * Shows the value, and puts it away again.
+	 *
+	 * Once it is on the screen the focus goes to the eye that hides it, so that
+	 * Cmd+C copies this value through Rust and a stray key lands on a button
+	 * rather than in the page. Never out of a field the reader is writing in: a
+	 * new value half typed beside the old one is theirs to finish.
+	 */
 	async function toggle() {
 		if (revealed.showing) {
 			revealed.hide();
@@ -56,39 +80,42 @@
 		if (!node) return;
 		try {
 			await revealed.show(node, entry, field, read);
+			if (!typing(document.activeElement)) eye?.focus();
 		} catch (thrown) {
 			onFailure(thrown);
 		}
 	}
+
+	/** Cmd+C with the focus on this row copies this row's value, whole. */
+	function keys(event: KeyboardEvent) {
+		if (!copying(event)) return;
+		event.preventDefault();
+		onCopy(null);
+	}
 </script>
 
-{#snippet value()}
-	{#if !revealed.showing}
-		<span class="min-w-0 flex-1 overflow-hidden"><Mask /></span>
-	{/if}
-	<!-- The value lives here and nowhere else. Hidden rather than taken out, so
-	     that the node a reveal writes into is there before it is asked for. -->
-	<span
-		bind:this={node}
-		data-value
-		hidden={!revealed.showing}
-		class="min-w-0 flex-1 font-mono text-small break-all text-txt"
-	></span>
-{/snippet}
-
-{#if bare}
-	<span class="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">{@render value()}</span>
-{:else}
-	<!-- The same box the value would be edited in, so that a field the database
-	     protects sits on the line its neighbours sit on rather than a thinner one
-	     of its own, and so that revealing it moves nothing. -->
-	<Field>{@render value()}</Field>
-{/if}
+<Shown {revealed} bind:node {bare} {lines} {onCopy} {onFailure} />
+<!-- Neither press moves the focus, so a new value being written beside this
+     row keeps it, and the old one can be looked at and copied from while it is
+     being replaced. -->
 <button
+	bind:this={eye}
 	type="button"
+	onmousedown={(event) => event.preventDefault()}
 	onclick={toggle}
+	onkeydown={keys}
 	class="shrink-0 text-txt4 transition-colors hover:text-txt2"
 	aria-label={revealed.showing ? `Hide ${label}` : `Show ${label}`}
 >
-	<Icon name="eye" class="h-4 w-4" />
+	<Icon name={revealed.showing ? 'eye-off' : 'eye'} class="h-4 w-4" />
+</button>
+<button
+	type="button"
+	onmousedown={(event) => event.preventDefault()}
+	onclick={() => onCopy(null)}
+	onkeydown={keys}
+	class="shrink-0 text-txt4 transition-colors hover:text-txt2"
+	aria-label="Copy {label}"
+>
+	<Icon name="copy" class="h-4 w-4" />
 </button>

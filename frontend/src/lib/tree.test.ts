@@ -2,13 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { group, row } from './fixtures';
 import {
 	entriesOf,
+	find,
+	inBin,
 	liveEntries,
 	pathTo,
 	projects,
 	recycleBin,
+	rowOf,
+	searchedEntries,
 	shownEntries,
 	visible
 } from './tree';
+import type { EntryRow } from './model';
 
 describe('walking the tree', () => {
 	it('gathers the entries of a group and of everything under it', () => {
@@ -51,6 +56,95 @@ describe('walking the tree', () => {
 		expect(shownEntries(work)).toHaveLength(2);
 		expect(shownEntries(bin)).toHaveLength(1);
 		expect(entriesOf(work)).toHaveLength(3);
+	});
+
+	/**
+	 * A folder that went into the bin is still a folder. The bin shows what it
+	 * holds itself, and the folder shows its own: poured out into the bin, the
+	 * entries of a deleted folder were a heap with nothing to say they had been
+	 * together.
+	 */
+	it('shows a folder in the bin as a folder rather than pouring it out', () => {
+		const went = { since: '2026-08-26T09:00:00Z', within: null, from: null };
+		const inner = group({ name: 'Cards', binned: went, entries: [row({ title: 'Visa' })] });
+		const banking = group({
+			name: 'Banking',
+			binned: went,
+			entries: [row({ title: 'Bank' })],
+			sections: [inner]
+		});
+		const bin = group({
+			name: 'Recycle Bin',
+			isRecycleBin: true,
+			entries: [row({ title: 'Mail' })],
+			sections: [banking]
+		});
+		const tree = group({ entries: [row({ title: 'kept' })], sections: [bin] });
+
+		expect(shownEntries(bin).map((entry) => entry.title)).toEqual(['Mail']);
+		expect(shownEntries(banking).map((entry) => entry.title)).toEqual(['Bank']);
+		expect(shownEntries(inner).map((entry) => entry.title)).toEqual(['Visa']);
+		expect([bin, banking, inner].every(inBin)).toBe(true);
+		expect(inBin(tree)).toBe(false);
+		expect(liveEntries(tree).map((entry) => entry.title)).toEqual(['kept']);
+		expect(entriesOf(bin)).toHaveLength(3);
+	});
+
+	/**
+	 * A search in the bin looks inside the deleted folders too. One that stopped
+	 * at the folder being shown said nothing matched "visa" while Visa sat one
+	 * folder down. Outside the bin a search still leaves the bin out, wherever a
+	 * client put it.
+	 */
+	it('searches everything below a folder in the bin, and nothing of the bin outside it', () => {
+		const went = { since: '2026-08-26T09:00:00Z', within: null, from: null };
+		const inner = group({ name: 'Cards', binned: went, entries: [row({ title: 'Visa' })] });
+		const banking = group({
+			name: 'Banking',
+			binned: went,
+			entries: [row({ title: 'Bank' })],
+			sections: [inner]
+		});
+		const bin = group({
+			name: 'Recycle Bin',
+			isRecycleBin: true,
+			entries: [row({ title: 'Mail' })],
+			sections: [banking]
+		});
+		const project = group({ entries: [row({ title: 'kept' })], sections: [bin] });
+
+		const titles = (rows: EntryRow[]) => rows.map((entry) => entry.title);
+		expect(titles(searchedEntries(bin))).toEqual(['Mail', 'Bank', 'Visa']);
+		expect(titles(searchedEntries(banking))).toEqual(['Bank', 'Visa']);
+		expect(titles(searchedEntries(inner))).toEqual(['Visa']);
+		expect(titles(searchedEntries(project))).toEqual(['kept']);
+	});
+
+	it('finds a group wherever it sits, and nothing for one that is not there', () => {
+		const deep = group({ name: 'Servers' });
+		const tree = group({ sections: [group({ sections: [deep] })] });
+
+		expect(find(tree, deep.id)).toBe(deep);
+		expect(find(tree, tree.id)).toBe(tree);
+		expect(find(tree, 'not a group')).toBeNull();
+	});
+
+	/** A row is what the pane draws an entry from until Rust has read it, and
+	 * an entry put back or just made can be anywhere, the bin included. */
+	it('finds the row of an entry wherever it sits, and nothing for one that has gone', () => {
+		const binned = row({ title: 'thrown away' });
+		const deep = row({ title: 'node-3' });
+		const tree = group({
+			sections: [
+				group({ sections: [group({ entries: [deep] })] }),
+				group({ isRecycleBin: true, entries: [binned] })
+			]
+		});
+
+		expect(rowOf(tree, deep.id)).toBe(deep);
+		expect(rowOf(tree, binned.id)).toBe(binned);
+		expect(rowOf(tree, 'not an entry')).toBeNull();
+		expect(rowOf(group(), deep.id)).toBeNull();
 	});
 
 	it('finds the recycle bin wherever the file puts it', () => {

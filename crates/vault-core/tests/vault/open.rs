@@ -198,7 +198,10 @@ fn a_protected_title_leaves_the_list_with_no_title_rather_than_an_empty_one() {
     assert_eq!(summary.title.open(), Some("basic"));
     assert_eq!(
         entry.field(fields::NOTES).map(|field| field.value.clone()),
-        Some(FieldValue::Protected { empty: false })
+        Some(FieldValue::Protected {
+            empty: false,
+            lines: true
+        })
     );
     assert_eq!(
         entry
@@ -216,7 +219,13 @@ fn a_protected_field_arrives_without_its_value() {
     let entry = entry_titled(&vault, "basic");
 
     let password_field = entry.field(fields::PASSWORD).expect("a password field");
-    assert_eq!(password_field.value, FieldValue::Protected { empty: false });
+    assert_eq!(
+        password_field.value,
+        FieldValue::Protected {
+            empty: false,
+            lines: false
+        }
+    );
     assert!(entry.has_password());
 
     // The rendered form of the metadata must not contain the value either.
@@ -264,7 +273,14 @@ fn a_protected_notes_field_is_still_protected() {
     let entry = entry_titled(&vault, "basic");
 
     let notes = entry.field(fields::NOTES).expect("a notes field");
-    assert_eq!(notes.value, FieldValue::Protected { empty: false });
+    assert_eq!(
+        notes.value,
+        FieldValue::Protected {
+            empty: false,
+            lines: true
+        },
+        "a note in two lines does not say so"
+    );
     assert_eq!(
         vault
             .reveal(entry.id, fields::NOTES)
@@ -341,6 +357,45 @@ fn whitespace_inside_a_value_survives_but_a_value_that_is_only_whitespace_does_n
     assert_eq!(read("padded"), Some("  kept  ".to_owned()));
 }
 
+/// A protected value says whether it is written in lines, so that a new one
+/// can be written the same way, and says nothing else about itself. A line
+/// feed, a CRLF and a CR on its own are each a break the way a text area reads
+/// them, and a value with none is one line however long it is.
+#[test]
+fn a_protected_value_says_whether_it_is_in_lines_and_nothing_more() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let database = support::built(scratch.path(), "lines.kdbx", |db| {
+        db.root_mut().add_entry().edit(|entry| {
+            entry.set_unprotected(fields::TITLE, "codes");
+            entry.set_protected("LF", "0451-7719\n2231-0098");
+            entry.set_protected("CRLF", "0451-7719\r\n2231-0098");
+            entry.set_protected("CR", "0451-7719\r2231-0098");
+            entry.set_protected("Long", "0451-7719 ".repeat(10_000));
+            entry.set_protected("Empty", "");
+            entry.set_unprotected("Open", "first\nsecond");
+        });
+    });
+    let vault = open(&database, support::BUILT_PASSWORD);
+    let entry = entry_titled(&vault, "codes");
+
+    for (name, lines) in [
+        ("LF", true),
+        ("CRLF", true),
+        ("CR", true),
+        ("Long", false),
+        ("Empty", false),
+        ("Open", true),
+    ] {
+        assert_eq!(
+            entry.field(name).map(vault_core::model::Field::in_lines),
+            Some(lines),
+            "{name}"
+        );
+    }
+    let printed = format!("{entry:?}");
+    assert!(!printed.contains("0451"), "{printed}");
+}
+
 #[test]
 fn empty_values_survive_as_empty_rather_than_absent() {
     let (_scratch, database) = support::scratch(RICH);
@@ -353,7 +408,13 @@ fn empty_values_survive_as_empty_rather_than_absent() {
     assert_eq!(open_field.value, FieldValue::Open(String::new()));
 
     let protected = entry.field("empty-protected").expect("the field is there");
-    assert_eq!(protected.value, FieldValue::Protected { empty: true });
+    assert_eq!(
+        protected.value,
+        FieldValue::Protected {
+            empty: true,
+            lines: false
+        }
+    );
     assert!(protected.is_empty());
 }
 

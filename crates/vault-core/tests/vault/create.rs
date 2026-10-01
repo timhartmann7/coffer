@@ -215,11 +215,17 @@ fn a_creation_that_cannot_take_the_lock_leaves_the_name_free() {
 }
 
 /// A name of the shape Coffer gives its own snapshots opens like any other
-/// database and then refuses every save, for good.
+/// database and then refuses every save, for good. The name of the copy a lock
+/// leaves is written over by the next lock that has something to keep.
 #[test]
-fn a_name_belonging_to_a_snapshot_is_refused() {
+fn a_name_belonging_to_a_snapshot_or_a_rescue_copy_is_refused() {
     let (scratch, _) = scratch();
-    for name in ["vault.1.bak", "vault.10.bak", "personal.7.bak"] {
+    for name in [
+        "vault.1.bak",
+        "vault.10.bak",
+        "personal.7.bak",
+        "vault.kdbx.unsaved.kdbx",
+    ] {
         let path = scratch.path().join(name);
         assert!(
             matches!(make(&path, SECRET, "Work"), Err(VaultError::ReservedName)),

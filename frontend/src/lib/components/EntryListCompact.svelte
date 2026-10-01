@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import type { EntryRow } from '$lib/model';
 	import Icon from './Icon.svelte';
 	import Mask from './Mask.svelte';
@@ -17,12 +18,22 @@
 	let {
 		rows,
 		open,
+		note,
+		before,
 		onOpen,
 		onDismiss
 	}: {
 		rows: EntryRow[];
 		open: string | null;
-		onOpen: (id: string) => void;
+		/** What a row's second line says in place of the login and the address,
+		 * for a list that has something to say about each row: in the bin, when
+		 * and where from. */
+		note?: (row: EntryRow) => string;
+		/** Rows of another kind at the top of the list, scrolled with it. */
+		before?: Snippet;
+		/** Opens the entry, handed the row that was pressed: it is what the pane
+		 * is drawn from until Rust has read the entry. */
+		onOpen: (row: EntryRow) => void;
 		/** What the empty part of the list under the rows does: it puts the open
 		 * entry away, the way pressing Escape does. */
 		onDismiss: () => void;
@@ -52,11 +63,12 @@
 	onclick={(event) => event.target === event.currentTarget && onDismiss()}
 	class="flex-1 overflow-y-auto p-2"
 >
+	{@render before?.()}
 	{#each rows as row (row.id)}
 		{@const here = row.id === open}
 		<button
 			type="button"
-			onclick={() => onOpen(row.id)}
+			onclick={() => onOpen(row)}
 			class="relative mb-1 block w-full overflow-hidden rounded-sm border px-3 py-2.5 text-left transition {here
 				? 'border-hairline bg-raised'
 				: 'border-transparent hover:border-hairline hover:bg-raised/50'}"
@@ -83,7 +95,7 @@
 			<span
 				class="mt-1 block truncate pl-[22px] font-mono text-sub {here ? 'text-txt3' : 'text-txt4'}"
 			>
-				{subtitle(row)}
+				{note ? note(row) : subtitle(row)}
 			</span>
 		</button>
 	{/each}

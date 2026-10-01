@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { sealed } from '$lib/guard';
 	import { generatePassword } from '$lib/ipc';
 	import type { Alphabet } from '$lib/model';
 	import { place } from '$lib/reveal.svelte';
@@ -75,6 +76,21 @@
 		void draw();
 		return wipe;
 	});
+
+	/**
+	 * The system's copy, which stops here.
+	 *
+	 * A made password is not in the vault yet, so Rust has nothing to copy by
+	 * name, and the system's own copy is the ordinary pasteboard write the rest
+	 * of the window is kept away from. Once it is in the field, Copy takes it
+	 * from there the way every other copy goes.
+	 */
+	function refused() {
+		onFailure({
+			code: 'refused',
+			message: 'Put it in the field first, and copy it from there.'
+		});
+	}
 </script>
 
 <div class="animate-fade overflow-hidden rounded-md border border-hairline bg-surface">
@@ -96,6 +112,7 @@
 			<span
 				bind:this={node}
 				data-value
+				{@attach sealed(refused, onFailure)}
 				class="min-w-0 flex-1 font-mono text-base break-all text-txt"
 			></span>
 			<button

@@ -24,9 +24,25 @@ pub fn remembered(directory: &Path) -> Option<PathBuf> {
     Some(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
 }
 
+/// Writes down the vault that has just opened, so that the next launch offers
+/// it.
+///
+/// A snapshot and the copy a lock left are never written down, however they
+/// came to be open. Each opens with the vault's password and is an older copy
+/// of it, and a launch that offered one as the vault would be offering the
+/// passwords of last week as the ones in use.
+///
+/// Nothing is written when the path is the one already there, which is every
+/// unlock of the same vault after the first. The staged write flushes the disk
+/// twice, and an unlock has a budget.
 pub fn remember(directory: &Path, database: &Path) -> Result<(), io::Error> {
     use std::io::Write;
     use std::os::unix::ffi::OsStrExt as _;
+
+    if vault_core::storage::reserved(database) || remembered(directory).as_deref() == Some(database)
+    {
+        return Ok(());
+    }
 
     std::fs::create_dir_all(directory)?;
 
@@ -100,6 +116,52 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    /// A snapshot or a rescue copy opened by the reader is still not the
+    /// vault, and the vault that was written down stays written down.
+    #[test]
+    fn a_file_kept_beside_a_vault_is_never_remembered() {
+        let directory = tempfile::tempdir().expect("a scratch directory");
+        let vault = Path::new("/Users/someone/Coffer/vault.kdbx");
+        remember(directory.path(), vault).expect("it is written");
+
+        for beside in [
+            "/Users/someone/Coffer/vault.kdbx.1.bak",
+            "/Users/someone/Coffer/vault.kdbx.10.bak",
+            "/Users/someone/Coffer/vault.kdbx.unsaved.kdbx",
+        ] {
+            remember(directory.path(), Path::new(beside)).expect("nothing to write");
+            assert_eq!(remembered(directory.path()), Some(vault.to_path_buf()));
+        }
+
+        // Nor on a first run, with nothing written down before it.
+        let empty = tempfile::tempdir().expect("a scratch directory");
+        remember(empty.path(), Path::new("/x.kdbx.unsaved.kdbx")).expect("nothing to write");
+        assert_eq!(remembered(empty.path()), None);
+    }
+
+    /// The same vault unlocked every morning is written once. Each write is a
+    /// new file renamed into place, so the file itself says whether one
+    /// happened.
+    #[test]
+    fn the_same_vault_again_writes_nothing() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let directory = tempfile::tempdir().expect("a scratch directory");
+        let written = directory.path().join(REMEMBERED);
+        let inode = || std::fs::metadata(&written).expect("it is there").ino();
+
+        remember(directory.path(), Path::new("/a.kdbx")).expect("it is written");
+        let first = inode();
+        for _ in 0..3 {
+            remember(directory.path(), Path::new("/a.kdbx")).expect("nothing to write");
+            assert_eq!(inode(), first, "the same path was written again");
+        }
+
+        remember(directory.path(), Path::new("/b.kdbx")).expect("it is written");
+        assert_ne!(inode(), first, "a different vault was not written down");
+        assert_eq!(remembered(directory.path()), Some(PathBuf::from("/b.kdbx")));
     }
 
     #[test]

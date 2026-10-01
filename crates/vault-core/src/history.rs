@@ -5,8 +5,9 @@
 //! and writes one on every edit whether or not the edit changed anything. Both
 //! rules live here.
 
+use chrono::NaiveDateTime;
 use keepass::Database;
-use keepass::db::{Entry, EntryId, History, Icon, Times};
+use keepass::db::{Entry, EntryId, EntryRef, History, Icon, Times};
 
 use crate::error::VaultError;
 
@@ -43,6 +44,17 @@ fn bound(stated: Option<isize>, default: isize) -> Option<isize> {
         negative if negative < 0 => None,
         limit => Some(limit),
     }
+}
+
+/// Where a version falls in time: by when it was last changed, and a version
+/// nobody dated after every version somebody did.
+///
+/// One rule for the three places that put versions in order - the list the
+/// window reads, the pruning on save, and the question of which version is the
+/// newest - because two of them disagreeing is a list that shows one version as
+/// the newest while the engine acts on another.
+pub(crate) fn age(modified: Option<NaiveDateTime>) -> (bool, Option<NaiveDateTime>) {
+    (modified.is_none(), modified)
 }
 
 /// Edits an entry, keeping its previous state as a version.
@@ -199,6 +211,45 @@ pub(crate) fn restore(
     }
 }
 
+/// Which version holds the entry as it was before `field` came off it, when
+/// taking it off is the last thing that happened to the entry.
+///
+/// Only the newest version can be that one, in the order a version list is read
+/// in, and it is that one only when it is the entry as it stands now with that
+/// one field put back. Any other version is one whose restore takes back more
+/// than the field, which is not an undo of the removal:
+///
+/// - The save after a removal may prune the version the removal wrote. A limit
+///   of no versions at all does, and so does a size limit that one version does
+///   not fit. What is newest after that is something older, something undated,
+///   or nothing at all.
+/// - Any change after the removal writes a newer version of its own.
+///
+/// Both answer `None`, and never the position of some other version that
+/// happens to hold a field of the same name.
+pub(crate) fn before_removal(database: &Database, id: EntryId, field: &str) -> Option<usize> {
+    let entry = database.entry(id)?;
+    if entry.fields.contains_key(field) {
+        return None;
+    }
+
+    let (index, newest) = entry
+        .history
+        .as_ref()?
+        .get_entries()
+        .iter()
+        .enumerate()
+        .max_by_key(|(index, version)| (age(version.times.last_modification), *index))?;
+
+    let mut put_back = Entry::clone(&entry);
+    put_back.history = None;
+    put_back
+        .fields
+        .insert(field.to_owned(), newest.fields.get(field)?.clone());
+
+    same_content(&put_back, newest).then_some(index)
+}
+
 /// Drops one previous version.
 pub(crate) fn forget(database: &mut Database, id: EntryId, index: usize) -> Result<(), VaultError> {
     let mut entry = database.entry_mut(id).ok_or(VaultError::NoSuchEntry)?;
@@ -243,25 +294,86 @@ fn prune(database: &mut Database, id: EntryId, limits: Limits) {
         let Some(entry) = database.entry(id) else {
             return;
         };
-        let Some(history) = entry.history.as_ref() else {
+        if entry.history.is_none() {
+            return;
+        }
+        // A version that cannot be weighed is a version this function does not
+        // understand, and dropping what you do not understand is how history
+        // goes missing. Leave the entry exactly as it is.
+        let Some(weighed) = weighed(&entry, Entry::clone) else {
             return;
         };
-
-        let mut weighed = Vec::with_capacity(history.get_entries().len());
-        for index in 0..history.get_entries().len() {
-            // A version that cannot be weighed is a version this function does
-            // not understand, and dropping what you do not understand is how
-            // history goes missing. Leave the entry exactly as it is.
-            let (Some(version), Some(entry)) =
-                (entry.historical(index), history.get_entries().get(index))
-            else {
-                return;
-            };
-            weighed.push((entry.clone(), weigh(&version)));
-        }
         weighed
     };
 
+    keep(
+        &mut versions,
+        |version| version.times.last_modification,
+        limits,
+    );
+
+    let kept: Vec<Entry> = versions.into_iter().map(|(version, _)| version).collect();
+
+    let Some(mut entry) = database.entry_mut(id) else {
+        return;
+    };
+    entry.history = Some(rebuild(kept));
+}
+
+/// Whether the version a change to an entry would write now is still there
+/// once the save after it has pruned.
+///
+/// That version is the entry as it stands, dated when the entry was last
+/// changed, so it is weighed and dated here and put through [`keep`] behind the
+/// versions the entry already has, which is where a change puts it. A removal
+/// asks before it happens: the version it writes is the only way back, and a
+/// database that keeps no versions, or a size limit that version does not fit,
+/// throws it away at the very next save.
+pub(crate) fn outlasts_save(database: &Database, id: EntryId) -> bool {
+    let Some(entry) = database.entry(id) else {
+        return false;
+    };
+    // A history the save cannot weigh is one it leaves exactly as it is.
+    let Some(mut versions) = weighed(&entry, |version| (version.times.last_modification, false))
+    else {
+        return true;
+    };
+    versions.push(((entry.times.last_modification, true), weigh(&entry)));
+
+    keep(
+        &mut versions,
+        |(modified, _)| *modified,
+        Limits::of(database),
+    );
+    versions.iter().any(|((_, written), _)| *written)
+}
+
+/// Every version an entry keeps, as `read` makes of it, with what it weighs;
+/// or `None` when one of them cannot be weighed.
+fn weighed<T>(entry: &EntryRef<'_>, read: impl Fn(&Entry) -> T) -> Option<Vec<(T, u64)>> {
+    let Some(history) = entry.history.as_ref() else {
+        return Some(Vec::new());
+    };
+
+    let mut weighed = Vec::with_capacity(history.get_entries().len());
+    for (index, version) in history.get_entries().iter().enumerate() {
+        weighed.push((read(version), weigh(&entry.historical(index)?)));
+    }
+    Some(weighed)
+}
+
+/// Which of an entry's versions a save keeps: `versions` put oldest first, and
+/// as many taken off the front as the limits ask.
+///
+/// The one rule for the save that prunes and for a removal asking beforehand
+/// whether the version it writes will survive that save. Two copies of it would
+/// be a removal that asked nobody, and a save that counted differently and
+/// threw its version away.
+fn keep<T>(
+    versions: &mut Vec<(T, u64)>,
+    modified: impl Fn(&T) -> Option<NaiveDateTime>,
+    limits: Limits,
+) {
     // The vector is oldest first: that is the order KeePassXC writes and the
     // order `settle` restores after every edit. Sorting by time only corrects a
     // file that arrived out of order, and being stable it leaves versions that
@@ -271,12 +383,7 @@ fn prune(database: &mut Database, id: EntryId, limits: Limits) {
     // A version with no modification time sorts last rather than first. Nothing
     // is known about when it was written, and a version nobody can date is the
     // wrong thing to throw away first.
-    versions.sort_by_key(|(version, _)| {
-        (
-            version.times.last_modification.is_none(),
-            version.times.last_modification,
-        )
-    });
+    versions.sort_by_key(|(version, _)| age(modified(version)));
 
     let mut drop_count = match limits.items {
         Some(max) => versions.len().saturating_sub(max),
@@ -299,13 +406,6 @@ fn prune(database: &mut Database, id: EntryId, limits: Limits) {
     }
 
     versions.drain(..drop_count);
-
-    let kept: Vec<Entry> = versions.into_iter().map(|(version, _)| version).collect();
-
-    let Some(mut entry) = database.entry_mut(id) else {
-        return;
-    };
-    entry.history = Some(rebuild(kept));
 }
 
 /// What one version costs, counted as what dropping it would give back: its
@@ -323,7 +423,7 @@ fn prune(database: &mut Database, id: EntryId, limits: Limits) {
 ///
 /// `SPEC.md` grants this. The arithmetic decides how many versions are kept and
 /// not whether the file is valid, and it does not have to be KeePassXC's.
-fn weigh(version: &keepass::db::EntryRef<'_>) -> u64 {
+fn weigh(version: &EntryRef<'_>) -> u64 {
     let fields: usize = version
         .fields
         .iter()

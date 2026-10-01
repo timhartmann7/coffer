@@ -1,21 +1,36 @@
 <script lang="ts">
 	import Create from '$lib/components/Create.svelte';
+	import InCopy from '$lib/components/InCopy.svelte';
 	import Settings from '$lib/components/Settings.svelte';
 	import Titlebar from '$lib/components/Titlebar.svelte';
 	import Unlock from '$lib/components/Unlock.svelte';
 	import Vault from '$lib/components/Vault.svelte';
+	import { flush } from '$lib/drafts';
+	import { lockByHand } from '$lib/locking';
 	import {
 		chooseDatabase,
-		lock as lockVault,
+		leaveRescue,
+		promoteRescue,
 		settings as loadSettings,
 		status,
 		tree
 	} from '$lib/ipc';
 	import { Presence } from '$lib/presence';
 	import { wear } from '$lib/theme';
-	import type { Database, Group, Rescued, Settings as Chosen } from '$lib/model';
+	import type {
+		CopyOf,
+		Database,
+		Found,
+		Group,
+		OnDisk,
+		Rescued,
+		Settings as Chosen,
+		Status
+	} from '$lib/model';
 
 	let database = $state<Database | null>(null);
+	/** A vault Rust found in Coffer's own folder, when nothing was remembered. */
+	let found = $state<Found | null>(null);
 	/** The key file the next unlock will use, when Rust is holding one. */
 	let keyFile = $state<Database | null>(null);
 	let root = $state<Group | null>(null);
@@ -30,6 +45,15 @@
 	let rescue = $state<Rescued | null>(null);
 	/** Whether the last lock had work to write and nowhere at all to put it. */
 	let lost = $state(false);
+	/** Whether the last lock found what the reader was typing and saved it. */
+	let typed = $state(false);
+	/** Whether some of it was a new value kept beside the old one. */
+	let typedBeside = $state(false);
+	/** The chosen file as the disk has it, which is what the sentences about
+	 * a lock's copy and about lost work are measured against. */
+	let file = $state<OnDisk | null>(null);
+	/** The vault the chosen file was copied from, when it is a lock's copy. */
+	let copy = $state<CopyOf | null>(null);
 
 	/** The throttle on telling Rust that somebody is at the machine. */
 	const presence = new Presence();
@@ -46,10 +70,10 @@
 			try {
 				const opening = await status();
 				database = opening.database;
+				found = opening.found;
 				keyFile = opening.keyFile;
 				reason = opening.lockedBy;
-				rescue = opening.rescue;
-				lost = opening.lost;
+				heard(opening);
 				chosen = await loadSettings();
 				if (opening.unlocked) await opened();
 			} finally {
@@ -75,20 +99,64 @@
 		database = now.database;
 		readOnly = now.readOnly;
 		reason = null;
-		rescue = now.rescue;
-		lost = now.lost;
+		heard(now);
+	}
+
+	/** What Rust says about the files beside the vault, which every reading of
+	 * the status brings. */
+	function heard(now: Status | null) {
+		rescue = now?.rescue ?? null;
+		lost = now?.lost ?? false;
+		typed = now?.typed ?? false;
+		typedBeside = now?.typedBeside ?? false;
+		file = now?.file ?? null;
+		copy = now?.copy ?? null;
 	}
 
 	/**
-	 * Locking destroys this window, so nothing after the call is guaranteed to
-	 * run. The state is cleared first for the case where it does: a window that
-	 * outlived its own lock would go on drawing a tree that is no longer in
-	 * memory.
+	 * Makes the open copy the vault it was taken from. The session stays open,
+	 * now on the vault, so the window reads again what is true of it: its name,
+	 * whether it can be written, and that it is no copy.
+	 *
+	 * Every value already on its way to Rust is waited for first, so that the
+	 * file that goes over the vault holds every field the reader has left.
+	 * What is still being typed stays with the session, which is now the
+	 * vault's, and the next lock writes it there.
+	 *
+	 * Read again however it went. Rust holds the press to how the banner last
+	 * said the vault's file stood, and refuses when it stands otherwise; the
+	 * banner then has to say how it stands now before the reader presses
+	 * again.
 	 */
-	async function lock() {
+	async function promote() {
+		await flush();
+		try {
+			database = await promoteRescue();
+		} finally {
+			const now = await status();
+			readOnly = now.readOnly;
+			heard(now);
+		}
+	}
+
+	/**
+	 * Goes back from the copy to its vault. With the copy open that is a lock,
+	 * which takes this window with it, so the screen is only cleared once Rust
+	 * has answered - the same order `lockByHand` keeps, for the same reason.
+	 */
+	async function back() {
+		await flush();
+		database = await leaveRescue();
 		root = null;
 		showing = 'vault';
-		await lockVault();
+		await chosen_elsewhere();
+	}
+
+	function lock() {
+		return lockByHand(() => {
+			root = null;
+			showing = 'vault';
+		});
 	}
 
 	/** The way in to the settings is the way back out of them, wherever it is
@@ -108,14 +176,21 @@
 	 */
 	async function choose() {
 		const picked = await chooseDatabase();
-		if (picked) {
-			database = picked;
-			// Rust forgot the key file when the session was pointed elsewhere,
-			// and the screen has to say the same thing.
-			keyFile = null;
-			showing = 'vault';
-			await chosen_elsewhere();
-		}
+		if (picked) await pointAt(picked);
+	}
+
+	/**
+	 * Takes the reader to the unlock screen for a file chosen away from it: in
+	 * the settings, or on the creation screen, which offers to open what already
+	 * sits where the new vault would have gone.
+	 */
+	async function pointAt(picked: Database) {
+		database = picked;
+		// Rust forgot the key file when the session was pointed elsewhere, and
+		// the screen has to say the same thing.
+		keyFile = null;
+		showing = 'vault';
+		await chosen_elsewhere();
 	}
 
 	/**
@@ -126,9 +201,15 @@
 	 * wrong one. Only Rust knows whether the new one has a copy beside it.
 	 */
 	async function chosen_elsewhere() {
+		heard(await status().catch(() => null));
+	}
+
+	/** Reads again what Rust found in Coffer's own folder, after the file it
+	 * named was not a vault any more when the reader pressed it. */
+	async function foundAgain() {
 		const now = await status().catch(() => null);
-		rescue = now?.rescue ?? null;
-		lost = now?.lost ?? false;
+		found = now?.found ?? null;
+		heard(now);
 	}
 </script>
 
@@ -176,8 +257,12 @@
 				await opened();
 			}}
 			onCancel={() => (showing = 'vault')}
+			onOpen={(picked) => void pointAt(picked)}
 		/>
 	{:else if root && database}
+		{#if copy}
+			<InCopy {copy} onPromote={promote} onBack={back} />
+		{/if}
 		<!-- An open vault keeps the screen, and the settings go over it. There is
 		     one way in and out of them while a vault is open, it is in the status
 		     bar, and it does not move when it is pressed. -->
@@ -196,16 +281,22 @@
 	{:else if ready}
 		<Unlock
 			{database}
+			{found}
 			{keyFile}
 			{reason}
 			{rescue}
 			{lost}
+			{file}
+			{copy}
+			{typed}
+			{typedBeside}
 			onChoose={(picked) => {
 				database = picked;
 				void chosen_elsewhere();
 			}}
 			onKeyFile={(chosen) => (keyFile = chosen)}
 			onCreate={() => (showing = 'create')}
+			onGone={() => void foundAgain()}
 			onUnlocked={opened}
 		/>
 	{/if}

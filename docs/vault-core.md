@@ -73,7 +73,36 @@ versions oldest first and the parser preserves that order, while
 `history::prune` sorts by `last_modification` and rebuilds oldest first, which
 is what KeePassXC writes, so a database Coffer saved looks like one KeePassXC
 saved. The rebuild is the only way to prune at all: `History::entries` is
-private and `add_entry` is the only way in.
+private and `add_entry` is the only way in. The order itself - by
+`last_modification`, a version nobody dated after every dated one - is
+`history::age`, and the version list, the prune and the question below all sort
+by it, so none of them can call a different version the newest.
+
+**A position holds only until the next edit.** `Vault::edits` is a number that
+moves on every change the vault marks itself changed for, on every write, whose
+settling prunes and re-sorts, and on every reload - and on nothing else, so a
+change the vault refused or found nothing to do in leaves it where it was.
+`vault-gui` compares it to tell whether a version's position read earlier still
+names the same version.
+
+**Taking a removal back is a restore, and only of one version.** Removing a
+field writes a version like any other edit, and restoring that version is the
+undo. But the save after the removal prunes, and what is newest after a prune,
+a change made since, or a version another client dated later is something else,
+whose restore would take back every change since as well. `Vault::undo_removal`
+restores the newest version only when it is the entry as it stands with that
+field put back, and refuses with `RemovalSuperseded` otherwise - never the
+position of some other version that happens to hold a field of that name. The
+question and the restore are one call.
+
+**A removal whose version the save would drop asks first.** A database that
+keeps no versions, or a size limit the removal's version does not fit, drops
+that version at the very next save, and the field is gone for good.
+`Vault::remove_field` refuses that removal with `RemovalForGood` unless it is
+told the reader agreed. It decides by putting the version the removal would
+write through `history::keep`, the rule the save prunes by, beside the versions
+the entry already has - so the question and the save cannot disagree about
+which versions a save keeps.
 
 **Key derivation runs on unauthenticated parameters.** `format/kdbx4/parse.rs`
 derives the key from the KDF dictionary in the outer header before it checks the
@@ -284,6 +313,113 @@ database is shown as the database holds it and is never used as a path; this is
 the name the save panel is offered, and it is the only place the conversion
 happens.
 
+**Part of a secret is cut here, and only here.** A reader who selects one
+recovery code out of ten and copies it asks for a part of a value, and the
+window never holds the value to cut it:
+[`SecretValue::part`](../crates/vault-core/src/secret.rs) takes the two positions
+the selection reports, counted in UTF-16 code units because that is what a text
+node counts in, and hands back that part as a secret of its own. It refuses
+rather than rounds: an empty or backwards range, an end past the value, and an
+end between the two halves of a character outside the basic plane are none of
+them a selection a reader can make, and the refusal says so without a word of
+the value. A property test holds it to what a text node would have selected for
+the same two numbers.
+
+**Typing a lock finds is written here, on narrower terms than a commit.**
+[`Vault::set_typed`](../crates/vault-core/src/vault.rs) is `set_field` - the
+entry's previous state kept as a version - for text the reader had typed into a
+field and not left when the vault had to lock. Nobody is looking when it runs,
+so it refuses what a commit would take: a field the entry no longer has, unless
+it is one of the five standard ones every entry is drawn with, is not made
+again, because a field of the reader's own removed while its text was on the
+way would otherwise come back under their feet. And text that is what the field
+already holds, under the same protection, writes nothing and marks nothing to
+save, so a lock that found only that saves nothing and says nothing. What was
+typed, and in which order it arrived, is the window's business and is kept in
+`vault-gui`; this is the one rule for what a draft may do to the database.
+
+**A new value typed in a Change field never goes over a value.** The draft says
+how it was typed ([`Typing`](../crates/vault-core/src/vault.rs)): `InPlace` for
+a field edited where it stands, `Beside` for a new value typed in a field of its
+own under a protected one. The reader never saved a `Beside` value, and it may be
+half a password or the wrong one pasted, so a lock that wrote it over the stored
+one handed them a password that opens nothing. It goes into the field only when
+the field holds nothing - "Set one" on an entry without a password. Otherwise it
+goes into a new protected string field of the same entry, named after the one it
+was typed for with ` (typed before locking)` after it -
+`Password (typed before locking)` - and numbered past a name the entry already
+uses by the rule that names a second file (`clash::beside`), and the value it was
+typed for stays as it was. Nothing typed, or what the field already holds, is no
+new value and writes nothing. `set_typed` answers which of the three happened
+([`Written`](../crates/vault-core/src/vault.rs): `Nothing`, `Into`, `Beside`),
+so that the unlock screen can say a new value was kept beside the old one
+without anything having to name the field. The field is an ordinary KDBX string field of the
+kind a reader makes with "+", which every client shows and edits; nothing is
+added to the format.
+
+**Whether a protected value is in lines is known without revealing it.**
+`FieldValue::Protected` carries `lines` beside `empty`: whether the value has a
+line feed or a carriage return in it, the way a text area counts a break. It is
+one bit about the value and nothing of what it says, and it is what lets the
+window replace ten recovery codes in a field written in lines.
+`Field::in_lines` answers it for an open value and a protected one alike.
+
+## The recycle bin, and putting things back
+
+`SPEC.md` says a deletion goes to the recycle bin when the database keeps one
+and out of the file otherwise. Coffer also takes things back out of the bin, and
+says before a deletion which of the two it will be.
+
+**The library keeps where something came from, and hides half of it.**
+`EntryMut::move_to` and `GroupMut::move_to` both set `PreviousParentGroup` to
+the group being left, and the field is read and written with the rest of the
+file (`format/xml_db/entry.rs`, `format/xml_db/group.rs`). The field itself is
+`pub(crate)`. The only way to read it is `previous_parent()`, which answers only
+when the group it names is still there, so a folder that was never written down
+and one that has since gone look the same from here. Both send what is put back
+to the top of the vault, which is the right answer for either.
+
+Moving is not an edit. The move uses `move_to` on an `EntryMut` or a `GroupMut`
+rather than through `track_changes`, so no version is written, and it records
+nothing in `DeletedObjects`: a record there would make every other client delete
+the entry at its next merge. Putting back moves the same way, and the folder it
+leaves - the bin, or a folder in it - becomes its `PreviousParentGroup`.
+
+**Where something goes back to is the folder it came from, while that is
+somewhere to go.** Not when it has gone, and not when it is in the bin itself:
+an entry whose folder followed it into the bin goes to the top of the vault
+rather than into a deleted folder. The top of the vault is a folder like any
+other to come from.
+
+**What went in with a folder goes back where the folder came from.** Deleting a
+folder moves the folder and nothing inside it, so what is inside keeps the
+`PreviousParentGroup` of its own last move, which KeePass and KeePassXC write on
+every drag between folders. Read as "deleted from", that sent an entry filed
+into Banking a year ago back into the folder it was filed out of. So `Binned`
+names the folder it went in with (`within`, the one the bin holds), and `from`
+is that folder's own way back: where it would be had the folder been put back
+whole, or the top of the vault when that is gone or in the bin too.
+`put_back_entry` and `put_back_group` return nothing; where a thing went is
+read off the tree like everything else.
+
+**When something went in is the date its folder went in.** A folder takes what
+is in it along, and nothing inside it is moved, so its own `LocationChanged` is
+the date of some older move. What sits inside a deleted folder reports the
+folder's.
+
+**One rule, asked from both sides.** [`bin.rs`](../crates/vault-core/src/bin.rs)
+decides where a deletion goes, what the tree says it will do, and what the bin
+says about what it holds. A walk of the tree steps down folder by folder with
+`Bin::enter`; a single entry is placed by taking the same steps from the top, so
+the tree and the entry cannot disagree, and the deletion asks the same function
+the window was answered from. The deletion also takes the answer the reader was
+shown, and refuses with `DeletionChanged`, changing nothing, when the rule now
+gives the other one: a move to the bin never turns into an erasure on the way,
+whatever reached the vault first. A folder the bin is inside is erased rather than
+binned - it cannot go inside itself - and that is asked of a folder and never of
+an entry, because the top of the vault holds the bin and is where every entry
+Coffer makes lands.
+
 ## The pool of files, and why removing one is not a removal
 
 Every attachment in a KDBX 4 file lives once, in the inner header, and an entry
@@ -329,6 +465,28 @@ surprising:
   and a version written on the way *in* would be the surest way to make the file
   impossible to take off again. What a version records is the entry's fields,
   tags, notes, colours, icon and expiry date.
+
+**A file never goes on an entry over one of the same name.** An entry keys its
+files by name, and the library's `EntryMut::add_attachment` drops whatever the
+name held before - which is how the second page of a passport, scanned by a
+phone that calls every scan `Scanned Document.pdf`, used to take the first with
+it and leave no version to find it in. `Vault::add_attachment` now changes
+nothing when the name is taken and answers `Attached::Taken(Clash)`: the size of
+the file there and the name the new one could go by. The caller decides, through
+`Vault::keep_both`, which puts it beside the old one under that name worked out
+again at that moment, or `Vault::replace_attachment`, which is a removal by this
+module's rules followed by an add, and is refused exactly when a removal would
+be. Both take the bytes by reference, so a caller told the name is taken still
+has them to answer with.
+
+The free name is [`clash.rs`](../crates/vault-core/src/clash.rs): a number before
+the last extension, or at the end of a name that has none - a dotfile, a
+trailing dot, and a dot followed by a space are not one - counting from 2 past
+every name on the entry that matches it with letter case ignored. Whether a name
+is taken at all is exact, because the format and the library both tell
+`Scan.pdf` from `scan.pdf` and adding the second loses nothing. Only the files
+the entry has now count: a name only an earlier version gives a file is free,
+and the version keeps its bytes.
 
 `unbroken` runs before every write. It has never fired, and it is the last thing
 between a mistake in this module and a database that hands out the wrong file.
@@ -382,6 +540,55 @@ Neither reaches an Objective-C allocation or another process. The pasteboard is
 both, which is why a copied secret is taken back on a timer rather than trusted
 to a wipe.
 
+## The copy a lock leaves, and putting it back
+
+[`storage/unsaved.rs`](../crates/vault-core/src/storage/unsaved.rs) is the whole
+life of the copy `Vault::rescue` writes: where it goes, whether one is there,
+removing it, and the two ways it becomes the vault again. Which vault a copy
+belongs to is read off its name by `unsaved::taken_from` and recorded nowhere
+else - not inside it, where it would be a field no other client knows, and not
+in a file beside it that could disagree with the name.
+
+**Putting a copy back is a staged write published at a name nothing holds,
+not a rename.** `rename` replaces whatever is at the target, and the whole point
+of `unsaved::put_back` is that it never does: it runs only for a vault whose
+file has gone, and without a password. So the copy's bytes go through
+`atomic::stage` into Coffer's own temporary file, and `Staged::publish` gives
+that file the vault's name with `hard_link`, which fails with `AlreadyExists` if
+anything is there, a dangling link included. Nothing is at the vault's name
+until it is whole, a file that arrived first is `DatabaseExists` and is neither
+written over nor removed, a copy that is not there leaves nothing at the name,
+and a process killed part way leaves the name empty and the copy where it was.
+The copy is removed only after the publish. A filesystem without hard links is
+`NoExclusiveMove`: an exclusive create followed by a copy would be a name
+holding half a database while it ran, so the copy is opened and promoted
+instead. The lock files beside both names are taken for as long as it runs,
+with `unsaved::claim`, which is stricter than opening: a lock somebody else
+holds is a refusal, not an offer to take it over.
+
+**Making a copy the vault is an ordinary save aimed at another name.**
+`Vault::promote` points the vault at the name `taken_from` gives, takes the lock
+beside it, and runs the same write `save_over` runs, so the place is proved
+writable, what is there becomes `<vault>.1.bak`, and the stamp is recorded as
+for any save. It takes the `storage::Seen` of the vault's file the reader was
+shown - its time and its length, inode and device - and with the lock held
+refuses with `VaultFileChanged` when the file stands otherwise now, or when
+nothing was shown: `Guard::Ignore` would otherwise push a change nobody saw into
+the snapshots. If the write is refused or fails, the path and the stamp are put
+back and the vault is still the copy; only once it went through does the vault
+keep the new lock, drop the copy's, and remove the copy.
+
+**A copy's snapshots go with it.** Saves inside an open copy rotate a chain
+beside the copy's name. `unsaved::retire` clears those slots once the copy is
+promoted, put back or discarded: nothing lists them after that, and they would
+be old states of the vault opening with an old password.
+
+**Whether a file is there is its own question.** `storage::on_disk` answers it
+for the screen - gone only when nothing at all is at the name, and a link that
+leads nowhere is still something - and it is only ever advice. The two moves
+above ask the disk again, with the publish's hard link and with `Seen` under the
+vault's lock.
+
 ## Making a vault, and what a second of work costs
 
 [`kdf.rs`](../crates/vault-core/src/kdf.rs) measures rather than assumes. Coffer
@@ -426,11 +633,26 @@ the first one's vault. `atomic::reserve` makes the question and the answer the
 same act: the target is created empty and exclusively, and the caller owns it
 from then on and takes it back off the disk however the creation ends. The lock
 file beside it is taken before any contents are written, so a creation that
-cannot have the database never wrote one.
+cannot have the database never wrote one. `atomic::taken`, inside the crate,
+asks the same question without taking the name, for putting a copy back, which
+wants to refuse before it reads a large one; a unit test holds it to what the
+reservation and the publish refuse. The creation screen asks `vault-gui`'s own
+reading of the place, `home::standing`, which also says what is there, and a
+test there holds it to what `Vault::create` takes. Either answer is advice, and
+the reservation is still what decides.
 
-A name of the shape Coffer gives its own snapshots is refused outright - it
-would open like any other database and then refuse every save, for good - and so
-is a master password with nothing in it.
+A name Coffer gives a file of its own beside a database is refused outright: a
+snapshot's would open like any other database and then refuse every save, for
+good, and a rescue copy's would be written over by the next lock that had
+something to keep. `storage::reserved` is the one rule for both, and the window
+asks it too, so that neither is ever remembered or offered as the vault. A master
+password with nothing in it is refused outright as well.
+
+So is a name with a rescue copy beside it, as `CopyBeside`. The copy is what is
+left of a vault whose file went while it was open, and it is put back from that
+name's unlock screen. A vault made at the name would be offered the copy as its
+own unsaved work, under a password that does not open it, and its next lock with
+something to keep would write over the only copy there is.
 
 **A new database is written down in full.** Every `Meta` field is skipped when
 it has no value, so a bare new database writes a `<Meta>` carrying a generator
