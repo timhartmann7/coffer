@@ -47,6 +47,8 @@
 	let lost = $state(false);
 	/** Whether the last lock found what the reader was typing and saved it. */
 	let typed = $state(false);
+	/** Whether some of it was a new value kept beside the old one. */
+	let typedBeside = $state(false);
 	/** The chosen file as the disk has it, which is what the sentences about
 	 * a lock's copy and about lost work are measured against. */
 	let file = $state<OnDisk | null>(null);
@@ -106,6 +108,7 @@
 		rescue = now?.rescue ?? null;
 		lost = now?.lost ?? false;
 		typed = now?.typed ?? false;
+		typedBeside = now?.typedBeside ?? false;
 		file = now?.file ?? null;
 		copy = now?.copy ?? null;
 	}
@@ -286,6 +289,7 @@
 			{file}
 			{copy}
 			{typed}
+			{typedBeside}
 			onChoose={(picked) => {
 				database = picked;
 				void chosen_elsewhere();

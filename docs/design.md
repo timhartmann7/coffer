@@ -118,12 +118,16 @@ somewhere else leaves the focus there.
 
 **Leaving that field with something typed asks, in the same place.** The Cancel
 and Save line gives way to the window's question box on `surface2`: "Save the
-new password?", with Discard as the way out and Save as the neutral pill. There
-is no red answer, because neither takes anything out of the vault - a saved
-password leaves the old one in Versions, and Discard throws away only what was
-typed - and the box does not take the focus, because the reader just put it
-somewhere else. Going back into the field takes the question away. The pressed
-Change pill, pressed again with something typed, asks the same question.
+new password?", with "Keep typing" as the way out, Save as the neutral pill and
+Discard last, as the red answer. The way out, and so Escape, goes back into the
+field and loses nothing: Escape is what a reader presses again when the pane
+did not close, and a way out that discarded threw away a password just set on
+a website on that second press, with nothing said. Discard takes nothing out of
+the vault, but it throws away the one copy of what was typed, which is why it
+is the red one and never what a key gives. The box does not take the focus
+when the reader put it somewhere else. Going back into the field takes the
+question away. The pressed Change pill, pressed again with something typed,
+asks the same question.
 
 **The pane stays while that field holds something.** A row pressed, Escape,
 the header's close, "+ Entry", a folder chosen, the bin emptied, "Move to
@@ -171,7 +175,10 @@ of the line about work a lock could not write - `small`, centred, `mt-6` - in
 `txt2` rather than `danger`, and names no entry. A new value in a Change field
 is written beside the value it was for rather than over it, in a protected
 field of its own called after it - "Password (typed before locking)" - where it
-is found under Own fields; into the field itself only when that held nothing. A
+is found under Own fields; into the field itself only when that held nothing.
+A lock that kept one so adds a second sentence to the same line, naming no
+entry and no field either: "A new value you had not saved yet was kept in a
+field of its own, beside the old one, which is unchanged." A
 Change field emptied again has no dot and nothing to write. A box that holds a
 name rather than a value - a tag being typed, the name of a new field, a
 folder's name - has no dot either: a lock does not write a name the reader has
@@ -382,7 +389,10 @@ unlock screen already offers a lock's rescue copy in: `surface2` behind a
 hairline, `rounded-sm`, the disk icon in `txt4`, the sentence in `body` and the
 file name in mono, and the same bordered `h-9` pill for "Open it". It is not the
 accent: the accent stays on the screen's one call to action, and a reader who
-presses it anyway is told on the next screen that the vault is there.
+presses it anyway is told on the next screen that the vault is there. When what
+was found is the copy a lock left of a vault whose file has gone, the sentence
+says it found a copy of that vault, kept when it last locked, that the vault's
+own file is not there, and that opening it is how the copy goes back.
 
 **The creation screen says the place is taken** under the row that names it,
 before a password is typed: the corrupted-file state's warn icon and its bordered
@@ -428,7 +438,11 @@ pill's place, because opening it is then the call.
 opens the question in the card, under a hairline: "Remove the only copy of those
 changes?", with "Keep it" first and focused and "Remove" last in red. When the
 vault's file has gone, the copy is the whole vault, and the question is "Remove
-the only copy of your vault?" in the same box.
+the only copy of your vault?" in the same box. When the chosen file is itself a
+copy a lock left - the reader was in one, and the lock that closed it kept
+their work in a copy of that copy - it is that copy's file that went, not the
+vault's: the card says "This copy is not there any more", and the question is
+"Remove the only copy of what this copy held?".
 
 **A lock that could write nothing says what survived.** Under the red line, in
 the same `small` and centred, in `txt2`: "Your vault file is as it was today at

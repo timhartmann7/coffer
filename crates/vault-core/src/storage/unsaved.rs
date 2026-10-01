@@ -108,9 +108,12 @@ pub fn discard(database: &Path) -> Result<(), io::Error> {
 /// there goes into the snapshots through [`crate::Vault::promote`], which has
 /// the password a write needs.
 ///
-/// The copy is removed only once the vault's name holds every byte of it. A
-/// process killed part way leaves the copy where it was, nothing at the
-/// vault's name, and at most a temporary file the next write beside it sweeps.
+/// The copy is removed only once the vault's name holds every byte of it and
+/// the folder has been flushed with that name in it. A process killed part
+/// way leaves the copy where it was, nothing at the vault's name, and at most a
+/// temporary file the next write beside it sweeps. A folder that will not be
+/// flushed after the link leaves the move made and the copy beside it, and is
+/// not answered as a refusal: the vault's name already holds the copy.
 ///
 /// A filesystem that keeps no second name for a file cannot publish without
 /// replacing, so the move is refused there with [`VaultError::NoExclusiveMove`]
@@ -135,12 +138,18 @@ pub fn put_back(database: &Path) -> Result<(), VaultError> {
         return Err(VaultError::DatabaseExists);
     }
 
-    atomic::stage::<io::Error, _>(database, |writer: &mut dyn io::Write| {
+    let flushed = atomic::stage::<io::Error, _>(database, |writer: &mut dyn io::Write| {
         io::copy(&mut source, writer).map(drop)
     })?
     .publish()
     .map_err(unpublished)?;
 
+    // The vault's name holds the copy from here on, so nothing below is a
+    // refusal. Until the folder is known to remember that name, the copy is
+    // the only name the work certainly has on the disk, and it stays.
+    if flushed.is_err() {
+        return Ok(());
+    }
     // A copy that will not go is a copy offered again beside a vault that now
     // holds the same thing, which loses nothing and is said on the next screen.
     let _ = std::fs::remove_file(&copy);

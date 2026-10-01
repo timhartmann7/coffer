@@ -141,6 +141,7 @@
 		close: () => (pane = null),
 		select,
 		open,
+		redraw,
 		read,
 		unread,
 		expand: (id) => expanded.add(id),
@@ -419,7 +420,7 @@
 	function removeFolder() {
 		if (held()) return;
 		deleting = false;
-		if (group !== null) void moves.removeFolder(group, quoted(shown.name));
+		if (group !== null) void moves.removeFolder(group, quoted(shown.name), shown.deletion);
 	}
 
 	/** Deletes the folder being shown in the bin for good. */

@@ -43,7 +43,7 @@ the first over all ten. Rust reads it off the value in
 
 | Command | Takes | Answers |
 |---|---|---|
-| `status` | | the chosen database, whether it is open, how many entries, whether it can be written, why it locked, whether that lock saved something being typed, the unsaved copy sitting beside it, the chosen file as it stands on disk, the vault it was copied from when it is a lock's copy, and - when nothing is remembered - a vault found in Coffer's own folder |
+| `status` | | the chosen database, whether it is open, how many entries, whether it can be written, why it locked, whether that lock saved something being typed and whether some of it was kept beside the value it was for, the unsaved copy sitting beside it, the chosen file as it stands on disk, the vault it was copied from when it is a lock's copy, and - when nothing is remembered - a vault found in Coffer's own folder |
 | `choose_database` | | the database the user picked, or nothing if they closed the dialog |
 | `choose_found` | | the vault the last `status` found in Coffer's own folder, now chosen |
 | `unlock` | the master password, as the raw body | nothing |
@@ -66,10 +66,10 @@ Everything slice 3 added:
 | Command | Takes | Answers |
 |---|---|---|
 | `create_entry` | `group` | the tree, and the entry it made |
-| `delete_entry` | `entry`, `sequence` | the tree |
+| `delete_entry` | `entry`, `deletion`, `sequence` | the tree |
 | `create_group` | `parent`, `name` | the tree |
 | `rename_group` | `group`, `name` | the tree |
-| `delete_group` | `group` | the tree |
+| `delete_group` | `group`, `deletion` | the tree |
 | `put_back_entry` | `entry` | the tree |
 | `put_back_group` | `group` | the tree |
 | `empty_recycle_bin` | | the tree |
@@ -177,6 +177,9 @@ not a snapshot, not a copy a lock left, not a folder, not an empty file, not a
 hidden one - and a link counts when it leads to one. A copy a lock left whose
 vault's file has gone counts under the vault's name and by the copy's time: it
 is all there is of that vault, and the unlock screen for the name puts it back.
+`found` then says `copy`, and the card says it found a copy of the vault and
+that the vault's own file is not there, rather than that it found a file the
+Finder will not show.
 With several, `vault.kdbx` wins, then the one written last, then the first by
 name. A folder that cannot be read is one in which nothing was found.
 
@@ -282,8 +285,12 @@ field holds; a draft the vault refuses is let go and the lock goes on. When the
 lock's save went through, `status` answers `typed`, and the unlock screen says
 "What you were typing was saved before locking." - a flag and nothing more,
 because after a lock nothing of the vault is left in memory to name the entry
-with. When the save went beside the vault instead, the typing is in that copy
-with everything else, and `rescue` is what is said.
+with. `typedBeside` is the second flag: some of it was a new value kept beside
+the value it was typed for (below), and the screen adds that it was kept in a
+field of its own and that the old value is unchanged. "Saved" on its own reads
+as the new password being the entry's now. When the save went beside the vault
+instead, the typing is in that copy with everything else, and `rescue` is what
+is said.
 
 **A new value typed in a Change field is kept beside the value, never over it.**
 `beside` is true for text typed in a Change field of its own rather than into
@@ -319,9 +326,12 @@ while a save is running reaches the vault after the save has moved the
 positions. A drop pressed in that second dropped the neighbour of the version
 on its row, for good; a second Restore put another version over the one chosen.
 So `versions`, `delete_version` and `clear_history` answer with
-a `revision`, a number the session moves every time the open vault is handed
-out to be changed - every edit, drop, restore, save, reload and move, and a
-vault that opens - and not for a draft or anything that only reads. Every
+a `revision`, a number the session moves every time the open vault changes -
+every edit, drop, restore, save, reload and move, counted by the vault itself
+in `Vault::edits`, and a vault that opens - and not for a draft, anything that
+only reads, or a change the vault refused or found nothing to do in. The window
+reads no list again after a refusal, and a revision moved by one would have
+turned the next press on a version into a refusal of its own. Every
 command that takes an `index` takes that `revision` as well, and refuses with
 `versionsChanged` and does nothing when the vault has moved on, checked under
 the same lock the action runs in (`Session::at` and `Session::at_mut`). The
@@ -392,6 +402,16 @@ go into itself. The rule is one function in
 function the deletion asks, so the answer the window drew is the thing that
 happens. The window asks before a deletion that is `forever` and offers the
 other kind back from its notice.
+
+`delete_entry` and `delete_group` take back the `deletion` the window showed,
+and Rust refuses with `deletionChanged`, deleting nothing, when deleting the
+thing would now do the other. Two deletions can wait on the session behind one
+save, and the thread that takes it first is not the one that asked first: a
+folder that goes into the bin ahead of an entry in it, or ahead of a folder in
+it, makes the move the reader agreed to an erasure. Something put back out of
+the bin before its erasure arrives is refused the same way. The window says
+nothing was deleted and reads the tree and the pane again, which show what
+deleting each now does.
 
 It travels with the tree and with the entry rather than in `status`, on
 purpose. `status` is read when the window is built; the tree and the entry are
@@ -504,7 +524,8 @@ a secret and never says which half of a credential was wrong. The code is what
 the screen branches on: `wrongCredentials`, `notADatabase`, `unsupportedFormat`,
 `damaged`, `heldByAnother`, `externalChange`, `readOnly`, `gone`, `tooLarge`,
 `noVault`, `noSuchEntry`, `refused`, `taken`, `attachmentInHistory`,
-`versionsChanged`, `forGood`, `superseded`, `needsOpening`, `io`, `other`.
+`versionsChanged`, `forGood`, `superseded`, `deletionChanged`, `needsOpening`,
+`io`, `other`.
 
 `versionsChanged` is a position read at a revision the vault has moved on from
 (see above). Nothing was done, so it is not shown as a failure: the window
@@ -514,6 +535,9 @@ choosing.
 `forGood` and `superseded` are about a removed field (see above), and neither
 did anything. `forGood` is answered with a question, and `superseded` with the
 sentence that the removal can no longer be undone.
+
+`deletionChanged` is a deletion that would no longer do what the window showed
+(see above), and nothing was deleted.
 
 `needsOpening` is `put_back_rescue` on a disk that keeps no second name for a
 file, and nothing was moved: the unlock screen offers to open the copy instead

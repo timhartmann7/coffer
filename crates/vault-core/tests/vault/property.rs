@@ -464,7 +464,12 @@ proptest! {
                 Act::ClearHistory(entry) => vault.clear_history(pick(*entry)),
                 Act::DeleteEntry(entry) => {
                     let id = pick(*entry);
-                    let done = vault.delete_entry(id);
+                    // What the window would have shown for it, as the reader
+                    // agreed to it.
+                    let shown = vault
+                        .entry(id)
+                        .map_or(vault_core::model::Deletion::Bin, |entry| entry.deletion);
+                    let done = vault.delete_entry(id, shown);
                     // Into the bin it stays an entry; out of the bin it is gone.
                     if done.is_ok() && vault.entry(id).is_none() {
                         expected.remove(&id.to_string());

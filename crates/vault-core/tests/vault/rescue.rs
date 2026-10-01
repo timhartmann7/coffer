@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use vault_core::storage::lock::{self, Lock, Outcome};
 use vault_core::storage::{self, OnDisk, snapshot, unsaved};
-use vault_core::{NewValue, Rescue, Typing, VaultError};
+use vault_core::{NewValue, Rescue, Typing, VaultError, Written};
 
 use crate::support::{self, BUILT_PASSWORD, built, open, password, permissions_apply};
 
@@ -384,7 +384,7 @@ fn typing_a_lock_finishes_is_an_edit_like_any_other() {
     ] {
         assert_eq!(
             vault.set_typed(id, field, typed, Typing::InPlace).ok(),
-            Some(true),
+            Some(Written::Into),
             "{field}"
         );
     }
@@ -437,7 +437,7 @@ fn typing_that_changes_nothing_writes_nothing() {
     ] {
         assert_eq!(
             vault.set_typed(id, field, typed, Typing::InPlace).ok(),
-            Some(false),
+            Some(Written::Nothing),
             "{field}"
         );
     }
@@ -452,7 +452,7 @@ fn typing_that_changes_nothing_writes_nothing() {
         vault
             .set_typed(id, "PIN", NewValue::Open("1234".into()), Typing::InPlace)
             .ok(),
-        Some(true),
+        Some(Written::Into),
         "a protected value going into the open is not nothing"
     );
 }
@@ -476,13 +476,13 @@ fn a_new_value_typed_beside_one_never_goes_over_it() {
     let versions = vault.versions(id).len();
 
     for (field, text, written) in [
-        ("PIN", "98", true),
-        ("PIN", "9876", true),
-        ("PIN", "", false),
-        ("PIN", "1234", false),
-        ("Passport", "C01X00T4", true),
+        ("PIN", "98", Written::Beside),
+        ("PIN", "9876", Written::Beside),
+        ("PIN", "", Written::Nothing),
+        ("PIN", "1234", Written::Nothing),
+        ("Passport", "C01X00T4", Written::Into),
         // A password the entry never had is one it has nothing in.
-        (keepass::db::fields::PASSWORD, "first one", true),
+        (keepass::db::fields::PASSWORD, "first one", Written::Into),
     ] {
         assert_eq!(
             vault.set_typed(id, field, typed(text), Typing::Beside).ok(),
@@ -501,7 +501,7 @@ fn a_new_value_typed_beside_one_never_goes_over_it() {
                 Typing::Beside
             )
             .ok(),
-        Some(true)
+        Some(Written::Beside)
     );
     assert_eq!(vault.versions(id).len(), versions + 5);
     assert_eq!(vault.rescue(), Rescue::Saved);

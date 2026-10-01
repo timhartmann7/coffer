@@ -92,6 +92,7 @@ pub fn status(app: AppHandle, session: Held<'_>) -> Status {
             Some(dto::CopyOf::of(&vault, storage::on_disk(copy), vault_file))
         }),
         typed: session.typed(),
+        typed_beside: session.typed_beside(),
         database: database.as_deref().map(Database::of),
         key_file: session.key_file().as_deref().map(Database::of),
         unlocked: session.is_unlocked(),
@@ -806,10 +807,22 @@ pub fn create_entry(group: String, session: Held<'_>) -> Result<Made, Failure> {
 
 /// Deletes an entry, and lets go of anything typed into it that the window
 /// said before it asked: the pane it was typed in goes with the entry.
+///
+/// `deletion` is what the window showed the deletion would do. Two deletions
+/// can wait behind one save, and the thread that takes the session first is
+/// not the one that asked first, so an entry whose folder went into the bin
+/// ahead of it is refused with `deletionChanged` rather than erased.
 #[tauri::command(async)]
-pub fn delete_entry(entry: String, sequence: u64, session: Held<'_>) -> Result<Group, Failure> {
+pub fn delete_entry(
+    entry: String,
+    deletion: dto::Deletion,
+    sequence: u64,
+    session: Held<'_>,
+) -> Result<Group, Failure> {
     let id = dto::entry_id(&entry)?;
-    session.overtaking(Over::Entry(id), sequence, |vault| vault.delete_entry(id))??;
+    session.overtaking(Over::Entry(id), sequence, |vault| {
+        vault.delete_entry(id, deletion.shown())
+    })??;
     tree_of(&session)
 }
 
@@ -827,10 +840,15 @@ pub fn rename_group(group: String, name: String, session: Held<'_>) -> Result<Gr
     tree_of(&session)
 }
 
+/// Deletes a folder, on the terms [`delete_entry`] gives.
 #[tauri::command(async)]
-pub fn delete_group(group: String, session: Held<'_>) -> Result<Group, Failure> {
+pub fn delete_group(
+    group: String,
+    deletion: dto::Deletion,
+    session: Held<'_>,
+) -> Result<Group, Failure> {
     let group = dto::group_id(&group)?;
-    session.with_mut(|vault| vault.delete_group(group))??;
+    session.with_mut(|vault| vault.delete_group(group, deletion.shown()))??;
     tree_of(&session)
 }
 
@@ -1690,8 +1708,16 @@ mod tests {
             looked_home(&session, Some(home.path())),
             Some(named.clone())
         );
+        assert!(
+            dto::Found::of(&named).copy,
+            "the offer says it found a vault that is not there"
+        );
         assert!(found_chosen(&session).is_ok());
-        assert_eq!(session.database(), Some(named));
+        assert_eq!(session.database(), Some(named.clone()));
+
+        // The vault back at its name is a vault found, whatever is beside it.
+        vault(&named);
+        assert!(!dto::Found::of(&named).copy);
     }
 
     /// Choosing either way would lock the open vault, and a press on a screen

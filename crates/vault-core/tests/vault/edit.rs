@@ -2,7 +2,7 @@
 //! underneath it.
 
 use keepass::db::fields;
-use vault_core::model::{EntryId, Field, FieldValue, GroupId};
+use vault_core::model::{Deletion, EntryId, Field, FieldValue, GroupId};
 use vault_core::{NewValue, Vault, VaultError};
 use zeroize::Zeroizing;
 
@@ -171,7 +171,7 @@ fn the_top_of_the_vault_is_not_a_folder_anybody_can_delete() {
 
     let root = root_of(&vault);
     assert!(matches!(
-        vault.delete_group(root),
+        vault.delete_group(root, Deletion::Bin),
         Err(VaultError::CannotMoveRoot)
     ));
     // The tree still has its top, which is what a database with a deleted root
@@ -185,7 +185,9 @@ fn a_deleted_entry_goes_to_the_recycle_bin_and_the_second_deletion_takes_it_out_
     let mut vault = open(&database, SECRET);
 
     let id = only_entry(&vault, "basic");
-    vault.delete_entry(id).expect("the entry is deleted");
+    vault
+        .delete_entry(id, Deletion::Bin)
+        .expect("the entry is deleted");
 
     let bin = vault
         .tree()
@@ -199,7 +201,9 @@ fn a_deleted_entry_goes_to_the_recycle_bin_and_the_second_deletion_takes_it_out_
         "the entry did not land in the recycle bin"
     );
 
-    vault.delete_entry(id).expect("the entry is deleted again");
+    vault
+        .delete_entry(id, Deletion::Forever)
+        .expect("the entry is deleted again");
     assert!(
         vault.entry(id).is_none(),
         "the entry is still in the database"
@@ -227,7 +231,9 @@ fn an_entry_at_the_top_of_the_vault_goes_to_the_recycle_bin_like_any_other() {
         .set_field(id, fields::TITLE, NewValue::Open("at the top".to_owned()))
         .expect("the title is written");
 
-    vault.delete_entry(id).expect("the entry is deleted");
+    vault
+        .delete_entry(id, Deletion::Bin)
+        .expect("the entry is deleted");
 
     let bin = vault
         .tree()
@@ -263,7 +269,9 @@ fn a_folder_at_the_top_of_the_vault_goes_to_the_recycle_bin_like_any_other() {
         .create_group(root, "at the top")
         .expect("the folder is made");
 
-    vault.delete_group(id).expect("the folder is deleted");
+    vault
+        .delete_group(id, Deletion::Bin)
+        .expect("the folder is deleted");
 
     let bin = vault
         .tree()
@@ -291,7 +299,9 @@ fn a_database_that_keeps_no_recycle_bin_deletes_outright() {
 
     let mut vault = open(&path, BUILT_PASSWORD);
     let id = only_entry(&vault, "doomed");
-    vault.delete_entry(id).expect("the entry is deleted");
+    vault
+        .delete_entry(id, Deletion::Forever)
+        .expect("the entry is deleted");
 
     assert!(vault.entry(id).is_none(), "the entry is still there");
     assert!(
@@ -316,7 +326,9 @@ fn a_database_that_wants_a_recycle_bin_and_has_none_is_given_one() {
 
     let mut vault = open(&path, BUILT_PASSWORD);
     let id = only_entry(&vault, "doomed");
-    vault.delete_entry(id).expect("the entry is deleted");
+    vault
+        .delete_entry(id, Deletion::Bin)
+        .expect("the entry is deleted");
     vault.save().expect("the database saves");
     drop(vault);
 
@@ -349,7 +361,9 @@ fn deleting_a_folder_takes_everything_in_it() {
         .expect("the folder is made");
     let inside = vault.create_entry(section).expect("the entry is made");
 
-    vault.delete_group(project).expect("the folder is deleted");
+    vault
+        .delete_group(project, Deletion::Forever)
+        .expect("the folder is deleted");
     assert!(
         vault.entry(inside).is_none(),
         "the entry outlived its folder"
@@ -398,7 +412,7 @@ fn a_deleted_folder_is_not_left_named_in_the_settings_of_the_file() {
     {
         let mut vault = open(&database, SECRET);
         vault
-            .delete_group(named)
+            .delete_group(named, Deletion::Forever)
             .expect("the recycle bin itself is deleted");
         vault.save().expect("the database saves");
     }
@@ -779,7 +793,9 @@ fn the_recycle_bin_empties_once_the_versions_holding_a_file_have_gone() {
     let mut vault = open(&path, BUILT_PASSWORD);
 
     // Into the bin, which never touches the pool.
-    vault.delete_entry(first).expect("it goes to the bin");
+    vault
+        .delete_entry(first, Deletion::Bin)
+        .expect("it goes to the bin");
 
     // Out of the file, which does. The last file in the pool is held by the
     // last entry's version, so the pool cannot get shorter yet.
@@ -886,9 +902,11 @@ fn deleting_an_entry_takes_its_files_and_leaves_everybody_elses() {
         // Straight out of the file: the recycle bin would only move it, and a
         // moved entry still holds its files.
         vault
-            .delete_entry(middle)
+            .delete_entry(middle, Deletion::Bin)
             .expect("the entry goes to the bin");
-        vault.delete_entry(middle).expect("the entry is deleted");
+        vault
+            .delete_entry(middle, Deletion::Forever)
+            .expect("the entry is deleted");
         vault.save().expect("the database saves");
     }
 
@@ -1311,7 +1329,9 @@ fn emptying_the_recycle_bin_takes_what_is_in_it_out_of_the_file() {
 
     let deleted = only_entry(&vault, "deleted entry");
     let living = only_entry(&vault, "basic");
-    vault.delete_entry(living).expect("the entry is deleted");
+    vault
+        .delete_entry(living, Deletion::Bin)
+        .expect("the entry is deleted");
 
     // A folder in the bin, with a folder in that. Emptying has to take the
     // whole branch in one go rather than coming back for a folder that went
@@ -1323,7 +1343,9 @@ fn emptying_the_recycle_bin_takes_what_is_in_it_out_of_the_file() {
     vault
         .create_group(inner, "deeper")
         .expect("the folder is made");
-    vault.delete_group(project).expect("the folder is deleted");
+    vault
+        .delete_group(project, Deletion::Bin)
+        .expect("the folder is deleted");
 
     assert_eq!(vault.count(), 11, "the fixture holds eleven entries");
 
@@ -1677,7 +1699,7 @@ fn a_snapshot_is_opened_to_read_and_never_written_back() {
     assert!(vault.is_read_only());
     for refused in [
         vault.set_field(id, fields::NOTES, NewValue::Open("x".to_owned())),
-        vault.delete_entry(id),
+        vault.delete_entry(id, Deletion::Bin),
         vault.clear_history(id),
         vault.add_attachment(id, "x", b"x").map(drop),
         vault.keep_both(id, "x", b"x"),
@@ -2156,7 +2178,9 @@ fn a_folder_that_holds_the_recycle_bin_can_still_be_deleted() {
         "the fixture is supposed to hold the bin inside a folder"
     );
 
-    vault.delete_group(project).expect("the folder is deleted");
+    vault
+        .delete_group(project, Deletion::Forever)
+        .expect("the folder is deleted");
     assert!(
         vault.tree().sections.iter().all(|s| s.name != "Work"),
         "the folder that held the bin could not be deleted"

@@ -52,7 +52,13 @@ impl Staged {
     /// the refusal is returned as it came. There is no exclusive way to publish
     /// a whole file there, and an exclusive create followed by a copy is a name
     /// holding half a database for as long as the copy runs.
-    pub fn publish(mut self) -> Result<(), io::Error> {
+    ///
+    /// Two answers, because there are two moments. The outer one is the link:
+    /// an error there is a refusal, and nothing is at the target. Once the link
+    /// is made the file is published, whatever happens next, so a directory
+    /// that will not be flushed afterwards is the inner answer, and never one a
+    /// caller could mistake for the move having been refused.
+    pub fn publish(mut self) -> Result<Result<(), io::Error>, io::Error> {
         let directory = parent_of(&self.target)?;
 
         fs::hard_link(&self.temporary, &self.target)?;
@@ -61,10 +67,10 @@ impl Staged {
         // second name for it. One that will not go is the same file twice,
         // which the next write from this process or a later sweep takes away.
         let _ = fs::remove_file(&self.temporary);
-        sync_directory(directory)?;
+        let flushed = sync_directory(directory);
 
         sweep_abandoned(&self.target);
-        Ok(())
+        Ok(flushed)
     }
 }
 
@@ -123,7 +129,7 @@ where
 ///
 /// The caller owns what it reserved, and has to take it back off the disk if it
 /// then decides not to fill it.
-pub fn reserve(path: &Path) -> Result<(), io::Error> {
+pub(crate) fn reserve(path: &Path) -> Result<(), io::Error> {
     OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -132,15 +138,15 @@ pub fn reserve(path: &Path) -> Result<(), io::Error> {
         .map(drop)
 }
 
-/// Whether [`reserve`] would find the name already taken, asked without taking
-/// it.
+/// Whether [`reserve`], or the link [`Staged::publish`] makes, would find the
+/// name already taken, asked without taking it.
 ///
 /// Anything at the name counts, a link that leads nowhere included, because
-/// that is what an exclusive create refuses. The answer is advice and nothing
-/// more - for a move that would rather refuse before it reads a large copy -
-/// and anything can arrive between it and a reservation, which is why a
-/// creation takes the name rather than asking about it.
-pub fn taken(path: &Path) -> bool {
+/// that is what an exclusive create and a hard link both refuse. The answer is
+/// advice and nothing more - for putting a copy back, which would rather refuse
+/// before it reads a large one - and anything can arrive between it and the
+/// act, which is why the act itself is the answer that counts.
+pub(crate) fn taken(path: &Path) -> bool {
     path.symlink_metadata().is_ok()
 }
 
@@ -220,4 +226,49 @@ fn sweep_abandoned(database: &Path) {
 fn abandoned_pid(name: &str, database_name: &str) -> Option<u32> {
     let rest = name.strip_prefix(database_name)?.strip_prefix('.')?;
     rest.strip_suffix(TEMPORARY_SUFFIX)?.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Putting a copy back asks [`taken`] before it reads the copy, and the
+    /// publish refuses on its own terms afterwards. The two answers have to be
+    /// the same answer, or the move reads a whole copy only to be refused, or
+    /// refuses a name it could have had.
+    #[test]
+    fn a_name_is_taken_exactly_when_it_cannot_be_reserved() -> io::Result<()> {
+        let scratch = tempfile::tempdir()?;
+        let at = |name: &str| scratch.path().join(name);
+
+        fs::write(at("a-vault.kdbx"), "somebody's vault")?;
+        fs::write(at("empty.kdbx"), "")?;
+        fs::create_dir(at("a-folder.kdbx"))?;
+        std::os::unix::fs::symlink(at("nowhere.kdbx"), at("dangling.kdbx"))?;
+        std::os::unix::fs::symlink(at("a-vault.kdbx"), at("linked.kdbx"))?;
+
+        for name in [
+            "a-vault.kdbx",
+            "empty.kdbx",
+            "a-folder.kdbx",
+            "dangling.kdbx",
+            "linked.kdbx",
+        ] {
+            assert!(taken(&at(name)), "{name} is not reported as taken");
+            assert!(reserve(&at(name)).is_err(), "{name} was reserved over");
+            let staged = stage::<io::Error, _>(&at(name), |writer| writer.write_all(b"copy"))?;
+            assert!(staged.publish().is_err(), "{name} was published over");
+        }
+
+        let free = at("free.kdbx");
+        assert!(!taken(&free));
+        reserve(&free)?;
+        assert!(taken(&free), "a reserved name is not reported as taken");
+
+        // A link that led nowhere is still nothing but a link: neither the
+        // reservation nor the publish followed it and made the file it named.
+        assert!(!at("nowhere.kdbx").exists());
+        assert_eq!(fs::read_to_string(at("a-vault.kdbx"))?, "somebody's vault");
+        Ok(())
+    }
 }

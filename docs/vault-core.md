@@ -78,6 +78,13 @@ private and `add_entry` is the only way in. The order itself - by
 `history::age`, and the version list, the prune and the question below all sort
 by it, so none of them can call a different version the newest.
 
+**A position holds only until the next edit.** `Vault::edits` is a number that
+moves on every change the vault marks itself changed for, on every write, whose
+settling prunes and re-sorts, and on every reload - and on nothing else, so a
+change the vault refused or found nothing to do in leaves it where it was.
+`vault-gui` compares it to tell whether a version's position read earlier still
+names the same version.
+
 **Taking a removal back is a restore, and only of one version.** Removing a
 field writes a version like any other edit, and restoring that version is the
 undo. But the save after the removal prunes, and what is newest after a prune,
@@ -343,7 +350,10 @@ was typed for with ` (typed before locking)` after it -
 `Password (typed before locking)` - and numbered past a name the entry already
 uses by the rule that names a second file (`clash::beside`), and the value it was
 typed for stays as it was. Nothing typed, or what the field already holds, is no
-new value and writes nothing. The field is an ordinary KDBX string field of the
+new value and writes nothing. `set_typed` answers which of the three happened
+([`Written`](../crates/vault-core/src/vault.rs): `Nothing`, `Into`, `Beside`),
+so that the unlock screen can say a new value was kept beside the old one
+without anything having to name the field. The field is an ordinary KDBX string field of the
 kind a reader makes with "+", which every client shows and edits; nothing is
 added to the format.
 
@@ -402,7 +412,10 @@ decides where a deletion goes, what the tree says it will do, and what the bin
 says about what it holds. A walk of the tree steps down folder by folder with
 `Bin::enter`; a single entry is placed by taking the same steps from the top, so
 the tree and the entry cannot disagree, and the deletion asks the same function
-the window was answered from. A folder the bin is inside is erased rather than
+the window was answered from. The deletion also takes the answer the reader was
+shown, and refuses with `DeletionChanged`, changing nothing, when the rule now
+gives the other one: a move to the bin never turns into an erasure on the way,
+whatever reached the vault first. A folder the bin is inside is erased rather than
 binned - it cannot go inside itself - and that is asked of a folder and never of
 an entry, because the top of the vault holds the bin and is where every entry
 Coffer makes lands.
@@ -620,11 +633,13 @@ the first one's vault. `atomic::reserve` makes the question and the answer the
 same act: the target is created empty and exclusively, and the caller owns it
 from then on and takes it back off the disk however the creation ends. The lock
 file beside it is taken before any contents are written, so a creation that
-cannot have the database never wrote one. `atomic::taken` asks the same question
-without taking the name, for a move that wants to refuse before it reads a large
-copy; the creation screen asks the window's own reading of the place, which also
-says what is there. Either answer is advice, and the reservation is still what
-decides.
+cannot have the database never wrote one. `atomic::taken`, inside the crate,
+asks the same question without taking the name, for putting a copy back, which
+wants to refuse before it reads a large one; a unit test holds it to what the
+reservation and the publish refuse. The creation screen asks `vault-gui`'s own
+reading of the place, `home::standing`, which also says what is there, and a
+test there holds it to what `Vault::create` takes. Either answer is advice, and
+the reservation is still what decides.
 
 A name Coffer gives a file of its own beside a database is refused outright: a
 snapshot's would open like any other database and then refuse every save, for

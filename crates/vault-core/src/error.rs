@@ -148,6 +148,13 @@ pub enum VaultError {
     #[error("the entry has changed since that field came off")]
     RemovalSuperseded,
 
+    /// A deletion would no longer do what the reader was shown before they
+    /// asked for it: what was going to the bin would now go for good, because
+    /// a folder around it went into the bin first, or the other way round.
+    /// Nothing was deleted.
+    #[error("that deletion would no longer do what was shown, so nothing was deleted")]
+    DeletionChanged,
+
     /// Part of a value was asked for that the value does not have: an empty
     /// or backwards range, an end past the last character, or an end between
     /// the two halves of a character outside the basic plane.

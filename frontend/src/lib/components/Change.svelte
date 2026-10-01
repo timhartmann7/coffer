@@ -30,6 +30,14 @@
 	 * again, asks the same question, because it is as likely to mean "done" as
 	 * "never mind".
 	 *
+	 * Its way out, and so its Escape, is back into the field, which loses
+	 * nothing. Escape is the key a reader presses again when the pane did not
+	 * close the first time, and the window's Escape is what raised the question
+	 * with the focus on it: a way out that discarded was the only copy of a new
+	 * password gone on the second press, with nothing said. Discard is an
+	 * answer of its own, last and in the danger colour, because it is the one
+	 * that throws away what nothing else holds.
+	 *
 	 * The pane does not go while this holds something or is saving it
 	 * (`holding.ts`). A row pressed, Escape, Close, a folder chosen: each leaves
 	 * the pane where it is, and this puts its question with the focus on it, so
@@ -282,10 +290,12 @@
 			<Confirm
 				class="mt-2 bg-surface2"
 				question="Save the new {what}?"
-				keep="Discard"
+				keep="Keep typing"
 				neutral={{ label: 'Save', run: () => void save() }}
+				act="Discard"
 				focus={summoned > 0 ? 'neutral' : 'none'}
-				onKeep={() => close()}
+				onKeep={() => node?.focus()}
+				onAct={() => close()}
 			/>
 		{/key}
 	{:else}

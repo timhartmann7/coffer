@@ -48,6 +48,10 @@ pub struct Found {
     pub name: String,
     /// The folder in the home folder it was found in.
     pub folder: &'static str,
+    /// Whether nothing is at the name any more, and what was found is the copy
+    /// a lock left of the vault beside it. The offer must not say it found a
+    /// file that is not there.
+    pub copy: bool,
 }
 
 /// A value revealed out of the vault, on its way to the one screen that asked
@@ -112,6 +116,7 @@ impl Found {
         Found {
             name: file_name(path),
             folder: crate::home::FOLDER,
+            copy: crate::home::standing(path) == crate::home::Standing::Copy,
         }
     }
 }
@@ -249,6 +254,12 @@ pub struct Status {
     /// it into the vault with everything else. Which entry is not said: after a
     /// lock nothing of the vault is left to say it with.
     pub typed: bool,
+    /// Whether some of what it saved was a new value typed in a Change field
+    /// and kept in a field of its own beside the value it was for, which the
+    /// field still holds. Said apart, because "saved" alone reads as the new
+    /// value being the field's now. Which field is not said, for the same
+    /// reason.
+    pub typed_beside: bool,
     /// Why the vault that was open is not open any more, when it is worth
     /// saying. A lock the reader asked for has nothing to explain.
     pub locked_by: Option<&'static str>,
@@ -435,7 +446,10 @@ impl Group {
 /// because both are read again after every change and after a reload, and a
 /// file another client rewrote can have stopped keeping a bin: a flag read
 /// once at unlock would go on promising a bin to a deletion that erases.
-#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+///
+/// It comes back with a deletion, as the one the reader was shown, and Rust
+/// refuses a deletion that would now do something else.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum Deletion {
     /// It moves to the recycle bin, and can be put back.
@@ -449,6 +463,13 @@ impl Deletion {
         match deletion {
             model::Deletion::Bin => Deletion::Bin,
             model::Deletion::Forever => Deletion::Forever,
+        }
+    }
+
+    pub fn shown(self) -> model::Deletion {
+        match self {
+            Deletion::Bin => model::Deletion::Bin,
+            Deletion::Forever => model::Deletion::Forever,
         }
     }
 }

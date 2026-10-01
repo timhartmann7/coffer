@@ -30,6 +30,7 @@
 		file = null,
 		copy = null,
 		typed = false,
+		typedBeside = false,
 		onChoose,
 		onKeyFile,
 		onCreate,
@@ -81,6 +82,14 @@
 		 * not be what keeps one.
 		 */
 		typed?: boolean;
+		/**
+		 * Whether some of it was a new value typed in a Change field, kept in a
+		 * field of its own beside the old one rather than over it. "Saved" alone
+		 * reads as the new value being the field's now, and the reader who
+		 * copies the old one somewhere it no longer works is the one misled.
+		 * Named no more than `typed` is.
+		 */
+		typedBeside?: boolean;
 		onChoose: (database: Database) => void;
 		onKeyFile: (chosen: Database | null) => void;
 		/** Offered on the first run, where there is nothing to open yet. */
@@ -167,6 +176,16 @@
 	 */
 	const standIn = $derived(rescue !== null && !dropped && file?.there === false);
 
+	/**
+	 * What the copy stands in for, as the card names it. The chosen file is
+	 * itself a copy when the reader was in one a lock had left and that lock
+	 * kept their work beside it: then it is that copy's file that went, and the
+	 * vault it came from is another file the card knows nothing new about.
+	 * Saying "your vault" there sent a reader to put a copy back over a vault
+	 * they believed was gone.
+	 */
+	const missing = $derived(copy ? 'This copy' : 'Your vault file');
+
 	/** What survived a lock that could write nothing: the chosen file, as it
 	 * was before the changes that were lost. That is the copy, when the lock
 	 * that lost them was of a copy opened to look. */
@@ -192,12 +211,11 @@
 	 * the ones every command shares, and "there is already a file with that
 	 * name" is a sentence about making a vault.
 	 */
-	const unmovedBecause: Record<string, string> = {
-		taken: 'A file is back where your vault was, so the copy was left where it is.',
+	const unmovedBecause: Record<string, string> = $derived({
+		taken: `A file is back where ${copy ? 'this copy' : 'your vault'} was, so the copy was left where it is.`,
 		gone: 'The copy is not there any more.',
-		needsOpening:
-			'This disk cannot take the copy back without it being opened. Open it, and make it your vault from inside.'
-	};
+		needsOpening: `This disk cannot take the copy back without it being opened. Open it, and ${copy ? 'put it back in this one’s place' : 'make it your vault'} from inside.`
+	});
 
 	async function submit(event: SubmitEvent) {
 		event.preventDefault();
@@ -401,6 +419,10 @@
 		{#if typed}
 			<p class="mx-auto mt-6 max-w-[38ch] text-center text-small leading-relaxed text-txt2">
 				What you were typing was saved before locking.
+				{#if typedBeside}
+					A new value you had not saved yet was kept in a field of its own, beside the old one,
+					which is unchanged.
+				{/if}
 			</p>
 		{/if}
 
@@ -432,8 +454,10 @@
 					A lock could not save it, so Coffer put it in
 					<bdi class="font-mono text-txt">{rescue.name}</bdi>{kept ? ` ${kept}` : ''}.
 					{#if standIn && !mustOpen}
-						Your vault file is not there any more, so the copy can go back in its place with nothing
-						to type.
+						{missing} is not there any more, so the copy can go back in its place with nothing to type.
+					{:else if standIn && copy}
+						This copy is not there any more. The copy kept of it opens with the same password, and
+						inside it you can put it back in this one’s place.
 					{:else if standIn}
 						Your vault file is not there any more. The copy opens with the same password, and inside
 						it you can make it your vault.
@@ -446,9 +470,11 @@
 					<Confirm
 						bare
 						class="mt-4 border-t border-hairline pt-3"
-						question={standIn
-							? 'Remove the only copy of your vault?'
-							: 'Remove the only copy of those changes?'}
+						question={!standIn
+							? 'Remove the only copy of those changes?'
+							: copy
+								? 'Remove the only copy of what this copy held?'
+								: 'Remove the only copy of your vault?'}
 						act="Remove"
 						onKeep={() => (removing = false)}
 						onAct={dropRescue}
@@ -705,9 +731,19 @@
 				<div class="mt-8 rounded-sm border border-hairline bg-surface2 px-4 py-4">
 					<div class="flex items-start gap-2">
 						<Icon name="disk" class="mt-0.5 h-4 w-4 shrink-0 text-txt4" />
+						<!-- A vault whose file has gone, with the copy a lock kept of it
+						     beside its name, is offered under that name: opening it is
+						     where the copy is put back. The sentence must not say the
+						     vault's own file was found. -->
 						<p class="text-body leading-relaxed text-txt">
-							We found your vault: <bdi class="font-mono">{found.name}</bdi> in
-							<bdi>{found.folder}</bdi> (your home folder).
+							{#if found.copy}
+								We found a copy of your vault <bdi class="font-mono">{found.name}</bdi> in
+								<bdi>{found.folder}</bdi> (your home folder), kept when it last locked. The vault’s own
+								file is not there. Open it to put the copy back.
+							{:else}
+								We found your vault: <bdi class="font-mono">{found.name}</bdi> in
+								<bdi>{found.folder}</bdi> (your home folder).
+							{/if}
 						</p>
 					</div>
 					<button

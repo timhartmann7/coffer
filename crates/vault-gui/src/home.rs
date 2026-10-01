@@ -557,4 +557,53 @@ mod tests {
             "/Users/anna/Coffer/vault.kdbx"
         );
     }
+
+    /// The creation screen is told what is at a place before anybody types a
+    /// password, and the creation is then refused or not by `vault-core`. The
+    /// two answers have to be the same answer, or the screen offers a place the
+    /// creation then refuses - or refuses one it would have taken.
+    #[test]
+    fn a_place_is_free_exactly_when_a_vault_can_be_made_there() {
+        use vault_core::kdf::Work;
+        use vault_core::{MasterKey, Recipe, Vault};
+        use zeroize::Zeroizing;
+
+        let (_home, folder) = home();
+        let at = |name: &str| folder.join(name);
+        vault(&at("a-vault.kdbx"), hours_ago(1));
+        std::fs::write(at("empty.kdbx"), b"").expect("the file is written");
+        std::fs::create_dir(at("a-folder.kdbx")).expect("the folder is made");
+        symlink(at("nowhere.kdbx"), at("dangling.kdbx")).expect("a link");
+        symlink(at("a-vault.kdbx"), at("linked.kdbx")).expect("a link");
+        symlink(at("a-folder.kdbx"), at("to-a-folder.kdbx")).expect("a link");
+        vault(&at("gone.kdbx.unsaved.kdbx"), hours_ago(1));
+
+        for name in [
+            "a-vault.kdbx",
+            "empty.kdbx",
+            "a-folder.kdbx",
+            "dangling.kdbx",
+            "linked.kdbx",
+            "to-a-folder.kdbx",
+            "gone.kdbx",
+            "free.kdbx",
+        ] {
+            let place = at(name);
+            let offered = standing(&place) == Standing::Free;
+            let made = Vault::create(
+                &place,
+                MasterKey::from_password(Zeroizing::new(b"a password".to_vec())),
+                &Recipe {
+                    name: "made",
+                    work: Work::at(1),
+                },
+            )
+            .is_ok();
+            assert_eq!(offered, made, "{name}: offered {offered}, made {made}");
+        }
+        assert!(
+            !at("nowhere.kdbx").exists(),
+            "a creation followed a dangling link"
+        );
+    }
 }

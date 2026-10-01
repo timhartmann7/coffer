@@ -68,6 +68,11 @@ enum Code {
     /// that happened to its entry. Nothing was done, and the screen says the
     /// removal can no longer be undone.
     Superseded,
+    /// A deletion would no longer do what the window showed before the reader
+    /// asked for it: a move to the bin would now erase, or the other way round,
+    /// because something around it was deleted first. Nothing was done, and the
+    /// screen says so and reads the tree again.
+    DeletionChanged,
     /// The copy a lock left cannot be put back without a password on this
     /// disk. Nothing was done, and the screen offers to open the copy, which
     /// is the way it can still become the vault.
@@ -195,6 +200,7 @@ impl From<VaultError> for Failure {
             | VaultError::RandomnessUnavailable => Code::Refused,
             VaultError::RemovalForGood => Code::ForGood,
             VaultError::RemovalSuperseded => Code::Superseded,
+            VaultError::DeletionChanged => Code::DeletionChanged,
             VaultError::Io(_) => Code::Io,
             _ => Code::Other,
         };
@@ -262,6 +268,7 @@ mod tests {
             (VaultError::NothingToGenerateFrom, "refused"),
             (VaultError::RemovalForGood, "forGood"),
             (VaultError::RemovalSuperseded, "superseded"),
+            (VaultError::DeletionChanged, "deletionChanged"),
             (VaultError::Io(io::Error::other("a disk")), "io"),
         ] {
             let message = error.to_string();

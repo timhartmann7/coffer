@@ -12,7 +12,9 @@ use std::sync::{Mutex, MutexGuard};
 use vault_core::kdf::Work;
 use vault_core::model::{Entry, EntryId, Project};
 use vault_core::storage::{OnDisk, Seen, unsaved};
-use vault_core::{Attached, LockPolicy, MasterKey, Recipe, Rescue, SecretValue, Vault, VaultError};
+use vault_core::{
+    Attached, LockPolicy, MasterKey, Recipe, Rescue, SecretValue, Vault, VaultError, Written,
+};
 use zeroize::Zeroizing;
 
 use crate::autolock::Reason;
@@ -39,11 +41,12 @@ struct Held {
     /// it anywhere at all. There is no file to point the reader at, which is why
     /// this is a flag and not a path. Cleared with `locked_by`.
     lost: bool,
-    /// Whether the last lock found text the reader was still typing, wrote it
-    /// into the vault and saved it where the reader believes it is. A flag and
-    /// nothing more: after a lock nothing of the vault may be left to name the
-    /// entry it went into. Cleared with `locked_by`.
-    typed: bool,
+    /// Where the last lock put text the reader was still typing, when it wrote
+    /// it into the vault and saved it where the reader believes it is:
+    /// [`Written::Beside`] when any of it was a new value kept beside the old
+    /// one. Where and nothing more: after a lock nothing of the vault may be
+    /// left to name the entry it went into. Cleared with `locked_by`.
+    typed: Written,
     /// The key file the next unlock will use alongside the password, when the
     /// database asks for one.
     ///
@@ -79,8 +82,7 @@ struct Held {
     /// derivation takes a second and does not hold the lock, so an unlock that
     /// started before such a change must not finish over it.
     generation: u64,
-    /// Bumped every time the open vault is handed out to be changed, and when a
-    /// vault lands.
+    /// Moved every time the open vault changes, and when a vault lands.
     ///
     /// A previous version is addressed by its position in its entry's history,
     /// and nearly everything moves those positions: an edit adds one, a drop or
@@ -95,12 +97,20 @@ struct Held {
     /// [`Session::at_mut`] refuse a number that is not this one, under the same
     /// lock the action then runs in.
     ///
-    /// Counted for every change the vault was handed out for rather than for
-    /// every history that moved. Which histories a change moved is the question
-    /// this is here to avoid answering, and a change that moved none costs the
-    /// window one more reading of a list. Nothing in it comes from what the
-    /// vault holds, and typing held as a draft is not a change to the vault.
+    /// Counted for every change the vault made rather than for every history
+    /// that moved. Which histories a change moved is the question this is here
+    /// to avoid answering, and a change that moved none costs the window one
+    /// more reading of a list. A change the vault refused, or one that found
+    /// nothing to do, is not one: the window does not read the list again after
+    /// those, and its next press on a version would be refused for nothing.
+    /// Nothing in it comes from what the vault holds, and typing held as a
+    /// draft is not a change to the vault.
+    ///
+    /// Read through [`Held::revision`], which catches it up with
+    /// [`Vault::edits`] first.
     revision: u64,
+    /// The vault's [`Vault::edits`] when `revision` last caught up with it.
+    edits: u64,
     /// How the vault's file stood when the window was last told, while the
     /// chosen file is a copy a lock left. "Make this my vault" is held to it
     /// (see [`Vault::promote`]): what the banner said is what the reader
@@ -113,21 +123,34 @@ struct Held {
 }
 
 impl Held {
-    /// The open vault, to be changed: a new revision of it, whatever the
-    /// change turns out to be.
+    /// The open vault, to be changed. The revision moves only if the vault
+    /// says it did: see [`Held::revision`].
     fn changing(&mut self) -> Result<&mut Open, Failure> {
-        let open = self.open.as_mut().ok_or_else(Failure::no_vault)?;
-        self.revision += 1;
-        Ok(open)
+        self.open.as_mut().ok_or_else(Failure::no_vault)
+    }
+
+    /// The revision of the vault as it is now. Every change the vault made
+    /// since this was last asked moves it once.
+    fn revision(&mut self) -> u64 {
+        if let Some(open) = &self.open {
+            let edits = open.vault.edits();
+            if edits != self.edits {
+                self.edits = edits;
+                self.revision += 1;
+            }
+        }
+        self.revision
     }
 
     /// The open vault, when nothing has changed it since `revision`.
-    fn at(&self, revision: u64) -> Result<&Open, Failure> {
-        let open = self.open.as_ref().ok_or_else(Failure::no_vault)?;
-        if revision != self.revision {
+    fn at(&mut self, revision: u64) -> Result<&mut Open, Failure> {
+        if self.open.is_none() {
+            return Err(Failure::no_vault());
+        }
+        if revision != self.revision() {
             return Err(Failure::versions_changed());
         }
-        Ok(open)
+        self.changing()
     }
 }
 
@@ -156,22 +179,24 @@ impl Open {
     }
 
     /// Writes what the reader was typing into the vault, the way leaving each
-    /// field would have, and says whether any of it changed an entry. A new
-    /// value typed in a Change field is kept beside the value it was for,
-    /// never over it (see [`Vault::set_typed`]).
+    /// field would have, and says where it went. A new value typed in a Change
+    /// field is kept beside the value it was for, never over it (see
+    /// [`Vault::set_typed`]), and one kept so is the answer whatever else went
+    /// where it was typed: it is the one the reader has to be told about.
     ///
     /// A draft the vault will not take - its entry gone, its field removed, a
     /// vault Coffer does not write back - is let go, and the rest are still
     /// written: nothing here may stop a lock.
-    fn finish_typing(&mut self) -> bool {
-        let mut changed = false;
+    fn finish_typing(&mut self) -> Written {
+        let mut written = Written::Nothing;
         for (entry, field, value, typing) in self.drafts.take() {
-            changed |= self
-                .vault
-                .set_typed(entry, &field, value, typing)
-                .unwrap_or(false);
+            match self.vault.set_typed(entry, &field, value, typing) {
+                Ok(Written::Beside) => written = Written::Beside,
+                Ok(Written::Into) if written == Written::Nothing => written = Written::Into,
+                _ => {}
+            }
         }
-        changed
+        written
     }
 }
 
@@ -184,7 +209,7 @@ impl Session {
                 database,
                 locked_by: None,
                 lost: false,
-                typed: false,
+                typed: Written::Nothing,
                 key_file: None,
                 making: None,
                 found: None,
@@ -192,6 +217,7 @@ impl Session {
                 open: None,
                 generation: 0,
                 revision: 0,
+                edits: 0,
                 shown: None,
                 returning: false,
             }),
@@ -234,7 +260,7 @@ impl Session {
         // A flag about the vault that was open says nothing about the one being
         // chosen, for the same reason the key file does not carry over.
         held.lost = false;
-        held.typed = false;
+        held.typed = Written::Nothing;
         held.shown = None;
         held.returning = false;
         held.found = None;
@@ -377,6 +403,7 @@ impl Session {
             // The database Coffer opened is the one it followed the links to.
             let opened = vault.path().to_path_buf();
             held.database = Some(opened.clone());
+            held.edits = vault.edits();
             held.open = Some(Open::of(vault));
             // Every position the window was sent was about the vault that was
             // open before, if any was.
@@ -385,7 +412,7 @@ impl Session {
             held.making = None;
             held.locked_by = None;
             held.lost = false;
-            held.typed = false;
+            held.typed = Written::Nothing;
             held.returning = false;
             opened
         };
@@ -462,7 +489,11 @@ impl Session {
         };
         held.locked_by = Some(reason);
         held.lost = rescue == Rescue::Lost;
-        held.typed = typed && rescue == Rescue::Saved;
+        held.typed = if rescue == Rescue::Saved {
+            typed
+        } else {
+            Written::Nothing
+        };
 
         // Leaving a copy for its vault, and the copy kept everything. Both
         // flags were about the copy, and the vault's screen must not say its
@@ -475,7 +506,7 @@ impl Session {
             .filter(|_| returning && kept_all)
         {
             held.database = Some(vault);
-            held.typed = false;
+            held.typed = Written::Nothing;
             held.shown = None;
         }
         true
@@ -489,7 +520,13 @@ impl Session {
     /// Whether the last lock in this run wrote what the reader was typing into
     /// the vault, and saved it there.
     pub fn typed(&self) -> bool {
-        self.held().typed
+        self.held().typed != Written::Nothing
+    }
+
+    /// Whether any of what the last lock wrote and saved was a new value kept
+    /// beside the value it was typed for, which is still the field's.
+    pub fn typed_beside(&self) -> bool {
+        self.held().typed == Written::Beside
     }
 
     /// Why the window is asking for a password again, when there is something
@@ -620,15 +657,16 @@ impl Session {
     /// and says which revision of the vault the answer is about: see the
     /// `revision` the session holds.
     pub fn listing<T>(&self, read: impl FnOnce(&Vault) -> T) -> Result<(u64, T), Failure> {
-        let held = self.held();
+        let mut held = self.held();
+        let revision = held.revision();
         let open = held.open.as_ref().ok_or_else(Failure::no_vault)?;
-        Ok((held.revision, read(&open.vault)))
+        Ok((revision, read(&open.vault)))
     }
 
     /// Borrows the open vault to read a version by its position, when nothing
     /// has changed the vault since `revision`, the one the position was read at.
     pub fn at<T>(&self, revision: u64, read: impl FnOnce(&Vault) -> T) -> Result<T, Failure> {
-        let held = self.held();
+        let mut held = self.held();
         Ok(read(&held.at(revision)?.vault))
     }
 
@@ -641,8 +679,7 @@ impl Session {
         change: impl FnOnce(&mut Vault) -> T,
     ) -> Result<T, Failure> {
         let mut held = self.held();
-        held.at(revision)?;
-        Ok(change(&mut held.changing()?.vault))
+        Ok(change(&mut held.at(revision)?.vault))
     }
 
     /// Borrows the open vault to change it.
@@ -748,7 +785,7 @@ impl Session {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use vault_core::model::fields;
+    use vault_core::model::{Deletion, fields};
 
     use super::*;
 
@@ -1290,6 +1327,80 @@ mod tests {
             .listing(|vault| vault.versions(basic))
             .expect("the vault is open");
         assert_eq!(again, listed);
+        session
+            .at_mut(listed, |vault| vault.delete_version(basic, newest))
+            .expect("the list is current")
+            .expect("the version is dropped");
+    }
+
+    /// A change the vault refused did not happen, and neither did one that
+    /// found nothing to do. The window reads no list again after either - it
+    /// says why and goes on - so a revision moved by them left every press on
+    /// a version refused with a sentence about versions changing when none had.
+    #[test]
+    fn a_refused_change_leaves_the_revision_where_it_was() {
+        let (_scratch, session) = unlocked(RICH);
+        let basic = entry_titled(&session, "basic").id;
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    basic,
+                    fields::NOTES,
+                    vault_core::NewValue::Open("edited".to_owned()),
+                )
+            })
+            .expect("the vault is open")
+            .expect("the notes are written");
+        let (listed, versions) = session
+            .listing(|vault| vault.versions(basic))
+            .expect("the vault is open");
+        let newest = versions.last().expect("the edit kept a version").index;
+        let root = session.tree().expect("the tree comes back");
+
+        type Change = fn(&mut Vault, EntryId) -> Result<(), VaultError>;
+        let refused: [(&str, Change); 4] = [
+            ("a field that is not there", |vault, id| {
+                vault.remove_field(id, "no such field", false)
+            }),
+            ("an undo of a removal that never happened", |vault, id| {
+                vault.undo_removal(id, fields::NOTES)
+            }),
+            ("an erasure of an entry outside the bin", |vault, id| {
+                vault.delete_entry(id, Deletion::Forever)
+            }),
+            ("tags that cannot be written", |vault, id| {
+                vault.set_tags(id, vec![" padded ".to_owned()])
+            }),
+        ];
+        for (what, change) in refused {
+            let done = session
+                .with_mut(|vault| change(vault, basic))
+                .expect("the vault is open");
+            assert!(done.is_err(), "{what} was not refused");
+        }
+        session
+            .with_mut(|vault| vault.rename_group(root.id, &root.name))
+            .expect("the vault is open")
+            .expect("a folder keeps the name it has");
+        session
+            .with_mut(|vault| {
+                vault.set_typed(
+                    basic,
+                    fields::NOTES,
+                    vault_core::NewValue::Open("edited".to_owned()),
+                    vault_core::Typing::InPlace,
+                )
+            })
+            .expect("the vault is open")
+            .expect("typing what is there already writes nothing");
+
+        let (again, _) = session
+            .listing(|vault| vault.versions(basic))
+            .expect("the vault is open");
+        assert_eq!(
+            again, listed,
+            "a change that did not happen moved the revision"
+        );
         session
             .at_mut(listed, |vault| vault.delete_version(basic, newest))
             .expect("the list is current")
@@ -2068,14 +2179,16 @@ mod tests {
             ),
             ("the entry deleted", nothing, |session, id| {
                 session
-                    .overtaking(Over::Entry(id), 1, |vault| vault.delete_entry(id))
+                    .overtaking(Over::Entry(id), 1, |vault| {
+                        vault.delete_entry(id, Deletion::Bin)
+                    })
                     .expect("the session is open")
                     .expect("the entry goes");
             }),
             ("its folder deleted", nothing, |session, id| {
                 let folder = session.entry(id).expect("the entry is there").group;
                 session
-                    .with_mut(|vault| vault.delete_group(folder))
+                    .with_mut(|vault| vault.delete_group(folder, Deletion::Bin))
                     .expect("the session is open")
                     .expect("the folder goes");
             }),
@@ -2083,7 +2196,7 @@ mod tests {
                 "the bin it is in emptied",
                 |session, id| {
                     session
-                        .with_mut(|vault| vault.delete_entry(id))
+                        .with_mut(|vault| vault.delete_entry(id, Deletion::Bin))
                         .expect("the session is open")
                         .expect("the entry goes to the bin");
                 },
@@ -2151,7 +2264,9 @@ mod tests {
             .expect("the session is open")
             .expect("a folder is made");
         session
-            .overtaking(Over::Entry(other), 1, |vault| vault.delete_entry(other))
+            .overtaking(Over::Entry(other), 1, |vault| {
+                vault.delete_entry(other, Deletion::Bin)
+            })
             .expect("the session is open")
             .expect("another entry goes");
 
@@ -2326,6 +2441,10 @@ mod tests {
             "a second lock found a vault"
         );
         assert!(session.typed(), "the unlock screen is not told");
+        assert!(
+            !session.typed_beside(),
+            "the unlock screen says a value was kept beside one"
+        );
         assert!(!session.lost());
 
         let file = reopened(&database);
@@ -2479,7 +2598,7 @@ mod tests {
                 )?;
                 vault.remove_field(basic.id, "PIN", false)?;
                 // Out of the bin, and so out of the file.
-                vault.delete_entry(binned.id)
+                vault.delete_entry(binned.id, Deletion::Forever)
             })
             .expect("the vault is open")
             .expect("the changes are made");
@@ -2548,7 +2667,7 @@ mod tests {
             .expect("the draft is heard");
         session
             .overtaking(Over::Entry(basic.id), 2, |vault| {
-                vault.delete_entry(basic.id)
+                vault.delete_entry(basic.id, Deletion::Bin)
             })
             .expect("the vault is open")
             .expect("the entry goes to the bin");
@@ -2653,7 +2772,9 @@ mod tests {
     /// idle lock wrote "Tr0ub" over the router's password and the next copy
     /// handed that to a router that rejects it. The password stays what it was
     /// now, what was typed is kept beside it in a field that says what it is,
-    /// and the unlock screen still says what it always says.
+    /// and the unlock screen is told so: "saved" on its own reads as the new
+    /// password being the entry's. A note typed into the same entry and written
+    /// where it was typed does not make that go unsaid.
     #[test]
     fn a_lock_keeps_a_new_password_half_typed_beside_the_old_one() {
         let (_directory, database, session) = holding(RICH);
@@ -2662,8 +2783,15 @@ mod tests {
         session
             .draft(basic.id, fields::PASSWORD, replacement("Tr0ub"), 1)
             .expect("the draft is heard");
+        session
+            .draft(basic.id, fields::NOTES, words("and a note", false), 2)
+            .expect("the draft is heard");
         assert!(session.lock(Reason::Idle));
         assert!(session.typed(), "the unlock screen is not told");
+        assert!(
+            session.typed_beside(),
+            "the unlock screen does not say the new password is beside the old"
+        );
 
         let file = reopened(&database);
         assert_eq!(
@@ -2675,7 +2803,11 @@ mod tests {
             value_of(&file, basic.id, "Password (typed before locking)").as_deref(),
             Some("Tr0ub")
         );
-        assert_eq!(file.versions(basic.id).len(), basic.versions + 1);
+        assert_eq!(
+            value_of(&file, basic.id, fields::NOTES).as_deref(),
+            Some("and a note")
+        );
+        assert_eq!(file.versions(basic.id).len(), basic.versions + 2);
     }
 
     /// "Set one" on an entry with no password has nothing to keep a new one
@@ -2700,6 +2832,7 @@ mod tests {
             .expect("the draft is heard");
         assert!(session.lock(Reason::Sleeping));
         assert!(session.typed());
+        assert!(!session.typed_beside(), "nothing was kept beside anything");
 
         let file = reopened(&database);
         assert_eq!(

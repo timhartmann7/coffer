@@ -113,6 +113,19 @@ pub enum Typing {
     Beside,
 }
 
+/// Where text typed before a lock went, as [`Vault::set_typed`] answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Written {
+    /// Nowhere: it was nothing new.
+    Nothing,
+    /// Into the field it was typed for.
+    Into,
+    /// Into a field of its own beside the one it was typed for, whose value
+    /// stays as it was. The reader who comes back has to be told: the field
+    /// they typed into still holds the old value.
+    Beside,
+}
+
 /// What the field a new value is kept in when it cannot go over the old one is
 /// called, after the old one's name: a string field like any the reader makes,
 /// so every KeePass client shows it, and named so the reader knows it on sight.
@@ -137,6 +150,9 @@ pub struct Vault {
     content: Content,
     /// Whether this vault holds a change the file on disk does not.
     changed: bool,
+    /// How many times the tree has changed since the vault opened, counting
+    /// what a save settles and what a reload replaces. See [`Vault::edits`].
+    edits: u64,
     /// Held for as long as the vault is open; removed when it is dropped.
     ///
     /// Absent where the place beside the database would not take the file.
@@ -290,6 +306,7 @@ impl Vault {
             stamp,
             content,
             changed: false,
+            edits: 0,
             _lock: lock,
         })
     }
@@ -487,7 +504,7 @@ impl Vault {
         });
 
         if edited {
-            self.changed = true;
+            self.touched();
             Ok(())
         } else {
             Err(VaultError::NoSuchEntry)
@@ -495,7 +512,7 @@ impl Vault {
     }
 
     /// Writes text the reader was still typing into a field when the vault had
-    /// to go, and says whether it changed the entry.
+    /// to go, and says where it went, if anywhere.
     ///
     /// On the terms of [`Vault::set_field`], so the entry's previous state is
     /// kept as a version, and narrower, because nobody is looking when it
@@ -521,7 +538,7 @@ impl Vault {
         field: &str,
         value: NewValue,
         typing: Typing,
-    ) -> Result<bool, VaultError> {
+    ) -> Result<Written, VaultError> {
         let (text, protect) = match &value {
             NewValue::Open(written) => (written.as_str(), false),
             NewValue::Protected(written) => (written.as_str(), true),
@@ -538,17 +555,18 @@ impl Vault {
         let nothing_new =
             beside && (text.is_empty() || held.is_some_and(|held| held.get() == text));
         if unchanged || nothing_new {
-            return Ok(false);
+            return Ok(Written::Nothing);
         }
 
         if beside && held.is_some_and(|held| !held.get().is_empty()) {
             let names: Vec<&str> = entry.fields.keys().map(String::as_str).collect();
             let kept = clash::beside(&format!("{field} {TYPED_BEFORE_LOCKING}"), &names);
             self.set_field(id, &kept, NewValue::Protected(value.into_text()))?;
+            Ok(Written::Beside)
         } else {
             self.set_field(id, field, value)?;
+            Ok(Written::Into)
         }
-        Ok(true)
     }
 
     /// Whether the file on disk is still the one this vault was opened from.
@@ -636,8 +654,30 @@ impl Vault {
     }
 
     /// Everything a write settles in the database before any bytes leave it.
+    ///
+    /// Settling prunes and re-sorts histories, which moves the position of
+    /// every previous version it touches, so it counts as an edit whether or
+    /// not the write that follows goes through.
     fn prepare(&mut self) -> Result<(), VaultError> {
+        self.edits += 1;
         settle(&mut self.database)
+    }
+
+    /// Marks the tree as holding a change the file has not got.
+    fn touched(&mut self) {
+        self.changed = true;
+        self.edits += 1;
+    }
+
+    /// A number that moves every time the tree changes and at no other time:
+    /// on every change, every save, which settles the histories, and every
+    /// reload.
+    ///
+    /// What a caller compares to tell whether something read from the tree,
+    /// such as the position of a previous version, still means what it did. A
+    /// change that was refused, or that found nothing to do, leaves it alone.
+    pub fn edits(&self) -> u64 {
+        self.edits
     }
 
     /// How many entries the vault holds. Previous versions are not entries and
@@ -683,7 +723,7 @@ impl Vault {
             made.id()
         };
 
-        self.changed = true;
+        self.touched();
         Ok(made)
     }
 
@@ -699,7 +739,7 @@ impl Vault {
         group.name = name.to_owned();
         group.times.last_modification = Some(Times::now());
 
-        self.changed = true;
+        self.touched();
         Ok(())
     }
 
@@ -710,7 +750,14 @@ impl Vault {
     /// with no bin, gets it removed and recorded in `DeletedObjects` so that
     /// other clients do not bring it back. Which of the two happens is what
     /// [`Project::deletion`] said it would.
-    pub fn delete_group(&mut self, id: GroupId) -> Result<(), VaultError> {
+    ///
+    /// `shown` is the deletion the reader was shown and agreed to. When the
+    /// folder stands somewhere else by now - a folder around it went into the
+    /// bin first, or a reload brought in a vault that keeps no bin - this one
+    /// would do something they never chose, and is refused with
+    /// [`VaultError::DeletionChanged`], changing nothing. A move to the bin
+    /// must never turn into an erasure on the way.
+    pub fn delete_group(&mut self, id: GroupId, shown: Deletion) -> Result<(), VaultError> {
         self.writable()?;
         if id == self.database.root().id() {
             return Err(VaultError::CannotMoveRoot);
@@ -721,6 +768,7 @@ impl Vault {
 
         let bin = Bin::of(&self.database);
         match bin.group_deletion(id, bin.standing(&self.database, id)) {
+            deletion if deletion != shown => Err(VaultError::DeletionChanged),
             Deletion::Forever => self.erase_group(id),
             Deletion::Bin => {
                 let into = self.bin(bin.id());
@@ -793,7 +841,7 @@ impl Vault {
             entry.id()
         };
 
-        self.changed = true;
+        self.touched();
         Ok(made)
     }
 
@@ -831,7 +879,7 @@ impl Vault {
             entry.times.last_modification = Some(Times::now());
         });
 
-        self.changed = true;
+        self.touched();
         Ok(())
     }
 
@@ -858,7 +906,7 @@ impl Vault {
             entry.times.last_modification = Some(Times::now());
         });
 
-        self.changed = true;
+        self.touched();
         Ok(())
     }
 
@@ -871,7 +919,11 @@ impl Vault {
     /// A move to the bin is not an edit. It writes no version and records no
     /// deletion, and the entry keeps the folder it came out of as its
     /// `PreviousParentGroup`, which is where [`Vault::put_back_entry`] takes it.
-    pub fn delete_entry(&mut self, id: EntryId) -> Result<(), VaultError> {
+    ///
+    /// `shown` is the deletion the reader agreed to, refused with
+    /// [`VaultError::DeletionChanged`] when it is no longer what deleting the
+    /// entry does, for the reasons [`Vault::delete_group`] gives.
+    pub fn delete_entry(&mut self, id: EntryId, shown: Deletion) -> Result<(), VaultError> {
         self.writable()?;
         let group = self
             .database
@@ -882,6 +934,7 @@ impl Vault {
 
         let bin = Bin::of(&self.database);
         match bin.deletion(bin.standing(&self.database, group)) {
+            deletion if deletion != shown => Err(VaultError::DeletionChanged),
             Deletion::Forever => self.erase_entry(id),
             Deletion::Bin => {
                 let into = self.bin(bin.id());
@@ -945,7 +998,7 @@ impl Vault {
         let mut entry = self.database.entry_mut(id).ok_or(VaultError::NoSuchEntry)?;
         entry.move_to(into).map_err(|_| VaultError::NoSuchGroup)?;
         entry.times.location_changed = Some(Times::now());
-        self.changed = true;
+        self.touched();
         Ok(())
     }
 
@@ -1041,7 +1094,7 @@ impl Vault {
         entry.add_attachment(name.to_owned(), value);
         entry.times.last_modification = Some(Times::now());
 
-        self.changed = true;
+        self.touched();
         Ok(())
     }
 
@@ -1062,7 +1115,7 @@ impl Vault {
             entry.times.last_modification = Some(Times::now());
         }
 
-        self.changed = true;
+        self.touched();
         Ok(())
     }
 
@@ -1101,7 +1154,7 @@ impl Vault {
                 if let Some(mut entry) = self.database.entry_mut(id) {
                     entry.times.last_modification = Some(Times::now());
                 }
-                self.changed = true;
+                self.touched();
                 Ok(())
             }
             Err(refused) => {
@@ -1172,7 +1225,7 @@ impl Vault {
     pub fn restore_version(&mut self, id: EntryId, index: usize) -> Result<(), VaultError> {
         self.writable()?;
         history::restore(&mut self.database, id, index)?;
-        self.changed = true;
+        self.touched();
         Ok(())
     }
 
@@ -1193,7 +1246,7 @@ impl Vault {
         let index = history::before_removal(&self.database, id, field)
             .ok_or(VaultError::RemovalSuperseded)?;
         history::restore(&mut self.database, id, index)?;
-        self.changed = true;
+        self.touched();
         Ok(())
     }
 
@@ -1201,7 +1254,7 @@ impl Vault {
     pub fn delete_version(&mut self, id: EntryId, index: usize) -> Result<(), VaultError> {
         self.writable()?;
         history::forget(&mut self.database, id, index)?;
-        self.changed = true;
+        self.touched();
         Ok(())
     }
 
@@ -1214,7 +1267,7 @@ impl Vault {
     pub fn clear_history(&mut self, id: EntryId) -> Result<(), VaultError> {
         self.writable()?;
         history::clear(&mut self.database, id)?;
-        self.changed = true;
+        self.touched();
         Ok(())
     }
 
@@ -1384,6 +1437,7 @@ impl Vault {
         self.stamp = stamp;
         self.content = content;
         self.changed = false;
+        self.edits += 1;
         Ok(())
     }
 
@@ -1451,7 +1505,7 @@ impl Vault {
         self.database.meta.recyclebin_enabled = Some(true);
         self.database.meta.recyclebin_uuid = Some(made.uuid());
         self.database.meta.recyclebin_changed = Some(Times::now());
-        self.changed = true;
+        self.touched();
         made
     }
 
@@ -1466,7 +1520,7 @@ impl Vault {
         })?;
         group.times.location_changed = Some(Times::now());
 
-        self.changed = true;
+        self.touched();
         Ok(())
     }
 
@@ -1492,7 +1546,7 @@ impl Vault {
             .map_err(|_| VaultError::CannotMoveRoot)?;
 
         self.forget_groups(&gone);
-        self.changed = true;
+        self.touched();
         Ok(())
     }
 
@@ -1506,7 +1560,7 @@ impl Vault {
             .track_changes()
             .remove();
 
-        self.changed = true;
+        self.touched();
         Ok(())
     }
 
@@ -1611,6 +1665,7 @@ fn fill(path: &Path, key: MasterKey, recipe: &Recipe<'_>) -> Result<Vault, Vault
         stamp,
         content,
         changed: false,
+        edits: 0,
         _lock: Some(lock),
     })
 }

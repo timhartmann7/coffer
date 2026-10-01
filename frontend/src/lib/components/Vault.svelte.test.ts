@@ -1672,7 +1672,7 @@ it('asks before a folder goes, and keeps it on the way out', async () => {
 	[...host.querySelectorAll('button')]
 		.find((each) => each.textContent?.trim() === 'Move to Recycle Bin')
 		?.click();
-	await vi.waitFor(() => expect(ipc.deleteGroup).toHaveBeenCalledWith(work.id));
+	await vi.waitFor(() => expect(ipc.deleteGroup).toHaveBeenCalledWith(work.id, 'bin'));
 	await vi.waitFor(() => expect(ipc.save).toHaveBeenCalledTimes(1));
 	await vi.waitFor(() =>
 		expect(toast()?.textContent).toContain('Moved “\u2068Work\u2069” to the Recycle Bin')
@@ -1936,7 +1936,7 @@ it('moves the open entry to the bin and offers it back', async () => {
 		pressed('Move to Recycle Bin');
 		await settled();
 
-		expect(ipc.deleteEntry).toHaveBeenCalledWith(bank.id, expect.any(Number));
+		expect(ipc.deleteEntry).toHaveBeenCalledWith(bank.id, 'bin', expect.any(Number));
 		expect(ipc.save).toHaveBeenCalledTimes(1);
 		expect(onTree).toHaveBeenLastCalledWith(after);
 		expect(host.querySelector('h1'), 'the pane stayed open on a deleted entry').toBeNull();
@@ -2108,7 +2108,7 @@ it('puts an entry back from the bin, or deletes it for good after asking', async
 		pressed('Delete forever', host.querySelector('[data-confirm]') ?? host);
 		await settled();
 
-		expect(ipc.deleteEntry).toHaveBeenCalledWith(vault.mail.id, expect.any(Number));
+		expect(ipc.deleteEntry).toHaveBeenCalledWith(vault.mail.id, 'forever', expect.any(Number));
 		expect(toast()?.textContent).toContain('Deleted “\u2068Old mail\u2069” forever');
 		expect(undo()).toBeNull();
 	} finally {
@@ -2180,7 +2180,7 @@ it('deletes a folder in the bin for good after asking, and goes up a level', asy
 		pressed('Delete forever', host.querySelector('[data-confirm]') ?? host);
 		await settled();
 
-		expect(ipc.deleteGroup).toHaveBeenCalledWith(vault.banking.id);
+		expect(ipc.deleteGroup).toHaveBeenCalledWith(vault.banking.id, 'forever');
 		expect(toast()?.textContent).toContain('Deleted “\u2068Banking\u2069” forever');
 		expect(undo()).toBeNull();
 		expect(reads(), 'the list did not go back up to the bin').toContain('Old mail');
@@ -2212,7 +2212,7 @@ it('says so when deleting a folder is for good', async () => {
 		pressed('Delete forever', host.querySelector('[data-confirm]') ?? host);
 		await settled();
 
-		expect(ipc.deleteGroup).toHaveBeenCalledWith(work.id);
+		expect(ipc.deleteGroup).toHaveBeenCalledWith(work.id, 'forever');
 		expect(toast()?.textContent).toContain('Deleted “\u2068Work\u2069” forever');
 		expect(undo()).toBeNull();
 	} finally {
@@ -2425,8 +2425,8 @@ it('deletes an entry with a number newer than anything typed into it', async () 
 		pressed('Move to Recycle Bin');
 		await settled();
 
-		expect(ipc.deleteEntry).toHaveBeenCalledWith(bank.id, expect.any(Number));
-		expect(ipc.deleteEntry.mock.lastCall?.[1]).toBeGreaterThan(drafted);
+		expect(ipc.deleteEntry).toHaveBeenCalledWith(bank.id, 'bin', expect.any(Number));
+		expect(ipc.deleteEntry.mock.lastCall?.[2]).toBeGreaterThan(drafted);
 	} finally {
 		await unmount(component);
 		vi.useRealTimers();
@@ -2812,7 +2812,7 @@ it('keeps the pane away when the entry’s folder goes while it is opening', asy
 		flushSync();
 		pressed('Move to Recycle Bin', host.querySelector('[data-confirm]') ?? host);
 		await settled();
-		expect(ipc.deleteGroup).toHaveBeenCalledWith(work.id);
+		expect(ipc.deleteGroup).toHaveBeenCalledWith(work.id, 'bin');
 		expect(pane()).toBeNull();
 
 		reading.resolve(readOf(inside));
@@ -2963,7 +2963,7 @@ it('moves another entry to the bin while the save of the first holds Rust', asyn
 			ipc.deleteEntry,
 			'the second move was dropped behind the first save'
 		).toHaveBeenCalledTimes(2);
-		expect(ipc.deleteEntry).toHaveBeenLastCalledWith(drive.id, expect.any(Number));
+		expect(ipc.deleteEntry).toHaveBeenLastCalledWith(drive.id, 'bin', expect.any(Number));
 		expect(pane()).toBeNull();
 
 		saving.resolve();
@@ -2976,9 +2976,10 @@ it('moves another entry to the bin while the save of the first holds Rust', asyn
 });
 
 /**
- * The one press the narrower guard must still hold back: the open entry's own
- * move while its folder's move to the bin is on its way. Rust takes the folder
- * first, and the entry's move would then find it in the bin and erase it.
+ * The one press the narrower guard still holds back: the open entry's own
+ * move while its folder's move to the bin is on its way. Rust may take the
+ * folder first and refuse the entry's move, for a choice the folder's move has
+ * already made for it.
  */
 it('does not move an entry on its own while its folder is on its way to the bin', async () => {
 	const bank = row({ title: 'Bank' });
@@ -3015,16 +3016,98 @@ it('does not move an entry on its own while its folder is on its way to the bin'
 		flushSync();
 		pressed('Move to Recycle Bin', host.querySelector('[data-confirm]') ?? host);
 		flushSync();
-		expect(ipc.deleteGroup).toHaveBeenCalledWith(work.id);
+		expect(ipc.deleteGroup).toHaveBeenCalledWith(work.id, 'bin');
 
 		pressed('Move to Recycle Bin', pane() ?? host);
 		await settled();
-		expect(ipc.deleteEntry, 'the entry went after its folder, and for good').not.toHaveBeenCalled();
+		expect(ipc.deleteEntry, 'the entry went after its folder').not.toHaveBeenCalled();
 
 		moving.resolve(gone);
 		await settled();
 		expect(pane()).toBeNull();
 		expect(toast()?.textContent).toContain('Moved “\u2068Work\u2069” to the Recycle Bin');
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * Rust refuses a deletion that would no longer do what the window showed: a
+ * folder around the entry reached it first, behind a save, and the move the
+ * reader agreed to would now erase. Nothing was deleted, nothing is written or
+ * offered back, and the reader is told so plainly. The tree and the pane are
+ * read again, so the button says what deleting the entry does now.
+ */
+it('says nothing was deleted when Rust refuses a deletion that changed, and reads again', async () => {
+	const bank = row({ title: 'Bank' });
+	const work = group({ name: 'Work', entries: [bank] });
+	bank.group = work.id;
+	const bin = group({ name: 'Recycle Bin', isRecycleBin: true, deletion: 'forever' });
+	const tree = group({ name: 'Root', sections: [work, bin] });
+	const now = group({
+		...tree,
+		sections: [
+			{
+				...bin,
+				sections: [
+					{ ...work, binned: { since: null, within: null, from: tree.id }, deletion: 'forever' }
+				]
+			}
+		]
+	});
+	ipc.entry
+		.mockResolvedValueOnce(titled(bank.id, 'Bank', { group: work.id, deletion: 'bin' }))
+		.mockResolvedValue(titled(bank.id, 'Bank', { group: work.id, deletion: 'forever' }));
+	ipc.deleteEntry.mockRejectedValueOnce({
+		code: 'deletionChanged',
+		message: 'that deletion would no longer do what was shown, so nothing was deleted'
+	});
+
+	const { component, onTree } = mounted(tree);
+	try {
+		pressed('Bank');
+		await settled();
+		ipc.tree.mockResolvedValue(now);
+		pressed('Move to Recycle Bin', pane() ?? host);
+		await settled();
+
+		expect(ipc.deleteEntry).toHaveBeenCalledWith(bank.id, 'bin', expect.any(Number));
+		expect(toast()?.textContent).toContain('Choose again from the vault as it is now');
+		expect(undo(), 'a deletion that did not happen was offered back').toBeNull();
+		expect(ipc.save, 'a refusal changed nothing to write').not.toHaveBeenCalled();
+		expect(onTree).toHaveBeenLastCalledWith(now);
+		expect(pane()?.textContent).toContain('Delete forever…');
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** The same refusal for a folder, asked from the question over the folders. */
+it('says nothing was deleted when Rust refuses a folder deletion that changed', async () => {
+	const work = group({ name: 'Work' });
+	const tree = group({ name: 'Root', sections: [work] });
+	const now = group({ ...tree, sections: [{ ...work, deletion: 'forever' }] });
+	ipc.deleteGroup.mockRejectedValueOnce({
+		code: 'deletionChanged',
+		message: 'that deletion would no longer do what was shown, so nothing was deleted'
+	});
+
+	const { component, onTree } = mounted(tree);
+	try {
+		pressed('Work');
+		flushSync();
+		ipc.tree.mockResolvedValue(now);
+		host.querySelector<HTMLButtonElement>('[aria-label="Delete this folder"]')?.click();
+		flushSync();
+		pressed('Move to Recycle Bin', host.querySelector('[data-confirm]') ?? host);
+		await settled();
+
+		expect(ipc.deleteGroup).toHaveBeenCalledWith(work.id, 'bin');
+		expect(toast()?.textContent).toContain('Choose again from the vault as it is now');
+		expect(ipc.save).not.toHaveBeenCalled();
+		expect(onTree).toHaveBeenLastCalledWith(now);
 	} finally {
 		await unmount(component);
 		vi.useRealTimers();
@@ -3568,6 +3651,73 @@ it('keeps the pane and asks when a new password typed there would go with it', a
 		await settled();
 		expect(titleField()?.value).toBe('Google Drive');
 		expect(ipc.entry).toHaveBeenCalledWith(drive.id);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * Escape pressed again because the pane did not close the first time. The
+ * first one raised the question with the focus on Save, so the second lands
+ * on the question - and its way out used to be Discard, which threw the new
+ * password away with nothing said. The way out is back into the field now:
+ * the question goes, the text stays, and nothing is let go of in Rust.
+ */
+it('takes a second Escape back into the field, and throws nothing away', async () => {
+	const { tree } = withPasswords();
+	const { component } = mounted(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		const typed = typeNewPassword('n3w-from-the-website');
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(ipc.draft, 'the premise is a new password Rust has heard').toHaveBeenCalled();
+
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		await settled();
+		expect(document.activeElement).toBe(exactly('Save'));
+
+		document.activeElement?.dispatchEvent(
+			new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+		);
+		await settled();
+
+		expect(titleField()?.value, 'the second Escape took the pane').toBe('Gmail');
+		expect(reads()).not.toContain('Save the new password?');
+		expect(document.activeElement, 'the focus is not back in the field').toBe(typed);
+		expect(typed.value, 'the second Escape threw the new password away').toBe(
+			'n3w-from-the-website'
+		);
+		expect(
+			ipc.draft.mock.calls.map((call) => call[2]),
+			'the new password was let go of in Rust'
+		).not.toContain(null);
+		expect(ipc.setField).not.toHaveBeenCalled();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Discard is an answer of its own, and the one that throws the new value
+ * away. */
+it('throws a new password away only when Discard is pressed', async () => {
+	const { tree } = withPasswords();
+	const { component } = mounted(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		typeNewPassword('n3w-from-the-website');
+		await vi.advanceTimersByTimeAsync(1_000);
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		await settled();
+
+		exactly('Discard').click();
+		await settled();
+		expect(host.querySelector('textarea[aria-label="New password"]')).toBeNull();
+		expect(ipc.draft.mock.calls.map((call) => call[2])).toContain(null);
+		expect(ipc.setField).not.toHaveBeenCalled();
 	} finally {
 		await unmount(component);
 		vi.useRealTimers();

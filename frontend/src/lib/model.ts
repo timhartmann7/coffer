@@ -44,6 +44,10 @@ export interface Found {
 	name: string;
 	/** The folder in the home folder it was found in. */
 	folder: string;
+	/** Whether nothing is at the name any more, and what was found is the copy
+	 * a lock left of the vault beside it. The offer must not say it found a
+	 * file that is not there. */
+	copy: boolean;
 }
 
 export interface Status {
@@ -78,6 +82,10 @@ export interface Status {
 	 * it into the vault with everything else. It does not say which entry: after
 	 * a lock nothing of the vault is left to say it with. */
 	typed: boolean;
+	/** Whether some of what it saved was a new value typed in a Change field and
+	 * kept in a field of its own beside the value it was for, which the field
+	 * still holds. Which field is not said either. */
+	typedBeside: boolean;
 	/** Why the vault that was open is not open any more, when it is worth
 	 * saying. A lock the reader asked for has nothing to explain. */
 	lockedBy: 'idle' | 'sleeping' | 'screenLocked' | 'sessionSwitched' | null;
@@ -157,9 +165,10 @@ export interface Field {
  * the recycle bin and can be put back, or it goes out of the file for good.
  * Rust answers it for every entry and every folder, from the file as it is
  * now, so a reload that brought in a vault which stopped keeping a bin is
- * answered by the next tree.
+ * answered by the next tree. A deletion sends back the one the reader was
+ * shown, and Rust refuses it when it would now do the other.
  */
-type Deletion = 'bin' | 'forever';
+export type Deletion = 'bin' | 'forever';
 
 /** What is known about something in the recycle bin. */
 export interface Binned {
@@ -376,6 +385,7 @@ export interface Failure {
 		| 'versionsChanged'
 		| 'forGood'
 		| 'superseded'
+		| 'deletionChanged'
 		| 'needsOpening'
 		| 'taken'
 		| 'readOnly'

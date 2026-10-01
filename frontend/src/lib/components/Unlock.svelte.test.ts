@@ -549,6 +549,51 @@ function standingIn(onChoose = vi.fn()) {
 }
 
 /**
+ * The reader was in a copy a lock had left, its file went, and the lock that
+ * closed it kept their work in a copy of that copy. The chosen file is the
+ * first copy, and it is that copy's file that is gone - the vault it came from
+ * is untouched. The card used to tell them their vault file was gone, and ask
+ * whether to remove the only copy of their vault.
+ */
+it('says it is the copy that went when the chosen file is itself a copy', () => {
+	const component = mount(Unlock, {
+		target: host,
+		props: {
+			database: {
+				path: '/Users/someone/personal.kdbx.unsaved.kdbx',
+				name: 'personal.kdbx.unsaved'
+			},
+			rescue: {
+				name: 'personal.kdbx.unsaved.kdbx.unsaved.kdbx',
+				written: '2026-09-01T14:05:00Z'
+			},
+			copy: {
+				vault: 'personal.kdbx',
+				saved: '2026-09-01T13:00:00Z',
+				keptAs: 'personal.kdbx.1.bak',
+				vaultFile: { there: true, written: null }
+			},
+			file: { there: false, written: null },
+			onChoose: vi.fn(),
+			onKeyFile: vi.fn(),
+			onCreate: vi.fn(),
+			onGone: vi.fn(),
+			onUnlocked: vi.fn()
+		}
+	});
+	flushSync();
+
+	expect(reads()).toContain('This copy is not there any more');
+	expect(reads()).not.toContain('Your vault file is not there');
+	button('Remove it…').click();
+	flushSync();
+	expect(reads()).toContain('Remove the only copy of what this copy held?');
+	expect(reads()).not.toContain('the only copy of your vault');
+
+	unmount(component);
+});
+
+/**
  * The vault's file went, and the copy is all there is. Putting it back is the
  * one thing to do, so it is the accent and nothing asks for a password that
  * could only open nothing; the move sends nothing, because the paths are
@@ -830,9 +875,44 @@ it('says what was being typed was saved, and names nothing', () => {
 	}
 });
 
+/**
+ * A lock that kept a half-typed new value beside the old one, rather than over
+ * it, says that as well. "Saved" alone reads as the new password being the
+ * entry's now, and the old one the field still holds is what the reader would
+ * copy. Still in words that name no entry and no field.
+ */
+it('says a new value was kept beside the old one, and names nothing', () => {
+	const kept = 'A new value you had not saved yet was kept in a field of its own';
+	for (const [typed, typedBeside] of [
+		[true, true],
+		[true, false],
+		[false, false]
+	] as const) {
+		const component = mount(Unlock, {
+			target: host,
+			props: {
+				database,
+				typed,
+				typedBeside,
+				onChoose: vi.fn(),
+				onKeyFile: vi.fn(),
+				onCreate: vi.fn(),
+				onGone: vi.fn(),
+				onUnlocked: vi.fn()
+			}
+		});
+		flushSync();
+
+		const said = host.textContent?.replace(/\s+/g, ' ') ?? '';
+		expect(said.includes(kept), `${typed} ${typedBeside}`).toBe(typedBeside);
+		expect(said).not.toContain('typed before locking');
+		unmount(component);
+	}
+});
+
 /** The first-run screen, with nothing remembered and whatever Rust found. */
 function firstRun(
-	found: { name: string; folder: string } | null,
+	found: { name: string; folder: string; copy?: boolean } | null,
 	onChoose = vi.fn(),
 	onGone = vi.fn()
 ) {
@@ -840,7 +920,7 @@ function firstRun(
 		target: host,
 		props: {
 			database: null,
-			found,
+			found: found && { copy: false, ...found },
 			onChoose,
 			onKeyFile: vi.fn(),
 			onCreate: vi.fn(),
@@ -873,6 +953,27 @@ it("offers a vault found in Coffer's folder above the offer to make one", async 
 	await vi.waitFor(() => expect(onChoose).toHaveBeenCalledWith(opened));
 	// Rust opens the file it named: nothing this window sends names one.
 	expect(ipc.chooseFound).toHaveBeenCalledWith();
+
+	unmount(component);
+});
+
+/**
+ * Coffer's folder holds only the copy a lock left: the vault's own file went
+ * while it was open. The copy is offered under the vault's name, because that
+ * name's unlock screen is where it is put back - but the card does not say it
+ * found a vault.kdbx the Finder will not show.
+ */
+it('says a copy was found when the vault it is a copy of is not there', () => {
+	const component = firstRun({ name: 'vault.kdbx', folder: 'Coffer', copy: true });
+
+	expect(reads()).toContain(
+		'We found a copy of your vault vault.kdbx in Coffer (your home folder)'
+	);
+	expect(reads()).toContain('The vault’s own file is not there.');
+	expect(reads()).not.toContain('We found your vault:');
+	expect(
+		[...host.querySelectorAll('button')].some((each) => each.textContent?.trim() === 'Open it')
+	).toBe(true);
 
 	unmount(component);
 });
@@ -960,7 +1061,7 @@ it('offers nothing found when there is a vault to unlock', () => {
 		target: host,
 		props: {
 			database,
-			found: { name: 'vault.kdbx', folder: 'Coffer' },
+			found: { name: 'vault.kdbx', folder: 'Coffer', copy: false },
 			onChoose: vi.fn(),
 			onKeyFile: vi.fn(),
 			onCreate: vi.fn(),

@@ -12,6 +12,7 @@ import type {
 	Attached,
 	Calibration,
 	Database,
+	Deletion,
 	Entry,
 	Failure,
 	Group,
@@ -257,10 +258,14 @@ export function createEntry(group: string): Promise<Made> {
 	return invoke('create_entry', { group });
 }
 
-/** Deletes an entry. `sequence` is the number `drafts.release` gave for it:
- * whatever was typed into the entry and said before it is let go. */
-export function deleteEntry(entry: string, sequence: number): Promise<Group> {
-	return invoke('delete_entry', { entry, sequence });
+/**
+ * Deletes an entry. `deletion` is what the window showed the deletion would
+ * do, and Rust rejects with `deletionChanged`, deleting nothing, when that is
+ * no longer what it does. `sequence` is the number `drafts.release` gave for
+ * it: whatever was typed into the entry and said before it is let go.
+ */
+export function deleteEntry(entry: string, deletion: Deletion, sequence: number): Promise<Group> {
+	return invoke('delete_entry', { entry, deletion, sequence });
 }
 
 export function createGroup(parent: string, name: string): Promise<Group> {
@@ -271,8 +276,9 @@ export function renameGroup(group: string, name: string): Promise<Group> {
 	return invoke('rename_group', { group, name });
 }
 
-export function deleteGroup(group: string): Promise<Group> {
-	return invoke('delete_group', { group });
+/** Deletes a folder and everything in it, on the terms `deleteEntry` gives. */
+export function deleteGroup(group: string, deletion: Deletion): Promise<Group> {
+	return invoke('delete_group', { group, deletion });
 }
 
 /**
