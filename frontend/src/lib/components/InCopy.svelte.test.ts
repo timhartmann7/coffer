@@ -63,7 +63,7 @@ it('says it is the copy, and what becomes of the vault file it would replace', (
 	expect(reads()).toContain('This is the copy saved on 1 Sep at 14:05.');
 	expect(reads()).toContain('What you change here changes the copy, not your vault.');
 	expect(reads()).toContain(
-		'puts it in place of personal.kdbx, last changed on 1 Sep at 14:07, which is kept as personal.kdbx.1.bak.'
+		'puts it in place of personal.kdbx, last changed on 1 Sep at 14:07, which is kept as personal.kdbx.1.bak until later saves push it out of the snapshots.'
 	);
 	expect(button('Make this my vault').className).toContain('bg-accent');
 	expect(button('Back to my vault').className).not.toContain('bg-accent');
@@ -80,7 +80,7 @@ it('says only what it knows about the times, and nothing is kept of a vault that
 	});
 	expect(reads()).toContain('This is the copy a lock saved. What you change');
 	expect(reads()).toContain(
-		'puts it in place of personal.kdbx, which is kept as personal.kdbx.1.bak.'
+		'puts it in place of personal.kdbx, which is kept as personal.kdbx.1.bak until later saves push it out of the snapshots.'
 	);
 	unmount(component);
 
@@ -129,6 +129,30 @@ it('says why the copy did not become the vault, where the press was', async () =
 
 	button('Make this my vault').click();
 	await vi.waitFor(() => expect(reads()).toContain('someone has this vault open on a-mac'));
+	expect(button('Make this my vault').disabled).toBe(false);
+
+	unmount(component);
+});
+
+/**
+ * Rust holds the press to the vault's file as the banner last described it.
+ * When somebody wrote it since, nothing is replaced, and the banner says so in
+ * words about itself rather than Rust's: the time it shows has been read again
+ * by then, and the reader looks at it before pressing again.
+ */
+it('says nothing was replaced when the vault file changed after the banner said how it stood', async () => {
+	const onPromote = vi.fn().mockRejectedValue({
+		code: 'externalChange',
+		message: 'your vault file changed after this was shown, so nothing was replaced'
+	});
+	const component = banner({ there: true, written: '2026-09-01T14:07:00Z' }, onPromote);
+
+	button('Make this my vault').click();
+	await vi.waitFor(() =>
+		expect(reads()).toContain(
+			'Your vault file changed after this was shown, so nothing was replaced. What is said above is how it stands now.'
+		)
+	);
 	expect(button('Make this my vault').disabled).toBe(false);
 
 	unmount(component);

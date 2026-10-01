@@ -18,7 +18,7 @@ use std::time::SystemTime;
 
 use crate::error::VaultError;
 use crate::storage::lock::{Lock, Outcome};
-use crate::storage::{atomic, sibling};
+use crate::storage::{atomic, sibling, snapshot};
 
 /// Appended to the whole file name, the way `.lock` and `.1.bak` are, so that
 /// the copy lands in the folder the reader chose. The `.kdbx` on the end is
@@ -79,13 +79,17 @@ pub fn found(database: &Path) -> Result<Option<Kept>, io::Error> {
     }
 }
 
-/// Takes the copy away, at the reader's word and never at Coffer's.
+/// Takes the copy away, at the reader's word and never at Coffer's, and its
+/// snapshots with it (see [`retire`]).
 pub fn discard(database: &Path) -> Result<(), io::Error> {
-    match std::fs::remove_file(beside(database)?) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
+    let copy = beside(database)?;
+    match std::fs::remove_file(&copy) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
+    retire(&copy);
+    Ok(())
 }
 
 /// Moves the copy beside `database` into the vault's own name, for a vault
@@ -93,17 +97,24 @@ pub fn discard(database: &Path) -> Result<(), io::Error> {
 ///
 /// No password, because nothing is opened: the copy is a whole database under
 /// the vault's credentials, and moving it is all the reader asked for. Only
-/// into a name that holds nothing, though. The name is taken with an exclusive
-/// create before a byte moves, so a file that arrives while this runs - the
-/// vault dragged back out of the Trash, a sync client catching up - is never
-/// written over, and the answer is [`VaultError::DatabaseExists`] with both
-/// files as they were. A vault that is there goes into the snapshots through
-/// [`crate::Vault::promote`], which has the password a write needs.
+/// into a name that holds nothing, though, and nothing is ever written at that
+/// name before it is whole. The copy's bytes go into a temporary file of
+/// Coffer's own beside it, owner-only and flushed, and that file is then
+/// published at the vault's name with [`atomic::Staged::publish`], which is
+/// refused if anything at all is there by then. So a file that arrives while
+/// this runs - the vault dragged back out of the Trash, a sync client catching
+/// up - is never written over and never removed, and the answer is
+/// [`VaultError::DatabaseExists`] with both files as they were. A vault that is
+/// there goes into the snapshots through [`crate::Vault::promote`], which has
+/// the password a write needs.
 ///
-/// The bytes go through the staged writer into the name that was taken, so the
-/// vault is born owner-only and whole, and the copy is removed only once the
-/// vault's name holds every byte of it. A process killed part way leaves the
-/// copy where it was.
+/// The copy is removed only once the vault's name holds every byte of it. A
+/// process killed part way leaves the copy where it was, nothing at the
+/// vault's name, and at most a temporary file the next write beside it sweeps.
+///
+/// A filesystem that keeps no second name for a file cannot publish without
+/// replacing, so the move is refused there with [`VaultError::NoExclusiveMove`]
+/// and the copy has to be opened and made the vault from inside.
 ///
 /// The lock files beside both are taken for as long as this runs, so that
 /// another Coffer holding either is told rather than having the file moved
@@ -113,35 +124,66 @@ pub fn put_back(database: &Path) -> Result<(), VaultError> {
     let _vault = claim(database)?;
     let _copy = claim(&copy)?;
 
-    // Opened before the name is taken, so that a copy that is not there leaves
-    // nothing at the vault's name either.
     let mut source = File::open(&copy).map_err(|error| match error.kind() {
         io::ErrorKind::NotFound => VaultError::DatabaseGone,
         _ => VaultError::Io(error),
     })?;
 
-    atomic::reserve(database).map_err(|error| match error.kind() {
-        io::ErrorKind::AlreadyExists => VaultError::DatabaseExists,
-        _ => VaultError::Io(error),
-    })?;
-
-    // From here the file at the vault's name is this function's, and every way
-    // out that is not a vault has to take it back off the disk: an empty file
-    // there would be a vault that will not open, standing in the way of the
-    // next attempt.
-    let moved = atomic::stage::<io::Error, _>(database, |writer: &mut dyn io::Write| {
-        io::copy(&mut source, writer).map(drop)
-    })
-    .and_then(atomic::Staged::commit);
-    if let Err(error) = moved {
-        let _ = std::fs::remove_file(database);
-        return Err(VaultError::Io(error));
+    // Advice, asked before a copy that can be large is read: the answer that
+    // counts is the publish's own.
+    if atomic::taken(database) {
+        return Err(VaultError::DatabaseExists);
     }
+
+    atomic::stage::<io::Error, _>(database, |writer: &mut dyn io::Write| {
+        io::copy(&mut source, writer).map(drop)
+    })?
+    .publish()
+    .map_err(unpublished)?;
 
     // A copy that will not go is a copy offered again beside a vault that now
     // holds the same thing, which loses nothing and is said on the next screen.
     let _ = std::fs::remove_file(&copy);
+    retire(&copy);
     Ok(())
+}
+
+/// What a refused publish means for a move into the vault's name.
+fn unpublished(error: io::Error) -> VaultError {
+    match error.kind() {
+        io::ErrorKind::AlreadyExists => VaultError::DatabaseExists,
+        // The temporary file was just made in the same folder, so a folder
+        // that will not take a new name is not what refused: the filesystem
+        // keeps no second name for a file. FAT and exFAT answer EPERM, and
+        // most network shares that lack links ENOTSUP, which the standard
+        // library leaves uncategorised.
+        io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported => VaultError::NoExclusiveMove,
+        _ if error
+            .raw_os_error()
+            .is_some_and(|errno| [libc::ENOTSUP, libc::EOPNOTSUPP].contains(&errno)) =>
+        {
+            VaultError::NoExclusiveMove
+        }
+        _ => VaultError::Io(error),
+    }
+}
+
+/// Takes away the snapshots a copy rotated beside its own name, once the copy
+/// has gone: into the vault's name, over the vault, or at the reader's word.
+///
+/// Every save made inside an open copy pushes a chain beside the copy, as any
+/// save does. Once the copy is not there to be chosen, nothing in Coffer lists
+/// that chain or offers it, and it would sit in the folder as earlier states of
+/// the vault that open with whatever password the vault had then - long after
+/// the reader changed it because they thought it had leaked. The next copy a
+/// lock left would then rotate into it, and two rescues' generations would
+/// share one chain. The vault's own chain is untouched: what the copy replaced
+/// is in it.
+///
+/// Best effort: the move it follows has happened, and a snapshot that will not
+/// go is no reason to say it did not.
+pub(crate) fn retire(copy: &Path) {
+    let _ = snapshot::clear(copy);
 }
 
 /// Takes the lock beside a file a copy is about to be moved onto or off, for
@@ -156,5 +198,43 @@ pub(crate) fn claim(path: &Path) -> Result<Lock, VaultError> {
         Outcome::Taken(lock) => Ok(lock),
         Outcome::Held(holder) => Err(VaultError::Locked(holder)),
         Outcome::Unwritable => Err(VaultError::ReadOnlyPlace),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unpublished;
+    use crate::error::VaultError;
+    use std::io;
+
+    /// A disk without hard links cannot be made inside a test, so this is
+    /// where the answer to one is pinned: the errnos FAT, exFAT and the shares
+    /// that lack links give for a link are a refusal that sends the reader to
+    /// open the copy, a name already taken is the one answer about the vault,
+    /// and anything else is a fault said as one.
+    #[test]
+    fn a_publish_refused_is_read_for_what_it_says_about_the_move() {
+        assert!(matches!(
+            unpublished(io::Error::from_raw_os_error(libc::EEXIST)),
+            VaultError::DatabaseExists
+        ));
+        for errno in [libc::EPERM, libc::EACCES, libc::ENOTSUP, libc::EOPNOTSUPP] {
+            assert!(
+                matches!(
+                    unpublished(io::Error::from_raw_os_error(errno)),
+                    VaultError::NoExclusiveMove
+                ),
+                "errno {errno}"
+            );
+        }
+        for errno in [libc::ENOSPC, libc::EIO, libc::ENOENT] {
+            assert!(
+                matches!(
+                    unpublished(io::Error::from_raw_os_error(errno)),
+                    VaultError::Io(_)
+                ),
+                "errno {errno}"
+            );
+        }
     }
 }

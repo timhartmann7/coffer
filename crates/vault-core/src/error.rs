@@ -173,6 +173,21 @@ pub enum VaultError {
     #[error("this is not a copy a lock left beside a vault")]
     NotACopy,
 
+    /// The copy cannot go into the vault's empty name without a password, on
+    /// a filesystem that keeps no second name for a file: there is no way to
+    /// put a whole file at a name there that is refused if something arrived
+    /// first. Opened, the copy becomes the vault through an ordinary save.
+    #[error(
+        "this disk cannot take the copy back without it being opened: open the copy, then make it your vault from inside"
+    )]
+    NoExclusiveMove,
+
+    /// The vault's file is not as it stood when the reader was last told how
+    /// it stood, and making the copy the vault would push a change they were
+    /// never shown into the snapshots.
+    #[error("your vault file changed after this was shown, so nothing was replaced")]
+    VaultFileChanged,
+
     /// A password with no characters to choose from is not a password.
     #[error("a password needs at least one kind of character")]
     NothingToGenerateFrom,

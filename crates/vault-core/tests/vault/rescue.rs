@@ -584,6 +584,11 @@ fn rescued(directory: &Path, name: &str, note: &str) -> (PathBuf, PathBuf) {
     (database, copy)
 }
 
+/// How the vault's file stands, as the copy's banner tells the reader.
+fn told(database: &Path) -> Option<storage::Seen> {
+    Some(storage::Seen::of(database))
+}
+
 fn notes_of(path: &Path) -> Option<String> {
     let vault = open(path, BUILT_PASSWORD);
     let id = vault.tree().entries[0].id;
@@ -594,14 +599,19 @@ fn notes_of(path: &Path) -> Option<String> {
     })
 }
 
-/// Every lock file and every temporary file in a directory. A move that is
-/// over leaves none of either behind.
+/// Every lock file, every temporary file and everything kept beside a copy -
+/// its snapshots, a copy of it - in a directory. A move that is over leaves
+/// none of them behind.
 fn leftovers(directory: &Path) -> Vec<String> {
     std::fs::read_dir(directory)
         .expect("the directory reads")
         .flatten()
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .filter(|name| name.ends_with(".lock") || name.ends_with(".coffer-tmp"))
+        .filter(|name| {
+            name.ends_with(".lock")
+                || name.ends_with(".coffer-tmp")
+                || name.contains(".unsaved.kdbx.")
+        })
         .collect()
 }
 
@@ -692,6 +702,153 @@ fn putting_the_copy_back_never_writes_over_what_is_at_the_vaults_name() {
         "the link was written over"
     );
     assert_eq!(std::fs::read(&copy).expect("the copy reads"), ours);
+}
+
+/// The vault comes back while its copy is on the way into its name: a sync
+/// client catching up, or Finder's Put Back. What came back is never written
+/// over and never removed, the copy stays, and nothing of the move is left.
+///
+/// The copy is a pipe, so that the move reads it exactly as fast as this test
+/// writes it: the vault comes back after the move has begun writing and before
+/// it can have finished, every time, rather than when a race happens to land.
+#[test]
+fn a_vault_that_comes_back_while_the_copy_moves_is_never_written_over() {
+    use std::io::Write as _;
+
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let (database, copy) = rescued(scratch.path(), "arriving.kdbx", "mine");
+    let theirs = std::fs::read(&database).expect("the vault reads");
+    std::fs::remove_file(&database).expect("the vault goes");
+    let ours = std::fs::read(&copy).expect("the copy reads");
+    std::fs::remove_file(&copy).expect("the copy is taken away to become a pipe");
+    let name = std::ffi::CString::new(copy.as_os_str().as_encoded_bytes()).expect("a path");
+    // SAFETY: a valid C string and a plain mode; nothing is shared.
+    assert_eq!(
+        unsafe { libc::mkfifo(name.as_ptr(), 0o600) },
+        0,
+        "the pipe is made"
+    );
+
+    let directory = scratch.path().to_path_buf();
+    let (vault, pipe) = (database.clone(), copy.clone());
+    let restorer = std::thread::spawn(move || {
+        // Opens once the move has opened the other end.
+        let mut writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&pipe)
+            .expect("the pipe opens");
+        let started = std::time::Instant::now();
+        while !std::fs::read_dir(&directory)
+            .expect("the directory reads")
+            .flatten()
+            .any(|entry| entry.file_name().to_string_lossy().ends_with(".coffer-tmp"))
+        {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "the move never began writing"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // Whole and by rename, the way a sync client puts a file back.
+        let incoming = directory.join("incoming");
+        std::fs::write(&incoming, &theirs).expect("their file is written");
+        std::fs::rename(&incoming, &vault).expect("the vault comes back");
+        writer.write_all(&ours).expect("the copy is read");
+        theirs
+    });
+
+    let answer = unsaved::put_back(&database);
+    let theirs = restorer.join().expect("the restorer finishes");
+
+    assert!(
+        matches!(answer, Err(VaultError::DatabaseExists)),
+        "{answer:?}"
+    );
+    assert_eq!(
+        std::fs::read(&database).expect("the vault reads"),
+        theirs,
+        "the vault that came back was written over"
+    );
+    assert!(
+        copy.symlink_metadata().is_ok(),
+        "the copy went although it was not put back"
+    );
+    assert_eq!(leftovers(scratch.path()), Vec::<String>::new());
+}
+
+/// A process killed once the copy's bytes are written beside the vault's name
+/// and before they are given it. Nothing is at the vault's name - not a file
+/// that will not open, standing in the way and hiding the copy - the copy is
+/// as it was, and the next press puts it back and sweeps what was left.
+#[test]
+fn a_move_killed_before_it_took_the_vaults_name_leaves_the_name_empty() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let (database, copy) = rescued(scratch.path(), "killed.kdbx", "mine");
+    std::fs::remove_file(&database).expect("the vault goes");
+    let ours = std::fs::read(&copy).expect("the copy reads");
+
+    let staged =
+        storage::atomic::stage::<std::io::Error, _>(&database, |writer| writer.write_all(&ours))
+            .expect("the copy's bytes are staged");
+    // Killed: nothing after this runs, a drop included.
+    std::mem::forget(staged);
+
+    assert_eq!(storage::on_disk(&database), OnDisk::Gone);
+    assert_eq!(std::fs::read(&copy).expect("the copy reads"), ours);
+
+    unsaved::put_back(&database).expect("the next press puts it back");
+    assert_eq!(std::fs::read(&database).expect("the vault reads"), ours);
+    assert_eq!(leftovers(scratch.path()), Vec::<String>::new());
+}
+
+/// Saves inside an open copy push a chain of snapshots beside the copy, as
+/// every save does. However the copy goes - made the vault, put back, or
+/// removed - its chain goes with it: nothing lists it once the copy is not
+/// there, and it would open with whatever password the vault had then. The
+/// vault's own chain is not touched.
+#[test]
+fn a_copy_takes_its_own_snapshots_with_it_however_it_goes() {
+    for how in ["made the vault", "put back", "removed"] {
+        let scratch = tempfile::tempdir().expect("a scratch directory");
+        let (database, copy) = rescued(scratch.path(), "chain.kdbx", "mine");
+
+        let mut vault = open(&copy, BUILT_PASSWORD);
+        let id = vault.tree().entries[0].id;
+        for username in ["first", "second"] {
+            vault
+                .set_field(
+                    id,
+                    keepass::db::fields::USERNAME,
+                    NewValue::Open(username.into()),
+                )
+                .expect("the field is set");
+            vault.save().expect("the copy saves as itself");
+        }
+        assert_eq!(snapshots(&copy).len(), 2, "{how}");
+
+        match how {
+            "made the vault" => {
+                vault
+                    .promote(told(&database))
+                    .expect("the copy becomes the vault");
+                drop(vault);
+            }
+            "put back" => {
+                drop(vault);
+                std::fs::remove_file(&database).expect("the vault goes");
+                unsaved::put_back(&database).expect("the copy goes back");
+            }
+            _ => {
+                drop(vault);
+                unsaved::discard(&database).expect("the copy is removed");
+            }
+        }
+
+        assert!(snapshots(&copy).is_empty(), "{how}");
+        assert!(!copy.exists(), "{how}");
+        assert_eq!(leftovers(scratch.path()), Vec::<String>::new(), "{how}");
+        assert!(database.exists(), "{how}");
+    }
 }
 
 /// A copy that is not there any more - removed in the Finder while the unlock
@@ -792,7 +949,9 @@ fn a_copy_made_the_vault_keeps_the_file_it_replaced_as_the_newest_snapshot() {
         .expect("the field is set");
     assert!(copy_lock.exists(), "the open copy has no lock beside it");
 
-    vault.promote().expect("the copy becomes the vault");
+    vault
+        .promote(told(&database))
+        .expect("the copy becomes the vault");
 
     assert_eq!(
         vault.path(),
@@ -854,7 +1013,9 @@ fn a_copy_made_the_vault_where_the_vault_has_gone_takes_its_name() {
     let chain = snapshots(&database);
 
     let mut vault = open(&copy, BUILT_PASSWORD);
-    vault.promote().expect("the copy becomes the vault");
+    vault
+        .promote(told(&database))
+        .expect("the copy becomes the vault");
     drop(vault);
 
     assert!(!copy.exists());
@@ -885,14 +1046,20 @@ fn a_copy_that_cannot_become_the_vault_leaves_both_files_as_they_were() {
     let Ok(Outcome::Taken(theirs_open)) = Lock::acquire(&database) else {
         panic!("the test takes the vault's lock");
     };
-    assert!(matches!(vault.promote(), Err(VaultError::Locked(_))));
+    assert!(matches!(
+        vault.promote(told(&database)),
+        Err(VaultError::Locked(_))
+    ));
     drop(theirs_open);
 
     if permissions_apply() {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o400))
             .expect("the vault is made read only");
-        assert!(vault.promote().is_err(), "a read-only vault was replaced");
+        assert!(
+            vault.promote(told(&database)).is_err(),
+            "a read-only vault was replaced"
+        );
         std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o600))
             .expect("the vault is writable again");
     }
@@ -917,13 +1084,73 @@ fn a_copy_that_cannot_become_the_vault_leaves_both_files_as_they_were() {
     assert_eq!(std::fs::read(&database).expect("the vault reads"), theirs);
 
     vault
-        .promote()
+        .promote(told(&database))
         .expect("with nothing in the way, the copy becomes the vault");
     drop(vault);
     let reopened = open(&database, BUILT_PASSWORD);
     assert_eq!(
         reopened.entry(id).expect("the entry is there").username(),
         "still the copy"
+    );
+}
+
+/// "Make this my vault" goes over the file the reader was told about and no
+/// other. Another client's save after the banner said how the vault stood, a
+/// vault that went, one that came back, and a reader who was never told are
+/// all refused with nothing written: the vault's file, its snapshots and the
+/// copy as they were, and the vault still the copy. Told again, it goes
+/// through, and what the other client wrote is the newest snapshot.
+#[test]
+fn a_copy_is_not_made_the_vault_over_a_file_the_reader_was_not_shown() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let (database, copy) = rescued(scratch.path(), "moved-on.kdbx", "mine");
+    let mut vault = open(&copy, BUILT_PASSWORD);
+    let copy_path = vault.path().to_path_buf();
+    let ours = std::fs::read(&copy).expect("the copy reads");
+
+    let before = told(&database);
+    somebody_else_writes(&database);
+    let theirs = std::fs::read(&database).expect("the vault reads");
+    let chain = snapshots(&database);
+
+    let gone = told(&database);
+    let aside = scratch.path().join("aside");
+    std::fs::rename(&database, &aside).expect("the vault goes");
+    let missing = told(&database);
+    let refused = vault.promote(gone);
+    std::fs::rename(&aside, &database).expect("the vault comes back");
+
+    for (said, answer) in [
+        ("another client's save", vault.promote(before)),
+        ("a vault that went", refused),
+        ("a vault that came back", vault.promote(missing)),
+        ("nothing said at all", vault.promote(None)),
+    ] {
+        assert!(
+            matches!(answer, Err(VaultError::VaultFileChanged)),
+            "{said}: {answer:?}"
+        );
+        assert_eq!(
+            std::fs::read(&database).expect("the vault reads"),
+            theirs,
+            "{said}"
+        );
+        assert_eq!(snapshots(&database), chain, "{said}");
+        assert_eq!(
+            std::fs::read(&copy).expect("the copy reads"),
+            ours,
+            "{said}"
+        );
+        assert_eq!(vault.path(), copy_path, "{said}");
+    }
+
+    vault
+        .promote(told(&database))
+        .expect("told again, the copy becomes the vault");
+    assert_eq!(
+        std::fs::read(snapshot::slot(&database, 1).expect("a slot has a name"))
+            .expect("the snapshot reads"),
+        theirs
     );
 }
 
@@ -936,7 +1163,10 @@ fn only_a_copy_a_lock_left_can_become_a_vault() {
     let before = std::fs::read(&database).expect("the vault reads");
 
     let mut vault = open(&database, BUILT_PASSWORD);
-    assert!(matches!(vault.promote(), Err(VaultError::NotACopy)));
+    assert!(matches!(
+        vault.promote(told(&database)),
+        Err(VaultError::NotACopy)
+    ));
     assert_eq!(std::fs::read(&database).expect("the vault reads"), before);
     assert!(snapshots(&database).is_empty());
 }

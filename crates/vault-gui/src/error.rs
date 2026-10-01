@@ -31,7 +31,9 @@ enum Code {
     /// Another process has this database open.
     HeldByAnother,
     /// The file changed on disk after Coffer opened it, and the screen has to
-    /// ask which version to keep before anything is written.
+    /// ask which version to keep before anything is written. Also the vault's
+    /// file changing after the copy's banner said how it stood: the banner
+    /// reads it again before the copy goes over it.
     ExternalChange,
     /// The database cannot be written back at all: a snapshot, or a format
     /// Coffer reads and does not write.
@@ -64,6 +66,10 @@ enum Code {
     /// that happened to its entry. Nothing was done, and the screen says the
     /// removal can no longer be undone.
     Superseded,
+    /// The copy a lock left cannot be put back without a password on this
+    /// disk. Nothing was done, and the screen offers to open the copy, which
+    /// is the way it can still become the vault.
+    NeedsOpening,
     Io,
     Other,
 }
@@ -155,7 +161,8 @@ impl From<VaultError> for Failure {
             VaultError::Locked(_) => Code::HeldByAnother,
             VaultError::AttachmentInHistory => Code::AttachmentInHistory,
             VaultError::DatabaseExists => Code::Taken,
-            VaultError::ExternalChange => Code::ExternalChange,
+            VaultError::ExternalChange | VaultError::VaultFileChanged => Code::ExternalChange,
+            VaultError::NoExclusiveMove => Code::NeedsOpening,
             VaultError::ReadOnlyKdb
             | VaultError::ReadOnlyKdbx3Attachments
             | VaultError::ReadOnlySnapshot
@@ -238,6 +245,8 @@ mod tests {
             (VaultError::ReadOnlySnapshot, "readOnly"),
             (VaultError::ReadOnlyPlace, "readOnly"),
             (VaultError::ExternalChange, "externalChange"),
+            (VaultError::VaultFileChanged, "externalChange"),
+            (VaultError::NoExclusiveMove, "needsOpening"),
             (VaultError::NoSuchGroup, "noSuchEntry"),
             (VaultError::NoSuchVersion, "noSuchEntry"),
             (VaultError::AttachmentInHistory, "attachmentInHistory"),

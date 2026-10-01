@@ -90,13 +90,11 @@ pub fn status(app: AppHandle, session: Held<'_>) -> Status {
         file: database
             .as_deref()
             .map(|chosen| dto::OnDisk::of(storage::on_disk(chosen))),
+        // What is said here about the vault's file is what "Make this my
+        // vault" is then held to, so it is the session that reads it.
         copy: database.as_deref().and_then(|copy| {
-            let vault = unsaved::taken_from(copy)?;
-            Some(dto::CopyOf::of(
-                &vault,
-                storage::on_disk(copy),
-                storage::on_disk(&vault),
-            ))
+            let (vault, vault_file) = session.telling()?;
+            Some(dto::CopyOf::of(&vault, storage::on_disk(copy), vault_file))
         }),
         typed: session.typed(),
         database: database.as_deref().map(Database::of),
@@ -681,7 +679,8 @@ pub fn choose_rescue(session: Held<'_>) -> Result<Database, Failure> {
     Ok(Database::of(&path))
 }
 
-/// Takes that copy off the disk.
+/// Takes that copy off the disk, and the snapshots saves inside it left
+/// beside it (see [`unsaved::discard`]).
 ///
 /// Only ever from a press. The copy holds the one version of work the vault has
 /// not got, so nothing in Coffer removes it on its own initiative: the reader is
@@ -731,17 +730,21 @@ pub async fn promote_rescue(session: Held<'_>) -> Result<Database, Failure> {
 }
 
 /// Goes back from the copy a lock left to the vault it was taken from, and
-/// answers with the vault.
+/// answers with what is chosen afterwards.
 ///
 /// A copy that is open is locked on the way, which is how any open vault is
 /// left: what it holds is written out into the copy, its window goes, and the
-/// window that comes back asks for the vault's password. A copy that is only
-/// chosen is simply not chosen any more, and nothing is locked.
+/// window that comes back asks for the vault's password - or for the copy's,
+/// when the lock had to keep the copy's work somewhere else or lost it, so
+/// that the screen saying so is the one about the copy (see
+/// [`Session::back_to_vault`]). A copy that is only chosen is simply not
+/// chosen any more, and nothing is locked.
 #[tauri::command(async)]
 pub fn leave_rescue(app: AppHandle, session: Held<'_>) -> Result<Database, Failure> {
-    let vault = session.back_to_vault()?;
+    session.back_to_vault()?;
     by_hand(&app);
-    Ok(Database::of(&vault))
+    let chosen = session.database().ok_or_else(Failure::no_vault)?;
+    Ok(Database::of(&chosen))
 }
 
 /// The whole tree, as it is now. Every command that changes the shape of the

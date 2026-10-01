@@ -11,7 +11,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use vault_core::kdf::Work;
 use vault_core::model::{Entry, EntryId, Project};
-use vault_core::storage::unsaved;
+use vault_core::storage::{OnDisk, Seen, unsaved};
 use vault_core::{Attached, LockPolicy, MasterKey, Recipe, Rescue, SecretValue, Vault, VaultError};
 use zeroize::Zeroizing;
 
@@ -95,6 +95,15 @@ struct Held {
     /// window one more reading of a list. Nothing in it comes from what the
     /// vault holds, and typing held as a draft is not a change to the vault.
     revision: u64,
+    /// How the vault's file stood when the window was last told, while the
+    /// chosen file is a copy a lock left. "Make this my vault" is held to it
+    /// (see [`Vault::promote`]): what the banner said is what the reader
+    /// decided on. Forgotten when the session is pointed somewhere else.
+    shown: Option<Seen>,
+    /// Whether the open copy is being left for the vault it was taken from.
+    /// The lock that closes it decides where the session points afterwards:
+    /// see [`Session::back_to_vault`].
+    returning: bool,
 }
 
 impl Held {
@@ -205,6 +214,8 @@ impl Session {
                 open: None,
                 generation: 0,
                 revision: 0,
+                shown: None,
+                returning: false,
             }),
             remembering,
         }
@@ -246,6 +257,8 @@ impl Session {
         // chosen, for the same reason the key file does not carry over.
         held.lost = false;
         held.typed = false;
+        held.shown = None;
+        held.returning = false;
         held.generation += 1;
     }
 
@@ -276,26 +289,42 @@ impl Session {
         self.use_key_file(key_file);
     }
 
-    /// Points the session back at the vault the chosen copy was taken from, and
-    /// says which that is. The path is read off the copy's name, so nothing the
-    /// window sends names it.
+    /// Points the session back at the vault the chosen copy was taken from.
+    /// The path is read off the copy's name, so nothing the window sends names
+    /// it.
     ///
-    /// A copy that is open stays open. Only what the next unlock opens changes
-    /// here: the lock that has to follow is what closes the copy, and it writes
-    /// out whatever the copy holds the way every lock does, into the copy.
-    /// Choosing another file would drop it unwritten.
-    pub fn back_to_vault(&self) -> Result<PathBuf, Failure> {
+    /// A copy that is open stays open, and stays chosen: the lock that has to
+    /// follow is what closes it, and it writes out whatever the copy holds the
+    /// way every lock does, into the copy. Choosing another file would drop it
+    /// unwritten. Only once that lock has kept nothing beside the copy - it had
+    /// nothing to write, or the copy took it - does the session point at the
+    /// vault. A lock that had to put the copy's work in a copy of its own, or
+    /// could put it nowhere, leaves the copy chosen, so that the screen that
+    /// comes back is the copy's and offers that copy or says what was lost. The
+    /// vault's screen would find neither: they are about the copy.
+    pub fn back_to_vault(&self) -> Result<(), Failure> {
         let mut held = self.held();
         let chosen = held.database.clone().ok_or_else(Failure::no_vault)?;
         let vault = unsaved::taken_from(&chosen).ok_or(VaultError::NotACopy)?;
 
         if held.open.is_some() {
-            held.database = Some(vault.clone());
+            held.returning = true;
         } else {
             drop(held);
-            self.choose_sibling(vault.clone());
+            self.choose_sibling(vault);
         }
-        Ok(vault)
+        Ok(())
+    }
+
+    /// The vault the chosen copy was taken from, and how its file stands, as
+    /// the window is about to be told. What it is told is what "Make this my
+    /// vault" is held to.
+    pub fn telling(&self) -> Option<(PathBuf, OnDisk)> {
+        let mut held = self.held();
+        let vault = held.database.as_deref().and_then(unsaved::taken_from)?;
+        let seen = Seen::of(&vault);
+        held.shown = Some(seen);
+        Some((vault, seen.on_disk))
     }
 
     /// Opens the chosen database.
@@ -378,6 +407,7 @@ impl Session {
             held.locked_by = None;
             held.lost = false;
             held.typed = false;
+            held.returning = false;
             opened
         };
 
@@ -404,13 +434,17 @@ impl Session {
     /// written down the way a vault that opened is. The key file stays: the
     /// copy was written under the vault's credentials, and they are the same
     /// ones now.
+    ///
+    /// The vault's file is held to how the window was last told it stood.
     pub fn promote(&self) -> Result<PathBuf, Failure> {
         let vault = {
             let mut held = self.held();
+            let shown = held.shown;
             let open = held.changing()?;
-            open.vault.promote()?;
+            open.vault.promote(shown)?;
             let vault = open.vault.path().to_path_buf();
             held.database = Some(vault.clone());
+            held.shown = None;
             vault
         };
 
@@ -442,6 +476,7 @@ impl Session {
         });
         held.open = None;
         held.generation += 1;
+        let returning = std::mem::take(&mut held.returning);
 
         let Some((typed, rescue)) = ended else {
             return false;
@@ -449,6 +484,21 @@ impl Session {
         held.locked_by = Some(reason);
         held.lost = rescue == Rescue::Lost;
         held.typed = typed && rescue == Rescue::Saved;
+
+        // Leaving a copy for its vault, and the copy kept everything. Both
+        // flags were about the copy, and the vault's screen must not say its
+        // own file took what the copy took.
+        let kept_all = matches!(rescue, Rescue::Nothing | Rescue::Saved);
+        if let Some(vault) = held
+            .database
+            .as_deref()
+            .and_then(unsaved::taken_from)
+            .filter(|_| returning && kept_all)
+        {
+            held.database = Some(vault);
+            held.typed = false;
+            held.shown = None;
+        }
         true
     }
 
@@ -2962,6 +3012,10 @@ mod tests {
             .expect("the session is open")
             .expect("the copy takes the change");
 
+        assert!(
+            matches!(session.telling(), Some((vault, _)) if vault == database),
+            "the banner is not told about the vault the copy came from"
+        );
         assert_eq!(
             session.promote().expect("the copy becomes the vault"),
             database
@@ -3010,17 +3064,20 @@ mod tests {
             .expect("the session is open")
             .expect("the note is written");
 
-        assert_eq!(
-            session.back_to_vault().expect("the copy has a vault"),
-            database
-        );
+        session.back_to_vault().expect("the copy has a vault");
         assert!(
             session.is_unlocked(),
             "the copy was dropped without its lock"
         );
+        assert_eq!(
+            session.database(),
+            Some(copy.clone()),
+            "the vault was chosen before the copy's lock said how it went"
+        );
         assert!(session.lock(Reason::ByHand));
 
         assert_eq!(session.database(), Some(database.clone()));
+        assert!(!session.typed() && !session.lost());
         assert_eq!(
             std::fs::read(&database).expect("the vault reads"),
             vault_bytes
@@ -3049,10 +3106,7 @@ mod tests {
         let session = Session::new(Some(copy), None);
         session.use_key_file(Some(fixture("keyfile.key")));
 
-        assert_eq!(
-            session.back_to_vault().expect("the copy has a vault"),
-            database
-        );
+        session.back_to_vault().expect("the copy has a vault");
         assert!(!session.is_unlocked());
         assert_eq!(session.database(), Some(database));
         assert_eq!(session.key_file(), Some(fixture("keyfile.key")));
@@ -3078,5 +3132,165 @@ mod tests {
             code_of(&session.promote().expect_err("nothing is open")),
             "noVault"
         );
+    }
+
+    /// The copy's own file went while it was open - trashed in the Finder -
+    /// and the reader pressed "Back to my vault". The lock that closes the copy
+    /// can only keep its work in a copy of the copy, and that is what the next
+    /// screen has to offer: so the session stays on the copy, whose unlock
+    /// screen finds it. Pointed at the vault, it would look beside the vault
+    /// and find nothing, and the work would sit in a file nothing points at.
+    #[test]
+    fn going_back_from_a_copy_whose_lock_kept_its_work_elsewhere_stays_on_the_copy() {
+        let (_directory, database, copy) = with_a_copy(RICH);
+        let vault_bytes = std::fs::read(&database).expect("the vault reads");
+        let session = Session::new(Some(copy.clone()), None);
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the copy opens");
+
+        let id = entry_titled(&session, "basic").id;
+        session
+            .draft(id, fields::NOTES, words("typed in the copy", false), 1)
+            .expect("the draft is heard");
+        std::fs::remove_file(&copy).expect("the copy goes to the Trash");
+
+        session.back_to_vault().expect("the copy has a vault");
+        assert!(session.lock(Reason::ByHand));
+
+        assert_eq!(session.database(), Some(copy.clone()));
+        let kept = unsaved::found(&copy)
+            .expect("the folder reads")
+            .expect("the copy's work is offered beside the copy");
+        assert!(!session.lost());
+        assert!(
+            !session.typed(),
+            "the typing went into a copy of the copy, not where the reader believes"
+        );
+        assert_eq!(
+            std::fs::read(&database).expect("the vault reads"),
+            vault_bytes,
+            "the vault took what was the copy's"
+        );
+        assert!(
+            unsaved::found(&database)
+                .expect("the folder reads")
+                .is_none(),
+            "a copy beside the vault appeared"
+        );
+
+        let reread = Vault::open(
+            &kept.path,
+            MasterKey::from_password(password(SECRET)),
+            LockPolicy::Respect,
+        )
+        .expect("the copy of the copy opens");
+        assert_eq!(notes(&reread, id).as_deref(), Some("typed in the copy"));
+    }
+
+    /// Typing in the copy that the lock saved into the copy. The session goes
+    /// back to the vault, and the vault's screen does not say its own file
+    /// took the typing: nothing of it is in the vault.
+    #[test]
+    fn typing_saved_into_the_copy_is_not_said_on_the_vaults_screen() {
+        let (_directory, database, copy) = with_a_copy(RICH);
+        let session = Session::new(Some(copy.clone()), None);
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the copy opens");
+        let id = entry_titled(&session, "basic").id;
+        session
+            .draft(id, fields::NOTES, words("a note for the copy", false), 1)
+            .expect("the draft is heard");
+
+        session.back_to_vault().expect("the copy has a vault");
+        assert!(session.lock(Reason::ByHand));
+
+        assert_eq!(session.database(), Some(database.clone()));
+        assert!(!session.typed());
+        let reread = Vault::open(
+            &copy,
+            MasterKey::from_password(password(SECRET)),
+            LockPolicy::Respect,
+        )
+        .expect("the copy opens");
+        assert_eq!(notes(&reread, id).as_deref(), Some("a note for the copy"));
+    }
+
+    /// Going back is the lock that follows it, and nothing else: an unlock in
+    /// between - the reader typed the copy's password again - or another file
+    /// chosen leaves a later lock where it is.
+    #[test]
+    fn going_back_ends_with_the_lock_it_was_for() {
+        let (_directory, database, copy) = with_a_copy(RICH);
+        let session = Session::new(Some(copy.clone()), None);
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the copy opens");
+        session.back_to_vault().expect("the copy has a vault");
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the copy opens again");
+        assert!(session.lock(Reason::ByHand));
+        assert_eq!(session.database(), Some(copy.clone()));
+
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the copy opens");
+        session.back_to_vault().expect("the copy has a vault");
+        assert!(session.lock(Reason::ByHand));
+        assert_eq!(session.database(), Some(database));
+    }
+
+    /// "Make this my vault" goes over the file the banner described and over
+    /// no other. Another client's save after the window was told is refused
+    /// with nothing written, the copy still open; told again, the same press
+    /// goes through, and what that client wrote is the newest snapshot.
+    #[test]
+    fn a_copy_is_made_the_vault_only_over_the_file_the_window_was_told_about() {
+        let (_directory, database, copy) = with_a_copy(RICH);
+        let session = Session::new(Some(copy.clone()), None);
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the copy opens");
+
+        assert_eq!(
+            code_of(&session.promote().expect_err("nothing was said")),
+            "externalChange"
+        );
+
+        session.telling().expect("the copy has a vault");
+        let id = entry_titled(&session, "basic").id;
+        let mut theirs = Vault::open(
+            &database,
+            MasterKey::from_password(password(SECRET)),
+            LockPolicy::Respect,
+        )
+        .expect("the other client opens the vault");
+        theirs
+            .set_field(
+                id,
+                fields::URL,
+                vault_core::NewValue::Open("https://theirs.example".to_owned()),
+            )
+            .expect("their change is applied");
+        theirs.save().expect("their save goes through");
+        drop(theirs);
+        let written = std::fs::read(&database).expect("the vault reads");
+
+        assert_eq!(
+            code_of(&session.promote().expect_err("the vault changed")),
+            "externalChange"
+        );
+        assert_eq!(session.database(), Some(copy.clone()));
+        assert!(copy.exists());
+        assert_eq!(std::fs::read(&database).expect("the vault reads"), written);
+
+        session.telling().expect("the copy has a vault");
+        session
+            .promote()
+            .expect("told again, the copy becomes the vault");
+        let first = vault_core::storage::snapshot::slot(&database, 1).expect("a slot has a name");
+        assert_eq!(std::fs::read(first).expect("the snapshot reads"), written);
     }
 }

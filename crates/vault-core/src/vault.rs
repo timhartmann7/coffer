@@ -24,7 +24,7 @@ use crate::preflight;
 use crate::secret::SecretValue;
 use crate::storage::lock::{Lock, Outcome};
 use crate::storage::watch::{Change, Content, Stamp};
-use crate::storage::{self, atomic, snapshot, unsaved, watch};
+use crate::storage::{self, Seen, atomic, snapshot, unsaved, watch};
 use crate::text;
 use crate::wipe;
 
@@ -1297,12 +1297,24 @@ impl Vault {
     /// once the vault's file holds this; a refusal or a failure anywhere before
     /// that leaves both files as they were, and this vault still the copy.
     ///
+    /// `seen` is how the vault's file stood when the reader was told, which is
+    /// what they decided on. A file that stands otherwise now - another
+    /// client's save, a vault that came back or went - is
+    /// [`VaultError::VaultFileChanged`] with nothing written, because the write
+    /// would push a change nobody showed them into the snapshots; so is a
+    /// reader who was never told, with nothing to have decided on. Asked once
+    /// the vault's lock is held, so another Coffer cannot write it in between.
+    ///
     /// From then on this is the vault: its path, the lock beside it, and every
-    /// save after this one. The copy's own lock goes with the copy.
-    pub fn promote(&mut self) -> Result<(), VaultError> {
+    /// save after this one. The copy's own lock goes with the copy, and so do
+    /// the snapshots its saves rotated beside it (see [`unsaved::retire`]).
+    pub fn promote(&mut self, seen: Option<Seen>) -> Result<(), VaultError> {
         let vault = unsaved::taken_from(&self.path).ok_or(VaultError::NotACopy)?;
         self.writable()?;
         let lock = unsaved::claim(&vault)?;
+        if seen != Some(Seen::of(&vault)) {
+            return Err(VaultError::VaultFileChanged);
+        }
 
         // The write is the ordinary one aimed at the vault's name, so that it
         // proves the place will take it, snapshots what is there and records
@@ -1323,6 +1335,7 @@ impl Vault {
         // holds the same thing, which loses nothing and is said on the unlock
         // screen the next time it is drawn.
         let _ = std::fs::remove_file(&copy);
+        unsaved::retire(&copy);
         Ok(())
     }
 

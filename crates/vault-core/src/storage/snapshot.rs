@@ -120,6 +120,15 @@ pub fn taken(database: &Path) -> Result<Vec<Taken>, io::Error> {
     Ok(found)
 }
 
+/// Takes every snapshot beside `database` off the disk. Only for a database
+/// that has gone for good: see [`crate::storage::unsaved::retire`].
+pub(crate) fn clear(database: &Path) -> Result<(), io::Error> {
+    for index in 1..=SNAPSHOT_COUNT {
+        remove_if_present(&slot(database, index)?)?;
+    }
+    Ok(())
+}
+
 fn remove_if_present(path: &Path) -> Result<(), io::Error> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),

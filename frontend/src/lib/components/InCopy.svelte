@@ -17,6 +17,12 @@
 	 * opened to decide. It goes over the vault's file, so the sentence beside
 	 * it says what becomes of that file and when it last changed, which is how
 	 * the reader tells whether somebody else wrote it after the copy was made.
+	 * The file it names is a snapshot, and later saves push it out like any
+	 * other, so the sentence says that too.
+	 *
+	 * Rust holds the press to the file this sentence described. A file that
+	 * changed since is refused, the window reads it again, and the banner says
+	 * why nothing happened above a sentence that is true now.
 	 */
 	let {
 		copy,
@@ -25,7 +31,8 @@
 	}: {
 		copy: CopyOf;
 		/** Makes the copy the vault. A refusal is thrown back here to be said
-		 * where the press was. */
+		 * where the press was, once `copy` says how the vault's file stands
+		 * now. */
 		onPromote: () => Promise<void>;
 		/** Goes back to the vault, which locks the copy on the way. */
 		onBack: () => Promise<void>;
@@ -43,6 +50,13 @@
 	});
 	const changed = $derived(at(copy.vaultFile.written, now));
 
+	/** What a refusal says, in words about the banner when it is about what
+	 * the banner said. */
+	const refusedBecause: Record<string, string> = {
+		externalChange:
+			'Your vault file changed after this was shown, so nothing was replaced. What is said above is how it stands now.'
+	};
+
 	/** One press at a time: either answer ends what this banner is about. */
 	async function run(which: 'promoting' | 'leaving', action: () => Promise<void>) {
 		if (busy) return;
@@ -51,7 +65,8 @@
 		try {
 			await action();
 		} catch (thrown) {
-			failure = asFailure(thrown).message;
+			const refused = asFailure(thrown);
+			failure = refusedBecause[refused.code] ?? refused.message;
 		} finally {
 			busy = null;
 		}
@@ -74,7 +89,7 @@
 			{:else}
 				Making this your vault puts it in place of <span class="font-mono">{copy.vault}</span
 				>{#if changed}, last changed {changed}{/if}, which is kept as
-				<span class="font-mono">{copy.keptAs}</span>.
+				<span class="font-mono">{copy.keptAs}</span> until later saves push it out of the snapshots.
 			{/if}
 		</p>
 		{#if failure}

@@ -552,6 +552,15 @@ it('puts the copy back in place of a vault whose file has gone', async () => {
 
 	expect(reads()).toContain('Your vault file is not there any more');
 	expect(host.querySelector('form')?.hidden).toBe(true);
+
+	// The copy is the whole vault now, and the question says so.
+	button('Remove it…').click();
+	flushSync();
+	expect(reads()).toContain('Remove the only copy of your vault?');
+	expect(reads()).not.toContain('of those changes');
+	expect(document.activeElement?.textContent?.trim()).toBe('Keep it');
+	button('Keep it').click();
+	flushSync();
 	expect(button('Put this copy back as my vault').className).toContain('bg-accent');
 	expect(buttons()).not.toContain('Open the copy to look');
 
@@ -592,6 +601,41 @@ it('says why the copy was not put back and asks what is true now', async () => {
 
 		unmount(component);
 	}
+});
+
+/**
+ * A disk that keeps no second name for a file cannot take the copy back
+ * without a password: there is no way there to put a whole file at a name and
+ * be refused if something arrived first. The screen says so, and opening the
+ * copy - from inside which it becomes the vault - is the card's call instead.
+ */
+it('sends the reader into the copy when this disk cannot take it back unopened', async () => {
+	ipc.putBackRescue.mockRejectedValue({
+		code: 'needsOpening',
+		message: 'this disk cannot take the copy back without it being opened'
+	});
+	const copied = {
+		path: '/Users/someone/personal.kdbx.unsaved.kdbx',
+		name: 'personal.kdbx.unsaved'
+	};
+	ipc.chooseRescue.mockResolvedValue(copied);
+	const onChoose = vi.fn();
+	const component = standingIn(onChoose);
+
+	button('Put this copy back as my vault').click();
+	await vi.waitFor(() =>
+		expect(reads()).toContain(
+			'This disk cannot take the copy back without it being opened. Open it, and make it your vault from inside.'
+		)
+	);
+	expect(buttons()).not.toContain('Put this copy back as my vault');
+	expect(reads()).not.toContain('with nothing to type');
+	expect(button('Open the copy to look').className).toContain('bg-accent');
+
+	button('Open the copy to look').click();
+	await vi.waitFor(() => expect(onChoose).toHaveBeenCalledWith(copied));
+
+	unmount(component);
 });
 
 /**
@@ -693,6 +737,45 @@ it('says so when a lock could not write the changes anywhere, and what survived'
 
 		expect(reads()).toContain('could not write them anywhere');
 		expect(reads()).toContain(said);
+
+		unmount(component);
+	}
+});
+
+/** A lock of a copy opened to look that could write nothing leaves the
+ * reader on the copy's screen, and what survived is the copy: its time, not
+ * the vault's, and never under the vault's name. */
+it('says what survived of the copy when the lost lock was of a copy', () => {
+	for (const [file, said] of [
+		[{ there: true, written: '2026-09-01T14:02:00Z' }, 'This copy is as it was on 1 Sep at 14:02.'],
+		[{ there: true, written: null }, 'This copy is as it was before those changes.'],
+		[{ there: false, written: null }, 'This copy is not where it was, either.']
+	] as const) {
+		const component = mount(Unlock, {
+			target: host,
+			props: {
+				database: {
+					path: '/Users/someone/personal.kdbx.unsaved.kdbx',
+					name: 'personal.kdbx.unsaved'
+				},
+				lost: true,
+				file,
+				copy: {
+					vault: 'personal.kdbx',
+					saved: '2026-09-01T14:02:00Z',
+					keptAs: 'personal.kdbx.1.bak',
+					vaultFile: { there: true, written: '2026-09-01T09:00:00Z' }
+				},
+				onChoose: vi.fn(),
+				onKeyFile: vi.fn(),
+				onCreate: vi.fn(),
+				onUnlocked: vi.fn()
+			}
+		});
+		flushSync();
+
+		expect(reads()).toContain(said);
+		expect(reads()).not.toContain('Your vault file');
 
 		unmount(component);
 	}

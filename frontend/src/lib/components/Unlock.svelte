@@ -137,7 +137,8 @@
 	let dropped = $state(false);
 
 	/** Whether the reader pressed Remove and is being asked whether they mean
-	 * it: the copy holds the only copy of those changes. */
+	 * it: the copy holds the only copy of those changes, or of the whole vault
+	 * when the vault's file has gone. */
 	let removing = $state(false);
 
 	/** When the copy beside the vault was written, when the filesystem kept
@@ -146,6 +147,11 @@
 
 	/** Why the copy could not be put back, when it could not. */
 	let unmoved = $state<string | null>(null);
+
+	/** Whether this disk cannot take the copy back without it being opened.
+	 * Opening it is then the way it becomes the vault, so that is what the
+	 * card offers instead. */
+	let mustOpen = $state(false);
 
 	/**
 	 * The copy stands in for a vault whose file has gone.
@@ -157,15 +163,15 @@
 	 */
 	const standIn = $derived(rescue !== null && !dropped && file?.there === false);
 
-	/** What survived a lock that could write nothing: the vault's file, as it
-	 * was before the changes that were lost. */
+	/** What survived a lock that could write nothing: the chosen file, as it
+	 * was before the changes that were lost. That is the copy, when the lock
+	 * that lost them was of a copy opened to look. */
 	const survived = $derived.by(() => {
 		if (!file) return null;
-		if (!file.there) return 'Your vault file is not where it was, either.';
+		const which = copy ? 'This copy' : 'Your vault file';
+		if (!file.there) return `${which} is not where it was, either.`;
 		const when = at(file.written, new Date());
-		return when
-			? `Your vault file is as it was ${when}.`
-			: 'Your vault file is as it was before those changes.';
+		return when ? `${which} is as it was ${when}.` : `${which} is as it was before those changes.`;
 	});
 
 	/** The start of the sentence that says the chosen file is a copy, with
@@ -184,7 +190,9 @@
 	 */
 	const unmovedBecause: Record<string, string> = {
 		taken: 'A file is back where your vault was, so the copy was left where it is.',
-		gone: 'The copy is not there any more.'
+		gone: 'The copy is not there any more.',
+		needsOpening:
+			'This disk cannot take the copy back without it being opened. Open it, and make it your vault from inside.'
 	};
 
 	async function submit(event: SubmitEvent) {
@@ -275,6 +283,7 @@
 		} catch (thrown) {
 			const refused = asFailure(thrown);
 			unmoved = unmovedBecause[refused.code] ?? refused.message;
+			mustOpen = refused.code === 'needsOpening';
 			onChoose(chosen);
 		} finally {
 			busy = false;
@@ -353,6 +362,7 @@
 		failure = null;
 		snapshot = null;
 		unmoved = null;
+		mustOpen = false;
 		removing = false;
 		takingOver = false;
 		if (!sameVault) onKeyFile(null);
@@ -412,9 +422,12 @@
 				<p class="mt-2 text-fine leading-relaxed text-txt2">
 					A lock could not save it, so Coffer put it in
 					<span class="font-mono text-txt">{rescue.name}</span>{kept ? ` ${kept}` : ''}.
-					{#if standIn}
+					{#if standIn && !mustOpen}
 						Your vault file is not there any more, so the copy can go back in its place with nothing
 						to type.
+					{:else if standIn}
+						Your vault file is not there any more. The copy opens with the same password, and inside
+						it you can make it your vault.
 					{:else}
 						It opens with the same password, and inside it you can make it your vault or come back
 						to this one.
@@ -424,7 +437,9 @@
 					<Confirm
 						bare
 						class="mt-4 border-t border-hairline pt-3"
-						question="Remove the only copy of those changes?"
+						question={standIn
+							? 'Remove the only copy of your vault?'
+							: 'Remove the only copy of those changes?'}
 						act="Remove"
 						onKeep={() => (removing = false)}
 						onAct={dropRescue}
@@ -432,8 +447,10 @@
 				{:else}
 					<div class="mt-4 flex flex-wrap gap-2">
 						<!-- The one call this card makes is the accent only when there is
-						     no vault to unlock instead: then it is the screen's call. -->
-						{#if standIn}
+						     no vault to unlock instead: then it is the screen's call. On a
+						     disk that cannot take the copy back unopened, opening it is
+						     that call. -->
+						{#if standIn && !mustOpen}
 							<button
 								type="button"
 								onclick={putBack}
@@ -447,7 +464,9 @@
 								type="button"
 								onclick={openRescue}
 								disabled={busy}
-								class="h-9 rounded-full border border-hairline px-4 text-small text-txt transition-colors hover:border-txt3 active:bg-surface2 disabled:cursor-not-allowed"
+								class="h-9 rounded-full px-4 text-small transition-colors disabled:cursor-not-allowed {standIn
+									? 'bg-accent font-medium text-canvas hover:bg-accenthi active:bg-accenthi'
+									: 'border border-hairline text-txt hover:border-txt3 active:bg-surface2'}"
 							>
 								Open the copy to look
 							</button>

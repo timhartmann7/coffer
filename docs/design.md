@@ -396,17 +396,24 @@ the password field is not drawn, the sentence says the file is not there any
 more, and "Put this copy back as my vault" is the accent pill at `h-9`, the way
 "Put back" is in the recycle bin's card - on this screen it is the one call
 there is. A move that is refused is said under the card in `small` and
-`danger`, in words about the move.
+`danger`, in words about the move. On a disk that cannot take the copy back
+unopened, the card's sentence says the copy opens with the same password and
+becomes the vault from inside, and "Open the copy to look" takes the accent
+pill's place, because opening it is then the call.
 
 **Removing the copy asks.** "Remove it…" is the plain `txt3` pill that takes
 `dangerwash` and `danger` under the pointer, like "Delete forever…", and it
 opens the question in the card, under a hairline: "Remove the only copy of those
-changes?", with "Keep it" first and focused and "Remove" last in red.
+changes?", with "Keep it" first and focused and "Remove" last in red. When the
+vault's file has gone, the copy is the whole vault, and the question is "Remove
+the only copy of your vault?" in the same box.
 
 **A lock that could write nothing says what survived.** Under the red line, in
 the same `small` and centred, in `txt2`: "Your vault file is as it was today at
-14:02.", or that it is not where it was either. Times of files a reader is
-comparing are always said to the minute.
+14:02.", or that it is not where it was either. On a copy's own screen - the
+lock that lost the work was of a copy opened to look - the sentence is about the
+copy: "This copy is as it was …". Times of files a reader is comparing are
+always said to the minute.
 
 **The copy's own unlock screen says what it is.** The same card, headed "A
 copy, not your vault", with when the lock saved it and the vault's file name in
@@ -421,11 +428,14 @@ and `txt`, says it is the copy and when it was saved, and that what is changed
 here changes the copy and not the vault. The second, in `fine` and `txt2`, says
 what "Make this my vault" does to the vault's file: which file it goes over,
 when that file last changed - which is how a reader sees that somebody wrote it
-after the copy was made - and the snapshot name it is kept under, file names in
-mono. At the end, "Back to my vault" in the bordered `h-9` pill and "Make this
+after the copy was made - and the snapshot name it is kept under until later
+saves push it out of the snapshots, file names in mono. At the end, "Back to my vault" in the bordered `h-9` pill and "Make this
 my vault" in the accent pill, which is what the copy was opened to decide; while
 it writes, it takes the Unlock button's busy look and reads "Making it your
-vault…". A refusal is said under the second line in `danger`. The strip is not
+vault…". A refusal is said under the second line in `danger`. When the vault's
+file changed after the banner said when it last changed, the window reads it
+again, the second line says how it stands now, and the refusal says nothing was
+replaced and points at that line. The strip is not
 part of the panes, so the settings do not cover it.
 
 ## The settings, and the way in and out of them

@@ -119,13 +119,21 @@
 	 * file that goes over the vault holds every field the reader has left.
 	 * What is still being typed stays with the session, which is now the
 	 * vault's, and the next lock writes it there.
+	 *
+	 * Read again however it went. Rust holds the press to how the banner last
+	 * said the vault's file stood, and refuses when it stands otherwise; the
+	 * banner then has to say how it stands now before the reader presses
+	 * again.
 	 */
 	async function promote() {
 		await flush();
-		database = await promoteRescue();
-		const now = await status();
-		readOnly = now.readOnly;
-		heard(now);
+		try {
+			database = await promoteRescue();
+		} finally {
+			const now = await status();
+			readOnly = now.readOnly;
+			heard(now);
+		}
 	}
 
 	/**

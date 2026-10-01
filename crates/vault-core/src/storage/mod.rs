@@ -73,6 +73,27 @@ pub fn on_disk(path: &Path) -> OnDisk {
     }
 }
 
+/// How a file stood when the reader was told how it stood, kept so that an act
+/// taken on what they were told can ask whether it is still true.
+///
+/// The time is what the screen showed. The stamp is what a time cannot say: a
+/// file of another length or at another inode is another file, even inside
+/// the one tick of a clock that a rewrite can land in without moving it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Seen {
+    pub on_disk: OnDisk,
+    stamp: Option<watch::Stamp>,
+}
+
+impl Seen {
+    pub fn of(path: &Path) -> Seen {
+        Seen {
+            on_disk: on_disk(path),
+            stamp: watch::Stamp::of(path).ok(),
+        }
+    }
+}
+
 /// Flushes the directory entry itself, so that a rename survives a power cut.
 /// Without this the renamed file can be durable while the name still points at
 /// the old inode.

@@ -9,7 +9,8 @@ use crate::storage::{OWNER_ONLY, parent_of, process, sibling, sync_directory};
 
 const TEMPORARY_SUFFIX: &str = ".coffer-tmp";
 
-/// A temporary file, filled and flushed, waiting to be renamed over its target.
+/// A temporary file, filled and flushed, waiting to be renamed over its target
+/// or published at a name that holds nothing.
 ///
 /// Splitting the write in two is what lets a caller do everything that can fail
 /// before it disturbs anything on disk: filling this is where a full volume, a
@@ -32,6 +33,35 @@ impl Staged {
         fs::rename(&self.temporary, &self.target)?;
         sync_directory(directory)?;
         self.committed = true;
+
+        sweep_abandoned(&self.target);
+        Ok(())
+    }
+
+    /// Gives the temporary file the target's name only when nothing is at it,
+    /// and flushes the directory entry.
+    ///
+    /// For a target nothing may be written over. `rename` replaces whatever
+    /// is at the name; a hard link is refused with `AlreadyExists` if anything
+    /// is there, a link that leads nowhere included, and the check and the
+    /// link are one act. Nothing is ever at the target that is not whole:
+    /// before the link there is nothing of this write at the name, and after it
+    /// every byte.
+    ///
+    /// A filesystem that keeps no second name for a file refuses the link, and
+    /// the refusal is returned as it came. There is no exclusive way to publish
+    /// a whole file there, and an exclusive create followed by a copy is a name
+    /// holding half a database for as long as the copy runs.
+    pub fn publish(mut self) -> Result<(), io::Error> {
+        let directory = parent_of(&self.target)?;
+
+        fs::hard_link(&self.temporary, &self.target)?;
+        self.committed = true;
+        // The target holds the file now, and the temporary name is only a
+        // second name for it. One that will not go is the same file twice,
+        // which the next write from this process or a later sweep takes away.
+        let _ = fs::remove_file(&self.temporary);
+        sync_directory(directory)?;
 
         sweep_abandoned(&self.target);
         Ok(())

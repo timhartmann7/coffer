@@ -536,29 +536,44 @@ belongs to is read off its name by `unsaved::taken_from` and recorded nowhere
 else - not inside it, where it would be a field no other client knows, and not
 in a file beside it that could disagree with the name.
 
-**Putting a copy back is a copy into a taken name, not a rename.** `rename`
-replaces whatever is at the target, and the whole point of `unsaved::put_back`
-is that it never does: it runs only for a vault whose file has gone, and without
-a password. So the vault's name is taken with `atomic::reserve`, the copy's
-bytes go through the staged writer into it, and the copy is removed only after
-the commit. A file that arrived at the name first is `DatabaseExists`, a copy
-that is not there leaves nothing at the name, and a process killed part way
-leaves the copy where it was. The lock files beside both names are taken for as
-long as it runs, with `unsaved::claim`, which is stricter than opening: a lock
-somebody else holds is a refusal, not an offer to take it over.
+**Putting a copy back is a staged write published at a name nothing holds,
+not a rename.** `rename` replaces whatever is at the target, and the whole point
+of `unsaved::put_back` is that it never does: it runs only for a vault whose
+file has gone, and without a password. So the copy's bytes go through
+`atomic::stage` into Coffer's own temporary file, and `Staged::publish` gives
+that file the vault's name with `hard_link`, which fails with `AlreadyExists` if
+anything is there, a dangling link included. Nothing is at the vault's name
+until it is whole, a file that arrived first is `DatabaseExists` and is neither
+written over nor removed, a copy that is not there leaves nothing at the name,
+and a process killed part way leaves the name empty and the copy where it was.
+The copy is removed only after the publish. A filesystem without hard links is
+`NoExclusiveMove`: an exclusive create followed by a copy would be a name
+holding half a database while it ran, so the copy is opened and promoted
+instead. The lock files beside both names are taken for as long as it runs,
+with `unsaved::claim`, which is stricter than opening: a lock somebody else
+holds is a refusal, not an offer to take it over.
 
 **Making a copy the vault is an ordinary save aimed at another name.**
 `Vault::promote` points the vault at the name `taken_from` gives, takes the lock
 beside it, and runs the same write `save_over` runs, so the place is proved
 writable, what is there becomes `<vault>.1.bak`, and the stamp is recorded as
-for any save. If that write is refused or fails, the path and the stamp are put
+for any save. It takes the `storage::Seen` of the vault's file the reader was
+shown - its time and its length, inode and device - and with the lock held
+refuses with `VaultFileChanged` when the file stands otherwise now, or when
+nothing was shown: `Guard::Ignore` would otherwise push a change nobody saw into
+the snapshots. If the write is refused or fails, the path and the stamp are put
 back and the vault is still the copy; only once it went through does the vault
 keep the new lock, drop the copy's, and remove the copy.
+
+**A copy's snapshots go with it.** Saves inside an open copy rotate a chain
+beside the copy's name. `unsaved::retire` clears those slots once the copy is
+promoted, put back or discarded: nothing lists them after that, and they would
+be old states of the vault opening with an old password.
 
 **Whether a file is there is its own question.** `storage::on_disk` answers it
 for the screen - gone only when nothing at all is at the name, and a link that
 leads nowhere is still something - and it is only ever advice. The two moves above ask the disk again,
-with the exclusive create and with the write's own check.
+with the publish's hard link and with `Seen` under the vault's lock.
 
 ## Making a vault, and what a second of work costs
 

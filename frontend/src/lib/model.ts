@@ -363,6 +363,7 @@ export interface Failure {
 		| 'versionsChanged'
 		| 'forGood'
 		| 'superseded'
+		| 'needsOpening'
 		| 'taken'
 		| 'readOnly'
 		| 'gone'
