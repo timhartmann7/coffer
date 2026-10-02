@@ -1,6 +1,7 @@
 <script lang="ts">
+	import { about, offer } from '$lib/context.svelte';
 	import { typing } from '$lib/keys';
-	import type { Span } from '$lib/model';
+	import type { Chosen, Span } from '$lib/model';
 	import { Revealed } from '$lib/reveal.svelte';
 	import Change from './Change.svelte';
 	import Generator from './Generator.svelte';
@@ -137,81 +138,117 @@
 	function kept(event: MouseEvent) {
 		event.preventDefault();
 	}
+
+	/**
+	 * Coffer's menu for the row - its name, its value and its buttons - which
+	 * offers what the buttons do. Not for the Change field or the generator
+	 * under it: what is typed there is the reader's, and WebKit's menu is.
+	 */
+	function rowMenu(event: MouseEvent) {
+		offer(event, { kind: 'field', entry, field, shown: revealed.showing }, answer, onFailure);
+	}
+
+	/** Runs an item of the row's menu with the button that does the same,
+	 * while the row is still the one it was about. */
+	function answer(item: Chosen) {
+		if (!about(item, entry, field)) return;
+		switch (item.item) {
+			case 'showField':
+				if (!revealed.showing) void toggle();
+				break;
+			case 'hideField':
+				revealed.hide();
+				break;
+			case 'copyField':
+				onCopy(field, null);
+				break;
+			case 'changeField':
+				if (!readOnly && !changing) changing = true;
+				break;
+			case 'makeOne':
+				if (!readOnly) generating = true;
+				break;
+		}
+	}
 </script>
 
 <div class="mt-5">
-	<span class="font-mono text-label tracking-label text-txt3 uppercase">Password</span>
+	<div role="presentation" oncontextmenu={rowMenu}>
+		<span class="font-mono text-label tracking-label text-txt3 uppercase">Password</span>
 
-	<div class="mt-1.5 flex items-center">
-		<Shown
-			{revealed}
-			bind:node
-			classes="text-body"
-			onCopy={(range) => onCopy(field, range)}
-			{onFailure}
-		>
-			{#snippet hidden()}
-				{#if empty}
-					<span class="min-w-0 flex-1 truncate text-body text-txt4">
-						No password on this entry
-					</span>
-				{:else}
-					<span class="min-w-0 flex-1 overflow-hidden"><Mask /></span>
-				{/if}
-			{/snippet}
-		</Shown>
-	</div>
+		<div class="mt-1.5 flex items-center">
+			<Shown
+				{entry}
+				{field}
+				{revealed}
+				bind:node
+				classes="text-body"
+				onCopy={(range) => onCopy(field, range)}
+				{onFailure}
+			>
+				{#snippet hidden()}
+					{#if empty}
+						<span class="min-w-0 flex-1 truncate text-body text-txt4">
+							No password on this entry
+						</span>
+					{:else}
+						<span class="min-w-0 flex-1 overflow-hidden"><Mask /></span>
+					{/if}
+				{/snippet}
+			</Shown>
+		</div>
 
-	<!-- Their own line, whether or not anything is revealed. Sharing one with
-	     the value put them on a second line in a pane this narrow anyway, and
-	     which line they landed on then depended on how long the value was. -->
-	<div class="mt-2 flex flex-wrap items-center gap-2">
-		{#if !empty}
-			<button
-				bind:this={toggler}
-				type="button"
-				onmousedown={kept}
-				onclick={toggle}
-				class="flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 text-fine text-txt2 transition hover:border-txt3 hover:text-txt active:bg-raised"
-			>
-				<Icon name={revealed.showing ? 'eye-off' : 'eye'} class="h-3.5 w-3.5" />
-				<span>{revealed.showing ? 'Hide' : 'Show'}</span>
-			</button>
-		{/if}
-		<button
-			type="button"
-			onmousedown={kept}
-			onclick={() => onCopy(field, null)}
-			disabled={empty}
-			class="flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 text-fine text-txt2 transition hover:border-txt3 hover:text-txt active:bg-raised disabled:cursor-not-allowed disabled:text-txt4 disabled:hover:border-hairline"
-		>
-			<Icon name="copy" class="h-3.5 w-3.5" /> Copy
-		</button>
-		{#if !readOnly}
-			<button
-				bind:this={opener}
-				type="button"
-				onmousedown={kept}
-				onclick={change}
-				aria-expanded={changing}
-				class="flex h-7 shrink-0 items-center rounded-full border px-3 text-fine transition active:bg-raised {changing
-					? 'border-txt4 text-txt'
-					: 'border-hairline text-txt2 hover:border-txt3 hover:text-txt'}"
-			>
-				{empty ? 'Set one' : 'Change'}
-			</button>
+		<!-- Their own line, whether or not anything is revealed. Sharing one with
+		     the value put them on a second line in a pane this narrow anyway, and
+		     which line they landed on then depended on how long the value was. -->
+		<div class="mt-2 flex flex-wrap items-center gap-2">
+			{#if !empty}
+				<button
+					bind:this={toggler}
+					type="button"
+					onmousedown={kept}
+					onclick={toggle}
+					class="flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 text-fine text-txt2 transition hover:border-txt3 hover:text-txt active:bg-raised"
+				>
+					<Icon name={revealed.showing ? 'eye-off' : 'eye'} class="h-3.5 w-3.5" />
+					<span>{revealed.showing ? 'Hide' : 'Show'}</span>
+				</button>
+			{/if}
 			<button
 				type="button"
 				onmousedown={kept}
-				onclick={() => (generating = !generating)}
-				aria-expanded={generating}
-				class="flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-3 text-fine transition active:bg-raised {generating
-					? 'border-txt4 text-txt'
-					: 'border-hairline text-txt2 hover:border-txt3 hover:text-txt'}"
+				onclick={() => onCopy(field, null)}
+				disabled={empty}
+				class="flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 text-fine text-txt2 transition hover:border-txt3 hover:text-txt active:bg-raised disabled:cursor-not-allowed disabled:text-txt4 disabled:hover:border-hairline"
 			>
-				<Icon name="refresh" class="h-3.5 w-3.5" /> Make one
+				<Icon name="copy" class="h-3.5 w-3.5" /> Copy
 			</button>
-		{/if}
+			{#if !readOnly}
+				<button
+					bind:this={opener}
+					type="button"
+					onmousedown={kept}
+					onclick={change}
+					aria-expanded={changing}
+					class="flex h-7 shrink-0 items-center rounded-full border px-3 text-fine transition active:bg-raised {changing
+						? 'border-txt4 text-txt'
+						: 'border-hairline text-txt2 hover:border-txt3 hover:text-txt'}"
+				>
+					{empty ? 'Set one' : 'Change'}
+				</button>
+				<button
+					type="button"
+					onmousedown={kept}
+					onclick={() => (generating = !generating)}
+					aria-expanded={generating}
+					class="flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-3 text-fine transition active:bg-raised {generating
+						? 'border-txt4 text-txt'
+						: 'border-hairline text-txt2 hover:border-txt3 hover:text-txt'}"
+				>
+					<Icon name="refresh" class="h-3.5 w-3.5" /> Make one
+				</button>
+			{/if}
+		</div>
 	</div>
 
 	{#if changing}

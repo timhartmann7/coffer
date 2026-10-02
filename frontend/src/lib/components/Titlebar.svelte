@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { KEYS } from '$lib/shortcuts';
 	import Icon from './Icon.svelte';
 
 	let {
@@ -56,6 +57,7 @@
 		<button
 			type="button"
 			onclick={onLock}
+			title="Lock the vault · {KEYS.lock}"
 			class="flex items-center gap-2 rounded-full border border-hairline px-3 py-1.5 font-mono text-label tracking-label text-txt3 uppercase transition-colors hover:border-txt4 hover:text-txt2"
 		>
 			<Icon name="lock" class="h-3.5 w-3.5" /> Lock

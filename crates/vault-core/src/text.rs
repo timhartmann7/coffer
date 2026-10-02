@@ -27,3 +27,19 @@ pub(crate) fn writable(text: &str) -> Result<(), VaultError> {
         Err(VaultError::UnwritableText)
     }
 }
+
+/// Whether a tag goes into a KeePass file and comes back the same tag.
+///
+/// The format keeps an entry's tags in one string with semicolons between, and
+/// readers split on a comma and a tab as well, so a tag holding one of those
+/// comes back as two. A tag padded with spaces comes back trimmed, and an empty
+/// one is no tag at all. Each is refused rather than written and silently
+/// changed, wherever a tag is written, with a sentence about tags: the file can
+/// hold every one of those characters, just not inside a tag.
+pub(crate) fn tag(tag: &str) -> Result<(), VaultError> {
+    writable(tag)?;
+    if tag.is_empty() || tag.trim() != tag || tag.contains([';', ',', '\t']) {
+        return Err(VaultError::UnwritableTag);
+    }
+    Ok(())
+}

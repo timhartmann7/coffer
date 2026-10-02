@@ -43,3 +43,30 @@ pub fn functions(source: &str) -> Vec<String> {
 
     found
 }
+
+/// Every file of this crate's source, with where it is.
+///
+/// For a rule about a call that no file may make, or that one file alone may:
+/// `include_str!` reads only the files a check names, and the file that breaks
+/// the rule is the one nobody thought to name.
+pub fn every_file() -> Vec<(std::path::PathBuf, String)> {
+    let mut directories = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    let mut files = Vec::new();
+    while let Some(directory) = directories.pop() {
+        for found in std::fs::read_dir(&directory).expect("the source is there") {
+            let path = found.expect("the source is readable").path();
+            if path.is_dir() {
+                directories.push(path);
+                continue;
+            }
+            let file = std::fs::read_to_string(&path).expect("the source is text");
+            files.push((path, file));
+        }
+    }
+    assert!(
+        files.len() > 10,
+        "only {} files of this crate were read",
+        files.len()
+    );
+    files
+}

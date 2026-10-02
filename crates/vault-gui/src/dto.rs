@@ -12,9 +12,11 @@
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize, Serializer};
 use vault_core::generate;
+use vault_core::kind;
 use vault_core::model::{self, FieldValue, fields::Standard};
 use zeroize::Zeroizing;
 
+use crate::session::Looking;
 use crate::settings;
 
 /// The database Coffer has chosen, whether or not it is open.
@@ -80,7 +82,10 @@ impl Serialize for Revealed {
 /// another, counted the way the text node showing it counts: in UTF-16 code
 /// units. Two numbers and nothing of the value; whether they name a part of it
 /// at all is [`vault_core::SecretValue::part`]'s to say.
-#[derive(Deserialize, Clone, Copy)]
+///
+/// It goes back to the window too, in a Copy chosen from the menu over a
+/// revealed value, which the window then sends here again.
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct Span {
     pub from: usize,
     pub to: usize,
@@ -93,6 +98,13 @@ pub fn entry_id(text: &str) -> Result<model::EntryId, crate::error::Failure> {
     uuid::Uuid::parse_str(text)
         .map(model::EntryId::from_uuid)
         .map_err(|_| crate::error::Failure::no_such_entry())
+}
+
+/// The entries a batch names, or nothing at all: one id that does not parse
+/// refuses the whole batch before anything is asked of the vault, as one that
+/// parses and names nothing refuses it there.
+pub fn entry_ids(texts: &[String]) -> Result<Vec<model::EntryId>, crate::error::Failure> {
+    texts.iter().map(|text| entry_id(text)).collect()
 }
 
 /// The folder an id names, on the same terms.
@@ -108,6 +120,16 @@ impl Snapshot {
             name: file_name(&taken.path),
             index: taken.index,
             taken: taken.taken.and_then(moment),
+        }
+    }
+}
+
+impl Removed {
+    pub fn of(removal: vault_core::storage::snapshot::Removal) -> Removed {
+        Removed {
+            gone: removal.gone,
+            left: removal.left,
+            refused: removal.refused.map(crate::error::Failure::io),
         }
     }
 }
@@ -145,15 +167,9 @@ pub struct OnDisk {
 
 impl OnDisk {
     pub fn of(found: vault_core::storage::OnDisk) -> OnDisk {
-        match found {
-            vault_core::storage::OnDisk::Gone => OnDisk {
-                there: false,
-                written: None,
-            },
-            vault_core::storage::OnDisk::Written(written) => OnDisk {
-                there: true,
-                written: written.and_then(moment),
-            },
+        OnDisk {
+            there: found != vault_core::storage::OnDisk::Gone,
+            written: written(found),
         }
     }
 }
@@ -184,15 +200,193 @@ impl CopyOf {
     ) -> CopyOf {
         CopyOf {
             vault: file_name(vault),
-            saved: match copy {
-                vault_core::storage::OnDisk::Written(written) => written.and_then(moment),
-                vault_core::storage::OnDisk::Gone => None,
-            },
-            kept_as: vault_core::storage::snapshot::slot(vault, 1)
-                .map(|slot| file_name(&slot))
-                .unwrap_or_default(),
+            saved: written(copy),
+            kept_as: newest(vault),
             vault_file: OnDisk::of(vault_file),
         }
+    }
+}
+
+/// The vault a chosen database was taken beside, when it is one of the
+/// backups Coffer keeps: what the strip over it says about the backup, about
+/// why it is open, and about what making it the vault would do. Names and
+/// times only, as for a copy.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotOf {
+    /// The vault's file name, which is the file the backup would go over.
+    pub vault: String,
+    /// When the backup's file was written, which is when the vault was as the
+    /// backup holds it.
+    pub taken: Option<String>,
+    /// What the vault's file is called once the backup has gone over it, when
+    /// it opens with the backup's password: the newest snapshot.
+    pub kept_as: String,
+    /// The vault's file as it stands, which the backup would go over or, when
+    /// it has gone, take the name of.
+    pub vault_file: OnDisk,
+    /// Why the backup is open: the vault's file would not open, or the reader
+    /// asked to look.
+    pub because: Looking,
+}
+
+impl SnapshotOf {
+    pub fn of(
+        vault: &std::path::Path,
+        backup: vault_core::storage::OnDisk,
+        vault_file: vault_core::storage::OnDisk,
+        because: Looking,
+    ) -> SnapshotOf {
+        SnapshotOf {
+            vault: file_name(vault),
+            taken: written(backup),
+            kept_as: newest(vault),
+            vault_file: OnDisk::of(vault_file),
+            because,
+        }
+    }
+}
+
+/// Why the open database cannot be written back, as the status bar's note
+/// says it: a backup, a place that takes no file, or one of the two formats
+/// Coffer reads and does not write.
+#[derive(Serialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub enum ReadOnly {
+    Snapshot,
+    Place,
+    Kdb,
+    Kdbx3,
+}
+
+impl ReadOnly {
+    pub fn of(why: vault_core::ReadOnly) -> ReadOnly {
+        match why {
+            vault_core::ReadOnly::Snapshot => ReadOnly::Snapshot,
+            vault_core::ReadOnly::Place => ReadOnly::Place,
+            vault_core::ReadOnly::Kdb => ReadOnly::Kdb,
+            vault_core::ReadOnly::Kdbx3Attachments => ReadOnly::Kdbx3,
+        }
+    }
+}
+
+/// A backup made the vault: the vault, which is what is open now, and what
+/// became of the file it replaced, by name. Exactly one of the two names when
+/// a file was there, and neither when the backup took an empty name.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Adopted {
+    pub database: Database,
+    /// The file it replaced opened with the backup's password, and is the
+    /// newest snapshot under this name.
+    pub kept_as: Option<String>,
+    /// The file it replaced would not open with the backup's password, and is
+    /// kept beside the vault under this name, which nothing removes.
+    pub set_aside: Option<String>,
+}
+
+impl Adopted {
+    pub fn of(vault: &std::path::Path, adopted: &vault_core::Adopted) -> Adopted {
+        let (kept_as, set_aside) = match adopted {
+            vault_core::Adopted::Kept(snapshot) => (Some(file_name(snapshot)), None),
+            vault_core::Adopted::SetAside(aside) => (None, Some(file_name(aside))),
+            vault_core::Adopted::Empty => (None, None),
+        };
+        Adopted {
+            database: Database::of(vault),
+            kept_as,
+            set_aside,
+        }
+    }
+}
+
+/// What Coffer knows of copies of the open vault kept on another disk: dates
+/// and a disk's name. No path crosses, not even the folder a copy went to.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Elsewhere {
+    /// The newest copy saved through Coffer on a disk other than the vault's,
+    /// or nothing when none was.
+    pub other_disk: Option<OtherDisk>,
+    /// When the newest copy was saved, while that one went to the vault's own
+    /// disk: it goes with the vault the day that disk fails.
+    pub same_disk_at: Option<String>,
+    /// Whole days the vault has gone without a copy on another disk, once that
+    /// is thirty or more and it holds entries; nothing otherwise. Rust's rule
+    /// (`copies::overdue`), so the window holds no copy of it.
+    pub overdue: Option<u64>,
+}
+
+impl Elsewhere {
+    pub fn of(told: crate::copies::Told) -> Elsewhere {
+        Elsewhere {
+            other_disk: told.other_disk.as_ref().and_then(OtherDisk::of),
+            same_disk_at: told.same_disk.and_then(|near| at(near.at)),
+            overdue: told.overdue,
+        }
+    }
+}
+
+/// A copy on another disk: when, and what the disk is called.
+#[derive(Serialize)]
+pub struct OtherDisk {
+    pub at: String,
+    /// The name the Finder shows for the disk, when it is mounted in
+    /// `/Volumes`.
+    pub volume: Option<String>,
+}
+
+impl OtherDisk {
+    /// Nothing for a time no calendar can hold, which is no copy the window
+    /// could say anything true about.
+    fn of(away: &crate::copies::Last) -> Option<OtherDisk> {
+        Some(OtherDisk {
+            at: at(away.at)?,
+            volume: away.volume.clone(),
+        })
+    }
+}
+
+/// A copy `copy_vault` has just saved: whether it went to the vault's own disk
+/// and what that disk is called, for the notice to say, and what is known of
+/// copies of the vault now, for everything else.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedCopy {
+    pub same_disk: bool,
+    pub volume: Option<String>,
+    pub elsewhere: Elsewhere,
+}
+
+impl SavedCopy {
+    pub fn of(landed: &crate::copies::Landed, told: crate::copies::Told) -> SavedCopy {
+        SavedCopy {
+            same_disk: landed.same_disk,
+            volume: landed.last.volume.clone(),
+            elsewhere: Elsewhere::of(told),
+        }
+    }
+}
+
+/// A time written down in seconds since 1970, the way every date crosses.
+fn at(seconds: u64) -> Option<String> {
+    moment(std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(seconds))?)
+}
+
+/// The name a vault's file is kept under as the newest snapshot, for the
+/// sentences that promise it before a copy or a backup goes over it.
+fn newest(vault: &std::path::Path) -> String {
+    vault_core::storage::snapshot::slot(vault, 1)
+        .map(|slot| file_name(&slot))
+        .unwrap_or_default()
+}
+
+/// When a file was last written, when it is there and the filesystem keeps
+/// the time.
+fn written(found: vault_core::storage::OnDisk) -> Option<String> {
+    match found {
+        vault_core::storage::OnDisk::Written(written) => written.and_then(moment),
+        vault_core::storage::OnDisk::Gone => None,
     }
 }
 
@@ -236,6 +430,17 @@ pub struct Status {
     /// Whether this database can be written back at all. A snapshot, a format
     /// Coffer will not write and a place that refuses a write are all read only.
     pub read_only: bool,
+    /// Which of those it is, while a database that cannot be written back is
+    /// open.
+    pub read_only_because: Option<ReadOnly>,
+    /// Whether what is open can be written to a file somewhere else with
+    /// `save_copy`: anything but a format Coffer will not write.
+    pub copyable: bool,
+    /// What is known of copies of the open vault kept on another disk.
+    /// Nothing while no vault is open - the unlock screen says nothing of
+    /// copies (`SPEC.md` section 8) - and nothing for a snapshot, the copy a
+    /// lock left, or a format Coffer will not write anywhere.
+    pub elsewhere: Option<Elsewhere>,
     /// The unsaved copy sitting beside the database Coffer will open next, when
     /// a lock had to write one. Read off the disk rather than remembered, so a
     /// copy left by a run that has since quit is still offered.
@@ -251,6 +456,9 @@ pub struct Status {
     /// The vault the chosen database was copied from, when it is the copy a
     /// lock left.
     pub copy: Option<CopyOf>,
+    /// The vault the chosen database was taken beside, when it is one of its
+    /// backups.
+    pub snapshot: Option<SnapshotOf>,
     /// Whether the last lock found text the reader was still typing and saved
     /// it into the vault with everything else. Which entry is not said: after a
     /// lock nothing of the vault is left to say it with.
@@ -261,6 +469,19 @@ pub struct Status {
     /// value being the field's now. Which field is not said, for the same
     /// reason.
     pub typed_beside: bool,
+    /// Whether the vault the last lock closed was given a new master password
+    /// while it was open. The window that said so went with the lock, and a
+    /// change that finished as the vault locked may never have been said.
+    pub rekeyed: bool,
+    /// What became of the vault's file, when the vault the last lock closed
+    /// had just been made from one of its backups and nothing had happened in
+    /// it since. The notice that said so went with the window, and a lock that
+    /// landed while the press ran took it before it could.
+    pub adopted: Option<Adopted>,
+    /// Whether the backup the reader asked to look at from the settings was
+    /// pushed out of the chain by the save of the lock on the way to it, which
+    /// left the session on the vault.
+    pub backup_gone: bool,
     /// Why the vault that was open is not open any more, when it is worth
     /// saying. A lock the reader asked for has nothing to explain.
     pub locked_by: Option<&'static str>,
@@ -526,6 +747,187 @@ pub struct Made {
     pub entry: String,
 }
 
+/// One of the kinds of entry Coffer makes, by the word the window sends back.
+///
+/// The window holds no list of them: it draws what [`Kinds`] offered and sends
+/// back the word that came with each, so a kind it made up is a word serde
+/// refuses rather than one read as the nearest kind there is.
+#[derive(Serialize, Deserialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub enum Kind {
+    Login,
+    BankCard,
+    Wifi,
+    Identity,
+    Licence,
+    RecoveryCodes,
+    SecureNote,
+    SshKey,
+}
+
+impl Kind {
+    fn of(kind: kind::Kind) -> Kind {
+        match kind {
+            kind::Kind::Login => Kind::Login,
+            kind::Kind::BankCard => Kind::BankCard,
+            kind::Kind::Wifi => Kind::Wifi,
+            kind::Kind::Identity => Kind::Identity,
+            kind::Kind::Licence => Kind::Licence,
+            kind::Kind::RecoveryCodes => Kind::RecoveryCodes,
+            kind::Kind::SecureNote => Kind::SecureNote,
+            kind::Kind::SshKey => Kind::SshKey,
+        }
+    }
+
+    /// The kind the engine makes for this word.
+    pub fn wanted(self) -> kind::Kind {
+        match self {
+            Kind::Login => kind::Kind::Login,
+            Kind::BankCard => kind::Kind::BankCard,
+            Kind::Wifi => kind::Kind::Wifi,
+            Kind::Identity => kind::Kind::Identity,
+            Kind::Licence => kind::Kind::Licence,
+            Kind::RecoveryCodes => kind::Kind::RecoveryCodes,
+            Kind::SecureNote => kind::Kind::SecureNote,
+            Kind::SshKey => kind::Kind::SshKey,
+        }
+    }
+}
+
+/// One kind as "+ Entry" offers it: the word to send back, what to call it,
+/// and the fields it writes in lines, which the window draws as text areas
+/// before anything is in them. The rest of what it writes arrives with the
+/// entry it makes.
+#[derive(Serialize)]
+pub struct Offer {
+    pub kind: Kind,
+    pub name: &'static str,
+    pub lined: Vec<&'static str>,
+}
+
+/// A name offered for a field of the reader's own, and whether a field made
+/// under it is hidden.
+#[derive(Serialize)]
+pub struct Suggestion {
+    pub name: &'static str,
+    pub protect: bool,
+}
+
+/// What a new entry can start as, a login first, and the names offered for a
+/// field of the reader's own. The same for every vault and every launch, and
+/// Rust's, so the window holds no copy of either list.
+#[derive(Serialize)]
+pub struct Kinds {
+    pub offered: Vec<Offer>,
+    pub suggested: Vec<Suggestion>,
+}
+
+impl Kinds {
+    pub fn of() -> Kinds {
+        Kinds {
+            offered: kind::Kind::ALL
+                .into_iter()
+                .map(|offered| Offer {
+                    kind: Kind::of(offered),
+                    name: offered.name(),
+                    lined: offered
+                        .slots()
+                        .iter()
+                        .filter(|slot| slot.lines)
+                        .map(|slot| slot.name)
+                        .collect(),
+                })
+                .collect(),
+            suggested: kind::SUGGESTED
+                .into_iter()
+                .map(|slot| Suggestion {
+                    name: slot.name,
+                    protect: slot.protect,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// What a move between folders hands back: the tree as it is now, and every
+/// entry that changed folder with the folder it left, which is what taking the
+/// move back sends again.
+#[derive(Serialize)]
+pub struct Moved {
+    pub tree: Group,
+    pub moved: Vec<Move>,
+}
+
+/// One entry a move took out of a folder, and that folder.
+///
+/// It comes back from the window to take the move back, where it is only a
+/// claim: [`vault_core::Vault::move_entries_back`] takes nothing back unless
+/// the file says the same.
+#[derive(Serialize, Deserialize)]
+pub struct Move {
+    pub entry: String,
+    pub from: String,
+}
+
+impl Move {
+    pub fn of(moved: model::Move) -> Move {
+        Move {
+            entry: moved.entry.to_string(),
+            from: moved.from.to_string(),
+        }
+    }
+
+    /// The move this names, or nothing when either id does not parse, which
+    /// is answered the way an id naming nothing is.
+    pub fn parsed(&self) -> Result<model::Move, crate::error::Failure> {
+        Ok(model::Move {
+            entry: entry_id(&self.entry)?,
+            from: group_id(&self.from)?,
+        })
+    }
+}
+
+/// One entry a deletion names, with what the window showed deleting it would
+/// do. The answer the reader agreed to travels with each entry, because it is
+/// for each entry that Rust can find it changed.
+///
+/// It goes the other way in a deletion chosen from a menu under the pointer,
+/// carrying what that menu said each deletion does, which the window sends
+/// back as the one the reader was shown.
+#[derive(Serialize, Deserialize)]
+pub struct Deleting {
+    pub entry: String,
+    pub deletion: Deletion,
+}
+
+impl Deleting {
+    /// The entry and the deletion shown, or nothing when the id does not
+    /// parse, which is answered the way an id naming nothing is.
+    pub fn shown(&self) -> Result<(model::EntryId, model::Deletion), crate::error::Failure> {
+        Ok((entry_id(&self.entry)?, self.deletion.shown()))
+    }
+}
+
+/// What putting a tag on entries hands back: the tree, and the entries the tag
+/// went on, which are those that did not have it. Only those are what taking
+/// it off again sends.
+#[derive(Serialize)]
+pub struct Tagged {
+    pub tree: Group,
+    pub changed: Vec<String>,
+}
+
+impl Tagged {
+    /// The answer for a tag that went on `changed`, with the vault as it now
+    /// stands.
+    pub fn of(tree: &model::Project, changed: &[model::EntryId]) -> Tagged {
+        Tagged {
+            tree: Group::of(tree),
+            changed: changed.iter().map(ToString::to_string).collect(),
+        }
+    }
+}
+
 /// What the file on disk holds, for the dialog that asks which version to keep.
 #[derive(Serialize)]
 pub struct Rival {
@@ -556,12 +958,27 @@ pub struct Snapshot {
     pub taken: Option<String>,
 }
 
+/// What removing the snapshots that open with an old master password came to.
+#[derive(Serialize)]
+pub struct Removed {
+    pub gone: usize,
+    /// How many would not go. Each is still beside the vault and still opens
+    /// with the old password, so the window goes on asking about them.
+    pub left: usize,
+    /// Why the first of those would not go, said the way a command that fails
+    /// says it. Nothing when none is left.
+    pub refused: Option<crate::error::Failure>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Group {
     pub id: String,
     pub name: String,
     pub is_recycle_bin: bool,
+    /// The group the vault keeps its entry templates in: what "+ Entry"
+    /// offers to make an entry from is what it holds itself.
+    pub is_templates: bool,
     /// When the group is in the recycle bin, when it went in and where it goes
     /// back to. `null` for the bin itself and for everything outside it.
     pub binned: Option<Binned>,
@@ -577,6 +994,7 @@ impl Group {
             id: project.id.to_string(),
             name: project.name.clone(),
             is_recycle_bin: project.is_recycle_bin,
+            is_templates: project.is_templates,
             binned: project.binned.map(Binned::of),
             deletion: Deletion::of(project.deletion),
             sections: project.sections.iter().map(Group::of).collect(),
@@ -604,7 +1022,7 @@ pub enum Deletion {
 }
 
 impl Deletion {
-    fn of(deletion: model::Deletion) -> Deletion {
+    pub fn of(deletion: model::Deletion) -> Deletion {
         match deletion {
             model::Deletion::Bin => Deletion::Bin,
             model::Deletion::Forever => Deletion::Forever,
@@ -661,6 +1079,9 @@ pub struct EntryRow {
     pub attachments: usize,
     /// When the entry is in the recycle bin, when it went in and where from.
     pub binned: Option<Binned>,
+    /// What deleting the entry would do, so that the window can say before a
+    /// press which of several chosen entries go to the bin and which for good.
+    pub deletion: Deletion,
 }
 
 impl EntryRow {
@@ -676,6 +1097,7 @@ impl EntryRow {
             has_password: summary.has_password,
             attachments: summary.attachments,
             binned: summary.binned.map(Binned::of),
+            deletion: Deletion::of(summary.deletion),
         }
     }
 }
@@ -696,8 +1118,9 @@ pub enum FieldKind {
 impl FieldKind {
     /// Which names are standard is decided in `vault-core`, which is the only
     /// place that knows what KeePass calls a field, and the one a lock asks
-    /// before it writes a draft into a field the entry does not hold yet.
-    fn of(name: &str) -> FieldKind {
+    /// before it writes a draft into a field the entry does not hold yet, and
+    /// the one a menu under the pointer asks of a field the entry lacks.
+    pub fn of(name: &str) -> FieldKind {
         match Standard::of(name) {
             Some(Standard::Title) => FieldKind::Title,
             Some(Standard::Username) => FieldKind::Username,
@@ -856,6 +1279,185 @@ impl Clash {
     }
 }
 
+/// What the page is told the reader chose outside it: an item of the menu bar,
+/// or the window's own close button.
+///
+/// Small on purpose. A message under 8 KiB is evaluated straight into the page
+/// (`ipc/channel.rs` in tauri 2.11.5); a larger one is parked in Rust and
+/// fetched back over `ipc:`, which is a second request for every choice.
+#[derive(Serialize)]
+#[serde(tag = "action", rename_all = "camelCase")]
+pub enum Action {
+    /// An item of Coffer's own in the menu bar.
+    Command { command: crate::menu::Command },
+    /// The close button, or Close Window. The page sends what is being typed
+    /// and then asks for `close_window` itself, the way the Lock button asks
+    /// for a lock.
+    Closing,
+    /// An item of the menu the window asked for under the pointer
+    /// (`context_menu`), with the number the window gave that menu. A choice
+    /// for a selection carries every id in it, which can be over the 8 KiB:
+    /// it is fetched then, the one choice that pays for a second request.
+    Context { serial: u64, chosen: Chosen },
+}
+
+/// What a right-click was on, as the window names it: ids, names, whether a
+/// value is on the screen, and for a revealed value the part of it selected.
+/// Nothing of any value, and nothing Rust takes on trust: every id is read
+/// again in the vault, and a place is only where an item says a move goes.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Subject {
+    /// A row of the list, and where the window would let it be moved.
+    Entry { entry: String, places: Vec<Place> },
+    /// The rows chosen in the list, when the right-click was on one of them.
+    Entries {
+        entries: Vec<String>,
+        places: Vec<Place>,
+    },
+    /// A folder in the tree or in the recycle bin.
+    Folder { group: String, places: Vec<Place> },
+    /// The recycle bin's own row.
+    Bin,
+    /// A field's row, and whether its value is on the screen.
+    Field {
+        entry: String,
+        field: String,
+        shown: bool,
+    },
+    /// A file on an entry, by the name the entry gives it.
+    File { entry: String, name: String },
+    /// A revealed value, and the part of it the reader selected, or nothing
+    /// for all of it.
+    Value {
+        entry: String,
+        field: String,
+        range: Option<Span>,
+    },
+}
+
+/// A place a menu's Move to offers, as the window's folder list has it: in
+/// the tree's order, `depth` folders down from the top, its name already set
+/// apart and cut the way a sentence sets one apart, and whether a move there
+/// would be taken and change something.
+///
+/// The window's own rule (`placesFor` in `places.ts`), sent rather than worked
+/// out again here: a menu that offered another list of places than the
+/// window's folder list would be a second answer to one question. Flat,
+/// because a hundred folders nested inside each other would be more nesting
+/// than serde_json reads. A place the window was wrong about is refused by the
+/// move itself.
+#[derive(Deserialize)]
+pub struct Place {
+    pub id: String,
+    pub name: String,
+    pub open: bool,
+    pub depth: usize,
+}
+
+/// Where the pointer was when the reader right-clicked, in the window's points
+/// from its top-left corner.
+#[derive(Deserialize, Clone, Copy)]
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
+}
+
+impl Point {
+    /// Where AppKit is asked to draw the menu. A coordinate that is not a
+    /// place in the window - less than nothing, or not a number at all - is
+    /// its edge.
+    pub fn logical(self) -> tauri::LogicalPosition<f64> {
+        let inside = |at: f64| if at.is_finite() && at > 0.0 { at } else { 0.0 };
+        tauri::LogicalPosition::new(inside(self.x), inside(self.y))
+    }
+}
+
+/// An item chosen from a menu under the pointer, with the ids it is about. The
+/// window runs the function the item's button runs, on those ids, and nothing
+/// when they are not what it shows any more.
+#[derive(Serialize)]
+#[serde(tag = "item", rename_all = "camelCase")]
+pub enum Chosen {
+    /// A field's value, whole, through Rust.
+    CopyField {
+        entry: String,
+        field: String,
+    },
+    /// A revealed value, or the part of it selected, through Rust.
+    CopyValue {
+        entry: String,
+        field: String,
+        range: Option<Span>,
+    },
+    ShowField {
+        entry: String,
+        field: String,
+    },
+    HideField {
+        entry: String,
+        field: String,
+    },
+    ChangeField {
+        entry: String,
+        field: String,
+    },
+    MakeOne {
+        entry: String,
+        field: String,
+    },
+    RemoveField {
+        entry: String,
+        field: String,
+    },
+    OpenAddress {
+        entry: String,
+    },
+    Duplicate {
+        entry: String,
+    },
+    MoveEntries {
+        entries: Vec<String>,
+        into: String,
+    },
+    /// Each entry with what the menu said deleting it does.
+    DeleteEntries {
+        entries: Vec<Deleting>,
+    },
+    PutBackEntries {
+        entries: Vec<String>,
+    },
+    NewEntryIn {
+        group: String,
+    },
+    NewFolderIn {
+        group: String,
+    },
+    RenameFolder {
+        group: String,
+    },
+    MoveFolder {
+        group: String,
+        into: String,
+    },
+    DeleteFolder {
+        group: String,
+        deletion: Deletion,
+    },
+    PutBackFolder {
+        group: String,
+    },
+    EmptyBin,
+    SaveFile {
+        entry: String,
+        name: String,
+    },
+    RemoveFile {
+        entry: String,
+        name: String,
+    },
+}
+
 /// The value when the database does not protect it, and nothing at all when it
 /// does.
 fn shown(value: &FieldValue) -> Option<String> {
@@ -948,6 +1550,91 @@ mod tests {
         }
     }
 
+    /// The page reads a choice by its tag and nothing else, so the shape is
+    /// pinned exactly. Every one stays on the path that evaluates it into the
+    /// page rather than parking it for a second request.
+    #[test]
+    fn an_action_is_a_small_message_read_by_its_tag() {
+        assert_eq!(
+            json(&Action::Command {
+                command: crate::menu::Command::NewEntry
+            }),
+            r#"{"action":"command","command":"newEntry"}"#
+        );
+        assert_eq!(json(&Action::Closing), r#"{"action":"closing"}"#);
+
+        for command in crate::menu::Command::ALL {
+            let sent = json(&Action::Command { command });
+            assert!(sent.len() < 8192, "{command:?} is fetched rather than told");
+            assert!(
+                sent.starts_with(r#"{"action":"command","command":""#),
+                "{sent}"
+            );
+        }
+    }
+
+    /// An item chosen from a menu under the pointer reaches the page under
+    /// the menu's number, read by its own tag, with the ids it is about and
+    /// the part of a value selected: positions, never the value.
+    #[test]
+    fn a_choice_from_a_menu_under_the_pointer_is_read_by_its_tag() {
+        assert_eq!(
+            json(&Action::Context {
+                serial: 3,
+                chosen: Chosen::CopyValue {
+                    entry: "an entry".to_owned(),
+                    field: "PIN".to_owned(),
+                    range: Some(Span { from: 1, to: 4 }),
+                },
+            }),
+            r#"{"action":"context","serial":3,"chosen":{"item":"copyValue","entry":"an entry","field":"PIN","range":{"from":1,"to":4}}}"#
+        );
+        assert_eq!(
+            json(&Action::Context {
+                serial: 1,
+                chosen: Chosen::EmptyBin
+            }),
+            r#"{"action":"context","serial":1,"chosen":{"item":"emptyBin"}}"#
+        );
+        assert_eq!(
+            json(&Chosen::DeleteEntries {
+                entries: vec![Deleting {
+                    entry: "an entry".to_owned(),
+                    deletion: Deletion::Forever,
+                }],
+            }),
+            r#"{"item":"deleteEntries","entries":[{"entry":"an entry","deletion":"forever"}]}"#
+        );
+        assert_eq!(
+            json(&Chosen::MoveFolder {
+                group: "a".to_owned(),
+                into: "b".to_owned(),
+            }),
+            r#"{"item":"moveFolder","group":"a","into":"b"}"#
+        );
+    }
+
+    /// The pointer is where the window says, and a number that is no place in
+    /// the window - less than nothing, too large to be a number, not one at
+    /// all - is the window's edge rather than a menu drawn off the screen.
+    #[test]
+    fn a_point_off_the_window_is_its_edge() {
+        let at = |x: f64, y: f64| {
+            let logical = Point { x, y }.logical();
+            (logical.x, logical.y)
+        };
+        assert_eq!(at(12.5, 300.0), (12.5, 300.0));
+        assert_eq!(at(-4.0, -0.0), (0.0, 0.0));
+        assert_eq!(at(f64::NAN, f64::INFINITY), (0.0, 0.0));
+        assert_eq!(at(f64::NEG_INFINITY, 1e9), (0.0, 1e9));
+
+        let read: Point = serde_json::from_str(r#"{"x":10,"y":20.25}"#).expect("a point reads");
+        assert_eq!((read.x, read.y), (10.0, 20.25));
+        for refused in [r#"{"x":1}"#, r#"{"x":"1","y":2}"#, r#"{"x":1e999,"y":2}"#] {
+            assert!(serde_json::from_str::<Point>(refused).is_err(), "{refused}");
+        }
+    }
+
     /// The whole point of the boundary: what the database protects does not
     /// cross it, and the payload says so rather than saying nothing.
     #[test]
@@ -1007,7 +1694,7 @@ mod tests {
     }
 
     #[test]
-    fn a_row_carries_the_four_things_a_list_filters_on_and_nothing_else() {
+    fn a_row_carries_what_the_list_draws_and_no_protected_value() {
         let row = EntryRow::of(&EntrySummary {
             id: EntryId::from_uuid(uuid::Uuid::nil()),
             group: GroupId::from_uuid(uuid::Uuid::nil()),
@@ -1028,11 +1715,14 @@ mod tests {
             attachments: 2,
             versions: 7,
             binned: None,
+            deletion: model::Deletion::Bin,
         });
 
+        // What deleting it would do is on the row so that the window knows it
+        // before a press on several rows, rather than only once one is open.
         assert_eq!(
             json(&row),
-            r#"{"id":"00000000-0000-0000-0000-000000000000","group":"00000000-0000-0000-0000-000000000000","title":"node-3","username":"deploy","url":null,"tags":["prod","ssh"],"modified":"2026-03-12T18:42:00Z","hasPassword":true,"attachments":2,"binned":null}"#
+            r#"{"id":"00000000-0000-0000-0000-000000000000","group":"00000000-0000-0000-0000-000000000000","title":"node-3","username":"deploy","url":null,"tags":["prod","ssh"],"modified":"2026-03-12T18:42:00Z","hasPassword":true,"attachments":2,"binned":null,"deletion":"bin"}"#
         );
     }
 
@@ -1250,6 +1940,7 @@ mod tests {
             name: name.to_owned(),
             notes: None,
             is_recycle_bin: false,
+            is_templates: false,
             binned: None,
             deletion,
             sections,
@@ -1266,6 +1957,129 @@ mod tests {
         assert_eq!(payload["binned"], serde_json::Value::Null);
         assert_eq!(payload["sections"][0]["deletion"], "bin");
         assert_eq!(payload["sections"][0]["isRecycleBin"], false);
+    }
+
+    /// The group a vault keeps its templates in says so, and no other does:
+    /// the window lists the templates from the one group marked.
+    #[test]
+    fn a_group_says_whether_it_holds_the_templates() {
+        let folder = |name: &str, is_templates, sections| model::Project {
+            id: GroupId::from_uuid(uuid::Uuid::new_v4()),
+            name: name.to_owned(),
+            notes: None,
+            is_recycle_bin: false,
+            is_templates,
+            binned: None,
+            deletion: model::Deletion::Bin,
+            sections,
+            entries: Vec::new(),
+        };
+        let tree = folder(
+            "Root",
+            false,
+            vec![
+                folder("Templates", true, Vec::new()),
+                folder("Personal", false, Vec::new()),
+            ],
+        );
+
+        let payload = serde_json::to_value(Group::of(&tree)).expect("the tree serialises");
+        assert_eq!(payload["isTemplates"], false);
+        assert_eq!(payload["sections"][0]["isTemplates"], true);
+        assert_eq!(payload["sections"][1]["isTemplates"], false);
+    }
+
+    /// Every kind goes to the window under one word and comes back under the
+    /// same word as the same kind. A word the window made up, or one spelled
+    /// another way, is refused rather than read as the nearest kind: an entry
+    /// nobody chose would be made.
+    #[test]
+    fn every_kind_crosses_by_the_name_the_window_sends_back() {
+        let offered = serde_json::to_value(Kinds::of()).expect("the kinds serialise");
+        let words: Vec<&str> = offered["offered"]
+            .as_array()
+            .expect("a list")
+            .iter()
+            .filter_map(|offer| offer["kind"].as_str())
+            .collect();
+        assert_eq!(
+            words,
+            [
+                "login",
+                "bankCard",
+                "wifi",
+                "identity",
+                "licence",
+                "recoveryCodes",
+                "secureNote",
+                "sshKey"
+            ]
+        );
+
+        for made in kind::Kind::ALL {
+            let word = serde_json::to_value(Kind::of(made)).expect("a kind serialises");
+            let read: Kind = serde_json::from_value(word).expect("the word comes back");
+            assert_eq!(read.wanted(), made);
+        }
+
+        for wrong in [
+            "Login",
+            "bank_card",
+            "bankcard",
+            "card",
+            "",
+            " login",
+            "template",
+            "Bank card",
+        ] {
+            assert!(
+                serde_json::from_value::<Kind>(serde_json::json!(wrong)).is_err(),
+                "{wrong:?} was read as a kind"
+            );
+        }
+        assert!(serde_json::from_value::<Kind>(serde_json::json!(0)).is_err());
+        assert!(serde_json::from_value::<Kind>(serde_json::json!(null)).is_err());
+    }
+
+    /// What "+ Entry" makes unasked is a login, the first thing offered.
+    #[test]
+    fn the_first_kind_offered_is_a_login() {
+        let offered = serde_json::to_value(Kinds::of()).expect("the kinds serialise");
+        assert_eq!(offered["offered"][0]["kind"], "login");
+        assert_eq!(offered["offered"][0]["name"], "Login");
+        assert_eq!(offered["offered"][0]["lined"], serde_json::json!([]));
+    }
+
+    /// A kind says which of its fields it writes in lines, and only those; what
+    /// it hides arrives with the entry it makes, and the names offered for a
+    /// field of the reader's own say whether each is hidden.
+    #[test]
+    fn a_kind_offers_the_fields_it_writes_in_lines() {
+        let offered = serde_json::to_value(Kinds::of()).expect("the kinds serialise");
+        let lined = |word: &str| {
+            offered["offered"]
+                .as_array()
+                .and_then(|all| all.iter().find(|offer| offer["kind"] == word))
+                .map(|offer| offer["lined"].clone())
+        };
+        assert_eq!(
+            lined("recoveryCodes"),
+            Some(serde_json::json!(["Recovery codes"]))
+        );
+        assert_eq!(
+            lined("secureNote"),
+            Some(serde_json::json!(["Secret note"]))
+        );
+        assert_eq!(lined("licence"), Some(serde_json::json!(["Licence key"])));
+        assert_eq!(lined("bankCard"), Some(serde_json::json!([])));
+        assert_eq!(
+            offered["suggested"],
+            serde_json::json!([
+                { "name": "PIN", "protect": true },
+                { "name": "Account number", "protect": false },
+                { "name": "Security answer", "protect": true },
+            ])
+        );
     }
 
     #[test]
@@ -1379,6 +2193,79 @@ mod tests {
         assert!(!wanted.lock_on_sleep && wanted.lock_on_screen_lock);
     }
 
+    /// A deletion from the window names each entry with the answer it was
+    /// shown, in the two words the window spells them with and no others: a
+    /// word it made up is refused, not read as either of the two.
+    #[test]
+    fn a_deletion_reads_each_entry_with_what_the_window_showed() {
+        let read: Vec<Deleting> = serde_json::from_str(
+            r#"[{"entry":"00000000-0000-0000-0000-000000000000","deletion":"forever"},{"entry":"00000000-0000-0000-0000-000000000001","deletion":"bin"}]"#,
+        )
+        .expect("both are read");
+        let shown: Vec<_> = read
+            .iter()
+            .map(|deleting| deleting.shown().expect("the ids parse"))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (
+                    EntryId::from_uuid(uuid::Uuid::nil()),
+                    model::Deletion::Forever
+                ),
+                (
+                    EntryId::from_uuid(uuid::Uuid::from_u128(1)),
+                    model::Deletion::Bin
+                ),
+            ]
+        );
+
+        for refused in [
+            r#"{"entry":"00000000-0000-0000-0000-000000000000","deletion":"Bin"}"#,
+            r#"{"entry":"00000000-0000-0000-0000-000000000000","deletion":"trash"}"#,
+            r#"{"entry":"00000000-0000-0000-0000-000000000000"}"#,
+            r#"{"deletion":"bin"}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<Deleting>(refused).is_err(),
+                "{refused}"
+            );
+        }
+    }
+
+    /// One id in a batch that is not one refuses the batch, wherever it sits:
+    /// the entries before it are not asked about either.
+    #[test]
+    fn an_identifier_in_a_batch_that_is_not_one_refuses_the_batch() {
+        let good = "00000000-0000-0000-0000-000000000000".to_owned();
+        assert_eq!(
+            entry_ids(&[good.clone(), good.clone()])
+                .expect("both parse")
+                .len(),
+            2
+        );
+        assert!(entry_ids(&[]).expect("nothing is nothing").is_empty());
+        for bad in [
+            "",
+            "../../../etc/passwd",
+            "00000000-0000-0000-0000-00000000000",
+        ] {
+            assert!(
+                entry_ids(&[good.clone(), bad.to_owned()]).is_err(),
+                "{bad:?}"
+            );
+            assert!(
+                entry_ids(&[bad.to_owned(), good.clone()]).is_err(),
+                "{bad:?}"
+            );
+            let deleting = Deleting {
+                entry: bad.to_owned(),
+                deletion: Deletion::Bin,
+            };
+            assert!(deleting.shown().is_err(), "{bad:?}");
+        }
+    }
+
     #[test]
     fn an_identifier_that_is_not_one_names_no_entry() {
         assert!(entry_id("00000000-0000-0000-0000-000000000000").is_ok());
@@ -1432,6 +2319,181 @@ mod tests {
         assert_eq!(
             missing,
             serde_json::json!({ "there": false, "written": null })
+        );
+    }
+
+    /// What the strip over a backup is told, and what the window is told a
+    /// backup made the vault did, is file names, times and a word, never a
+    /// path: the one path is the vault's own, which `Database` always carries.
+    /// The reasons a vault is read only cross as the words the window
+    /// branches on.
+    #[test]
+    fn a_backup_crosses_as_names_and_times_only() {
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_000_000);
+        let folder = std::path::Path::new("/Users/someone/Vault");
+        let vault = folder.join("work <b>.kdbx");
+
+        let backup = serde_json::to_value(SnapshotOf::of(
+            &vault,
+            vault_core::storage::OnDisk::Written(Some(at)),
+            vault_core::storage::OnDisk::Gone,
+            Looking::Unopened,
+        ))
+        .expect("the backup serialises");
+        assert_eq!(
+            backup,
+            serde_json::json!({
+                "vault": "work <b>.kdbx",
+                "taken": "2026-09-21T14:13:20Z",
+                "keptAs": "work <b>.kdbx.1.bak",
+                "vaultFile": { "there": false, "written": null },
+                "because": "unopened"
+            })
+        );
+        let asked = serde_json::to_value(SnapshotOf::of(
+            &vault,
+            vault_core::storage::OnDisk::Gone,
+            vault_core::storage::OnDisk::Written(None),
+            Looking::Asked,
+        ))
+        .expect("the backup serialises");
+        assert_eq!(asked["because"], "asked");
+        assert_eq!(asked["taken"], serde_json::Value::Null);
+
+        for (adopted, kept_as, set_aside) in [
+            (
+                vault_core::Adopted::Kept(folder.join("work <b>.kdbx.1.bak")),
+                serde_json::json!("work <b>.kdbx.1.bak"),
+                serde_json::Value::Null,
+            ),
+            (
+                vault_core::Adopted::SetAside(
+                    folder.join("work <b>.kdbx.replaced-2026-10-01.kdbx"),
+                ),
+                serde_json::Value::Null,
+                serde_json::json!("work <b>.kdbx.replaced-2026-10-01.kdbx"),
+            ),
+            (
+                vault_core::Adopted::Empty,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+            ),
+        ] {
+            let said =
+                serde_json::to_value(Adopted::of(&vault, &adopted)).expect("the answer serialises");
+            assert_eq!(said["keptAs"], kept_as, "{said}");
+            assert_eq!(said["setAside"], set_aside, "{said}");
+            assert_eq!(said["database"]["name"], "work <b>");
+            let mut without = said.clone();
+            if let Some(fields) = without.as_object_mut() {
+                fields.remove("database");
+            }
+            assert!(!without.to_string().contains("/Users"), "{said}");
+        }
+
+        for (why, word) in [
+            (vault_core::ReadOnly::Snapshot, "snapshot"),
+            (vault_core::ReadOnly::Place, "place"),
+            (vault_core::ReadOnly::Kdb, "kdb"),
+            (vault_core::ReadOnly::Kdbx3Attachments, "kdbx3"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(ReadOnly::of(why)).expect("the reason serialises"),
+                word
+            );
+        }
+    }
+
+    /// A copy on another disk crosses as times, a disk's name and a count of
+    /// days: the folder the copy went to is written down in Rust and never
+    /// sent, and a time no calendar holds is not a copy the window is told of.
+    #[test]
+    fn a_copy_elsewhere_crosses_as_times_and_a_disk_name_only() {
+        use crate::copies::{Landed, Last, Told};
+
+        let away = Last {
+            at: 1_790_000_000,
+            folder: "/Users/someone/Secret Folder".to_owned(),
+            volume: Some("Stick <b>".to_owned()),
+        };
+        let near = Last {
+            at: 1_790_086_400,
+            folder: "/Users/someone/Secret Folder".to_owned(),
+            volume: None,
+        };
+        let told = || Told {
+            other_disk: Some(away.clone()),
+            same_disk: Some(near.clone()),
+            overdue: Some(34),
+        };
+
+        let said = serde_json::to_value(SavedCopy::of(
+            &Landed {
+                last: near.clone(),
+                same_disk: true,
+            },
+            told(),
+        ))
+        .expect("the copy serialises");
+        assert_eq!(
+            said,
+            serde_json::json!({
+                "sameDisk": true,
+                "volume": null,
+                "elsewhere": {
+                    "otherDisk": { "at": "2026-09-21T14:13:20Z", "volume": "Stick <b>" },
+                    "sameDiskAt": "2026-09-22T14:13:20Z",
+                    "overdue": 34
+                }
+            })
+        );
+        assert!(!said.to_string().contains('/'), "{said}");
+
+        let never = serde_json::to_value(Elsewhere::of(Told {
+            other_disk: Some(Last {
+                at: u64::MAX,
+                ..away.clone()
+            }),
+            same_disk: Some(Last {
+                at: u64::MAX,
+                ..near.clone()
+            }),
+            overdue: None,
+        }))
+        .expect("the copies serialise");
+        assert_eq!(
+            never,
+            serde_json::json!({ "otherDisk": null, "sameDiskAt": null, "overdue": null })
+        );
+    }
+
+    /// A removal that could not take everything says how many are left and
+    /// why, in the shape every refusal has, so the window can keep asking
+    /// about what is left and say what stopped the rest.
+    #[test]
+    fn a_removal_crosses_with_what_went_what_is_left_and_why() {
+        use vault_core::storage::snapshot::Removal;
+
+        let partly = serde_json::to_value(Removed::of(Removal {
+            gone: 3,
+            left: 1,
+            refused: Some(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        }))
+        .expect("the removal serialises");
+        assert_eq!(partly["gone"], 3);
+        assert_eq!(partly["left"], 1);
+        assert_eq!(partly["refused"]["code"], "io");
+        assert!(partly["refused"]["message"].is_string(), "{partly}");
+
+        let whole = serde_json::to_value(Removed::of(Removal {
+            gone: 4,
+            left: 0,
+            refused: None,
+        }))
+        .expect("the removal serialises");
+        assert_eq!(
+            whole,
+            serde_json::json!({ "gone": 4, "left": 0, "refused": null })
         );
     }
 

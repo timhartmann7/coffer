@@ -87,9 +87,16 @@ function key(place: Place): string {
 	return JSON.stringify([place.entry, place.field]);
 }
 
-/** Keeps a word in `sending` until it has arrived, whichever way it arrives. A
- * draft refused - the vault locked meanwhile - has nobody to tell. */
-function track<T>(sent: Promise<T>): Promise<T> {
+/**
+ * Keeps a word in `sending` until it has arrived, whichever way it arrives. A
+ * draft refused - the vault locked meanwhile - has nobody to tell.
+ *
+ * Also what the entry pane sends when something typed that is not a field's
+ * value is left - a tag, a field's new name - so that `flush` waits for those
+ * too: a copy of the entry asked for at the same moment would otherwise be
+ * answered beside them, and could hold the entry as it was before them.
+ */
+export function track<T>(sent: Promise<T>): Promise<T> {
 	sending.add(sent);
 	const arrived = () => sending.delete(sent);
 	sent.then(arrived, arrived);
@@ -173,19 +180,21 @@ export function settle<T>(place: Place, write: (sequence: number) => Promise<T>)
 }
 
 /**
- * An entry is being deleted, or - for `null` - the file read again, and what
- * was typed into it goes with it. Answers with the number the command carries,
- * which is how Rust knows which drafts came before it.
+ * Entries are being deleted, or - for `null` - the file read again, and what
+ * was typed into them goes with them. Answers with the number the command
+ * carries, which is how Rust knows which drafts came before it.
  */
-export function release(entry: string | null): number {
-	const going = [...typing].filter(([, held]) => entry === null || held.place.entry === entry);
+export function release(entries: readonly string[] | null): number {
+	const named = entries === null ? null : new Set(entries);
+	const going = [...typing].filter(([, held]) => named === null || named.has(held.place.entry));
 	for (const [name] of going) forget(name);
 	return next();
 }
 
 /**
  * Tells Rust everything typed that it has not heard yet, now, and waits until
- * every word on its way has arrived - the values being written included.
+ * every word on its way has arrived - the values being written included, and
+ * every other change `track` was handed.
  *
  * The window losing focus is when this happens on its own: the reader may be
  * about to close the lid. A lock the reader asked for waits for it, so that the

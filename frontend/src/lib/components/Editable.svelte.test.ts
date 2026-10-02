@@ -1,10 +1,13 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Place } from '$lib/drafts';
+import type { Stubbed } from '$lib/stubbed';
 import Editable from './Editable.svelte';
 
-const ipc = vi.hoisted(() => ({ draft: vi.fn() }));
-vi.mock('$lib/ipc', () => ipc);
+const ipc = vi.hoisted(() => ({}) as Stubbed);
+vi.mock(import('$lib/ipc'), async (real) =>
+	Object.assign(ipc, (await import('$lib/stubbed')).stubbed(await real()))
+);
 
 let host: HTMLElement;
 
@@ -398,4 +401,42 @@ it('draws a value it cannot change as a value and not as a field', () => {
 	expect(host.textContent).toContain('deploy');
 
 	return unmount(component);
+});
+
+/** A field asked to take the focus - the name of an entry just made, the
+ * value of a field just named - takes it with what is in it selected, so the
+ * first key replaces "Gmail copy" rather than adding to it. Only when the
+ * focus is nowhere: a reader who went on to type elsewhere keeps it there. */
+it('takes the focus with its value selected when asked to and the focus is nowhere', async () => {
+	const component = mount(Editable, {
+		target: host,
+		props: { value: 'Gmail copy', label: 'Title', focused: true, draft: place(), onCommit: taken() }
+	});
+	flushSync();
+	const name = field() as HTMLInputElement;
+	expect(document.activeElement).toBe(name);
+	expect([name.selectionStart, name.selectionEnd]).toEqual([0, 'Gmail copy'.length]);
+	name.blur();
+	await unmount(component);
+
+	const elsewhere = document.createElement('input');
+	document.body.appendChild(elsewhere);
+	elsewhere.focus();
+	try {
+		const later = mount(Editable, {
+			target: host,
+			props: {
+				value: 'Gmail copy',
+				label: 'Title',
+				focused: true,
+				draft: place(),
+				onCommit: taken()
+			}
+		});
+		flushSync();
+		expect(document.activeElement, 'the field took the focus from where it was').toBe(elsewhere);
+		await unmount(later);
+	} finally {
+		elsewhere.remove();
+	}
 });

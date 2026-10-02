@@ -7,8 +7,9 @@
 
 use chrono::NaiveDateTime;
 use keepass::Database;
-use keepass::db::{Entry, EntryId, EntryRef, History, Icon, Times};
+use keepass::db::{Entry, EntryId, EntryRef, History, Times};
 
+use crate::content::Content;
 use crate::error::VaultError;
 
 /// What KeePassXC uses when a database states no limit of its own, and what a
@@ -147,61 +148,30 @@ fn same_content(current: &Entry, previous: &Entry) -> bool {
     current == previous
 }
 
-/// Reads one previous version of an entry.
-///
-/// The index is the position the version holds in the file, which is what a
-/// version list hands back and what addresses the same version however the list
-/// was ordered.
-pub(crate) fn version(database: &Database, id: EntryId, index: usize) -> Option<Entry> {
-    let entry = database.entry(id)?;
-    let version = entry.historical(index)?;
-    Some((*version).clone())
-}
-
 /// Makes a previous version the current state of its entry, keeping the state
 /// it replaces as a version of its own.
 ///
-/// The files on the entry are not touched. A file belongs to the pool the whole
-/// database shares, a version names it by a number, and the library gives no way
-/// to point an entry at a number of its own choosing, so a restore that moved
-/// files would have to copy their bytes. What a restore brings back is the
-/// fields, the tags, the notes, the colours, the icon and the expiry date.
+/// What a restore brings back is what [`Content`] lists: the fields, the tags,
+/// the notes, the colours, the icon and the expiry date, and the rest of what
+/// an entry holds rather than where it sits. The files on the entry are not
+/// touched. A file belongs to the pool the whole database shares, a version
+/// names it by a number, and the library gives no way to point an entry at a
+/// number of its own choosing, so a restore that moved files would have to
+/// copy their bytes.
 pub(crate) fn restore(
     database: &mut Database,
     id: EntryId,
     index: usize,
 ) -> Result<(), VaultError> {
-    let wanted = version(database, id, index).ok_or(VaultError::NoSuchVersion)?;
-
-    // The icon is read out before the rest, because it is not a field anybody
-    // can assign: an entry holds a back-reference in the custom icon it uses,
-    // and only the three setters below keep that right.
-    let icon = wanted.icon().cloned();
+    let wanted = {
+        let entry = database.entry(id).ok_or(VaultError::NoSuchVersion)?;
+        let version = entry.historical(index).ok_or(VaultError::NoSuchVersion)?;
+        Content::of(&version)
+    };
 
     let restored = edit(database, id, move |entry| {
-        entry.fields = wanted.fields;
-        entry.tags = wanted.tags;
-        entry.custom_data = wanted.custom_data;
-        entry.autotype = wanted.autotype;
-        entry.foreground_color = wanted.foreground_color;
-        entry.background_color = wanted.background_color;
-        entry.override_url = wanted.override_url;
-        entry.quality_check = wanted.quality_check;
-        entry.times.expires = wanted.times.expires;
-        entry.times.expiry = wanted.times.expiry;
+        wanted.put(&mut entry.as_mut());
         entry.times.last_modification = Some(Times::now());
-
-        // A custom icon somebody deleted meanwhile leaves the entry with none
-        // rather than with a reference to nothing.
-        match icon {
-            None => entry.set_icon_none(),
-            Some(Icon::BuiltIn(icon)) => entry.set_icon_builtin(icon),
-            Some(Icon::Custom(icon)) => {
-                if entry.set_icon_custom(icon).is_err() {
-                    entry.set_icon_none();
-                }
-            }
-        }
     });
 
     if restored {

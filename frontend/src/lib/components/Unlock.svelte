@@ -1,6 +1,7 @@
 <script lang="ts">
 	import {
 		asFailure,
+		backToVault,
 		chooseDatabase,
 		chooseFound,
 		chooseKeyFile,
@@ -8,14 +9,27 @@
 		chooseSnapshot,
 		discardRescue,
 		forgetKeyFile,
-		leaveRescue,
 		putBackRescue,
+		showInFinder,
 		snapshots,
 		unlock,
 		unlockTakingOver
 	} from '$lib/ipc';
-	import { at, fully } from '$lib/format';
-	import type { CopyOf, Database, Failure, Found, OnDisk, Rescued, Snapshot } from '$lib/model';
+	import { at } from '$lib/format';
+	import { answer } from '$lib/menu.svelte';
+	import { adoptedBeforeLocking } from '$lib/replacing';
+	import type {
+		Adopted,
+		CopyOf,
+		Database,
+		Failure,
+		Found,
+		OnDisk,
+		Rescued,
+		Snapshot,
+		SnapshotOf
+	} from '$lib/model';
+	import Backups from './Backups.svelte';
 	import Confirm from './Confirm.svelte';
 	import Icon from './Icon.svelte';
 	import Mark from './Mark.svelte';
@@ -29,8 +43,12 @@
 		lost = false,
 		file = null,
 		copy = null,
+		snapshot = null,
 		typed = false,
 		typedBeside = false,
+		rekeyed = false,
+		adopted = null,
+		backupGone = false,
 		onChoose,
 		onKeyFile,
 		onCreate,
@@ -75,6 +93,9 @@
 		/** The vault the chosen file was copied from, when the chosen file is
 		 * the copy a lock left. */
 		copy?: CopyOf | null;
+		/** The vault the chosen file was taken beside, when the chosen file is
+		 * one of its backups. */
+		snapshot?: SnapshotOf | null;
 		/**
 		 * Whether the last lock found text the reader was still typing and saved
 		 * it into the vault. Only whether: after a lock nothing of the vault is
@@ -90,6 +111,29 @@
 		 * Named no more than `typed` is.
 		 */
 		typedBeside?: boolean;
+		/**
+		 * Whether the vault the last lock closed was given a new master
+		 * password while it was open. The settings said so, and they went with
+		 * the window; a change pressed as the lid closed may never have been
+		 * said at all, and the reader would not know which of two passwords to
+		 * type.
+		 */
+		rekeyed?: boolean;
+		/**
+		 * What became of the vault's file, when the vault the last lock closed
+		 * had just been made from one of its backups. The notice that would have
+		 * said so went with the window, and this screen is where the reader is
+		 * about to type a password - which is now the one that backup opened
+		 * with.
+		 */
+		adopted?: Adopted | null;
+		/**
+		 * Whether the backup the reader asked to look at was pushed out of the
+		 * chain by the save of the lock on the way to it, which left the vault
+		 * chosen. Without it this screen would be the vault's, as if the press
+		 * had never been made.
+		 */
+		backupGone?: boolean;
 		onChoose: (database: Database) => void;
 		onKeyFile: (chosen: Database | null) => void;
 		/** Offered on the first run, where there is nothing to open yet. */
@@ -114,7 +158,10 @@
 	let field = $state<HTMLInputElement>();
 	let busy = $state(false);
 	let failure = $state<Failure | null>(null);
-	let snapshot = $state<Snapshot | null>(null);
+	/** The backups beside the chosen file, offered when the file itself will
+	 * not open: nothing until a list with something in it has been read, and
+	 * from then on the list as it was last read, which may have emptied. */
+	let backups = $state<Snapshot[] | null>(null);
 
 	/**
 	 * The one failure the field itself is about. Everything else - a file that
@@ -124,10 +171,11 @@
 	 */
 	const wrongPassword = $derived(failure?.code === 'wrongCredentials');
 
-	/** A file that will not open at all. The offer to open a snapshot belongs to
-	 * this and to nothing else. */
-	const unreadable = $derived(
-		failure !== null && (failure.code === 'damaged' || failure.code === 'notADatabase')
+	/** A file that will not open at all, or is not there. The offer to open a
+	 * backup belongs to these and to nothing else. */
+	const offersBackups = $derived(
+		failure !== null &&
+			(failure.code === 'damaged' || failure.code === 'notADatabase' || failure.code === 'gone')
 	);
 
 	/** Somebody's lock file sits beside the vault. Coffer respects it, and the
@@ -206,6 +254,10 @@
 			: 'This is the copy a lock saved beside';
 	});
 
+	/** When the vault was as the chosen backup holds it, when the filesystem
+	 * kept that. */
+	const taken = $derived(snapshot ? at(snapshot.taken, new Date()) : '');
+
 	/**
 	 * What a move that did not go says, in words about the move. The codes are
 	 * the ones every command shares, and "there is already a file with that
@@ -230,7 +282,7 @@
 		const over = takingOver;
 		busy = true;
 		failure = null;
-		snapshot = null;
+		backups = null;
 
 		try {
 			await (over ? unlockTakingOver(bytes) : unlock(bytes));
@@ -238,9 +290,7 @@
 			await onUnlocked();
 		} catch (thrown) {
 			failure = asFailure(thrown);
-			if (unreadable) {
-				snapshot = (await snapshots().catch(() => []))[0] ?? null;
-			}
+			if (offersBackups) await listBackups();
 			field.focus();
 		} finally {
 			busy = false;
@@ -317,12 +367,12 @@
 		}
 	}
 
-	/** Points the screen back at the vault the chosen copy was taken from.
-	 * Nothing is sent: Rust reads the vault off the copy's name. */
-	async function backToVault() {
+	/** Points the screen back at the vault the chosen copy or backup was
+	 * taken from. Nothing is sent: Rust reads the vault off the file's name. */
+	async function goBack() {
 		if (busy) return;
 		try {
-			chose(await leaveRescue(), true);
+			chose(await backToVault(), true);
 		} catch (thrown) {
 			failure = asFailure(thrown);
 		}
@@ -363,12 +413,25 @@
 		if (picked) chose(picked);
 	}
 
-	async function openSnapshot(index: number) {
-		try {
-			chose(await chooseSnapshot(index), true);
-		} catch (thrown) {
-			failure = asFailure(thrown);
-		}
+	/** The chosen file's own name. When it is a backup it is the one that just
+	 * would not open, and offering it again would bring the same refusal back. */
+	const chosenName = $derived(database?.path.split('/').at(-1) ?? null);
+
+	/** Reads the backups beside the chosen file, the chosen one aside. One that
+	 * cannot be read leaves nothing to offer, which is no reason to say more
+	 * than the failure already does. A list already offered is drawn however
+	 * it comes back, so that what it says about a backup that went stays. */
+	async function listBackups() {
+		const listed = (await snapshots().catch(() => [])).filter(
+			(backup) => backup.name !== chosenName
+		);
+		backups = listed.length > 0 || backups !== null ? listed : null;
+	}
+
+	/** Opens the backup shown at `index`. A refusal is thrown back to the list,
+	 * which says a backup that went is gone and reads the list again. */
+	async function openBackup(index: number) {
+		chose(await chooseSnapshot(index), true);
 	}
 
 	/**
@@ -387,7 +450,7 @@
 	function chose(picked: Database, sameVault = false) {
 		onChoose(picked);
 		failure = null;
-		snapshot = null;
+		backups = null;
 		unmoved = null;
 		mustOpen = false;
 		removing = false;
@@ -399,6 +462,43 @@
 	$effect(() => {
 		field?.focus();
 	});
+
+	// Open Vault… in the menu bar is the link on every face of this screen.
+	$effect(() => answer({ openVault: { run: () => void choose(), when: () => !busy } }));
+
+	/**
+	 * Shows the vault's file in the Finder, for a reader carrying it to a
+	 * stick by hand: the encrypted file is what goes, and it needs no password.
+	 * File ▸ Show in Finder is the one way in from here, and nothing is drawn
+	 * for it, because `SPEC.md` section 8 ends this screen with "Nothing
+	 * else". A file that went since the screen was drawn is said the way an
+	 * unlock that found it gone says it, backups and all.
+	 *
+	 * A show that goes through leaves the screen as it was. What it says below
+	 * the form - a file that will not open and the backups to open instead, a
+	 * lock somebody holds and the offer to take it over - is about the vault,
+	 * and a look at its file in the Finder changes none of it. A refusal does
+	 * replace it, and a take-over pressed for a lock the screen no longer
+	 * explains is let go.
+	 */
+	async function showFile() {
+		try {
+			await showInFinder();
+		} catch (thrown) {
+			failure = asFailure(thrown);
+			takingOver = false;
+			if (offersBackups) await listBackups();
+		}
+	}
+
+	$effect(() =>
+		answer({
+			showInFinder: {
+				run: () => void showFile(),
+				when: () => database !== null && file?.there === true
+			}
+		})
+	);
 </script>
 
 <div class="flex flex-1 items-center justify-center overflow-y-auto px-10 py-10">
@@ -423,6 +523,25 @@
 					A new value you had not saved yet was kept in a field of its own, beside the old one,
 					which is unchanged.
 				{/if}
+			</p>
+		{/if}
+
+		<!-- The answer to the one question this screen cannot help with otherwise:
+		     which of two passwords to type. -->
+		{#if rekeyed}
+			<p class="mx-auto mt-6 max-w-[38ch] text-center text-small leading-relaxed text-txt2">
+				The master password was changed before locking, and the vault opens with the new one.
+			</p>
+		{/if}
+		{#if adopted}
+			<p class="mx-auto mt-6 max-w-[38ch] text-center text-small leading-relaxed text-txt2">
+				{adoptedBeforeLocking(adopted)}
+			</p>
+		{/if}
+		{#if backupGone}
+			<p class="mx-auto mt-6 max-w-[38ch] text-center text-small leading-relaxed text-txt2">
+				The backup you asked to look at is not there any more: the save that locked your vault
+				pushed it out of the ten Coffer keeps. This is your vault.
 			</p>
 		{/if}
 
@@ -540,7 +659,37 @@
 				</p>
 				<button
 					type="button"
-					onclick={backToVault}
+					onclick={goBack}
+					disabled={busy}
+					class="mt-4 h-9 rounded-full border border-hairline px-4 text-small text-txt transition-colors hover:border-txt3 active:bg-surface2 disabled:cursor-not-allowed"
+				>
+					Back to my vault
+				</button>
+			</div>
+		{/if}
+
+		<!-- The chosen file is a backup, and the same card leads back. It says
+		     which password opens it: the one the vault had when it was taken,
+		     which after a change is not the vault's. -->
+		{#if snapshot}
+			<div class="mt-6 rounded-sm border border-hairline bg-surface2 px-4 py-4">
+				<div class="flex items-center gap-2">
+					<Icon name="warn" class="h-4 w-4 shrink-0 text-warn" />
+					<span class="text-body text-txt">A backup, not your vault</span>
+				</div>
+				<p class="mt-2 text-fine leading-relaxed text-txt2">
+					{#if taken}
+						This is <bdi class="font-mono text-txt">{snapshot.vault}</bdi> as it was {taken}.
+					{:else}
+						This is a backup Coffer took of <bdi class="font-mono text-txt">{snapshot.vault}</bdi>
+						before one of its saves.
+					{/if}
+					It opens with the password the vault had then. Nothing in it can be changed, and from inside
+					it you can make it your vault.
+				</p>
+				<button
+					type="button"
+					onclick={goBack}
 					disabled={busy}
 					class="mt-4 h-9 rounded-full border border-hairline px-4 text-small text-txt transition-colors hover:border-txt3 active:bg-surface2 disabled:cursor-not-allowed"
 				>
@@ -646,23 +795,17 @@
 						<Icon name="warn" class="h-5 w-5 shrink-0 text-warn" />
 						{failure.message}
 					</p>
-					{#if snapshot}
+					<!-- Every backup, newest first, and not only the newest: when that
+					     one will not open either, the reader had nowhere to go. -->
+					{#if backups}
 						<p class="mx-auto mt-3 max-w-[38ch] text-small leading-relaxed text-txt2">
-							{#if snapshot.taken}
-								A snapshot from {fully(snapshot.taken, new Date())} sits beside it.
-							{:else}
-								A snapshot Coffer took before one of its own saves sits beside it.
-							{/if}
-							It opens with the same password.
+							Coffer keeps the vault as it was before each of its saves. Each of these opens with
+							the password the vault had then, to look at, and from inside one you can make it your
+							vault.
 						</p>
-						{@const only = snapshot}
-						<button
-							type="button"
-							onclick={() => openSnapshot(only.index)}
-							class="mt-5 h-9 rounded-full border border-hairline px-5 text-small text-txt transition-colors hover:border-txt3 active:bg-surface2"
-						>
-							Open <bdi>{only.name}</bdi>
-						</button>
+						<div class="mt-4 rounded-sm border border-hairline bg-surface2 px-3 text-left">
+							<Backups {backups} act="Open" onOpen={openBackup} onAgain={listBackups} />
+						</div>
 					{/if}
 
 					<!-- The lock file says who and when, and the reader is the only

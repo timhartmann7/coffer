@@ -1,5 +1,5 @@
 import { flush } from './drafts';
-import { lock } from './ipc';
+import { closeWindow, lock } from './ipc';
 
 /**
  * Locks the vault the reader asked to lock, and clears the screen with
@@ -21,4 +21,15 @@ export async function lockByHand(clear: () => void): Promise<void> {
 	} finally {
 		clear();
 	}
+}
+
+/**
+ * Closes the window the reader asked to close. Rust locks the vault and takes
+ * the window down without building it again. What they were typing goes first,
+ * the way `lockByHand` sends it; nothing is cleared, because nothing of this
+ * window is left to draw.
+ */
+export async function closeByHand(): Promise<void> {
+	await flush();
+	await closeWindow();
 }

@@ -5,6 +5,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use vault_core::EncryptedCopy;
 use vault_core::storage::atomic::write_atomic;
 use vault_core::storage::lock::{Lock, Outcome};
 use vault_core::storage::watch::{Change, Stamp};
@@ -511,6 +512,32 @@ fn a_hole_in_the_chain_does_not_hide_the_rest_of_it() {
     );
 }
 
+/// A slot the filesystem will not answer about - here a link somebody left
+/// that leads round in a circle - is passed over like a hole, and the
+/// snapshots either side of it are still offered.
+#[test]
+fn a_slot_nobody_can_read_does_not_hide_the_rest_of_the_chain() {
+    let (_scratch, database) = support::scratch(support::RICH);
+    let mut vault = open(&database, support::SECRET);
+
+    for _ in 0..3 {
+        vault.save().expect("the database saves");
+    }
+
+    let circle = snapshot::slot(&database, 2).expect("the slot has a path");
+    std::fs::remove_file(&circle).expect("the snapshot is removed");
+    std::os::unix::fs::symlink(&circle, &circle).expect("the link is made");
+
+    let taken = snapshot::taken(&database).expect("the chain reads");
+    assert_eq!(
+        taken
+            .iter()
+            .map(|snapshot| snapshot.index)
+            .collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+}
+
 /// Somebody can put anything beside a database, and a directory named like a
 /// snapshot is not one.
 #[test]
@@ -549,7 +576,7 @@ fn a_vault_where_no_lock_file_can_be_written_opens_to_be_read() {
         1,
         "the entries are not readable"
     );
-    assert!(vault.is_read_only());
+    assert_eq!(vault.read_only(), Some(vault_core::ReadOnly::Place));
     assert!(
         matches!(vault.save(), Err(vault_core::VaultError::ReadOnlyPlace)),
         "a save aimed at a place that refuses writes said something else"
@@ -580,13 +607,17 @@ fn a_vault_that_cannot_be_locked_still_writes_a_copy_somewhere_it_can() {
 
     let mut vault = open(&database, BUILT_PASSWORD);
     let copy = elsewhere.path().join("rescued.kdbx");
-    vault.save_copy(&copy).expect("the copy is written");
+    vault
+        .encrypt_copy(&copy)
+        .and_then(EncryptedCopy::write)
+        .expect("the copy is written");
     drop(vault);
 
     let again = open(&copy, BUILT_PASSWORD);
     assert_eq!(again.tree().entries.len(), 1);
-    assert!(
-        !again.is_read_only(),
+    assert_eq!(
+        again.read_only(),
+        None,
         "the copy inherited the medium the original was on"
     );
 }
@@ -631,7 +662,10 @@ fn a_format_that_cannot_be_read_back_is_still_that_wherever_it_is_kept() {
     let _frozen = support::Frozen::over(scratch.path());
 
     let mut vault = open(&database, SECRET);
-    assert!(vault.is_read_only());
+    assert_eq!(
+        vault.read_only(),
+        Some(vault_core::ReadOnly::Kdbx3Attachments)
+    );
     assert!(
         matches!(
             vault.save(),
@@ -656,7 +690,11 @@ fn a_vault_kept_where_nothing_can_be_written_stays_that_way_when_it_is_read_agai
 
     let mut vault = open(&database, BUILT_PASSWORD);
     vault.reload().expect("the file reads again");
-    assert!(vault.is_read_only(), "a reload thawed the medium");
+    assert_eq!(
+        vault.read_only(),
+        Some(vault_core::ReadOnly::Place),
+        "a reload thawed the medium"
+    );
 }
 
 /// The files Coffer keeps beside a vault open with its password and are not
@@ -683,6 +721,9 @@ fn only_the_names_coffer_keeps_beside_a_vault_are_reserved() {
         ".unsaved.kdbx",
         "unsaved.kdbx",
         "vault.unsaved",
+        // What a backup made the vault keeps the vault's file under: a vault
+        // of its own, opening with whatever password it has.
+        "vault.kdbx.replaced-2026-10-01.kdbx",
         "",
     ] {
         assert!(!reserved(Path::new(name)), "{name} is reserved");

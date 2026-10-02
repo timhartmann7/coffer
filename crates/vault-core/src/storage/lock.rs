@@ -10,6 +10,7 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::error::VaultError;
 use crate::storage::{process, refuses_writes, sibling};
 
 const LOCK_SUFFIX: &str = ".lock";
@@ -228,6 +229,23 @@ impl Lock {
                 Err(error) => return Err(error),
             }
         }
+    }
+}
+
+/// Takes the lock beside a file that is about to be written over, or moved
+/// onto or off, by something other than the vault open at it: a copy a lock
+/// left going back, or a copy or a backup becoming the vault. Held for as long
+/// as that runs.
+///
+/// Stricter than opening, on purpose. A lock somebody else holds is refused
+/// rather than offered to be taken over, because this is not a reader asking
+/// to open a vault they were shown is held; and a place that will not take the
+/// note beside a file will not take the file either.
+pub(crate) fn claim(path: &Path) -> Result<Lock, VaultError> {
+    match Lock::acquire(path)? {
+        Outcome::Taken(lock) => Ok(lock),
+        Outcome::Held(holder) => Err(VaultError::Locked(holder)),
+        Outcome::Unwritable => Err(VaultError::ReadOnlyPlace),
     }
 }
 

@@ -118,9 +118,27 @@ pub enum VaultError {
     #[error("that is not in the recycle bin")]
     NotInRecycleBin,
 
-    /// What is open is one of Coffer's own snapshots. It opens like any other
-    /// database and is not written back: the next save of the database it was
-    /// taken from would rotate it away.
+    /// Something in the recycle bin, or the bin itself, was to be moved between
+    /// folders. What is in the bin comes out by being put back, which takes it
+    /// to where it came from and says so; a move would take it out without
+    /// either.
+    #[error("what is in the recycle bin is put back, not moved")]
+    InRecycleBin,
+
+    /// Something was to go into the recycle bin, or a folder inside it, by a
+    /// way other than deleting it: moved there, or made there, from nothing,
+    /// from a template or as a copy. Deleting says before it happens whether
+    /// it can be undone, and nothing else that lands in the bin would.
+    #[error("the recycle bin takes nothing but what is deleted")]
+    IntoRecycleBin,
+
+    /// An entry was to be made from one that is not among the templates the
+    /// database keeps: not in the group `Meta/EntryTemplatesGroup` names, in a
+    /// folder inside it, or in a vault whose templates group has gone or been
+    /// deleted since the window drew its list.
+    #[error("that entry is not one of the templates this vault keeps")]
+    NotATemplate,
+
     /// The folder the database sits in will not take a file: a read-only disk
     /// image, a Time Machine snapshot, a stick macOS mounted read-only, a share
     /// the reader may only read. Coffer opens the database anyway, because
@@ -128,8 +146,19 @@ pub enum VaultError {
     #[error("this folder is read only, so nothing can be written to it")]
     ReadOnlyPlace,
 
+    /// What is open is one of Coffer's own snapshots. It opens like any other
+    /// database and is not written back: the next save of the database it was
+    /// taken from would rotate it away.
     #[error("a snapshot is opened to read, not to write")]
     ReadOnlySnapshot,
+
+    /// Only a file at one of Coffer's snapshot names can become the vault it
+    /// was taken beside this way, and what was asked of is not one - or it is
+    /// one kept beside the copy a lock left, which nothing but the copy's own
+    /// saves writes over: the copy holds the only version of work its vault
+    /// has not got.
+    #[error("this is not one of the snapshots Coffer keeps beside a vault")]
+    NotASnapshot,
 
     /// The entry has no field of that name.
     #[error("that entry has no such field")]
@@ -164,6 +193,16 @@ pub enum VaultError {
     /// more than the field.
     #[error("the entry has changed since that field came off")]
     RemovalSuperseded,
+
+    /// A move asked to be taken back is no longer what the file says of where
+    /// every entry or the folder it names is: one of them has gone, is not in
+    /// the folder the move took it to, or the file says it was last moved
+    /// there from another folder; the folder it came from has gone or is in
+    /// the bin, or has since been moved inside the folder going back; or the
+    /// folder it was moved into has gone or is in the bin. Taking it back then
+    /// would undo something done after it. Nothing moved.
+    #[error("something has moved since, so that move can no longer be taken back")]
+    MoveSuperseded,
 
     /// A deletion would no longer do what the reader was shown before they
     /// asked for it: what was going to the bin would now go for good, because
@@ -226,20 +265,60 @@ pub enum VaultError {
     #[error("that value contains a character a KDBX file cannot hold")]
     UnwritableText,
 
-    /// A vault is being made with no master password at all. The library would
-    /// write one happily; a file anybody can open is not what the reader asked
-    /// for. Opening a database that already has one is untouched.
-    #[error("a new vault needs a master password")]
+    /// A tag the format would not give back as it was written. Every reader
+    /// splits an entry's tags at a semicolon, a comma and a tab, trims the
+    /// space around each and drops an empty one, so such a tag would come
+    /// back as two tags, as another tag, or as none.
+    #[error(
+        "a tag cannot be empty, hold a semicolon, a comma or a tab, or begin or end with a space"
+    )]
+    UnwritableTag,
+
+    /// A vault is being made, or given a new password, with nothing in it. The
+    /// library would write one happily; a file anybody can open is not what
+    /// the reader asked for. Opening a database that already has one is
+    /// untouched.
+    #[error("a vault needs a master password")]
     EmptyMasterPassword,
 
-    /// There is already a file where the new vault would go. Nothing is written
-    /// over: a creation takes no snapshot, so what was there would be gone.
+    /// The password typed as the vault's current one is not the one it was
+    /// opened with. Asked of the key the vault holds, never of the file.
+    #[error("that is not the vault's current password")]
+    NotTheCurrentPassword,
+
+    /// The new master password is the one the vault already has. Writing it
+    /// would rotate a snapshot and change nothing, and the snapshots would
+    /// still open with it.
+    #[error("the new password is the one the vault already has")]
+    SamePassword,
+
+    /// The open file is the copy a lock left beside a vault, and a new
+    /// password given to it would be the copy's alone: the vault and every
+    /// snapshot of it would go on opening with the old one, while the count
+    /// of old snapshots could only be the copy's. Made the vault first, the
+    /// copy is the vault, and a change reaches what it has to.
+    #[error("make this copy your vault before giving it a new password")]
+    PasswordOfACopy,
+
+    /// The vault has the copy a lock left beside it, which opens with the
+    /// password the vault has now. Changed beside it, the vault would open with
+    /// one password and the copy with another, every sentence about the copy
+    /// that says it opens with the same password would be false, and making the
+    /// copy the vault would bring the old password back with nothing said.
+    /// Made the vault, or removed, the copy is out of the way.
+    #[error("the copy a lock left beside this vault has to be made the vault or removed first")]
+    PasswordBesideACopy,
+
+    /// There is already a file where the new vault, or a copy of the open one,
+    /// would go. Nothing is written over: neither takes a snapshot, so what was
+    /// there would be gone.
     #[error("there is already a file with that name")]
     DatabaseExists,
 
-    /// The new vault would take a name Coffer gives a file of its own beside a
-    /// database: a snapshot, which every save is refused for, or the copy a
-    /// lock leaves when it could not save, which the next such lock overwrites.
+    /// The new vault, or a copy of the open one, would take a name Coffer gives
+    /// a file of its own beside a database: a snapshot, which every save is
+    /// refused for, or the copy a lock leaves when it could not save, which the
+    /// next such lock overwrites.
     #[error("that name belongs to a file Coffer keeps beside a vault")]
     ReservedName,
 

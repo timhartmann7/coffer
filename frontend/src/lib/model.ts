@@ -63,6 +63,16 @@ export interface Status {
 	entries: number;
 	/** Whether this database can be written back at all. */
 	readOnly: boolean;
+	/** Which of the reasons it cannot be, while one that cannot is open. */
+	readOnlyBecause: ReadOnlyBecause | null;
+	/** Whether what is open can be written to a file somewhere else with
+	 * `saveCopy`: anything but a format Coffer will not write. */
+	copyable: boolean;
+	/** What is known of copies of the open vault kept on another disk. Null
+	 * while no vault is open - the unlock screen says nothing of copies - and
+	 * for a backup, the copy a lock left, or a format Coffer will not write
+	 * anywhere. */
+	elsewhere: Elsewhere | null;
 	/** The unsaved copy sitting beside the database Coffer will open next, when
 	 * a lock had to write one. Read off the disk rather than remembered, so a
 	 * copy left by a run that has since quit is still offered. */
@@ -78,6 +88,9 @@ export interface Status {
 	/** The vault the chosen database was copied from, when it is the copy a
 	 * lock left. */
 	copy: CopyOf | null;
+	/** The vault the chosen database was taken beside, when it is one of its
+	 * backups. */
+	snapshot: SnapshotOf | null;
 	/** Whether the last lock found text the reader was still typing and saved
 	 * it into the vault with everything else. It does not say which entry: after
 	 * a lock nothing of the vault is left to say it with. */
@@ -86,6 +99,19 @@ export interface Status {
 	 * kept in a field of its own beside the value it was for, which the field
 	 * still holds. Which field is not said either. */
 	typedBeside: boolean;
+	/** Whether the vault the last lock closed was given a new master password
+	 * while it was open. The window that said so went with the lock, and a
+	 * change that finished as the vault locked may never have been said. */
+	rekeyed: boolean;
+	/** What became of the vault's file, when the vault the last lock closed had
+	 * just been made from one of its backups and nothing had happened in it
+	 * since. The notice that said so went with the window, and a lock that
+	 * landed while the press ran took it before it could. */
+	adopted: Adopted | null;
+	/** Whether the backup the reader asked to look at from the settings was
+	 * pushed out of the chain by the save of the lock on the way to it, which
+	 * left the vault chosen. */
+	backupGone: boolean;
 	/** Why the vault that was open is not open any more, when it is worth
 	 * saying. A lock the reader asked for has nothing to explain. */
 	lockedBy: 'idle' | 'sleeping' | 'screenLocked' | 'sessionSwitched' | null;
@@ -121,6 +147,79 @@ export interface CopyOf {
 	/** The vault's file as it stands, which the copy would go over or, when it
 	 * has gone, take the name of. */
 	vaultFile: OnDisk;
+}
+
+/**
+ * Why a database cannot be written back:
+ * - `snapshot`: one of the backups Coffer keeps beside a vault;
+ * - `place`: kept somewhere that will not take a file;
+ * - `kdb`: the older format Coffer reads and does not write;
+ * - `kdbx3`: KDBX 3 holding files, which Coffer cannot write back whole.
+ * Only the last two refuse a copy somewhere else.
+ */
+export type ReadOnlyBecause = 'snapshot' | 'place' | 'kdb' | 'kdbx3';
+
+/** The vault a chosen database was taken beside, when it is one of its
+ * backups. Names and times only: the paths stay in Rust. */
+export interface SnapshotOf {
+	/** The vault's file name, which is the file the backup would go over. */
+	vault: string;
+	/** When the backup's file was written, which is when the vault was as the
+	 * backup holds it. */
+	taken: string | null;
+	/** What the vault's file is called once the backup has gone over it, when
+	 * it opens with the backup's password: the newest snapshot. */
+	keptAs: string;
+	/** The vault's file as it stands, which the backup would go over or, when
+	 * it has gone, take the name of. */
+	vaultFile: OnDisk;
+	/** Why the backup is open: the vault's file would not open or was not
+	 * there, or the reader asked to look. */
+	because: 'unopened' | 'asked';
+}
+
+/** What Coffer knows of copies of the open vault kept on another disk: dates
+ * and a disk's name. No path crosses, not even the folder a copy went to. */
+export interface Elsewhere {
+	/** The newest copy saved through Coffer on a disk other than the vault's,
+	 * or null when none was. */
+	otherDisk: OtherDisk | null;
+	/** When the newest copy was saved, while that one went to the vault's own
+	 * disk: it goes with the vault the day that disk fails. */
+	sameDiskAt: string | null;
+	/** Whole days the vault has gone without a copy on another disk, once that
+	 * is thirty or more and it holds entries. Rust's rule, so the window holds
+	 * no copy of it. */
+	overdue: number | null;
+}
+
+/** A copy on another disk: when, and what the disk is called. */
+interface OtherDisk {
+	at: string;
+	/** The name the Finder shows for the disk, when it is mounted in
+	 * `/Volumes`. */
+	volume: string | null;
+}
+
+/** A copy `copyVault` has just saved: whether it went to the vault's own disk
+ * and what that disk is called, for the notice to say, and what is known of
+ * copies of the vault now, for everything else. */
+export interface SavedCopy {
+	sameDisk: boolean;
+	volume: string | null;
+	elsewhere: Elsewhere;
+}
+
+/** A backup made the vault: the vault, which is what is open now, and what
+ * became of the file it replaced, by name. */
+export interface Adopted {
+	database: Database;
+	/** The file it replaced opened with the backup's password, and is the
+	 * newest snapshot under this name. */
+	keptAs: string | null;
+	/** The file it replaced would not open with the backup's password, and is
+	 * kept beside the vault under this name, which nothing removes. */
+	setAside: string | null;
 }
 
 /** A snapshot Coffer took before one of its own saves. */
@@ -210,12 +309,19 @@ export interface EntryRow {
 	attachments: number;
 	/** When the entry is in the recycle bin, when it went in and where from. */
 	binned: Binned | null;
+	/** What deleting the entry would do, so that a list knows before a press
+	 * which of several chosen entries go to the bin and which go for good. */
+	deletion: Deletion;
 }
 
 export interface Group {
 	id: string;
 	name: string;
 	isRecycleBin: boolean;
+	/** The group the vault keeps its entry templates in, while anything can be
+	 * made from what it holds. One at most in a tree, and none in a vault that
+	 * names none. */
+	isTemplates: boolean;
 	/** When the folder is in the recycle bin, when it went in and where it goes
 	 * back to. `null` for the bin itself and for everything outside it. */
 	binned: Binned | null;
@@ -272,6 +378,17 @@ export interface Entry {
 	 * back to. Such an entry is shown read only. */
 	binned: Binned | null;
 	deletion: Deletion;
+}
+
+/**
+ * Whether nothing in an entry may be changed: a database Coffer will not write
+ * back, or an entry in the recycle bin. What is in the bin is there to be put
+ * back or let go, and an edit to it would be a change nobody sees until it
+ * comes back. The pane draws it read only, and the menu bar offers nothing that
+ * would change it.
+ */
+export function untouchable(entry: Pick<Entry, 'binned'>, readOnly: boolean): boolean {
+	return readOnly || entry.binned !== null;
 }
 
 /** One previous version of an entry, as the versions block lists them. */
@@ -338,6 +455,61 @@ export interface Made {
 	entry: string;
 }
 
+/**
+ * One kind of entry "+ Entry" offers, as Rust offers it: the word to send back
+ * to make one, what to call it, and the fields it writes in lines, which are
+ * drawn as text areas before anything is in them. The word is Rust's and only
+ * ever sent back as it came.
+ */
+export interface Offer {
+	kind: string;
+	name: string;
+	lined: string[];
+}
+
+/** A name offered for a field of the reader's own, and whether a field made
+ * under it is hidden. */
+export interface Suggestion {
+	name: string;
+	protect: boolean;
+}
+
+/** What a new entry can start as, a login first, and the names offered for a
+ * field of the reader's own. Rust's, and the same for every vault. */
+export interface Kinds {
+	offered: Offer[];
+	suggested: Suggestion[];
+}
+
+/** One entry a move between folders took somewhere else, and the folder it
+ * left: the top of the vault is the root's id. */
+export interface Move {
+	entry: string;
+	from: string;
+}
+
+/** What a move of entries hands back: the tree, and each entry that changed
+ * folder, which is what taking the move back sends again. */
+export interface Moved {
+	tree: Group;
+	moved: Move[];
+}
+
+/** One entry a deletion names, with what the window showed deleting it would
+ * do: Rust refuses the deletion when that is no longer what happens. */
+export interface Deleting {
+	entry: string;
+	deletion: Deletion;
+}
+
+/** What putting a tag on entries hands back: the tree, and the entries the tag
+ * went on, which are the ones that did not have it. Only those are what taking
+ * it off again sends. */
+export interface Tagged {
+	tree: Group;
+	changed: string[];
+}
+
 /** What the file on disk holds, for the dialog that asks which version to keep. */
 export interface Rival {
 	modified: string | null;
@@ -346,6 +518,17 @@ export interface Rival {
 	 * whoever wrote it may have changed that too.
 	 */
 	entries: number | null;
+}
+
+/** What removing the automatic backups that open with an old master password
+ * came to. */
+export interface Removed {
+	gone: number;
+	/** How many would not go. Each still opens with the old password, so the
+	 * question about them stays. */
+	left: number;
+	/** Why the first of those would not go. Nothing when none is left. */
+	refused: Failure | null;
 }
 
 /** What key derivation a new vault will ask for, measured on this machine. */
@@ -451,3 +634,97 @@ export interface Failure {
 		| 'other';
 	message: string;
 }
+
+/**
+ * Coffer's own items of the menu bar, in the bar's order, by the word Rust and
+ * the page both know them by. `menu.rs` draws them, and `shortcuts.test.ts`
+ * reads it to keep this the same list.
+ */
+export const COMMANDS = [
+	'settings',
+	'lock',
+	'newEntry',
+	'newFolder',
+	'duplicate',
+	'openVault',
+	'saveCopy',
+	'showInFinder',
+	'find',
+	'copyLogin',
+	'copyPassword',
+	'moveToBin',
+	'shortcuts'
+] as const;
+
+export type Command = (typeof COMMANDS)[number];
+
+/** What Rust tells the window the reader chose outside it: an item of the menu
+ * bar, the window's own close button, or an item of a menu under the pointer
+ * with the number the window gave that menu. */
+export type Action =
+	| { action: 'command'; command: Command }
+	| { action: 'closing' }
+	| { action: 'context'; serial: number; chosen: Chosen };
+
+/**
+ * A place a menu's Move to offers, in the folder list's order: the top of the
+ * vault, then every folder outside the bin, each `depth` folders down from the
+ * top. The name is already set apart and cut to length the way a sentence sets
+ * one apart, and `open` says whether a move there would be taken and change
+ * something. Rust draws the menu from these and trusts none of them: the move
+ * itself is checked again.
+ */
+export interface Place {
+	id: string;
+	name: string;
+	open: boolean;
+	depth: number;
+}
+
+/**
+ * What a right-click was on, as the window tells Rust: ids, names, whether a
+ * value is on the screen, and for a revealed value the positions of the part
+ * selected. Nothing of any value.
+ */
+export type Subject =
+	| { kind: 'entry'; entry: string; places: Place[] }
+	| { kind: 'entries'; entries: string[]; places: Place[] }
+	| { kind: 'folder'; group: string; places: Place[] }
+	| { kind: 'bin' }
+	| { kind: 'field'; entry: string; field: string; shown: boolean }
+	| { kind: 'file'; entry: string; name: string }
+	| { kind: 'value'; entry: string; field: string; range: Span | null };
+
+/** Where the pointer was, in the window's own points from its top-left corner. */
+export interface Point {
+	x: number;
+	y: number;
+}
+
+/**
+ * An item chosen from one of Coffer's menus under the pointer, with the ids it
+ * is about. The window runs the function the item's button runs, on those
+ * ids, and nothing when they are not what it shows any more.
+ */
+export type Chosen =
+	| { item: 'copyField'; entry: string; field: string }
+	| { item: 'copyValue'; entry: string; field: string; range: Span | null }
+	| { item: 'showField'; entry: string; field: string }
+	| { item: 'hideField'; entry: string; field: string }
+	| { item: 'changeField'; entry: string; field: string }
+	| { item: 'makeOne'; entry: string; field: string }
+	| { item: 'removeField'; entry: string; field: string }
+	| { item: 'openAddress'; entry: string }
+	| { item: 'duplicate'; entry: string }
+	| { item: 'moveEntries'; entries: string[]; into: string }
+	| { item: 'deleteEntries'; entries: Deleting[] }
+	| { item: 'putBackEntries'; entries: string[] }
+	| { item: 'newEntryIn'; group: string }
+	| { item: 'newFolderIn'; group: string }
+	| { item: 'renameFolder'; group: string }
+	| { item: 'moveFolder'; group: string; into: string }
+	| { item: 'deleteFolder'; group: string; deletion: Deletion }
+	| { item: 'putBackFolder'; group: string }
+	| { item: 'emptyBin' }
+	| { item: 'saveFile'; entry: string; name: string }
+	| { item: 'removeFile'; entry: string; name: string };

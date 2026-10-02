@@ -1,6 +1,7 @@
 /** Walking the group tree the way the two panes read it. */
 
 import type { EntryRow, Group } from './model';
+import { byName } from './order';
 
 /** Every entry in this group and in every group under it, in tree order. */
 export function entriesOf(group: Group): EntryRow[] {
@@ -25,6 +26,16 @@ export function liveEntries(root: Group): EntryRow[] {
 		found.push(...liveEntries(section));
 	}
 	return found;
+}
+
+/**
+ * The entries the top of the vault holds itself, outside every folder.
+ *
+ * What "Not in a folder" lists. A file that keeps its recycle bin at the top
+ * holds nothing live there.
+ */
+export function loose(root: Group): EntryRow[] {
+	return root.isRecycleBin ? [] : root.entries;
 }
 
 /**
@@ -90,6 +101,14 @@ export function rowOf(root: Group, id: string): EntryRow | null {
 	return entriesOf(root).find((row) => row.id === id) ?? null;
 }
 
+/** The rows of the entries with these ids, in the order the ids come, leaving
+ * out any the tree does not hold. One walk of the tree however many there are:
+ * fifty thousand chosen rows looked up one at a time are fifty thousand walks. */
+export function rowsOf(root: Group, ids: readonly string[]): EntryRow[] {
+	const rows = new Map(entriesOf(root).map((row) => [row.id, row]));
+	return ids.flatMap((id) => rows.get(id) ?? []);
+}
+
 /** The groups from the root down to `id`, or `null` when there is no such
  * group. The entry screen writes the tail of it above the title. */
 export function pathTo(root: Group, id: string): Group[] | null {
@@ -99,6 +118,25 @@ export function pathTo(root: Group, id: string): Group[] | null {
 		if (below) return [root, ...below];
 	}
 	return null;
+}
+
+/**
+ * The vault's templates: the entries its templates group holds itself, by
+ * title as a reader looks for them. What sits in a folder inside that group is
+ * not one. A title the database protects sorts as an empty one: it is not
+ * here to sort by.
+ */
+export function templatesOf(root: Group): EntryRow[] {
+	const pending = [root];
+	for (let here = pending.pop(); here !== undefined; here = pending.pop()) {
+		if (here.isTemplates) {
+			return here.entries.toSorted((a, b) =>
+				byName({ name: a.title ?? '' }, { name: b.title ?? '' })
+			);
+		}
+		pending.push(...here.sections);
+	}
+	return [];
 }
 
 /** The projects of a vault: the groups the root holds, without the recycle

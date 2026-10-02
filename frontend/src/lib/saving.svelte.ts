@@ -4,9 +4,18 @@
  * not there any more.
  */
 
-import { release } from './drafts';
-import { asFailure, reload, rival, save, saveCopy, saveOver } from './ipc';
-import type { Group, Rival } from './model';
+import { flush, release } from './drafts';
+import {
+	asFailure,
+	changeMasterPassword,
+	copyVault,
+	reload,
+	rival,
+	save,
+	saveCopy,
+	saveOver
+} from './ipc';
+import type { Group, Rival, SavedCopy } from './model';
 import type { Notices } from './notices.svelte';
 import { quoted } from './format';
 
@@ -20,6 +29,26 @@ export interface Screen {
 	/** Says why something was refused. */
 	failed(thrown: unknown): void;
 	notices: Notices;
+}
+
+/** The vault screen's way to give the vault a new master password, handed to
+ * the settings drawn over it. Absent where no vault Coffer can write is open. */
+export type Rekey = (current: Uint8Array, next: Uint8Array) => Promise<number>;
+
+/** The vault screen's way to save a copy of the vault on another disk, handed
+ * to the settings drawn over it. Absent where nothing Coffer keeps copies of is
+ * open. */
+export type CopyElsewhere = () => Promise<SavedCopy | null>;
+
+/**
+ * Writes what is in the window to a file of its own, wherever the reader says
+ * in the save panel, and answers with the sentence that says where - or with
+ * nothing when the panel was closed. The way off a backup, a place that takes
+ * no file, and a file somebody else wrote.
+ */
+export async function keepCopy(): Promise<string | null> {
+	const beside = await saveCopy();
+	return beside ? `Kept as ${quoted(beside.name)}` : null;
 }
 
 export class Saving {
@@ -43,6 +72,8 @@ export class Saving {
 	/** When the reader last changed the vault, which the dialog sets against
 	 * when the file was written. */
 	changedAt = $state<Date | null>(null);
+	/** Whether a copy of the vault is on its way to another disk. */
+	copying = $state(false);
 
 	readonly #screen: Screen;
 
@@ -70,17 +101,66 @@ export class Saving {
 			this.unsaved = false;
 		} catch (thrown) {
 			this.unsaved = true;
-			const refused = asFailure(thrown);
-			if (refused.code === 'externalChange' || refused.code === 'gone') {
-				this.missing = refused.code === 'gone';
-				this.conflict = await rival().catch(() => ({ modified: null, entries: null }));
-			} else {
-				this.#screen.failed(thrown);
-			}
+			if (!(await this.#asked(thrown))) this.#screen.failed(thrown);
 		} finally {
 			this.saving = false;
 		}
 		await this.#screen.reread();
+	}
+
+	/** Raises the question a write the file would not take asks - somebody else
+	 * wrote it, or it is not there any more - and answers whether that was it. */
+	async #asked(thrown: unknown): Promise<boolean> {
+		const refused = asFailure(thrown);
+		if (refused.code !== 'externalChange' && refused.code !== 'gone') return false;
+		this.missing = refused.code === 'gone';
+		this.conflict = await rival().catch(() => ({ modified: null, entries: null }));
+		return true;
+	}
+
+	/**
+	 * Gives the vault a new master password, which writes the file the way a save
+	 * does: whatever the vault held that the file had not got is written with it,
+	 * and a file somebody else wrote stops it here and asks, the same as a save.
+	 * The versions in the pane are read again afterwards, because the write
+	 * pruned them. Rejects with what Rust said, once the question is up when the
+	 * file would not take it.
+	 */
+	async rekey(current: Uint8Array, next: Uint8Array): Promise<number> {
+		this.saving = true;
+		try {
+			const old = await changeMasterPassword(current, next);
+			this.unsaved = false;
+			return old;
+		} catch (thrown) {
+			await this.#asked(thrown);
+			throw thrown;
+		} finally {
+			this.saving = false;
+			await this.#screen.reread();
+		}
+	}
+
+	/**
+	 * Saves a copy of the vault on another disk, where the reader says in the
+	 * panel Rust opens. Every value already on its way to Rust lands first, so
+	 * the copy holds every field the reader has left; what is still being typed
+	 * is not in it, and the next lock writes that into the vault. The copy
+	 * settles every entry's history the way a save does, so the versions in the
+	 * pane are read again afterwards, whatever came of it. Null when the panel
+	 * was closed, or when a copy is already on its way, which a second press
+	 * must not start again.
+	 */
+	async copyElsewhere(): Promise<SavedCopy | null> {
+		if (this.copying) return null;
+		this.copying = true;
+		try {
+			await flush();
+			return await copyVault();
+		} finally {
+			this.copying = false;
+			await this.#screen.reread();
+		}
 	}
 
 	/** Throws the window's change away and reads the file again. */
@@ -106,10 +186,10 @@ export class Saving {
 	async keepBoth(): Promise<void> {
 		try {
 			this.saving = true;
-			const beside = await saveCopy();
-			if (!beside) return;
+			const kept = await keepCopy();
+			if (!kept) return;
 			this.conflict = null;
-			this.#screen.notices.tell({ message: `Kept as ${quoted(beside.name)}`, kind: 'copied' });
+			this.#screen.notices.tell({ message: kept, kind: 'copied' });
 			// Only where there is a file to take instead. When the vault itself
 			// is gone there is nothing to read back, and the window goes on
 			// holding the version the copy was made from - which is still the

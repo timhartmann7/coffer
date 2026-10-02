@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use keepass::db::{Value, fields};
+use vault_core::kind::Kind;
 use vault_core::model::EntryId;
 use vault_core::{Attached, NewValue, Rescue, VaultError};
 
@@ -172,7 +173,9 @@ fn every_shape_of_name_is_kept_beside_itself_and_survives_the_disk() {
     {
         let mut vault = open(&path, BUILT_PASSWORD);
         let root = vault.tree().id;
-        let id = vault.create_entry(root).expect("the entry is made");
+        let id = vault
+            .create_entry(root, Kind::Login)
+            .expect("the entry is made");
         vault
             .set_field(id, fields::TITLE, NewValue::Open("names".to_owned()))
             .expect("the title is written");
@@ -214,7 +217,9 @@ fn the_name_kept_beside_passes_over_names_already_taken_in_any_case() {
     let path = built(scratch.path(), "taken.kdbx", |_| {});
     let mut vault = open(&path, BUILT_PASSWORD);
     let root = vault.tree().id;
-    let id = vault.create_entry(root).expect("the entry is made");
+    let id = vault
+        .create_entry(root, Kind::Login)
+        .expect("the entry is made");
 
     support::attach(&mut vault, id, "Scan.pdf", b"one");
     support::attach(&mut vault, id, "scan 2.PDF", b"two");
@@ -304,7 +309,9 @@ fn a_replacement_earlier_versions_stand_in_the_way_of_costs_nothing() {
     {
         let mut vault = open(&path, BUILT_PASSWORD);
         let root = vault.tree().id;
-        let id = vault.create_entry(root).expect("the entry is made");
+        let id = vault
+            .create_entry(root, Kind::Login)
+            .expect("the entry is made");
         vault
             .set_field(id, fields::TITLE, NewValue::Open("held".to_owned()))
             .expect("the title is written");
@@ -363,7 +370,9 @@ fn a_name_that_differs_only_in_letter_case_is_a_second_file() {
     {
         let mut vault = open(&path, BUILT_PASSWORD);
         let root = vault.tree().id;
-        let id = vault.create_entry(root).expect("the entry is made");
+        let id = vault
+            .create_entry(root, Kind::Login)
+            .expect("the entry is made");
         vault
             .set_field(id, fields::TITLE, NewValue::Open("case".to_owned()))
             .expect("the title is written");

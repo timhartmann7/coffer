@@ -3,9 +3,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import Generator from './Generator.svelte';
 import { drawing, generated } from '$lib/fixtures';
 import type { Alphabet, Generated, Generator as Drawn, Purpose, Recipe } from '$lib/model';
+import type { Stubbed } from '$lib/stubbed';
 
-const ipc = vi.hoisted(() => ({ generator: vi.fn(), generatePassword: vi.fn() }));
-vi.mock('$lib/ipc', () => ipc);
+const ipc = vi.hoisted(() => ({}) as Stubbed);
+vi.mock(import('$lib/ipc'), async (real) =>
+	Object.assign(ipc, (await import('$lib/stubbed')).stubbed(await real()))
+);
 
 const MADE = 't4Yv-8Qmz-Ld6R-Wn2H-Pk9C';
 

@@ -5,12 +5,15 @@ import {
 	find,
 	inBin,
 	liveEntries,
+	loose,
 	pathTo,
 	projects,
 	recycleBin,
 	rowOf,
+	rowsOf,
 	searchedEntries,
 	shownEntries,
+	templatesOf,
 	visible
 } from './tree';
 import type { EntryRow } from './model';
@@ -147,12 +150,46 @@ describe('walking the tree', () => {
 		expect(rowOf(group(), deep.id)).toBeNull();
 	});
 
+	/** In the order asked for, not the tree's, and without what has gone: the
+	 * rows a batch is about, looked up in one walk of the tree. */
+	it('finds the rows of many entries in the order they are named, leaving out what has gone', () => {
+		const binned = row({ title: 'thrown away' });
+		const deep = row({ title: 'node-3' });
+		const tree = group({
+			sections: [
+				group({ sections: [group({ entries: [deep] })] }),
+				group({ isRecycleBin: true, entries: [binned] })
+			]
+		});
+
+		expect(rowsOf(tree, [binned.id, 'gone', deep.id])).toEqual([binned, deep]);
+		expect(rowsOf(tree, [])).toEqual([]);
+
+		const many = Array.from({ length: 50_000 }, (_, at) => row({ title: `entry ${at}` }));
+		const wide = group({ entries: many });
+		const ids = many.map((each) => each.id).reverse();
+		expect(rowsOf(wide, ids).map((each) => each.id)).toEqual(ids);
+	});
+
 	it('finds the recycle bin wherever the file puts it', () => {
 		const bin = group({ name: 'Recycle Bin', isRecycleBin: true });
 		const tree = group({ sections: [group({ sections: [bin] })] });
 
 		expect(recycleBin(tree)?.id).toBe(bin.id);
 		expect(recycleBin(group())).toBeNull();
+	});
+
+	/** "Not in a folder" is what the top holds itself: nothing under a folder,
+	 * and nothing of a file whose top group is the bin. */
+	it('gives the entries at the top of the vault and nothing from below it', () => {
+		const loner = row({ title: 'loner' });
+		const tree = group({
+			entries: [loner],
+			sections: [group({ entries: [row({ title: 'filed' })] })]
+		});
+
+		expect(loose(tree)).toEqual([loner]);
+		expect(loose(group({ isRecycleBin: true, entries: [row()] }))).toEqual([]);
 	});
 
 	it('keeps the recycle bin out of the projects, which the tree draws apart', () => {
@@ -231,5 +268,42 @@ describe('walking the tree', () => {
 		expect(entriesOf(tree)).toHaveLength(1);
 		expect(liveEntries(tree)).toHaveLength(1);
 		expect(pathTo(tree, 'nothing')).toBeNull();
+	});
+});
+
+describe('the vault’s templates', () => {
+	/** Only the entries the templates group holds itself, as a reader looks for
+	 * them; a protected title sorts as an empty one, and nothing else in the
+	 * tree is a template. */
+	it('lists the entries the templates group holds itself, by title', () => {
+		const nested = group({ entries: [row({ title: 'nested' })] });
+		const templates = group({
+			isTemplates: true,
+			entries: [
+				row({ title: 'Card 10' }),
+				row({ title: null }),
+				row({ title: 'card 2' }),
+				row({ title: 'Wi-Fi' })
+			],
+			sections: [nested]
+		});
+		const tree = group({
+			entries: [row({ title: 'not a template' })],
+			sections: [group({ sections: [templates] })]
+		});
+
+		expect(templatesOf(tree).map((each) => each.title)).toEqual([
+			null,
+			'card 2',
+			'Card 10',
+			'Wi-Fi'
+		]);
+		expect(templatesOf(group({ entries: [row()] }))).toEqual([]);
+	});
+
+	it('finds the templates group a hundred levels deep without recursing', () => {
+		let tree = group({ isTemplates: true, entries: [row({ title: 'deep' })] });
+		for (let level = 0; level < 100; level += 1) tree = group({ sections: [tree] });
+		expect(templatesOf(tree).map((each) => each.title)).toEqual(['deep']);
 	});
 });

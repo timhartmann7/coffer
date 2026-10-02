@@ -16,7 +16,7 @@ const registered = readFileSync('../crates/vault-gui/src/lib.rs', 'utf8');
 const ipc = readFileSync('src/lib/ipc.ts', 'utf8');
 
 /** Arguments Tauri fills in itself. They are never sent by the window. */
-const PROVIDED = ['session', 'app', 'request'];
+const PROVIDED = ['session', 'app', 'request', 'window'];
 
 /** Every command Rust declares, with the arguments it expects from the window. */
 function declared(): Map<string, string[]> {

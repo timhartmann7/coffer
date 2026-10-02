@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { leaves, step } from '$lib/popup';
 	import Icon from './Icon.svelte';
 
 	/**
@@ -37,12 +38,9 @@
 		if (chosen !== value) onChoose(chosen);
 	}
 
-	/** Focus left the button. Whether it left the control is the question, and
-	 * `relatedTarget` is what it went to. */
+	/** Focus left the button. Whether it left the control is the question. */
 	function left(event: FocusEvent) {
-		const going = event.relatedTarget;
-		if (going instanceof Node && wrapper?.contains(going)) return;
-		open = false;
+		if (leaves(event, wrapper)) open = false;
 	}
 
 	function key(event: KeyboardEvent) {
@@ -59,12 +57,7 @@
 			open = true;
 			return;
 		}
-
-		const buttons = [...(wrapper?.querySelectorAll('[role="option"]') ?? [])];
-		const at = buttons.indexOf(document.activeElement as Element);
-		const step = event.key === 'ArrowDown' ? 1 : -1;
-		const next = buttons[(at + step + buttons.length) % buttons.length] ?? buttons[0];
-		if (next instanceof HTMLElement) next.focus();
+		step(wrapper, 'option', event.key);
 	}
 </script>
 

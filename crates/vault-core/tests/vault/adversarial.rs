@@ -144,27 +144,6 @@ fn a_single_flipped_bit_anywhere_is_caught() {
     }
 }
 
-/// Overwrites the eight-byte value of a one-letter key in the header's key
-/// derivation dictionary. The dictionary is in the clear, outside everything the
-/// header signature covers, which is exactly why it needs checking before it is
-/// used.
-fn forge_kdf_value(bytes: &mut [u8], key: u8, value: u64) -> bool {
-    let pattern = [0x05, 0x01, 0x00, 0x00, 0x00, key, 0x08, 0x00, 0x00, 0x00];
-    let Some(at) = bytes
-        .windows(pattern.len())
-        .position(|window| window == pattern)
-    else {
-        return false;
-    };
-
-    let start = at + pattern.len();
-    let Some(slot) = bytes.get_mut(start..start + 8) else {
-        return false;
-    };
-    slot.copy_from_slice(&value.to_le_bytes());
-    true
-}
-
 /// Builds a KDBX outer header by hand, so that a test can state exactly what a
 /// hostile file says.
 struct Header {
@@ -373,7 +352,7 @@ fn an_absurd_aes_round_count_is_refused_before_it_is_run() {
     let mut bytes = std::fs::read(support::fixture(RICH)).expect("the fixture reads");
 
     assert!(
-        forge_kdf_value(&mut bytes, b'R', u64::MAX),
+        support::forge_kdf_value(&mut bytes, b'R', u64::MAX),
         "the fixture should carry an AES round count to forge"
     );
 
@@ -408,7 +387,7 @@ fn an_absurd_argon2_memory_request_is_refused_before_it_is_allocated() {
 
     let mut bytes = std::fs::read(&path).expect("the database reads");
     assert!(
-        forge_kdf_value(&mut bytes, b'M', 4 * 1024 * 1024 * 1024 * 1024),
+        support::forge_kdf_value(&mut bytes, b'M', 4 * 1024 * 1024 * 1024 * 1024),
         "the header should carry an Argon2 memory request to forge"
     );
     std::fs::write(&path, &bytes).expect("the forged database is written");
@@ -434,7 +413,7 @@ fn a_zero_iteration_count_is_refused() {
     });
 
     let mut bytes = std::fs::read(&path).expect("the database reads");
-    assert!(forge_kdf_value(&mut bytes, b'I', 0));
+    assert!(support::forge_kdf_value(&mut bytes, b'I', 0));
     std::fs::write(&path, &bytes).expect("the forged database is written");
 
     assert!(matches!(

@@ -1,12 +1,14 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import type { Group } from '$lib/model';
+	import { KEYS } from '$lib/shortcuts';
 	import Icon from './Icon.svelte';
 	import Mask from './Mask.svelte';
+	import Path from './Path.svelte';
 
 	/**
-	 * The top of the entry pane: the folders down to the entry, its name, and
-	 * the way out.
+	 * The top of the entry pane: the folders down to the entry, its name, a
+	 * copy of it, and the way out.
 	 *
 	 * Drawn once, for an entry Rust has read and for one it is still reading, so
 	 * that the name and the close stand in the same place in both and nothing
@@ -14,15 +16,28 @@
 	 */
 	let {
 		path,
+		place,
 		masked,
+		duplicable = false,
+		onDuplicate,
 		onClose,
 		children
 	}: {
 		/** The folders from the vault down to the entry, for the line above
 		 * the name. */
 		path: Group[];
+		/** The line above the name when it is a control rather than a reading:
+		 * where the entry is, and the way to move it. */
+		place?: Snippet;
 		/** The database protects the name, and it is drawn as a secret is. */
 		masked: boolean;
+		/** Whether the entry is one a copy can be made of: in a vault Coffer
+		 * writes, and not in the recycle bin. */
+		duplicable?: boolean;
+		/** Makes the copy. An entry still being read has none yet, and its
+		 * Duplicate is drawn and cannot be pressed, so the name beside it does
+		 * not narrow when the entry arrives. */
+		onDuplicate?: () => void;
 		/** Puts the pane away. */
 		onClose: () => void;
 		/** The name, in the heading's type. */
@@ -34,18 +49,22 @@
 	<!--
 		The folders down to this entry, and only when there are any. An entry at
 		the top of a vault has none, and the empty line it used to leave was
-		what pushed the title below the two buttons beside it.
+		what pushed the title below the two buttons beside it. An entry that can
+		be moved says where it is either way, because the line is the way to move
+		it.
 	-->
-	{#if path.length > 0}
+	{#if place}
+		{@render place()}
+	{:else if path.length > 0}
 		<div class="mb-1.5 truncate font-mono text-label tracking-label text-txt4 uppercase">
-			{path.map((group) => group.name).join(' · ')}
+			<Path names={path.map((group) => group.name)} />
 		</div>
 	{/if}
 
-	<!-- The name and the way out, on one line and centred against each other.
-	     The trash used to stand sixteen pixels from the close at the same size,
-	     and a press meant for one took the other; deleting is now a labelled
-	     action at the foot of the pane. -->
+	<!-- The name, its copy and the way out, on one line and centred against
+	     each other. The trash used to stand sixteen pixels from the close at the
+	     same size, and a press meant for one took the other; deleting is now a
+	     labelled action at the foot of the pane. -->
 	<div class="flex items-center gap-4">
 		<!-- The type is the heading's, and the name inside inherits it: the one
 		     place that says how big an entry's name is, whether it is a field, a
@@ -62,6 +81,21 @@
 				{@render children()}
 			{/if}
 		</h1>
+		{#if duplicable}
+			<!-- Beside the close, where the trash used to stand: a copy loses
+			     nothing and is put away like any other entry, so a press meant
+			     for the close that lands on it costs a deletion at worst. -->
+			<button
+				type="button"
+				disabled={onDuplicate === undefined}
+				onclick={onDuplicate}
+				title="Duplicate · {KEYS.duplicate}"
+				aria-keyshortcuts="Meta+D"
+				class="flex h-7 shrink-0 items-center rounded-full border border-hairline px-3 text-fine text-txt2 transition hover:border-txt3 hover:text-txt active:bg-raised disabled:cursor-not-allowed disabled:text-txt4 disabled:hover:border-hairline"
+			>
+				Duplicate
+			</button>
+		{/if}
 		<button
 			type="button"
 			onclick={onClose}

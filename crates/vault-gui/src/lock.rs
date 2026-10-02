@@ -1,4 +1,5 @@
-//! Locking, in the one place the timer, the machine and the button all reach.
+//! Locking, in the one place the timer, the machine, the button and the close
+//! button all reach.
 //!
 //! Locking destroys the window. It does not hide one: a hidden window is a
 //! webview that still holds every value the reader looked at, in a heap nothing
@@ -25,7 +26,7 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::autolock::Reason;
 use crate::session::Session;
-use crate::{clipboard, window};
+use crate::{clipboard, context, window};
 
 /// Wipes the vault and takes the window down with it.
 pub fn lock<R: Runtime>(app: &AppHandle<R>, reason: Reason) {
@@ -40,6 +41,12 @@ pub fn lock<R: Runtime>(app: &AppHandle<R>, reason: Reason) {
         return;
     }
 
+    // What a menu under the pointer is about is names and ids out of the tree
+    // that just went. A menu still open keeps the window's destroy waiting
+    // until it is dismissed; nothing chosen in it reaches anything, and one
+    // asked for and not drawn yet is not drawn.
+    context::forget(app);
+
     // A vault that locked with the password still on the clipboard is a lock
     // that did not lock.
     clipboard::revoke_pending();
@@ -49,10 +56,10 @@ pub fn lock<R: Runtime>(app: &AppHandle<R>, reason: Reason) {
     vault_core::scrub::stack();
 
     if let Some(main) = app.get_webview_window(&window::label()) {
-        // Coffer is closing, so the window is not wanted back. Every other
-        // reason is a lock, and a lock is a window that returns asking for a
-        // password.
-        if reason != Reason::Quitting {
+        // Coffer is closing, or the reader closed the window, so the window is
+        // not wanted back. Every other reason is a lock, and a lock is a window
+        // that returns asking for a password.
+        if reason.comes_back() {
             window::rebuilding();
         }
 

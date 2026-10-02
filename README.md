@@ -75,7 +75,9 @@ an hour after the refusal, so the command is the reliable one.
   Nothing that can open a socket is in the dependency graph, and the build fails
   if one appears.
 - **No fields of our own.** The moment Coffer wrote something the specification
-  does not have, the first promise would stop being true.
+  does not have, the first promise would stop being true. A card, a Wi-Fi
+  network or a passport made in Coffer is ordinary string fields, a tag and one
+  of the icons every KeePass client draws.
 
 ## What Coffer does not protect against
 
@@ -84,6 +86,10 @@ an hour after the refusal, so the command is the reliable one.
   to.
 - **A forgotten master password.** It is not kept anywhere and it is not sent
   anywhere. There is no recovery, from us or from anybody.
+- **A copy made before the password changed.** It still opens with the old
+  one: a backup on another disk, and the snapshots you chose to keep. A copy a
+  lock left beside the vault has to be made the vault or removed before the
+  password can be changed.
 - **Universal Clipboard.** A password you copy reaches your other Apple devices
   if Universal Clipboard is on. macOS offers no documented way for an
   application to keep an item out of it. Turn it off under **System Settings →
@@ -97,13 +103,44 @@ an hour after the refusal, so the command is the reliable one.
 - Every write is staged beside the file and renamed into place, so a crash
   halfway leaves the old database whole.
 - Ten rotating snapshots, `vault.kdbx.1.bak` through `vault.kdbx.10.bak`, beside
-  the database. The database and every snapshot are `0600`.
+  the database. Settings lists them as automatic backups and opens any of them
+  to look at, and one press makes a backup the vault again: the file it replaces
+  is kept as the newest snapshot until later saves push it out, and for good as
+  `vault.kdbx.replaced-<date>.kdbx` when it does not open with the backup's
+  password. A backup opens with the password the vault had when it was taken,
+  and so does the vault made from it. A copy saved from one is never written
+  over a file that is there. The database and every snapshot are `0600`.
+- Settings › **Save a copy…** writes the vault, under the same password, to a
+  disk you pick - a stick, another drive - and never over a file that is there;
+  **Show in Finder** shows where the vault lives. Thirty days after the last copy
+  on another disk, or after the vault was made if there has been none, the
+  status bar says so, quietly. A copy on the disk the vault is on is made and
+  said to be there, and does not count: it fails with that disk. Coffer asks
+  macOS which physical disk a folder is on, so a second partition of the Mac's
+  own disk is that disk and a stick or a share is another. A disk image is never
+  counted as another disk, wherever its file is kept, and Coffer cannot tell
+  whether two disks are in the same bag.
+- The master password can be changed in Settings. The file is written again
+  under the new one, with its key derivation unchanged. The snapshots beside it
+  were written under the old one and still open with it until later saves push
+  them out; Coffer says how many there are and offers to remove them at once.
 - An advisory `vault.kdbx.lock` while the vault is open, in the shape other
   clients of the format write, and a dialog rather than a silent overwrite when
   the file changed underneath.
 - Previous versions of an entry live in the file's own history block, pruned to
   the limits the file carries.
-- The vault locks itself after five minutes idle, on sleep and on screen lock.
+- A move between folders is written the way other clients of the format write
+  one - the folder it left and when - and is not a change to the entry: no
+  version, and its modification date stays.
+- Whatever is done to several entries at once, moving, deleting, putting back
+  or tagging them, is one write, and happens to all of them or none. A tag
+  writes a version on each entry it went on and on no other.
+- A copy of an entry is made inside the vault: every value under the protection
+  it has, a file of its own for every file, and no versions. The entry it was
+  copied from is not changed.
+- The vault locks itself after five minutes idle, on sleep, on screen lock, and
+  when you close its window. After a close, Coffer waits in the Dock until you
+  click it; after the others, the window comes back asking for the password.
   Locking destroys the window and wipes the decrypted tree; it does not hide
   anything. It writes first: if the vault is holding a change the file has not
   got and the file will not take it — another client wrote it, the disk went, the
@@ -113,11 +150,13 @@ an hour after the refusal, so the command is the reliable one.
 - A copied password is written as a concealed, transient item, which keeps it
   out of clipboard history tools, and cleared after a minute.
 
-Coffer keeps three things of its own, all in
+Coffer keeps four things of its own, all in
 `~/Library/Application Support/app.coffer.vault/`: `settings.json`,
-`last-database`, and `generator.json`, the length and kinds of character the
-password generator last made a password from (never a password). Nothing else,
-and nothing anywhere else.
+`last-database`, `generator.json`, the length and kinds of character the
+password generator last made a password from (never a password), and
+`copies.json`, when and where you last saved a copy of each vault (dates,
+folders and the names of disks, never the vault). Nothing else, and nothing
+anywhere else.
 
 ## Building it
 

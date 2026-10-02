@@ -1,6 +1,6 @@
 /** Values as the screen writes them. */
 
-import type { Entry } from './model';
+import type { Entry, EntryRow } from './model';
 
 /**
  * A timestamp out of the database, in the reader's own clock.
@@ -47,21 +47,43 @@ export function at(stamp: string | null, now: Date): string {
 }
 
 /**
- * How long ago, the way a row in the recycle bin says it: "today",
- * "yesterday", a count of days for the week behind, and the day itself before
- * that. A date after today is a clock somebody else set, and it is written as
- * the day rather than counted backwards into nonsense.
+ * A moment as a row in a list of files says it, to the minute: "today, 14:05",
+ * "27 Aug, 18:40", with the year for any other year. Nothing for a date that is
+ * not one. The list form of `at`, for files a reader chooses one of - ten
+ * backups taken within the same hour are told apart by the minute alone.
  */
-export function ago(stamp: string | null, now: Date): string {
+export function minute(stamp: string | null, now: Date): string {
 	const moment = parse(stamp);
 	if (!moment) return '';
+	return `${day(stamp, now)}, ${time(moment)}`;
+}
+
+/**
+ * How recently, while that is the way to say it: "today", "yesterday", or a
+ * count of days for the week behind. Nothing for anything older, for a date
+ * after today - a clock somebody else set, which is not counted backwards into
+ * nonsense - and for a date that is not one: each sentence says those its own
+ * way.
+ */
+export function recently(stamp: string | null, now: Date): string | null {
+	const moment = parse(stamp);
+	if (!moment) return null;
 	// Counted between midnights rather than in hours, so that yesterday evening
 	// is yesterday this morning, and a clock change is not a day.
 	const days = Math.round((midnight(now) - midnight(moment)) / 86_400_000);
 	if (days === 0) return 'today';
 	if (days === 1) return 'yesterday';
 	if (days > 1 && days < 7) return `${days} days ago`;
-	return `on ${day(stamp, now)}`;
+	return null;
+}
+
+/**
+ * How long ago, the way a row in the recycle bin says it: `recently`, and the
+ * day itself before that - and for a date after today.
+ */
+export function ago(stamp: string | null, now: Date): string {
+	if (!parse(stamp)) return '';
+	return recently(stamp, now) ?? `on ${day(stamp, now)}`;
 }
 
 /**
@@ -82,9 +104,11 @@ const ENDS_PARAGRAPH = new Set(['\n', '\r', '\u001C', '\u001D', '\u001E', '\u008
 
 /**
  * A name from the vault or the disk - an entry's title, a field's, a file's or
- * a folder's name - in quotes, the way running text puts it.
+ * a folder's name - set apart from the words around it, and cut after
+ * `longest` characters with an ellipsis where it stands among other words with
+ * no room for all of it: a line of a menu.
  *
- * Isolated from the sentence around it. The name is the reader's or another
+ * Isolated from what is around it. The name is the reader's or another
  * client's and may hold right-to-left text or an override, and left bare, a
  * U+202E in it turns the rest of the sentence around: the sizes and the warning
  * a question asks the reader to read before they choose. The closing mark ends
@@ -97,10 +121,16 @@ const ENDS_PARAGRAPH = new Set(['\n', '\r', '\u001C', '\u001D', '\u001E', '\u008
  * would run on through the sentence. None of this changes how the name itself
  * reads, and the vault keeps it as it is.
  */
-export function quoted(name: string): string {
+export function isolated(name: string, longest = Infinity): string {
 	let open = 0;
 	let kept = '';
+	let counted = 0;
 	for (const char of name) {
+		if (counted === longest) {
+			kept += '…';
+			break;
+		}
+		counted += 1;
 		if (ENDS_PARAGRAPH.has(char)) {
 			kept += ' ';
 			continue;
@@ -112,7 +142,12 @@ export function quoted(name: string): string {
 		}
 		kept += char;
 	}
-	return `“${FIRST_STRONG_ISOLATE}${kept}${POP_DIRECTIONAL_ISOLATE.repeat(open + 1)}”`;
+	return `${FIRST_STRONG_ISOLATE}${kept}${POP_DIRECTIONAL_ISOLATE.repeat(open + 1)}`;
+}
+
+/** A name in quotes, set apart, the way running text puts it (`isolated`). */
+export function quoted(name: string): string {
+	return `“${isolated(name)}”`;
 }
 
 /**
@@ -120,9 +155,22 @@ export function quoted(name: string): string {
  * it has none to show - left empty, or kept protected by the database, which
  * no notice is a reason to reveal.
  */
-export function called(entry: Entry): string {
-	const title = entry.fields.find((field) => field.kind === 'title')?.value;
+function titled(title: string | null | undefined): string {
 	return title ? quoted(title) : 'this entry';
+}
+
+/** What a sentence calls an entry Rust has read. */
+export function called(entry: Entry): string {
+	return titled(entry.fields.find((field) => field.kind === 'title')?.value);
+}
+
+/**
+ * What a sentence calls entries from their rows in the list: one by its title,
+ * on the terms an entry Rust has read is named on - a row carries no title the
+ * database protects - and any other number by how many there are.
+ */
+export function counted(rows: readonly EntryRow[]): string {
+	return rows.length === 1 ? titled(rows[0].title) : `${rows.length} entries`;
 }
 
 /** What the pane calls the five fields every entry has, by their names in the

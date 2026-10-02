@@ -22,11 +22,25 @@ use crate::model::{
 };
 use crate::preflight;
 use crate::secret::SecretValue;
-use crate::storage::lock::{Lock, Outcome};
+use crate::storage::lock::{Lock, Outcome, claim};
 use crate::storage::watch::{Change, Content, Stamp};
 use crate::storage::{self, Seen, atomic, snapshot, unsaved, watch};
+use crate::templates;
 use crate::text;
 use crate::wipe;
+
+mod adopt;
+mod batch;
+mod began;
+mod copy;
+mod making;
+mod moves;
+mod read_only;
+mod rekey;
+
+pub use adopt::Adopted;
+pub use copy::EncryptedCopy;
+pub use read_only::ReadOnly;
 
 /// The largest file Coffer will read into memory to try to open.
 ///
@@ -147,7 +161,9 @@ pub struct Vault {
     database: Held,
     path: PathBuf,
     key: MasterKey,
-    source: Source,
+    /// Why the database may not be written back, decided by what it was read
+    /// from - its format and its place - or nothing when it may be.
+    source: Option<ReadOnly>,
     stamp: Stamp,
     /// The bytes the stamp went with. Read only when the stamp cannot decide on
     /// its own, which is when nothing but the change time moved.
@@ -157,6 +173,10 @@ pub struct Vault {
     /// How many times the tree has changed since the vault opened, counting
     /// what a save settles and what a reload replaces. See [`Vault::edits`].
     edits: u64,
+    /// The snapshots beside the database that open with a master password
+    /// this vault no longer has: every one there was when the password last
+    /// changed. Empty until it does.
+    superseded: snapshot::Superseded,
     /// Held for as long as the vault is open; removed when it is dropped.
     ///
     /// Absent where the place beside the database would not take the file.
@@ -252,31 +272,6 @@ enum Guard {
     Ignore,
 }
 
-/// The format the database was read from, which decides whether it may be
-/// written back.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Source {
-    /// KeePass 1. Read only: the format cannot hold what Coffer would put back.
-    Kdb,
-    /// KDBX 3 carrying attachments. Read only: the reader collapses every
-    /// attachment in a KDBX 3 database onto one, so saving would write fewer
-    /// attachments than were read.
-    Kdbx3WithAttachments,
-    /// One of Coffer's own snapshots. It opens like any other database and is
-    /// not written back: the next save of the database it was taken from would
-    /// rotate it away, so a change written here would be lost within ten saves.
-    /// It can still be written somewhere else, which is what the offer to keep
-    /// a copy is for.
-    Snapshot,
-    /// Kept somewhere that will not take a write: a read-only disk image, a
-    /// Time Machine snapshot, a stick macOS mounted read-only, a share the
-    /// reader may only read. It opens, because reading needs no write, and
-    /// every change is refused because none of them could reach the file.
-    ReadOnlyPlace,
-    /// Anything Coffer can write back as KDBX 4.1.
-    Writable,
-}
-
 impl Vault {
     /// Opens the database at `path`.
     ///
@@ -311,6 +306,7 @@ impl Vault {
             content,
             changed: false,
             edits: 0,
+            superseded: snapshot::Superseded::default(),
             _lock: lock,
         })
     }
@@ -379,11 +375,6 @@ impl Vault {
         &self.path
     }
 
-    /// Whether this database can be written back at all.
-    pub fn is_read_only(&self) -> bool {
-        self.source != Source::Writable
-    }
-
     /// The database's groups, as a tree.
     ///
     /// The value returned is the root group, which every KeePass database has
@@ -395,6 +386,7 @@ impl Vault {
         project_of(
             &self.database,
             &bin,
+            templates::group(&self.database),
             self.database.root(),
             Standing::Outside,
         )
@@ -471,7 +463,7 @@ impl Vault {
     /// Refusing to save one was never enough - it has to refuse to read one out
     /// as well.
     pub fn attachment(&self, id: EntryId, name: &str) -> Result<SecretValue, VaultError> {
-        if self.source == Source::Kdbx3WithAttachments {
+        if !self.files_readable() {
             return Err(VaultError::UnreadableAttachments);
         }
 
@@ -795,7 +787,7 @@ impl Vault {
             Deletion::Forever => self.erase_group(id),
             Deletion::Bin => {
                 let into = self.bin(bin.id());
-                self.move_group(id, into)
+                self.relocate_group(id, into)
             }
         }
     }
@@ -827,7 +819,7 @@ impl Vault {
             }
         }
         for entry in entries {
-            if let Err(error) = self.erase_entry(entry) {
+            if let Err(error) = self.erase_entries(&[entry]) {
                 refused.get_or_insert(error);
             }
         }
@@ -836,36 +828,6 @@ impl Vault {
             Some(error) => Err(error),
             None => Ok(()),
         }
-    }
-
-    /// Makes an entry in a folder.
-    ///
-    /// The five fields the format names are written empty, protected as the
-    /// database asks for them to be, so that an entry Coffer made looks like an
-    /// entry KeePassXC made and the screen has every row to edit.
-    pub fn create_entry(&mut self, group: GroupId) -> Result<EntryId, VaultError> {
-        self.writable()?;
-        let protection = self.protection();
-
-        let made = {
-            let mut group = self
-                .database
-                .group_mut(group)
-                .ok_or(VaultError::NoSuchGroup)?;
-            let mut entry = group.add_entry();
-            dated(&mut entry.times);
-            for (name, protect) in protection {
-                if protect {
-                    entry.set_protected(name, "");
-                } else {
-                    entry.set_unprotected(name, "");
-                }
-            }
-            entry.id()
-        };
-
-        self.touched();
-        Ok(made)
     }
 
     /// Takes a field off an entry.
@@ -992,17 +954,12 @@ impl Vault {
 
     /// Replaces an entry's tags.
     ///
-    /// The format keeps them as one string with semicolons between, and reads
-    /// a comma and a tab as separators too, so a tag holding one of those would
-    /// come back as two tags. A tag padded with spaces comes back trimmed. Both
-    /// are refused rather than written and silently changed.
+    /// A tag the format would split in two, trim or drop is refused rather
+    /// than written and silently changed (see `text::tag`).
     pub fn set_tags(&mut self, id: EntryId, tags: Vec<String>) -> Result<(), VaultError> {
         self.writable()?;
         for tag in &tags {
-            text::writable(tag)?;
-            if tag.is_empty() || tag.trim() != tag || tag.contains([';', ',', '\t']) {
-                return Err(VaultError::UnwritableText);
-            }
+            text::tag(tag)?;
         }
         if self.database.entry(id).is_none() {
             return Err(VaultError::NoSuchEntry);
@@ -1017,63 +974,9 @@ impl Vault {
         Ok(())
     }
 
-    /// Deletes an entry.
-    ///
-    /// As with a folder: to the recycle bin when the database has one, and out
-    /// of the file and into `DeletedObjects` when it is already there. Which of
-    /// the two happens is what [`Entry::deletion`] said it would.
-    ///
-    /// A move to the bin is not an edit. It writes no version and records no
-    /// deletion, and the entry keeps the folder it came out of as its
-    /// `PreviousParentGroup`, which is where [`Vault::put_back_entry`] takes it.
-    ///
-    /// `shown` is the deletion the reader agreed to, refused with
-    /// [`VaultError::DeletionChanged`] when it is no longer what deleting the
-    /// entry does, for the reasons [`Vault::delete_group`] gives.
-    pub fn delete_entry(&mut self, id: EntryId, shown: Deletion) -> Result<(), VaultError> {
-        self.writable()?;
-        let group = self
-            .database
-            .entry(id)
-            .ok_or(VaultError::NoSuchEntry)?
-            .parent()
-            .id();
-
-        let bin = Bin::of(&self.database);
-        match bin.deletion(bin.standing(&self.database, group)) {
-            deletion if deletion != shown => Err(VaultError::DeletionChanged),
-            Deletion::Forever => self.erase_entry(id),
-            Deletion::Bin => {
-                let into = self.bin(bin.id());
-                self.move_entry(id, into)
-            }
-        }
-    }
-
-    /// Takes an entry out of the recycle bin and puts it back where it was.
-    ///
-    /// Back into the folder it was deleted from, when that folder is still
-    /// somewhere to go. One that has gone, one that is in the bin itself, and
-    /// an entry another client put in the bin without saying where from all
-    /// send it to the top of the vault instead: put back somewhere is better
-    /// than left behind. An entry that went in with a deleted folder goes
-    /// where that folder came from ([`Binned::from`]).
-    ///
-    /// Moving is not an edit, so no version is written, and the folder it
-    /// leaves becomes its `PreviousParentGroup` the way every move makes it.
-    pub fn put_back_entry(&mut self, id: EntryId) -> Result<(), VaultError> {
-        self.writable()?;
-        let into = {
-            let entry = self.database.entry(id).ok_or(VaultError::NoSuchEntry)?;
-            let (binned, _) = self.placed(&entry, entry.parent().id());
-            self.back(binned)?
-        };
-        self.move_entry(id, into)
-    }
-
     /// Takes a folder out of the recycle bin with everything in it, on the
-    /// same terms as [`Vault::put_back_entry`]. The bin itself is not in the
-    /// bin, and cannot be put back.
+    /// same terms as [`Vault::put_back_entries`] takes an entry. The bin itself
+    /// is not in the bin, and cannot be put back.
     pub fn put_back_group(&mut self, id: GroupId) -> Result<(), VaultError> {
         self.writable()?;
         let into = {
@@ -1089,7 +992,7 @@ impl Vault {
                 group.previous_parent().map(|previous| previous.id()),
             ))?
         };
-        self.move_group(id, into)
+        self.relocate_group(id, into)
     }
 
     /// Where putting something back takes it: the folder it came from, or the
@@ -1099,9 +1002,29 @@ impl Vault {
         Ok(binned.from.unwrap_or_else(|| self.database.root().id()))
     }
 
+    /// Whether something may be put into `into` by any way but deleting it: a
+    /// folder that is there, and neither the recycle bin nor anything inside
+    /// it. Deleting is the one way into the bin, because it is the one that
+    /// says first whether it can be undone.
+    fn destination(&self, bin: &Bin, into: GroupId) -> Result<(), VaultError> {
+        if self.database.group(into).is_none() {
+            return Err(VaultError::NoSuchGroup);
+        }
+        if bin.standing(&self.database, into).binned() {
+            return Err(VaultError::IntoRecycleBin);
+        }
+        Ok(())
+    }
+
     /// Moves an entry into another folder, which is not an edit: no version,
     /// and the modification time stays where it was.
-    fn move_entry(&mut self, id: EntryId, into: GroupId) -> Result<(), VaultError> {
+    ///
+    /// No question about where: every caller has decided that already, the
+    /// deletion by the bin's rule, putting back by where the thing came from,
+    /// a move between folders by [`Vault::move_entries`]'s checks, and taking
+    /// one back by [`Vault::move_entries_back`]'s, which go by what the file
+    /// says of the move rather than by [`Vault::destination`].
+    fn relocate_entry(&mut self, id: EntryId, into: GroupId) -> Result<(), VaultError> {
         let mut entry = self.database.entry_mut(id).ok_or(VaultError::NoSuchEntry)?;
         entry.move_to(into).map_err(|_| VaultError::NoSuchGroup)?;
         entry.times.location_changed = Some(Times::now());
@@ -1388,34 +1311,16 @@ impl Vault {
         self.write(Guard::Ignore)
     }
 
-    /// Writes the database somewhere else, leaving the file it came from alone.
-    ///
-    /// No snapshot is rotated and nothing about this vault changes: the copy is
-    /// a copy, and the database is still the one this vault has open.
-    pub fn save_copy(&mut self, path: &Path) -> Result<(), VaultError> {
-        match self.source {
-            Source::Kdb => return Err(VaultError::ReadOnlyKdb),
-            Source::Kdbx3WithAttachments => return Err(VaultError::ReadOnlyKdbx3Attachments),
-            // A snapshot and a read-only place are both about where the
-            // database is, and a copy is written somewhere else. That is the
-            // whole point of the offer: it is how the reader gets their work
-            // off a medium that will not take it.
-            Source::Snapshot | Source::ReadOnlyPlace | Source::Writable => {}
-        }
-        if path.canonicalize().is_ok_and(|target| target == self.path) {
-            return Err(VaultError::CopyOntoItself);
-        }
-
+    /// Settles the database and encrypts the whole of it into `writer`, for a
+    /// write that is not a save of this vault's own file: a copy elsewhere, or
+    /// the one a lock leaves beside the vault. One past the ceiling is refused,
+    /// because nobody could open it again.
+    fn encrypt_whole(&mut self, writer: &mut dyn Write) -> Result<(), VaultError> {
         self.prepare()?;
-
-        let mut written = 0;
-        atomic::write_atomic::<VaultError, _>(path, |writer: &mut dyn Write| {
-            written = encrypt(&self.database, &self.key, writer)?;
-            if written > MAX_DATABASE_BYTES {
-                return Err(VaultError::TooLarge);
-            }
-            Ok(())
-        })
+        if encrypt(&self.database, &self.key, writer)? > MAX_DATABASE_BYTES {
+            return Err(VaultError::TooLarge);
+        }
+        Ok(())
     }
 
     /// Writes out whatever the file has not got, on the way to being wiped.
@@ -1447,7 +1352,12 @@ impl Vault {
             return Rescue::Lost;
         };
 
-        match self.save_copy(&beside) {
+        // Over the copy an earlier lock with the same trouble left, which is
+        // the one name a copy is written over: there is one copy, the newest.
+        let kept = atomic::write_atomic::<VaultError, _>(&beside, |writer: &mut dyn Write| {
+            self.encrypt_whole(writer)
+        });
+        match kept {
             Ok(()) => Rescue::Kept,
             Err(_) => Rescue::Lost,
         }
@@ -1477,25 +1387,12 @@ impl Vault {
     pub fn promote(&mut self, seen: Option<Seen>) -> Result<(), VaultError> {
         let vault = unsaved::taken_from(&self.path).ok_or(VaultError::NotACopy)?;
         self.writable()?;
-        let lock = unsaved::claim(&vault)?;
+        let lock = claim(&vault)?;
         if seen != Some(Seen::of(&vault)) {
             return Err(VaultError::VaultFileChanged);
         }
 
-        // The write is the ordinary one aimed at the vault's name, so that it
-        // proves the place will take it, snapshots what is there and records
-        // what it leaves exactly as every save does. What it records is put
-        // back if it does not go through.
-        let copy = std::mem::replace(&mut self.path, vault);
-        let agreed = (self.stamp, self.content);
-        if let Err(error) = self.write(Guard::Ignore) {
-            self.path = copy;
-            (self.stamp, self.content) = agreed;
-            return Err(error);
-        }
-
-        self._lock = Some(lock);
-        self.source = classify(&self.database, &self.path, self._lock.as_ref());
+        let copy = self.take_over(vault, lock)?;
 
         // A copy that will not go is offered again beside a vault that now
         // holds the same thing, which loses nothing and is said on the unlock
@@ -1552,11 +1449,8 @@ impl Vault {
     /// may not.
     fn writable(&self) -> Result<(), VaultError> {
         match self.source {
-            Source::Kdb => Err(VaultError::ReadOnlyKdb),
-            Source::Kdbx3WithAttachments => Err(VaultError::ReadOnlyKdbx3Attachments),
-            Source::Snapshot => Err(VaultError::ReadOnlySnapshot),
-            Source::ReadOnlyPlace => Err(VaultError::ReadOnlyPlace),
-            Source::Writable => Ok(()),
+            Some(why) => Err(why.into()),
+            None => Ok(()),
         }
     }
 
@@ -1616,7 +1510,10 @@ impl Vault {
         made
     }
 
-    fn move_group(&mut self, id: GroupId, into: GroupId) -> Result<(), VaultError> {
+    /// Moves a folder, with everything in it, into another folder, on the
+    /// terms [`Vault::relocate_entry`] moves an entry. The library's own walk
+    /// refuses the top of the vault and a folder going inside itself.
+    fn relocate_group(&mut self, id: GroupId, into: GroupId) -> Result<(), VaultError> {
         use keepass::db::MoveGroupError;
 
         let mut group = self.database.group_mut(id).ok_or(VaultError::NoSuchGroup)?;
@@ -1657,15 +1554,23 @@ impl Vault {
         Ok(())
     }
 
-    /// Takes an entry out of the file for good.
-    fn erase_entry(&mut self, id: EntryId) -> Result<(), VaultError> {
-        attachment::detach_entries(&mut self.database, &[id])?;
+    /// Takes entries out of the file for good, every one of them or none.
+    ///
+    /// Their files go first, by the pool's rules and for all of them at once:
+    /// [`attachment::detach_entries`] works out where every file goes before it
+    /// writes anything, so a version standing in the way of one entry's file
+    /// refuses them all with the pool as it was. Nothing after it can refuse:
+    /// every caller found each entry first, and names each one once.
+    fn erase_entries(&mut self, ids: &[EntryId]) -> Result<(), VaultError> {
+        attachment::detach_entries(&mut self.database, ids)?;
 
-        self.database
-            .entry_mut(id)
-            .ok_or(VaultError::NoSuchEntry)?
-            .track_changes()
-            .remove();
+        for &id in ids {
+            self.database
+                .entry_mut(id)
+                .ok_or(VaultError::NoSuchEntry)?
+                .track_changes()
+                .remove();
+        }
 
         self.touched();
         Ok(())
@@ -1773,6 +1678,7 @@ fn fill(path: &Path, key: MasterKey, recipe: &Recipe<'_>) -> Result<Vault, Vault
         content,
         changed: false,
         edits: 0,
+        superseded: snapshot::Superseded::default(),
         _lock: Some(lock),
     })
 }
@@ -1962,20 +1868,22 @@ fn parse_without_dying(bytes: &[u8], key: keepass::DatabaseKey) -> Result<Databa
 }
 
 /// What the database is, for the purpose of deciding whether it may be written
-/// back.
+/// back: why not, or nothing for anything Coffer can write back as KDBX 4.1.
 ///
 /// The format comes first and the place second, on purpose. A KDBX 3 database
 /// carrying attachments is refused a read of those attachments as well as a
 /// save, and that refusal has to survive the file being on a read-only medium:
 /// the medium is why a save cannot go anywhere, the format is why the bytes
 /// cannot be trusted, and only the second of those is about the data.
-fn classify(database: &Database, path: &Path, lock: Option<&Lock>) -> Source {
+fn classify(database: &Database, path: &Path, lock: Option<&Lock>) -> Option<ReadOnly> {
     match database.config.version {
-        DatabaseVersion::KDB(_) | DatabaseVersion::KDB2(_) => Source::Kdb,
-        DatabaseVersion::KDB3(_) if database.num_attachments() > 0 => Source::Kdbx3WithAttachments,
-        _ if snapshot::slot_of(path).is_some() => Source::Snapshot,
-        _ if lock.is_none() => Source::ReadOnlyPlace,
-        _ => Source::Writable,
+        DatabaseVersion::KDB(_) | DatabaseVersion::KDB2(_) => Some(ReadOnly::Kdb),
+        DatabaseVersion::KDB3(_) if database.num_attachments() > 0 => {
+            Some(ReadOnly::Kdbx3Attachments)
+        }
+        _ if snapshot::slot_of(path).is_some() => Some(ReadOnly::Snapshot),
+        _ if lock.is_none() => Some(ReadOnly::Place),
+        _ => None,
     }
 }
 
@@ -1984,8 +1892,15 @@ fn classify(database: &Database, path: &Path, lock: Option<&Lock>) -> Source {
 ///
 /// Where each group stands is worked out once, on the way down, and handed to
 /// the entries in it: a vault of fifty thousand entries asks the question once
-/// per folder rather than once per entry.
-fn project_of(database: &Database, bin: &Bin, group: GroupRef<'_>, holder: Standing) -> Project {
+/// per folder rather than once per entry. Which group holds the templates is
+/// worked out once for the whole tree, for the same reason.
+fn project_of(
+    database: &Database,
+    bin: &Bin,
+    templates: Option<GroupId>,
+    group: GroupRef<'_>,
+    holder: Standing,
+) -> Project {
     let group_id = group.id();
     let standing = bin.enter(holder, group_id, &group.times);
     let deletion = bin.deletion(standing);
@@ -1995,6 +1910,7 @@ fn project_of(database: &Database, bin: &Bin, group: GroupRef<'_>, holder: Stand
         name: group.name.clone(),
         notes: group.notes.clone(),
         is_recycle_bin: Some(group_id) == bin.id(),
+        is_templates: Some(group_id) == templates,
         binned: bin.binned(
             database,
             holder,
@@ -2004,7 +1920,7 @@ fn project_of(database: &Database, bin: &Bin, group: GroupRef<'_>, holder: Stand
         deletion: bin.group_deletion(group_id, standing),
         sections: group
             .groups()
-            .map(|section| project_of(database, bin, section, standing))
+            .map(|section| project_of(database, bin, templates, section, standing))
             .collect(),
         entries: group
             .entries()

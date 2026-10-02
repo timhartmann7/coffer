@@ -18,6 +18,22 @@ export function typing(target: EventTarget | null): boolean {
 	);
 }
 
+/** The kinds of input whose text the reader types and edits. */
+const TEXT = new Set(['text', 'search', 'password', 'email', 'url', 'tel', 'number']);
+
+/**
+ * Whether a right-click is in a field the reader can type into, where WebKit's
+ * own menu - Cut, Copy, Paste, spelling - is about their typing and stays. A
+ * slider, a field that is disabled or read only, and everything else are not,
+ * and get Coffer's menu or none.
+ */
+export function writable(target: EventTarget | null): boolean {
+	if (target instanceof HTMLInputElement)
+		return TEXT.has(target.type) && !target.disabled && !target.readOnly;
+	if (target instanceof HTMLTextAreaElement) return !target.disabled && !target.readOnly;
+	return target instanceof HTMLElement && target.isContentEditable;
+}
+
 /**
  * Whether a key is Cmd+C for Coffer rather than for the system.
  *

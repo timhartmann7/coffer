@@ -6,11 +6,15 @@
  * node that shows it and is never kept.
  */
 
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 import type {
+	Action,
+	Adopted,
 	Attached,
 	Calibration,
+	Command,
 	Database,
+	Deleting,
 	Deletion,
 	Entry,
 	Failure,
@@ -18,15 +22,23 @@ import type {
 	Generator,
 	Group,
 	History,
+	Kinds,
 	Made,
+	Move,
+	Moved,
+	Point,
 	Position,
 	Purpose,
 	Recipe,
+	Removed,
 	Rival,
+	SavedCopy,
 	Settings,
 	Snapshot,
 	Span,
 	Status,
+	Subject,
+	Tagged,
 	Target
 } from './model';
 
@@ -140,6 +152,40 @@ export async function createDatabase(password: Uint8Array): Promise<void> {
 	}
 }
 
+/**
+ * Gives the open vault a new master password.
+ *
+ * Both passwords are the whole body of the message, as bytes, for the reason an
+ * unlock's is. A body cannot carry named arguments beside it, so the two are
+ * framed in it: the current password's length in four bytes, big-endian, then
+ * the current password, then the new one. The two buffers handed in are wiped as
+ * soon as the frame holds them, and the frame once the call has finished with
+ * it, whatever it answered. Answers with how many automatic backups beside the
+ * vault still open with the old password.
+ */
+export async function changeMasterPassword(current: Uint8Array, next: Uint8Array): Promise<number> {
+	const body = new Uint8Array(4 + current.length + next.length);
+	new DataView(body.buffer).setUint32(0, current.length);
+	body.set(current, 4);
+	body.set(next, 4 + current.length);
+	current.fill(0);
+	next.fill(0);
+	try {
+		return await invoke('change_master_password', body);
+	} finally {
+		body.fill(0);
+	}
+}
+
+/** Removes the automatic backups that open with the password the vault had
+ * before its last change, and answers with how many went - and, when some would
+ * not go, how many are left and why. Nothing is sent: Rust removes the files it
+ * counted when the password changed, wherever later saves have moved them, and
+ * no others. */
+export function removeOldSnapshots(): Promise<Removed> {
+	return invoke('remove_old_snapshots');
+}
+
 export function lock(): Promise<void> {
 	return invoke('lock');
 }
@@ -159,6 +205,42 @@ export function lock(): Promise<void> {
  */
 export function stirred(): Promise<number | null> {
 	return invoke('stirred');
+}
+
+/**
+ * Hands Rust the way to tell this window what the reader chose outside it: an
+ * item of the menu bar, or the close button. One way per window: the window a
+ * lock builds next hands over its own, and Rust lets go of this one when its
+ * window goes. A channel and not an event: it needs no capability, and nothing
+ * of it outlives the window (see docs/ipc.md).
+ */
+export function listen(heard: (action: Action) => void): Promise<void> {
+	const channel = new Channel<Action>(heard);
+	return invoke('listen', { channel });
+}
+
+/** Tells the menu bar which of Coffer's items the window can do now. Rust greys
+ * out the rest, and Lock Vault and Open Vault… follow the vault as well. */
+export function menuState(enabled: Command[]): Promise<void> {
+	return invoke('menu_state', { enabled });
+}
+
+/** Locks the vault and takes this window down for good; the Dock brings it
+ * back. */
+export function closeWindow(): Promise<void> {
+	return invoke('close_window');
+}
+
+/**
+ * Draws Coffer's menu under the pointer for what the reader right-clicked, in
+ * place of WebKit's, and answers once it has closed. What is chosen from it
+ * arrives on its own, through the way in `listen` handed over, with `serial`
+ * and the ids it is about - before this answers, or after. Nothing of any
+ * value is sent: ids and names, and for a revealed value the positions of the
+ * part selected.
+ */
+export function contextMenu(serial: number, subject: Subject, at: Point): Promise<void> {
+	return invoke('context_menu', { serial, subject, at });
 }
 
 /** What the reader chose, and the values they may choose instead. Both come
@@ -209,12 +291,24 @@ export function openUrl(entry: string): Promise<void> {
 	return invoke('open_url', { entry });
 }
 
-/** The snapshots beside the chosen database, most recent first. */
+/** The snapshots beside the chosen database - or, when it is one of them,
+ * beside the vault it was taken from - most recent first. Rust keeps the list,
+ * and the slot `chooseSnapshot` sends back means what it meant in it. */
 export function snapshots(): Promise<Snapshot[]> {
 	return invoke('snapshots');
 }
 
-/** Points Coffer at one of those snapshots instead. */
+/**
+ * Points Coffer at the snapshot the last list showed at `index`, wherever later
+ * saves have moved it, and answers with what is chosen afterwards. Rejects with
+ * `gone`, changing nothing, when it has been pushed out of the chain or was
+ * never listed.
+ *
+ * With a vault open, that vault is locked first, the way any is: this window
+ * may be gone before the answer arrives, and what is chosen afterwards is the
+ * vault itself when the lock kept its work elsewhere, lost it, or pushed the
+ * snapshot out with its own save.
+ */
 export function chooseSnapshot(index: number): Promise<Database> {
 	return invoke('choose_snapshot', { index });
 }
@@ -248,27 +342,58 @@ export function promoteRescue(): Promise<Database> {
 	return invoke('promote_rescue');
 }
 
-/** Goes back from the copy to the vault it was taken from, and answers with
- * what is chosen afterwards: the vault, or the copy when the lock that closed
- * it had to keep its work elsewhere or lost it. A copy that is open is locked
- * on the way, so this window may be gone before the answer arrives. */
-export function leaveRescue(): Promise<Database> {
-	return invoke('leave_rescue');
+/** Makes the open snapshot the vault it was taken beside, and answers with the
+ * vault, which is what is open now, and with what became of the file it
+ * replaced. No password: the vault opens with the one the snapshot opened with
+ * from then on. Refused with `externalChange` when the vault's file no longer
+ * stands as the last `status` said. */
+export function adoptSnapshot(): Promise<Adopted> {
+	return invoke('adopt_snapshot');
 }
 
-/** Makes an entry in a folder and answers with the tree it changed. */
-export function createEntry(group: string): Promise<Made> {
-	return invoke('create_entry', { group });
+/** Goes back from the copy or the snapshot to the vault it was taken from, and
+ * answers with what is chosen afterwards: the vault, or the copy when the lock
+ * that closed it had to keep its work elsewhere or lost it. A file that is open
+ * is locked on the way, so this window may be gone before the answer arrives. */
+export function backToVault(): Promise<Database> {
+	return invoke('back_to_vault');
+}
+
+/** The kinds of entry Coffer makes, a login first, and the names offered for
+ * a field of the reader's own. The same answer every time. */
+export function kinds(): Promise<Kinds> {
+	return invoke('kinds');
+}
+
+/** Makes an entry of a kind - one of the words `kinds` offered - in a folder,
+ * and answers with the tree it changed and the entry. Rust refuses a folder in
+ * the recycle bin with `refused`. */
+export function createEntry(group: string, kind: string): Promise<Made> {
+	return invoke('create_entry', { group, kind });
+}
+
+/** Makes an entry in a folder from one of the vault's templates, every value
+ * and file copied in Rust. Rust refuses with `refused` an entry that is not
+ * one of them any more. */
+export function createFromTemplate(group: string, template: string): Promise<Made> {
+	return invoke('create_from_template', { group, template });
+}
+
+/** Makes a copy of an entry beside it, every value and file copied in Rust,
+ * and answers with the tree and the copy. */
+export function duplicateEntry(entry: string): Promise<Made> {
+	return invoke('duplicate_entry', { entry });
 }
 
 /**
- * Deletes an entry. `deletion` is what the window showed the deletion would
- * do, and Rust rejects with `deletionChanged`, deleting nothing, when that is
- * no longer what it does. `sequence` is the number `drafts.release` gave for
- * it: whatever was typed into the entry and said before it is let go.
+ * Deletes entries, every one of them or none, each with what the window showed
+ * deleting it would do: Rust rejects the whole batch with `deletionChanged`,
+ * deleting nothing, when that is no longer what happens to any of them. One
+ * entry is a batch of one. `sequence` is the number `drafts.release` gave for
+ * them: whatever was typed into them and said before it is let go.
  */
-export function deleteEntry(entry: string, deletion: Deletion, sequence: number): Promise<Group> {
-	return invoke('delete_entry', { entry, deletion, sequence });
+export function deleteEntries(entries: Deleting[], sequence: number): Promise<Group> {
+	return invoke('delete_entries', { entries, sequence });
 }
 
 export function createGroup(parent: string, name: string): Promise<Group> {
@@ -279,25 +404,76 @@ export function renameGroup(group: string, name: string): Promise<Group> {
 	return invoke('rename_group', { group, name });
 }
 
-/** Deletes a folder and everything in it, on the terms `deleteEntry` gives. */
+/** Deletes a folder and everything in it, on the terms `deleteEntries` gives
+ * each entry. */
 export function deleteGroup(group: string, deletion: Deletion): Promise<Group> {
 	return invoke('delete_group', { group, deletion });
 }
 
 /**
- * Takes an entry out of the recycle bin, back to the folder it was deleted
- * from, or to the top of the vault when that folder is nowhere to go. Rejects
- * with `refused` for anything that is not in the bin, so an undo that arrives
- * after the entry has already come back moves nothing.
+ * Takes entries out of the recycle bin, every one of them or none, each back
+ * to the folder it was deleted from, or to the top of the vault when that
+ * folder is nowhere to go. Rust rejects with `refused` when any of them is no
+ * longer in the bin, so an undo that arrives after one has already come back
+ * moves nothing, and with `noSuchEntry` when one has gone.
  */
-export function putBackEntry(entry: string): Promise<Group> {
-	return invoke('put_back_entry', { entry });
+export function putBackEntries(entries: string[]): Promise<Group> {
+	return invoke('put_back_entries', { entries });
+}
+
+/** Puts a tag on every entry named that lacks it, and answers with the tree
+ * and those entries. Rust refuses the whole batch with `refused`, saying why,
+ * for a tag the file would split or trim, and with `noSuchEntry` when one has
+ * gone. */
+export function tagEntries(entries: string[], tag: string): Promise<Tagged> {
+	return invoke('tag_entries', { entries, tag });
+}
+
+/** Takes a tag off every entry named that has it: the undo of `tagEntries`,
+ * sent only the entries that one answered it changed. */
+export function untagEntries(entries: string[], tag: string): Promise<Group> {
+	return invoke('untag_entries', { entries, tag });
 }
 
 /** Takes a folder out of the recycle bin with everything in it, on the same
  * terms. */
 export function putBackGroup(group: string): Promise<Group> {
 	return invoke('put_back_group', { group });
+}
+
+/**
+ * Moves entries into a folder, or to the top of the vault with the root's id,
+ * every one of them or none. Rust refuses the whole batch with `refused` when
+ * one of them, or the folder, is in the recycle bin, and with `noSuchEntry`
+ * when one of them or the folder is not there. One already in the folder stays
+ * where it is and is not among those answered.
+ */
+export function moveEntries(entries: string[], into: string): Promise<Moved> {
+	return invoke('move_entries', { entries, into });
+}
+
+/**
+ * Takes a move back: each entry `moveEntries` answered goes out of `into` to
+ * the folder it left, every one of them or none. Rust refuses with
+ * `superseded`, moving nothing, once the file says any of them has moved since.
+ */
+export function moveEntriesBack(moved: Move[], into: string): Promise<Group> {
+	return invoke('move_entries_back', { moved, into });
+}
+
+/** Moves a folder with everything in it, on the terms `moveEntries` gives. A
+ * folder cannot go inside itself or a folder under it. */
+export function moveGroup(group: string, into: string): Promise<Group> {
+	return invoke('move_group', { group, into });
+}
+
+/**
+ * Takes a folder's move back out of `into` to `from`, the folder it left. Rust
+ * refuses with `superseded`, moving nothing, once the file says the folder has
+ * moved since, or either folder has gone or is in the recycle bin.
+ */
+export function moveGroupBack(group: string, from: string, into: string): Promise<Group> {
+	return invoke('move_group_back', { group, from, into });
 }
 
 export function emptyRecycleBin(): Promise<Group> {
@@ -526,6 +702,24 @@ export function saveOver(): Promise<void> {
 /** Writes what is in the window to a file of its own. */
 export function saveCopy(): Promise<Database | null> {
 	return invoke('save_copy');
+}
+
+/**
+ * Saves a copy of the open vault on another disk, in a panel Rust opens on the
+ * folder the last such copy went to, another disk this Mac has mounted, or
+ * beside the vault, and writes down when and where. Answers with whether it
+ * went to the vault's own disk and what Coffer now knows of copies, or null
+ * when the panel was closed. Rejects with `taken`, replacing nothing, for a
+ * name that holds a file.
+ */
+export function copyVault(): Promise<SavedCopy | null> {
+	return invoke('copy_vault');
+}
+
+/** Shows the chosen vault's file in the Finder, selected. Nothing is sent: it
+ * is the file Rust chose. Rejects with `gone` when nothing is at its name. */
+export function showInFinder(): Promise<void> {
+	return invoke('show_in_finder');
 }
 
 /** Throws away what is in the window and reads the file again, typing that was

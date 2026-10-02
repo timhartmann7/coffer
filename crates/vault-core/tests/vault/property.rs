@@ -360,7 +360,7 @@ proptest! {
         // that a version is holding a file before anything else happens.
         let root = vault.tree().id;
         for round in 0..4u8 {
-            let id = vault.create_entry(root).expect("the entry is made");
+            let id = vault.create_entry(root, vault_core::kind::Kind::Login).expect("the entry is made");
             vault
                 .set_field(id, "Title", vault_core::NewValue::Open(format!("entry {round}")))
                 .expect("the title is written");
@@ -469,7 +469,7 @@ proptest! {
                     let shown = vault
                         .entry(id)
                         .map_or(vault_core::model::Deletion::Bin, |entry| entry.deletion);
-                    let done = vault.delete_entry(id, shown);
+                    let done = vault.delete_entries(&[(id, shown)]);
                     // Into the bin it stays an entry; out of the bin it is gone.
                     if done.is_ok() && vault.entry(id).is_none() {
                         expected.remove(&id.to_string());

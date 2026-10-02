@@ -1,9 +1,11 @@
 <script lang="ts">
 	import { tick, untrack } from 'svelte';
-	import { flush, type Place } from '$lib/drafts';
+	import { about, offer } from '$lib/context.svelte';
+	import { flush, track, type Place } from '$lib/drafts';
+	import { ready } from '$lib/focus.svelte';
 	import { quoted } from '$lib/format';
 	import { cancels, composing } from '$lib/lines';
-	import { masked, type Field, type Span } from '$lib/model';
+	import { masked, type Chosen, type Field, type Span } from '$lib/model';
 	import Changer from './Changer.svelte';
 	import Confirm from './Confirm.svelte';
 	import Editable from './Editable.svelte';
@@ -103,6 +105,8 @@
 	let retitling = $state(false);
 	let maker = $state<HTMLButtonElement>();
 	let namer = $state<HTMLButtonElement>();
+	/** The hidden value's own row, which shows it and hides it again. */
+	let value = $state<ReturnType<typeof ProtectedValue>>();
 
 	// The generator is Make one's, which is offered for a hidden field only. A
 	// field shown in the open while it was up would take a made password as
@@ -155,11 +159,6 @@
 		}
 	}
 
-	function writing(element: HTMLInputElement) {
-		element.focus();
-		element.select();
-	}
-
 	/** The name takes the focus as it is drawn after a rename finished with
 	 * Return, unless the reader has put it somewhere since. */
 	function retitled(button: HTMLButtonElement) {
@@ -194,8 +193,10 @@
 		retitling = true;
 		let taken = false;
 		try {
-			await flush();
-			taken = await onRename(on, to, typed);
+			// Tracked as one change from the moment the name is left, though it
+			// is sent only once the values before it have landed: a copy of the
+			// entry asked for by the press that left it waits for the new name.
+			taken = await track(flush().then(() => onRename(on, to, typed)));
 		} catch (thrown) {
 			onFailure(thrown);
 		} finally {
@@ -203,6 +204,48 @@
 			retitling = false;
 		}
 		if (!taken && typed) back();
+	}
+
+	/**
+	 * Coffer's menu for the row - the lock, the name, the value and its
+	 * buttons - offering what those buttons do. Not for the generator or a
+	 * question under the row, and not in the value while it is being written,
+	 * where WebKit's menu is the reader's.
+	 */
+	function menu(event: MouseEvent) {
+		offer(
+			event,
+			{ kind: 'field', entry, field: field.name, shown: value?.shown() ?? false },
+			answer,
+			onFailure
+		);
+	}
+
+	/** Runs an item of the row's menu with the button that does the same,
+	 * while the row is still the field on the entry it was about. Nothing that
+	 * is waiting for an answer about the field is opened over it. */
+	function answer(item: Chosen) {
+		if (!about(item, entry, field.name)) return;
+		switch (item.item) {
+			case 'showField':
+				if (!(value?.shown() ?? true)) void value?.toggle();
+				break;
+			case 'hideField':
+				if (value?.shown()) void value.toggle();
+				break;
+			case 'copyField':
+				onCopy(null);
+				break;
+			case 'changeField':
+				if (!readOnly && !pending && hidden) changing = true;
+				break;
+			case 'makeOne':
+				if (!readOnly && !pending && field.protected) generating = true;
+				break;
+			case 'removeField':
+				if (!readOnly && !removing) onRemove(false);
+				break;
+		}
 	}
 
 	function keys(event: KeyboardEvent & { currentTarget: HTMLInputElement }) {
@@ -238,12 +281,16 @@
 {/snippet}
 
 <div class="mt-3">
-	<div class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3">
+	<div
+		role="presentation"
+		oncontextmenu={menu}
+		class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3"
+	>
 		{#if renaming}
 			<!-- The whole row while it is being renamed: ninety-six pixels is a
 			     column to read a name in, not to write one. -->
 			<input
-				{@attach writing}
+				{@attach ready}
 				type="text"
 				value={field.name}
 				autocomplete="off"
@@ -302,7 +349,7 @@
 			-->
 			<div class="group flex min-w-0 items-center gap-3">
 				{#if hidden}
-					<ProtectedValue {entry} field={field.name} {onCopy} {onFailure} />
+					<ProtectedValue bind:this={value} {entry} field={field.name} {onCopy} {onFailure} />
 				{:else}
 					<!-- A protected field that is empty comes back with no value to
 					     reveal, and is written to protected. A field of the reader's

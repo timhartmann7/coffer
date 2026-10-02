@@ -1,30 +1,47 @@
 <script lang="ts">
+	import { tick } from 'svelte';
 	import Create from '$lib/components/Create.svelte';
+	import InBackup from '$lib/components/InBackup.svelte';
 	import InCopy from '$lib/components/InCopy.svelte';
-	import Settings from '$lib/components/Settings.svelte';
+	import Settings, { type Handed } from '$lib/components/Settings.svelte';
+	import Shortcuts from '$lib/components/Shortcuts.svelte';
 	import Titlebar from '$lib/components/Titlebar.svelte';
 	import Unlock from '$lib/components/Unlock.svelte';
 	import Vault from '$lib/components/Vault.svelte';
 	import { flush } from '$lib/drafts';
+	import { focused } from '$lib/focus.svelte';
+	import { report } from '$lib/greying';
 	import { lockByHand } from '$lib/locking';
 	import {
+		adoptSnapshot,
+		backToVault,
 		chooseDatabase,
-		leaveRescue,
+		chooseSnapshot,
+		kinds as loadKinds,
+		listen,
 		promoteRescue,
 		settings as loadSettings,
 		status,
 		tree
 	} from '$lib/ipc';
+	import { answer, applying } from '$lib/menu.svelte';
+	import { outside } from '$lib/outside';
 	import { Presence } from '$lib/presence';
+	import { adopted } from '$lib/replacing';
 	import { wear } from '$lib/theme';
 	import type {
+		Adopted,
 		CopyOf,
 		Database,
+		Elsewhere,
 		Found,
 		Group,
+		Kinds,
 		OnDisk,
+		ReadOnlyBecause,
 		Rescued,
 		Settings as Chosen,
+		SnapshotOf,
 		Status
 	} from '$lib/model';
 
@@ -35,8 +52,15 @@
 	let keyFile = $state<Database | null>(null);
 	let root = $state<Group | null>(null);
 	let readOnly = $state(false);
+	/** Why the open vault cannot be written back, when it cannot. */
+	let readOnlyBecause = $state<ReadOnlyBecause | null>(null);
+	/** Whether what is open can be written to a file somewhere else. */
+	let copyable = $state(false);
 	let ready = $state(false);
 	let chosen = $state<Chosen | null>(null);
+	/** What a new entry can start as. Rust's, the same for every vault, and
+	 * asked for once a boot like the settings. */
+	let kinds = $state<Kinds | null>(null);
 	let showing = $state<'vault' | 'settings' | 'create'>('vault');
 	let reason = $state<string | null>(null);
 	/** The copy a lock left beside the vault, when there is one. Rust's answer
@@ -49,14 +73,40 @@
 	let typed = $state(false);
 	/** Whether some of it was a new value kept beside the old one. */
 	let typedBeside = $state(false);
+	/** Whether the vault the last lock closed was given a new master password
+	 * while it was open. */
+	let rekeyed = $state(false);
+	/** What became of the vault's file, when the vault the last lock closed
+	 * had just been made from one of its backups and no notice said so. */
+	let adoptedBefore = $state<Adopted | null>(null);
+	/** Whether the backup asked for from the settings was pushed out by the
+	 * lock on the way to it. */
+	let backupGone = $state(false);
 	/** The chosen file as the disk has it, which is what the sentences about
 	 * a lock's copy and about lost work are measured against. */
 	let file = $state<OnDisk | null>(null);
 	/** The vault the chosen file was copied from, when it is a lock's copy. */
 	let copy = $state<CopyOf | null>(null);
+	/** The vault the chosen file was taken beside, when it is one of its
+	 * backups. */
+	let snapshot = $state<SnapshotOf | null>(null);
+	/** What the vault screen is to say when it is next drawn: what became of
+	 * the file a backup replaced. */
+	let news = $state<{ message: string } | null>(null);
+	/** What Rust knows of copies of the open vault kept on another disk: the
+	 * last ones, and whether a month has gone by without one. Null while
+	 * nothing Coffer keeps copies of is open, which is every moment the unlock
+	 * screen is up. */
+	let elsewhere = $state<Elsewhere | null>(null);
 
 	/** The throttle on telling Rust that somebody is at the machine. */
 	const presence = new Presence();
+
+	/** Whether Rust has this window's way to tell it what the reader chose in
+	 * the menu bar, which is when the bar is worth telling what applies. */
+	let listening = $state(false);
+	/** Whether the sheet of keyboard shortcuts is over the window. */
+	let keysShown = $state(false);
 
 	// The window opens locked. Nothing is asked of the vault until a password
 	// has opened it.
@@ -75,6 +125,7 @@
 				reason = opening.lockedBy;
 				heard(opening);
 				chosen = await loadSettings();
+				kinds = await loadKinds();
 				if (opening.unlocked) await opened();
 			} finally {
 				// Whatever went wrong, the unlock screen is where it can be said
@@ -82,7 +133,25 @@
 				// nothing in it says nothing.
 				ready = true;
 			}
-		})();
+		})().finally(hear);
+	});
+
+	/**
+	 * Starts hearing what the reader chooses outside the page, once the screens
+	 * that answer it are drawn. A choice made before then - the item that built
+	 * this window, when the reader had closed the last one - waits in Rust and
+	 * arrives now.
+	 */
+	async function hear() {
+		await tick();
+		await listen((action) => outside(action, () => presence.stir())).catch(() => {});
+		listening = true;
+	}
+
+	// The menu bar greys out what no screen can do now. The screens say what
+	// they can do, and this tells Rust whenever that changes.
+	$effect(() => {
+		if (listening) report(applying());
 	});
 
 	// Worn before the settings arrive as well as after. Rust built this window in
@@ -97,18 +166,25 @@
 		root = await tree();
 		const now = await status();
 		database = now.database;
-		readOnly = now.readOnly;
 		reason = null;
 		heard(now);
 	}
 
-	/** What Rust says about the files beside the vault, which every reading of
-	 * the status brings. */
+	/** What Rust says about the vault and the files beside it, which every
+	 * reading of the status brings. */
 	function heard(now: Status | null) {
+		readOnly = now?.readOnly ?? false;
+		readOnlyBecause = now?.readOnlyBecause ?? null;
+		copyable = now?.copyable ?? false;
+		elsewhere = now?.elsewhere ?? null;
+		snapshot = now?.snapshot ?? null;
 		rescue = now?.rescue ?? null;
 		lost = now?.lost ?? false;
 		typed = now?.typed ?? false;
 		typedBeside = now?.typedBeside ?? false;
+		rekeyed = now?.rekeyed ?? false;
+		adoptedBefore = now?.adopted ?? null;
+		backupGone = now?.backupGone ?? false;
 		file = now?.file ?? null;
 		copy = now?.copy ?? null;
 	}
@@ -133,20 +209,51 @@
 		try {
 			database = await promoteRescue();
 		} finally {
-			const now = await status();
-			readOnly = now.readOnly;
-			heard(now);
+			heard(await status());
 		}
 	}
 
 	/**
-	 * Goes back from the copy to its vault. With the copy open that is a lock,
-	 * which takes this window with it, so the screen is only cleared once Rust
-	 * has answered - the same order `lockByHand` keeps, for the same reason.
+	 * Makes the open backup the vault it was taken beside. The session stays
+	 * open, now on the vault, so the window reads again what is true of it, and
+	 * the vault screen says what became of the file the backup replaced.
+	 *
+	 * Read again however it went, for the reason `promote` is: Rust holds the
+	 * press to how the strip last said the vault's file stood.
+	 */
+	async function adopt() {
+		try {
+			const made = await adoptSnapshot();
+			database = made.database;
+			news = { message: adopted(made) };
+		} finally {
+			heard(await status());
+		}
+	}
+
+	/**
+	 * Goes back from the copy or the backup to its vault. With it open that is
+	 * a lock, which takes this window with it, so the screen is only cleared
+	 * once Rust has answered - the same order `lockByHand` keeps, for the same
+	 * reason.
 	 */
 	async function back() {
 		await flush();
-		database = await leaveRescue();
+		database = await backToVault();
+		root = null;
+		showing = 'vault';
+		await chosen_elsewhere();
+	}
+
+	/**
+	 * Opens a backup the settings listed, to look at. With a vault open, Rust
+	 * locks it first, which takes this window with it, so what is still on its
+	 * way to Rust is waited for first, and the screen is cleared only once Rust
+	 * has answered - in the order `back` keeps.
+	 */
+	async function look(index: number) {
+		await flush();
+		database = await chooseSnapshot(index);
 		root = null;
 		showing = 'vault';
 		await chosen_elsewhere();
@@ -165,9 +272,25 @@
 		showing = showing === 'settings' ? 'vault' : 'settings';
 	}
 
+	/** Whether the title bar is the way in to the settings: with no vault open,
+	 * and not while a new one is being made. An open vault's is in its status
+	 * bar. */
+	const titleSettings = $derived(chosen !== null && showing !== 'create' && !(root && database));
+
+	// The items of the menu bar this window answers whatever screen it shows:
+	// the title bar's two buttons, and the sheet of keys.
+	$effect(() =>
+		answer({
+			lock: { run: lock, when: () => root !== null },
+			settings: { run: toggleSettings, when: () => titleSettings && showing !== 'settings' },
+			shortcuts: { run: () => (keysShown = true) }
+		})
+	);
+
 	/**
 	 * The settings screen offers another vault, which is the unlock screen's
-	 * picker under another name.
+	 * picker under another name, and so does Open Vault… in the menu bar while
+	 * a vault is being made.
 	 *
 	 * The refusal is left to reach the screen. Rust will not point the session
 	 * at another file while one is open - the tree of the first would still be
@@ -217,20 +340,37 @@
 	What counts as the reader being there. Deliberately not every event a browser
 	has: a scroll or a mouse move can happen without anybody in the room, and a
 	deadline they reset would be a vault that never locks itself.
+
+	A key is heard on its way in, before anything on the page answers it. A sheet
+	over the window keeps every key to itself, and a reader reading it with the
+	keyboard is as much there as one pressing the pointer.
 -->
 <svelte:window
-	onkeydown={() => presence.stir()}
+	onkeydowncapture={() => presence.stir()}
 	onpointerdown={() => presence.stir()}
 	onwheel={() => presence.stir()}
+	onfocusin={focused}
+	onfocusout={focused}
 />
 
-{#snippet settingsScreen()}
+<!-- A lock's copy is handed no way to a new master password. It would be the
+     copy's alone: the vault and every snapshot of it would go on opening with
+     the old one, and the count of old snapshots could only be the copy's.
+     Made the vault, it is offered; Rust refuses it in the copy as well. A
+     vault with such a copy beside it is told why it has to wait: the copy
+     opens with the vault's password, and would bring it back as the vault. -->
+{#snippet settingsScreen(handed: Handed)}
 	{#if chosen}
 		<Settings
 			settings={chosen}
 			{database}
 			onSettings={(settled) => (chosen = settled)}
 			onChoose={choose}
+			{...handed}
+			rekey={copy ? undefined : handed.rekey}
+			{elsewhere}
+			copyBeside={rescue !== null}
+			onLook={look}
 		/>
 	{/if}
 {/snippet}
@@ -247,57 +387,79 @@
 		unlocked={root !== null}
 		{showing}
 		onLock={root !== null ? lock : undefined}
-		onSettings={chosen && showing !== 'create' && !(root && database) ? toggleSettings : undefined}
+		onSettings={titleSettings ? toggleSettings : undefined}
 	/>
 
-	{#if showing === 'create'}
-		<Create
-			onMade={async () => {
-				showing = 'vault';
-				await opened();
-			}}
-			onCancel={() => (showing = 'vault')}
-			onOpen={(picked) => void pointAt(picked)}
-		/>
-	{:else if root && database}
-		{#if copy}
-			<InCopy {copy} onPromote={promote} onBack={back} />
+	<!-- The sheet of keys goes over the screens and not over the title bar, so
+	     the window can still be dragged and locked while it is open. -->
+	<div class="relative flex min-h-0 flex-1 flex-col">
+		<div class="flex min-h-0 flex-1 flex-col" inert={keysShown}>
+			{#if showing === 'create'}
+				<Create
+					onMade={async () => {
+						showing = 'vault';
+						await opened();
+					}}
+					onCancel={() => (showing = 'vault')}
+					onOpen={(picked) => void pointAt(picked)}
+					onChoose={choose}
+				/>
+			{:else if root && database && kinds}
+				{#if copy}
+					<InCopy {copy} onPromote={promote} onBack={back} />
+				{:else if snapshot}
+					<InBackup {snapshot} onAdopt={adopt} onBack={back} />
+				{/if}
+				<!-- An open vault keeps the screen, and the settings go over it. There is
+				     one way in and out of them while a vault is open, it is in the status
+				     bar, and it does not move when it is pressed. -->
+				<Vault
+					{database}
+					{root}
+					{kinds}
+					{readOnly}
+					{readOnlyBecause}
+					{copyable}
+					{elsewhere}
+					{news}
+					settings={showing === 'settings' ? settingsScreen : undefined}
+					onSettings={toggleSettings}
+					onTree={(tree) => (root = tree)}
+					onElsewhere={(now) => (elsewhere = now)}
+				/>
+			{:else if showing === 'settings' && chosen}
+				<!-- Nothing is open, so there is nothing to lay them over: the way in was
+				     the title bar, and that is where it stays. -->
+				{@render settingsScreen({})}
+			{:else if ready}
+				<Unlock
+					{database}
+					{found}
+					{keyFile}
+					{reason}
+					{rescue}
+					{lost}
+					{file}
+					{copy}
+					{snapshot}
+					{typed}
+					{typedBeside}
+					{rekeyed}
+					adopted={adoptedBefore}
+					{backupGone}
+					onChoose={(picked) => {
+						database = picked;
+						void chosen_elsewhere();
+					}}
+					onKeyFile={(chosen) => (keyFile = chosen)}
+					onCreate={() => (showing = 'create')}
+					onGone={() => void foundAgain()}
+					onUnlocked={opened}
+				/>
+			{/if}
+		</div>
+		{#if keysShown}
+			<Shortcuts onClose={() => (keysShown = false)} />
 		{/if}
-		<!-- An open vault keeps the screen, and the settings go over it. There is
-		     one way in and out of them while a vault is open, it is in the status
-		     bar, and it does not move when it is pressed. -->
-		<Vault
-			{database}
-			{root}
-			{readOnly}
-			settings={showing === 'settings' ? settingsScreen : undefined}
-			onSettings={toggleSettings}
-			onTree={(tree) => (root = tree)}
-		/>
-	{:else if showing === 'settings' && chosen}
-		<!-- Nothing is open, so there is nothing to lay them over: the way in was
-		     the title bar, and that is where it stays. -->
-		{@render settingsScreen()}
-	{:else if ready}
-		<Unlock
-			{database}
-			{found}
-			{keyFile}
-			{reason}
-			{rescue}
-			{lost}
-			{file}
-			{copy}
-			{typed}
-			{typedBeside}
-			onChoose={(picked) => {
-				database = picked;
-				void chosen_elsewhere();
-			}}
-			onKeyFile={(chosen) => (keyFile = chosen)}
-			onCreate={() => (showing = 'create')}
-			onGone={() => void foundAgain()}
-			onUnlocked={opened}
-		/>
-	{/if}
+	</div>
 </div>

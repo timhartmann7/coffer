@@ -78,6 +78,25 @@ describe('the offer to take something back', () => {
 	});
 });
 
+describe('what an offer is about', () => {
+	/** The icon is the kind: a move between folders carries the folder, and a
+	 * move to the bin the trash, which is what every offer was before. */
+	it('a move is offered back with the folder, not the trash', async () => {
+		const notices = new Notices(vi.fn());
+		const { undo } = undoing();
+
+		notices.offer('Moved “Chase” to “Banking”', undo, 'moved');
+		expect(notices.notice?.kind).toBe('moved');
+		expect(notices.offering).toBe(true);
+		notices.takeBack();
+		await vi.runAllTimersAsync();
+		expect(undo).toHaveBeenCalledTimes(1);
+
+		notices.offer('Moved “Bank” to the Recycle Bin', undo);
+		expect(notices.notice?.kind).toBe('removed');
+	});
+});
+
 describe('a notice on the screen', () => {
 	/** The clock of the notice before is stopped, or it takes the next one away
 	 * early. */

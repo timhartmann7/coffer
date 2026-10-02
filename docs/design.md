@@ -153,7 +153,8 @@ same box, drawn afresh so that it moves where the reader is looking - with the
 focus on Save, the answer that loses nothing. Once it is answered, the press
 works. While the new value is on its way to the vault the pane waits for it
 without asking, since there is nothing left to answer. A state the mockup does
-not draw, built from the question it already has.
+not draw, built from the question it already has. A move is not on that list:
+the entry stays in the pane wherever it goes, and so does the field.
 
 **A protected field of the reader's own has its Change on the line under it.**
 Its row keeps the mockup's shape - name, value, eye - and has no room for a word
@@ -238,16 +239,46 @@ then scrolling, where Return starts a line and Cmd+Return finishes. A field of
 the reader's own is one from the start, one line tall and scrolling sideways
 until it has a second, so that a paste keeps its breaks.
 
-**The header is the way out of the pane, and nothing else.** The mockup's
+**The header is the way out of the pane, and to a copy of it.** The mockup's
 header carries one button and it is the trash. Escape had always closed the pane
 and nothing else did, and a close put beside that trash - sixteen pixels away,
 the same size, the same grey - was a press meant for one landing on the other.
-So the header carries the close alone, and deleting is a labelled action at the
-foot of the pane, after the versions, where no press aimed at anything else
-lands: the trash and "Move to Recycle Bin" in a plain `h-9` pill in `txt3`,
-taking `dangerwash` and `danger` under the pointer the way every trash in the
-window does. A deletion that would be final - a vault that keeps no bin - reads
-"Delete forever…" and asks first.
+So deleting is a labelled action at the foot of the pane, after the versions,
+where no press aimed at anything else lands: the trash and "Move to Recycle Bin"
+in a plain `h-9` pill in `txt3`, taking `dangerwash` and `danger` under the
+pointer the way every trash in the window does. A deletion that would be final -
+a vault that keeps no bin - reads "Delete forever…" and asks first. Beside the
+close stands "Duplicate", in words, as the password's bordered `h-7` pill in
+`fine` `txt2`, with "Duplicate · ⌘D" under the pointer the way the list's copy
+buttons name their keys. A copy may sit where a deletion may not: a press meant
+for the close that lands on it loses nothing, and what it made is put away like
+any other entry. It is drawn only for an entry Coffer can write and that is not
+in the bin, and an entry still being read draws it greyed - `txt4`, the hairline
+kept under the pointer, the not-allowed cursor - so the name beside it does not
+narrow when the entry arrives.
+
+**An entry just made opens with its name selected.** A kind, a template or a
+copy is made, opened, and its title takes the focus with all of it selected, so
+the first key types its name: "Gmail copy" is there to be typed over, and an
+empty one to be typed into. Only when the focus is nowhere: a reader who went
+on to type somewhere while Rust was making it keeps typing there. A name the
+database protects is drawn as the mask and takes nothing. No notice says a copy
+was made: the copy in the pane says it.
+
+**The step that names a new field suggests names.** Under the name and its two
+pills, a line: "Suggested" in the mono label, and a pill for each of PIN,
+Account number and Security answer - the generator's toggle pill, `meta` mono
+`txt3`, with the sprite's `plus` in `txt4` at the check's size - for those the
+entry does not have and whose name starts with what is typed, in either case.
+A press makes the field there and then, hidden as the suggestion says, and its
+value takes the focus; the line goes when nothing is left to suggest. The pills
+take no focus from the name, so pressing one is not leaving it.
+
+**A field an entry's kind writes in lines is a text area from the start.** A
+licence key, recovery codes and a secure note's secret are made empty, and an
+empty value has no line break to say it is in lines, so the fields the kind
+names open four lines tall, the way a field named with "Multi-line" does, for as
+long as the entry is open.
 
 **An entry is in the pane the moment its row is pressed.** Rust answers one
 command at a time, and a save holds it for the second a key derivation takes, so
@@ -428,6 +459,124 @@ the same two lines. Emptying the bin asks in the same box as before, and says
 what it is: everything in the bin deleted forever, with nothing to put back
 afterwards.
 
+## Moving things
+
+The mockup draws a folder line above an entry's title and a tree of folders,
+and nothing that moves an entry or a folder between them. Everything below is
+built from what it does draw.
+
+**The line above the title is where the entry is, and where it goes.** The
+mockup writes the folders down to an entry above its title in `label` mono
+`txt4`. In an entry Coffer can write, the same line is a button in the same
+type, `txt2` under the pointer, with the sprite's `chev-d` at the settings
+chip's size after it, and it reads "Top of the vault" for an entry in no folder,
+where the line used to be left out. Each folder's name in it is isolated, so a
+right-to-left name turns nothing round but itself. An entry still being read
+draws the same line with nothing to press, so nothing moves when it arrives; an
+entry Coffer will not write, and one in the bin, keep the plain line.
+
+**The folder list is the settings chip's list with a filter on top.**
+`bg-raised` behind a hairline, `rounded-sm`, arriving on the pop: a heading in
+`label` mono `txt3` ("Move to", "Put it in"), the field a new folder's name is
+typed in with "Find a folder", and the places in the tree's order, each a line
+of the tree's height - the folder icon, the name in `small`, the folders above
+it after it in `meta` mono `txt4`, each name isolated as the line above the
+title isolates them - with the top of the vault first under the sprite's disk.
+Nothing in the bin is listed. Where the thing is now has its icon in the
+accent, the way the tree marks the folder being shown; the line the keys are on
+is `surface2`, as the chip's chosen value is, and Return takes it. The list
+scrolls past `h-40`, and keeps the line the keys are on in sight, the one it
+opens on included, so Return never takes a line the reader was not shown. A
+folder chosen from it gives the focus back to the line above the title, which
+stays wherever the entry goes. Under the title it is the header's width; under
+"+ Entry" it is the notice's 292 pixels. "No folder matches “…”" in `fine`
+`txt4` when nothing does. Escape, and the focus leaving it, close it with
+nothing moved, and Escape goes no further: the search and the pane stay.
+
+**A row or a folder is dragged with the pointer, not by the system.** Nothing is
+drawn under the pointer: an image that followed it would be a position written
+into a style, which `style-src 'self'` forbids, and a system drag would put the
+row on the drag pasteboard, where whatever application is under the pointer
+reads it. A press that travels four pixels lifts the row, which keeps the
+`raised` plane, the cursor is the closed hand, and the folder it would land in
+is drawn the way the tree draws the folder being shown, with the accent outline
+the focus ring is - two pixels, inside the line so the pane does not clip it.
+Only a place that takes it lights: not where it already is, not itself or a
+folder under it, nothing in the bin. "All entries" and "Not in a folder" are
+the top of the vault, and each lights on its own. A folded folder opens when the
+pointer rests on it for 0.7 s. Escape lets go with nothing moved, and the
+release that follows presses nothing under it. The tree does
+not scroll by itself under a drag; a folder out of sight is reached through the
+line above the title.
+
+**A move is said, and taken back, in the notice.** "Moved “Chase” to
+“Banking”", "Moved “Home” to the top of the vault", with the folder icon in
+`txt3` where a deletion's notice has the trash, and Undo and ⌘Z as for every
+offer. Undo puts each thing back in the folder it came from, at the end of it,
+for a folder as for an entry. Once the file no longer holds the move - another
+move since, or a file read again in which it never happened or something was
+moved on, gone or deleted - the undo moves nothing and says what every undo
+that came too late says, "Something has changed since, so that can no longer be
+undone." A file read again that still holds the move takes it back as before.
+
+**An empty folder says how entries get into it.** The mockup's sentence, "Entries
+can be made here or dragged in from other folders.", now that both are there to
+do. A vault Coffer will not write back offers neither, and says "Entries live in
+folders. This one has none of its own." instead, with no button.
+
+**"Not in a folder" lists what sits at the top of the vault.** Under "All
+entries", in its row's shape, with the disk icon and the count, drawn in a vault
+with folders while the top holds entries of its own, and while it is chosen.
+Its list is only those entries, and so is a search in it. Chosen and empty: the
+disk icon over "Every entry is in a folder" and "Entries at the top of the
+vault, outside every folder, show up here." It is no folder, so the folders
+header offers no rename and no deletion on it.
+
+**"+ Entry" in "All entries" asks where.** In a vault with folders it opens the
+list as "Put it in" under the button, on the folder the last entry this window
+made went into, so Return makes it there - and on the top of the vault when this
+window has made none. A lock forgets it, as it forgets everything of the vault
+(`docs/ipc.md`). In a folder, in "Not in a folder", and in a vault with no
+folders, the entry is made there with no question. A kind or a template chosen
+from the button's own list asks the same way (see "Making an entry").
+
+## Making an entry
+
+The mockup draws "+ Entry" as one pill that makes a login. A reader keeps cards,
+networks, passports and codes as well, and Coffer makes each with the fields it
+needs (`docs/vault-core.md`, "Kinds, templates and copies").
+
+**"+ Entry" is split in two.** The mockup's pill, its hairline and `h-9` kept,
+holds two buttons: "+ Entry", which makes a login as it always did, and after a
+hairline the sprite's `chev-d` in `txt4` at the settings chip's size, read out
+as "Other kinds of entry". Each half takes the press on its own,
+`active:bg-raised` on its own side of the pill.
+
+**The chevron opens a list of every kind, and then the vault's templates.** The
+settings chip's list: `bg-raised` behind a hairline, `rounded-sm`, arriving on
+the pop under the pill's right edge, a line per kind in `fine` `txt2`,
+`surface2` and `txt` under the pointer and on the line the keys are on. In a
+vault whose file names a templates group, a hairline and a heading - "Templates
+in this vault" in the mono label, `txt4` - and a line for each template, its
+title isolated, the mask for a title the database protects and "Untitled" in
+`txt4` for none, cut at thirty-four characters, the width of an empty state's
+sentence. The list scrolls past 420 pixels, a height the mockup already draws
+(the window behind its conflict dialog), so a vault with a hundred templates
+does not run it off the window. Opening it puts the focus on its first line -
+the arrows on the chevron open it on the first or the last - the arrows step
+through it and round, Escape closes it with the focus back on the chevron and
+goes no further, from a line or from the chevron, a second press on the chevron
+closes it with the focus there, and the focus leaving the control closes it. A
+line chosen makes that kind or that template, asking where first in "All
+entries" as "+ Entry" does.
+
+**An empty vault offers every kind at once.** In place of "Add an entry" under
+"This vault has nothing in it yet", one pill per kind, the password's `h-7` pill
+in `fine` `txt2`, wrapping at forty-six characters, the width of the empty
+state's title above them, and centred: the first thing somebody keeps is as
+often a card or the Wi-Fi as a login. An empty folder keeps its one "Add an
+entry", which makes a login; a vault Coffer will not write offers neither.
+
 ## A vault that is already there
 
 The mockup's first run is for somebody who has nothing, and its creation screen
@@ -526,6 +675,143 @@ banner said when it last changed, the window reads it again, the second line
 says how it stands now, and the refusal says nothing was replaced and points at
 that line. The strip is not part of the panes, so the settings do not cover it.
 
+## Looking at a backup
+
+The mockup draws no backup, and nothing of a vault Coffer will not write.
+Everything below is the copy's strip and card, the settings' own rows, the
+generator's small pills, the dropdown's card and the notice's.
+
+**A backup that is open says so across the top of the window.** The strip an
+open copy wears - `warnwash` behind a `warn/35` hairline at its foot, the warn
+icon - is one component now, `Strip.svelte`, for both. The first line, in
+`small` and `txt`, says it is a backup and the moment it holds the vault as, to
+the minute, and why it is open: the vault's own file could not be opened, or is
+not there any more, or, when the reader opened it to look, that nothing in it
+can be changed. The second, in `fine` and `txt2`, says what "Use this copy as my
+vault" does to the vault's file: which file it goes in place of and when that
+file last changed, that a file which opens with this backup's password is kept
+as the newest backup until later saves push it out and one that does not is kept
+beside it under a name of its own, and that nothing is deleted - or, when the
+vault's file has gone, that the backup goes back as it. Both end on the password: from then on, the vault opens
+with the one this backup opens with, which after a change of the master password
+is the old one, and a reader who changed it because it leaked hears that before
+the press. File names are in mono. At the end, "Back to my vault" and "Save a
+copy as…" in the bordered `h-9` pill and "Use this copy as my vault" in the
+accent pill, which takes the Unlock button's busy look and reads "Making it your
+vault…". A refusal is said under the second line in `danger` - a copy aimed at a
+name that holds a file among them, in Rust's words, since a copy never replaces
+one - and a copy that was kept, where it went, in `txt2`. What became of the
+replaced file is said afterwards in the notice, with the toast's copy icon, the
+way "Kept as" is.
+
+**What a lock took the window from saying, its unlock screen says.** Two lines
+in the place and type of the one about a password changed before locking -
+centred, `small`, `txt2`. A backup made the vault and a lock that landed before
+its notice: the vault was made from a backup, it opens with the password that
+backup opened with, and the replaced file's name. A backup asked for from the
+settings that the lock's own save pushed out of the chain on the way: that it
+is not there any more, why, and that this is the vault's screen.
+
+**A chosen backup's unlock screen says what it is.** The copy's card, headed "A
+backup, not your vault": the vault's file name in mono, the moment the backup
+holds it as, the password it opens with - the one the vault had then - and "Back
+to my vault" in the bordered pill.
+
+**Backups are a list wherever they are offered.** A row is the moment in `small`
+and `txt` ("Today, 14:05", "27 Aug, 18:40"), to the minute because ten saves an
+hour apart are told from each other by nothing else, the file name under it in
+mono `meta` `txt4`, isolated, and the action at the end in the bordered `h-7`
+pill the generator and the Change field use. Rows are divided by `line`. A
+filesystem that keeps no times says "Time not kept" in `txt3`. In the settings,
+"Automatic backups" takes the place of the row that named the snapshots' file
+names: how many there are in mono `fine` `txt3`, and "Show" in the bordered pill
+"Open another" wears, which opens the rows under it inside the same divided
+list, at the rows' own `px-8`, each with "Open to look", and "Open now" in `fine`
+`txt4` for the one already open. On the screen for a vault file that will not
+open, or is not there, the same rows sit in the rescue card's plane (`surface2`,
+a hairline, `rounded-sm`) under a line in `small` and `txt2` that says each opens
+with the password the vault had then, each with "Open" - all but the chosen
+file itself, when it is a backup that would not open either. A backup that went
+before it was pressed is said under the list in `small` `danger`, and the list
+is read again; one read again with nothing in it says "No backups are left." in
+`small` `txt3` above that line, rather than taking it away with the list. The
+settings read the list again after the password row moved it: a new master
+password is a save, and old backups removed are gone.
+
+**Read only is a button, and its note says why.** The status bar's word, in the
+status bar's own type, opens a note above it on the pop: the dropdown's card -
+`raised` behind a hairline, `rounded-sm` - at the notice's width, `w-[292px]`,
+with the reason in `fine` `txt2` and, where a copy can be written somewhere
+else, "Save a copy somewhere else…" in the small bordered pill. The note sits
+inside the status bar, which spaces its letters and draws in mono capitals, so
+it puts back the sans face, the case and the spacing every sentence in the
+mockup has; the spacing is the one value here the mockup does not name, because
+it never had to: `--tracking-normal`, zero, the absence of one. It closes on
+Escape, which goes no further, when the focus leaves it, and when its button is
+pressed again; a notice rising in the corner is drawn over it. WebKit gives a
+button no focus when it is clicked, so the note puts the focus on its button
+when it opens, and its copy button keeps the focus where it is on a press:
+otherwise a note opened by a pointer would hear neither Escape nor a press
+elsewhere, and Escape would close the entry under it.
+
+## A copy on another disk
+
+The mockup's settings end at the vault's path and its snapshots, and its status
+bar holds a count, the path and the countdown. What is below is built from those
+rows and that bar, and nothing else.
+
+**The vault row shows the file.** "Show in Finder" is the "Open another" pill,
+class for class, drawn before it with `gap-3` between the two; both stay whole,
+and the path truncates. It is drawn whenever a vault is chosen, open or not. A
+file that is not there any more is said in the settings' own failure line.
+
+**"Copy on another disk" is a row like the vault's,** directly above "Automatic
+backups", so that the two kinds of copy are read together: those sit beside the
+vault, and this one is on another disk. The title is in `text-row text-txt`.
+Under it, in `text-fine text-txt3`, is "Last made: never" or when and where:
+"Last made: 3 days ago, on “Stick”", "Last made: 12 Sep, on another disk". The
+disk's name is quoted and isolated like any name in a sentence. While the newest
+copy is one on the vault's own disk, a second line in the same type says so:
+"The copy made today is on the same disk as the vault, and would not survive
+that disk failing." "Save a copy…" is the same pill. From the press until Rust
+answers - the panel up, then the write - it reads "Saving a copy…" and takes the
+disabled look of the entry pane's small pills and the backups' rows
+(`disabled:cursor-not-allowed disabled:text-txt4
+disabled:hover:border-hairline`), and so it does for a copy asked for from the
+status bar or the menu bar before the settings opened: the vault's screen holds
+whether one is on its way and hands it to the settings. A refusal is said in the
+settings' failure line - a name that holds a file as "A file by that name is already there, so
+nothing was replaced. Save the copy under another name." - and a panel closed
+says nothing. The row is drawn only while a vault Coffer keeps copies of is
+open: not a backup, not the copy a lock left, not a format Coffer will not write.
+
+**The status bar says when a month has gone by.** In the right-hand group, in the
+mockup countdown's `text-txt3`, in the bar's own mono capitals: "No copy on
+another disk for 34 days · Save a copy". "Save a copy" is a button that takes
+`txt2` under the pointer like the Settings button beside it. From a year on it
+says "over a year" rather than counting. The group says one thing at a time, and
+this is the last of them: "Saving a copy…" from the press until Rust answers,
+then "Saving…", "Not saved" and the read-only note each come first, because they
+are about the file as it is now. That also keeps the group short enough at the
+window's smallest width, where the path gives way first. It is drawn only in the
+unlocked window; the unlock screen draws nothing of it, because `SPEC.md`
+section 8 ends that screen with "Nothing else". "Save a copy" pressed from the
+keyboard goes from the bar with the focus on it while "Saving a copy…" is said
+there; once Rust answers, the focus goes back to it - a panel closed, a refusal
+and a copy on the vault's own disk all leave it standing - or to the Settings
+button beside it when a copy on another disk took the line away. A reader who
+put the focus somewhere meanwhile keeps it there.
+
+**The notice after a copy says where it went,** wherever the copy was asked for:
+the status bar, the menu bar or the settings' row. The `copied` toast: "Copy
+saved on “Stick”.", "Copy saved on another disk.", or "Copy saved on the same
+disk as the vault, where it would not survive that disk failing." Over the
+settings it draws above them, as every toast does: a second copy on one day
+leaves their row reading exactly as it did, and the toast is the one thing that
+says, to the eye and to VoiceOver, that it was written. A refusal from the
+status bar or the menu bar is the warning toast, in the same words as the
+settings' line; one from the settings' row is said in that line.
+
 ## The settings, and the way in and out of them
 
 The mockup draws the settings as a whole window with a title bar of their own and
@@ -541,6 +827,240 @@ accessibility tree. Every value in an entry the database does not protect is a
 live field that commits what the reader wrote in it when focus leaves, so a
 covered pane is an entry that can be rewritten by keys aimed at something else.
 
+## Changing the master password
+
+The mockup's settings draw no row for it, and its creation screen is the only
+place it draws a password typed twice; the row is built from both. `SPEC.md`
+names four things for this screen, and key derivation still does not appear.
+
+**A row like the vault's, with the creation screen's fields under it.** "Master
+password" is in `row` and `txt`, with "What you type to unlock this vault -
+nothing, if its key file alone opens it" under it in `fine` and `txt3`: true of
+a password alone, of a password beside a key file, and of a key file alone,
+whose reader would otherwise have nothing telling them the current password is
+an empty field. "Change…" is the bordered `h-9` pill "Open another" is. The row
+comes right after the vault's, and is drawn only while a vault Coffer can write
+is open - and not inside the copy a lock left, which can be written and is not
+the vault: a password given there would be the copy's alone, while the vault and
+every snapshot of it went on opening with the old one. The copy's banner is the
+way to make it the vault, and the row is there from then on. With such a copy
+beside the vault, the row is drawn without the pill, and a line under it in
+`small` and `txt2` says why and what to do: "Not while the copy a lock left sits
+beside this vault, which opens with the same password. Lock the vault, then make
+the copy your vault or remove it, and the password can be changed here." The
+unlock screen's card about the copy is where both are done. Pressed, the pill
+gives way to three fields under the row, with the cursor in the first. "Current
+password" is on a line of its own, at the width of one column; "New password"
+and "Once more" sit side by side. They use the creation screen's field, its mono
+label and its two-column grid with a `5` gap. Under them is the creation
+screen's warning, the same component at the same size, because the new password
+is as unrecoverable as the first. Then come "Never mind", the plain `h-9` pill
+in `txt3`, and "Change the password", the accent pill at `h-9` that "Put back"
+is. While Rust works the button reads "Changing it…", both buttons are disabled
+and every field is read only. Return in the first two fields moves to the next,
+and sends from the third.
+
+**Every field has the mockup's eye.** The mockup draws one at the end of the
+unlock field and of the creation screen's first field, in `txt3` at sixteen
+pixels, and the check alone at the end of the creation screen's "Once more".
+Pressed, the field shows what is typed, in mono, until the focus leaves the
+field and its eye; then it is a mask again, so a password is never left on the
+screen by a reader who went to type somewhere else. Pressing the eye leaves the
+focus in the field. Its name is what it does next, "Show the password" or "Hide
+the password", as the eye on a revealed value is named, and it is not also a
+pressed toggle. Here "Once more" has an eye as well as the check, so that each
+of the three can be read back before it is sent. "Once more" draws the mockup's
+check before its eye, in the same `txt3`, once the two new passwords are the
+same. They are compared when the focus leaves either, not on every key, and a
+key in either takes the check away. The creation screen's two fields are this
+same field drawn without the eye, so its look and its wrong state live in one
+component; that screen still draws neither the eye nor the check the mockup
+gives it.
+
+**Refusals are said under the form, in `small` and `danger`.** Two new passwords
+that differ give the creation screen's sentence; only "Once more" is emptied,
+with the cursor in it, and nothing is sent. An empty one gives the creation
+screen's sentence for that. Anything Rust refuses begins "The password was not
+changed:" and keeps everything typed. A wrong current password paints that
+field's border `danger/60`, the mockup's wrong-password state, and puts the
+cursor back in it with its text selected; a new one Rust refuses puts the cursor
+in "New password". A file somebody else wrote stops the change the way it stops
+a save, and the conflict dialog rises over the settings; a file that is not
+there any more raises the dialog a save raises for that. Each sentence arrives
+in a live region that was there before it, so a screen reader says it wherever
+the focus is, and "Once more" is described by the sentence about the two while
+it stands.
+
+**The settings stay while the change is on its way.** Escape and the status
+bar's button do nothing until Rust answers, because the answer is the one place
+that says which password now opens the vault. Otherwise Escape in the form puts
+the form away, with what was typed, and leaves the settings open with the focus
+on "Change…".
+
+**Afterwards, the snapshots are asked about in the window's one question box,**
+on `surface2` under the row: "Master password changed. Your 4 automatic backups
+of earlier saves still open with the old password until later saves replace
+them. Removing them can’t be undone." One is said in the singular, with "Keep
+it" and "Remove the old backup". "Keep them" is the way out and where the focus
+lands, and Escape is Keep; "Remove old backups" is last, in `danger`. Closing
+the settings keeps them. A line in `fine` and `txt3` under the row then says how
+many went, in a live region, because the focus goes back to "Change…", which
+says nothing of it. A removal that could not take every one says why in `danger`
+- "Not every old backup could be removed: …" when some went, "The old backups
+could not be removed: …" when none did - and leaves the question up, about how
+many are left rather than how many there were; Keep then takes the sentence away
+with the question. A change that left no snapshot to ask about says only "Master
+password changed." No notice rises for any of it: the row is where it is said.
+
+**A lock after a change says so on the unlock screen.** The row that said which
+password opens the vault goes with the window, and a change pressed as the lid
+closed may never have said it at all. So the first unlock screen after a lock
+that closed a vault whose password changed while it was open says "The master
+password was changed before locking, and the vault opens with the new one." in
+the place and the type of the line about typing a lock saved - `small`,
+centred, `mt-6`, in `txt2`. It is gone once the vault is open again, and is not
+said about any other file. The question about old backups is not asked again.
+
+## The menu bar and the keyboard
+
+The mockup draws no menu bar and no list of keys. Both follow from the window:
+the bar is the system's, with Coffer's items named the way a Mac names them,
+and the list is drawn from tokens the window already uses.
+
+**Keyboard Shortcuts is a sheet over the window, under the title bar.** It is
+the conflict dialog's veil and card with two lists in it: `canvas/75` fading in,
+the `raised` card with its hairline and `rounded-md` rising, at the mockup's
+`max-w-[720px]` so the lists stand side by side, and scrolling inside itself
+when the window is at its smallest. The title is `text-title`; each list is
+headed in the mono label the window puts over a column (`text-label`,
+`tracking-label`, `txt4`, upper case), and each row is what the key does in
+`text-small` `txt2` with the key in the search field's own key cap at the end,
+`line` between the rows. The first list is the keys of Coffer's items in the
+menu bar, the second the keys the window answers itself and the presses that
+choose rows in the list, with the system's Close Window, which locks the vault
+here. The one button is the plain bordered
+pill, "Close", and it is where the focus lands; Escape, Close, a press on the
+veil and anything chosen in the menu bar put the sheet away. Put away from
+itself, it gives the focus back where it was, once the screens under it are no
+longer inert; put away by a choice in the menu bar, it leaves the focus to the
+choice. The title bar stays above the veil, so the window can still be dragged
+and locked while it is open, and every key is the sheet's while it is up,
+wherever the focus is - on the title bar's Lock button one Shift+Tab away, or
+nowhere after a press on the title bar - so Cmd+C copies nothing out of the pane
+under it and Escape puts away the sheet and not the pane. `Sheet.svelte` is the
+veil and the card, for any sheet like it.
+
+**The Lock button names its key**, "Lock the vault · ⌘L", as a tooltip in the
+form the list row's copy buttons already use.
+
+**Cmd+C keeps the mockup's promise, and the menu's Copy Password is
+Shift+Cmd+C.** Edit ▸ Copy is the system's, and every text field finds Cmd+C
+through it, so no item of Coffer's can take the key. Cmd+C with nothing selected
+still copies the open entry's password, because the page answers it before
+AppKit looks in the menu.
+
+**Move to Recycle Bin is grey while a field is being written.** In a field
+Cmd+Backspace deletes to the start of the line, as it does everywhere on a Mac;
+Finder greys its own Move to Trash while a name is being edited, for the same
+reason. It is grey as well for an entry a deletion would erase, because the item
+says the bin: that one is deleted from the pane, which asks first. While rows
+are chosen it acts on them rather than on the open entry, and only when every
+one of them goes to the bin; a choice holding one that would go for good is
+deleted from its bar, which asks.
+
+**Duplicate is offered while a field is being written.** Cmd+D means nothing to
+a text field on a Mac, so the item stays when the focus is in one; chosen there,
+the field is left first, which writes it, and the copy holds what was typed - a
+tag or a field's name being typed included. It is grey with no entry read, for
+an entry in the bin and in a vault Coffer will not write, where the pane draws
+no Duplicate either. It is grey while rows are chosen too: Move to Recycle Bin
+then acts on the choice, and a copy of the pane's entry - which need not be one
+of the rows - would be one entry nobody chose, made over a choice it let go of.
+The pane's own pill names its entry, and stays.
+
+## Menus under the pointer
+
+The mockup draws no menu under the pointer. A native one is AppKit's and wears
+the system's look, so nothing in it is a token; what is Coffer's is which menus
+there are, what each line says, and what the window does around them.
+
+**A right-click is Coffer's, and WebKit's menu is left only to a field being
+typed in.** A row in either list, a folder in the tree or in the bin, the bin's
+own row, a field of the reader's own, the password's row, a file and a revealed
+value each draw Coffer's menu where the pointer is. The name of the password's
+row and of a field of the reader's own belong to that row, and draw its menu.
+Anywhere else - "All entries", "Not in a folder", blank space, the name over a
+login, an address, notes or tags - draws none. In a field the reader types
+into - the search, a value being written, a name, a new password, the three of
+the master password in the settings - WebKit's own menu stays, because its Cut,
+Copy, Paste and spelling are about their typing; a field made read only, as
+those three are while a change is on its way, draws none. A revealed value is
+not typing: its menu is Copy, through Rust, and Hide, and Look Up, Translate,
+Search and Share never appear on it. Nor do they anywhere else while part of a
+value is still selected: WebKit's menu is about the selection, wherever the
+pointer is, so a right-click in the search field then draws no menu at all.
+
+**What the menu is about is marked while it is open.** The row, the folder, the
+bin's row or the file carries the accent hairline a field takes with the focus,
+drawn inside its edge so that nothing moves (`[data-menu]` in `app.css`: one
+pixel of `accent`, offset inward), so that the reader can tell which of thirty
+rows the menu is for. It goes when the menu closes. A right-click on a chosen
+row marks every chosen row, and the menu is about all of them; one on a row
+outside the choice is about that row alone, and the choice stays. A field and
+a revealed value are not marked: the pointer is on them, and a value's
+selection is drawn already.
+
+**Every item does what its button does, and asks where its button asks.**
+Delete Forever… on a row opens the entry with its question already put, the
+focus on "Keep it", in the bin card or at the foot of the pane; on several
+chosen rows it puts the bar's question. The bin card's question goes with the
+card: an entry or a folder that leaves the bin while it is up - Put Back from
+another menu, a reload - is asked about nowhere, and is not found asked if it
+comes back. Move to Recycle Bin… on a folder shows
+the folder and puts the folders pane's question; Remove… on a file puts the
+file row's; Empty Recycle Bin… shows the bin and puts the question under it.
+New Entry Here and New Folder Inside show the folder and make there, the way
+"+ Entry" and the folders pane's plus do. Rename shows the folder and puts the
+focus in its name with the name selected - and the folders pane's own Rename
+now does the same, where it used to open the field and leave the focus behind.
+An item that would take the pane away while it holds a new password does
+nothing, and that field's question rises, as with its button. An item that
+does not apply is drawn greyed out rather than left out: Copy Password on an
+entry with none, Open Address for an address Coffer would not open, every
+change in a vault Coffer does not write back, whichever reason the note behind
+Read only gives, and Save to… on a file of a KDBX 3 vault, which Coffer does
+not read out.
+
+**Two parts of what a hidden field could offer are left out.** The item is
+Copy, not "Copy (clears in 1 min)": the notice every copy puts up says how long
+the clipboard holds it ("Password copied. The clipboard clears in 1 minute."),
+from the number Rust keeps in the settings and the words `duration.ts` writes
+it in, and a title saying the same would be a second place for that number
+and a second way of writing it, which goes stale when the reader changes the
+setting. And a field menu - Show, Copy, Change, Make a New One, Remove - is
+drawn for the password's row and for the reader's own fields only. A login, an
+address, notes or a title that a database written elsewhere protects keeps its
+eye and its copy beside it, and its value, once shown, draws the value's menu;
+a right-click on its mask draws nothing. Its Change is a line of its own whose
+state the entry pane keeps, which a menu inside the row would have to reach
+across. Both could be built - Rust holds the clipboard's timer, and could put
+it in the title - and neither is, for those reasons.
+
+**The words are the menu bar's where the item is the menu bar's.** Copy Login,
+Copy Password, Duplicate and Move to Recycle Bin are called what the bar calls
+them; an item that asks first ends in an ellipsis, as the bar's do. No key is
+written beside an item: the bar's keys act on the entry in the pane or on the
+choice, a menu's items on what was right-clicked, and the same key beside both
+would say they were one.
+
+**Move to lists the vault's folders as the folder list does.** "Top of the
+vault" first, then the folders in the tree's order; a folder with folders inside
+it is a submenu headed by itself. Where the thing is already is drawn greyed
+out, a folder's own line among them, and nothing under a folder being moved is
+listed. The recycle bin and everything in it are left out: deleting is the way
+in. A name is written whole up to sixty characters, then an ellipsis, and set
+apart from the menu's own words the way a name is set apart in a sentence.
+
 ## Motion
 
 The mockup is a still picture and names no duration. The window has three, and
@@ -551,7 +1071,8 @@ nothing defines a fourth:
 - **a fade**, 130ms, for something already the size it is that only had to
   appear: a pane, a dialog's veil, an empty state;
 - **a pop**, 120ms, for a list that belongs to the control under it, growing out
-  of that control's edge. The dropdown on the settings screen is the only one.
+  of that control's edge. The dropdown on the settings screen, the folder list,
+  the list of kinds under "+ Entry" and the note behind Read only are the four.
 
 None is longer than a fifth of a second, and every one is silenced by reduced
 motion — which is the whole difference between them and the two drains above.
@@ -618,6 +1139,83 @@ anything. Coffer's row is a `button` with the grid inside it, so that the whole
 of what lights up is the whole of what opens the entry. The two copy buttons at
 the end are laid over the column the mockup leaves empty for them, because a
 button cannot hold a button.
+
+## Choosing several entries
+
+The mockup draws one entry at a time. Choosing several, and acting on them
+together, is built from its tokens.
+
+**A chosen row is drawn on the selection colour.** `selection` is the mockup's
+colour for selected text, and a chosen row is a selection. The wide list's band
+and the narrow list's card take it as their plane - the card with its hairline
+`transparent` - with the name in `txt`, every other line in `txt2`, and the key
+or clip in `txt3`: `txt3` and `txt4` as text fall under 4.5 : 1 on it, and
+`theme.test.ts` holds `txt` and `txt2` to 4.5 there in both themes. A tag chip
+keeps its own `surface2`. The entry open beside the narrow list keeps its accent
+bar and its hairline over the plane. A row is drawn chosen only while the bar is
+drawn, so the entry a plain press opens looks as it always did, and a screen
+reader hears ", selected" after the title of each chosen row. How many are
+chosen is said as it changes, from a region that is never drawn and stays while
+the bar comes and goes: Cmd+A and a Cmd-click leave the focus where it was, on
+nothing that would say so.
+
+**Cmd, Shift and Cmd+A.** Cmd-click chooses a row or lets it go and opens
+nothing; Shift-click chooses every row from the last one pressed to this one, in
+the order the list draws them, on top of what Cmd chose before, and a second
+Shift-click moves the end of that run rather than adding another. A plain press
+opens the row and makes it the whole choice; Control-click is the menu under the
+pointer and chooses nothing. Cmd+A chooses every row the list draws - after a
+search, only what it found, and in the bin never the deleted folders above the
+entries - unless the focus is in a field or in the entry pane, where Select All
+is the system's. A vault Coffer will not write back offers no choosing: every
+press there opens.
+
+**The bar stands where the list's column names were,** in their own type -
+`label` mono, upper case, the label tracking, `py-2` and `px-5` over a `line` -
+so nothing under it moves: "3 selected" in `txt2`, then "Move to…", "Add tag" and
+"Delete" in `txt3` that turn `txt` under the pointer, Delete turning `danger`,
+with a `·` in `txt4` between them, and at the end the cross at 14 pixels in
+`txt4`, "Deselect all · Esc", which lets go the way Escape does. In the bin it
+offers "Put back" in the accent and "Delete forever…". Beside an open entry the
+list has no column names, and the bar is a line of its own above the cards that
+stays put while they scroll. When anything chosen would go out of the file for
+good, Delete reads "Delete forever…" and asks first in the window's question box
+under the bar, on `surface2` with the bar's own margin - "Delete 3 entries
+forever? This can’t be undone.", "Keep them" first and "Delete forever" last in
+red. "Add tag" gives way to the tag chip's own field, drawn into the bar's
+padding (`-my-1`) so the bar keeps its height; Return puts the tag on, and
+Escape or leaving the field lets it go. Unlike an entry's own chip, leaving does
+not put it on: here a tag is a version on every chosen entry, and the press that
+took the focus - the bar's own Delete, anywhere else - was not the reader saying
+it was done. The window going behind another app is not leaving, and the field
+keeps what was typed. "Move to…" opens the folder list an entry's line opens,
+on the pop, under the bar at its padding and the notice's 292 pixels, with the
+folder every chosen entry is in marked, when they are all in one. Escape in any
+of the three closes it and goes no further. Choosing anything else closes
+whichever is open, because it was about other rows.
+
+**What is chosen is what is drawn.** A search that hides a chosen row lets go of
+it, and clearing the search does not bring it back; another folder lets go of
+all of them, and so does the file read again; a change that takes a row out of
+the list lets go of that row. Nothing the bar does reaches an entry the reader
+cannot see. Escape lets go of the choice before it puts the pane away: the
+search first, then the choice, then the pane.
+
+**One notice for the lot,** the notice the window already draws for a change it
+can take back, its Undo taking back the whole batch: "Moved 3 entries to the
+Recycle Bin" with the trash icon, "Moved 3 entries to “Banking”" and "Put back 3
+entries" with the folder icon, "Added “work” to 3 entries" with the check, each
+icon in `txt3`. One entry is named by its title, isolated, as everywhere. A
+batch nothing can take back says so without the button - "Deleted 3 entries
+forever" - and so does a tag every chosen entry already had, "3 entries already
+have “work”", and a put back in a vault that keeps no bin, where the undo could
+only be refused. An undo the vault has moved on from - this one or any other in
+the window, a removed field's and a single move's included - says "Something has
+changed since, so that can no longer be undone." and does nothing.
+
+**Dragging a chosen row carries the choice.** A drag that starts on a chosen
+row carries every chosen row, and the notice names them all; one that starts on
+a row not chosen carries that row alone and leaves the choice as it was.
 
 ## One size that was off the scale
 

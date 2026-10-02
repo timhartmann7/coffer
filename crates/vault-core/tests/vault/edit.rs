@@ -2,8 +2,9 @@
 //! underneath it.
 
 use keepass::db::fields;
+use vault_core::kind::Kind;
 use vault_core::model::{Deletion, EntryId, Field, FieldValue, GroupId};
-use vault_core::{NewValue, Vault, VaultError};
+use vault_core::{EncryptedCopy, NewValue, Vault, VaultError};
 use zeroize::Zeroizing;
 
 use crate::support::{
@@ -65,7 +66,9 @@ fn a_new_entry_carries_the_fields_the_database_asks_to_protect() {
     let mut vault = open(&path, BUILT_PASSWORD);
 
     let root = root_of(&vault);
-    let id = vault.create_entry(root).expect("the entry is made");
+    let id = vault
+        .create_entry(root, Kind::Login)
+        .expect("the entry is made");
     let entry = vault.entry(id).expect("the entry is there");
 
     let named: Vec<&str> = entry
@@ -101,7 +104,9 @@ fn an_entry_made_in_coffer_is_there_after_the_file_is_opened_again() {
     let id = {
         let mut vault = open(&path, BUILT_PASSWORD);
         let root = root_of(&vault);
-        let id = vault.create_entry(root).expect("the entry is made");
+        let id = vault
+            .create_entry(root, Kind::Login)
+            .expect("the entry is made");
         vault
             .set_field(id, fields::TITLE, NewValue::Open("a new login".to_owned()))
             .expect("the title is written");
@@ -148,7 +153,9 @@ fn a_folder_can_be_made_renamed_and_filled() {
     let section = vault
         .create_group(project, "Servers")
         .expect("the folder is made");
-    let id = vault.create_entry(section).expect("the entry is made");
+    let id = vault
+        .create_entry(section, Kind::Login)
+        .expect("the entry is made");
 
     vault
         .rename_group(section, "Machines")
@@ -195,7 +202,7 @@ fn a_deleted_entry_goes_to_the_recycle_bin_and_the_second_deletion_takes_it_out_
 
     let id = only_entry(&vault, "basic");
     vault
-        .delete_entry(id, Deletion::Bin)
+        .delete_entries(&[(id, Deletion::Bin)])
         .expect("the entry is deleted");
 
     let bin = vault
@@ -211,7 +218,7 @@ fn a_deleted_entry_goes_to_the_recycle_bin_and_the_second_deletion_takes_it_out_
     );
 
     vault
-        .delete_entry(id, Deletion::Forever)
+        .delete_entries(&[(id, Deletion::Forever)])
         .expect("the entry is deleted again");
     assert!(
         vault.entry(id).is_none(),
@@ -235,13 +242,15 @@ fn an_entry_at_the_top_of_the_vault_goes_to_the_recycle_bin_like_any_other() {
     let mut vault = open(&database, SECRET);
 
     let root = vault.tree().id;
-    let id = vault.create_entry(root).expect("the entry is made");
+    let id = vault
+        .create_entry(root, Kind::Login)
+        .expect("the entry is made");
     vault
         .set_field(id, fields::TITLE, NewValue::Open("at the top".to_owned()))
         .expect("the title is written");
 
     vault
-        .delete_entry(id, Deletion::Bin)
+        .delete_entries(&[(id, Deletion::Bin)])
         .expect("the entry is deleted");
 
     let bin = vault
@@ -309,7 +318,7 @@ fn a_database_that_keeps_no_recycle_bin_deletes_outright() {
     let mut vault = open(&path, BUILT_PASSWORD);
     let id = only_entry(&vault, "doomed");
     vault
-        .delete_entry(id, Deletion::Forever)
+        .delete_entries(&[(id, Deletion::Forever)])
         .expect("the entry is deleted");
 
     assert!(vault.entry(id).is_none(), "the entry is still there");
@@ -336,7 +345,7 @@ fn a_database_that_wants_a_recycle_bin_and_has_none_is_given_one() {
     let mut vault = open(&path, BUILT_PASSWORD);
     let id = only_entry(&vault, "doomed");
     vault
-        .delete_entry(id, Deletion::Bin)
+        .delete_entries(&[(id, Deletion::Bin)])
         .expect("the entry is deleted");
     vault.save().expect("the database saves");
     drop(vault);
@@ -368,7 +377,9 @@ fn deleting_a_folder_takes_everything_in_it() {
     let section = vault
         .create_group(project, "Servers")
         .expect("the folder is made");
-    let inside = vault.create_entry(section).expect("the entry is made");
+    let inside = vault
+        .create_entry(section, Kind::Login)
+        .expect("the entry is made");
 
     vault
         .delete_group(project, Deletion::Forever)
@@ -446,7 +457,9 @@ fn a_value_a_keepass_file_cannot_hold_is_refused_wherever_it_is_offered() {
     let mut vault = open(&path, BUILT_PASSWORD);
 
     let root = root_of(&vault);
-    let id = vault.create_entry(root).expect("the entry is made");
+    let id = vault
+        .create_entry(root, Kind::Login)
+        .expect("the entry is made");
 
     // A vertical tab is not one of the three control characters XML 1.0 allows,
     // so a file carrying one is a file no conformant reader opens again.
@@ -485,7 +498,9 @@ fn a_tag_that_would_come_back_as_two_is_refused() {
     let mut vault = open(&path, BUILT_PASSWORD);
 
     let root = root_of(&vault);
-    let id = vault.create_entry(root).expect("the entry is made");
+    let id = vault
+        .create_entry(root, Kind::Login)
+        .expect("the entry is made");
 
     // The format keeps tags as one string and reads three characters as the
     // separator between them. A tag holding one comes back as two tags, and a
@@ -494,7 +509,7 @@ fn a_tag_that_would_come_back_as_two_is_refused() {
         assert!(
             matches!(
                 vault.set_tags(id, vec![rejected.to_owned()]),
-                Err(VaultError::UnwritableText)
+                Err(VaultError::UnwritableTag)
             ),
             "{rejected:?} was accepted"
         );
@@ -610,7 +625,9 @@ fn a_removal_never_renumbers_a_file_a_version_points_at() {
         let root = root_of(&vault);
         let mut ids = Vec::new();
         for (round, size) in sizes.iter().enumerate() {
-            let id = vault.create_entry(root).expect("the entry is made");
+            let id = vault
+                .create_entry(root, Kind::Login)
+                .expect("the entry is made");
             support::attach(
                 &mut vault,
                 id,
@@ -695,7 +712,9 @@ fn documents_can_still_be_taken_out_of_a_vault_that_has_been_used() {
         let root = root_of(&vault);
         let mut ids = Vec::new();
         for round in 0..COUNT {
-            let id = vault.create_entry(root).expect("the entry is made");
+            let id = vault
+                .create_entry(root, Kind::Login)
+                .expect("the entry is made");
             vault
                 .set_field(id, fields::TITLE, NewValue::Open(format!("doc {round}")))
                 .expect("the title is written");
@@ -787,7 +806,9 @@ fn the_recycle_bin_empties_once_the_versions_holding_a_file_have_gone() {
         let root = root_of(&vault);
         let mut ids = Vec::new();
         for round in 0..3u8 {
-            let id = vault.create_entry(root).expect("the entry is made");
+            let id = vault
+                .create_entry(root, Kind::Login)
+                .expect("the entry is made");
             support::attach(&mut vault, id, &format!("file-{round}.bin"), &[round; 64]);
             vault
                 .set_field(id, fields::NOTES, NewValue::Open(format!("note {round}")))
@@ -803,7 +824,7 @@ fn the_recycle_bin_empties_once_the_versions_holding_a_file_have_gone() {
 
     // Into the bin, which never touches the pool.
     vault
-        .delete_entry(first, Deletion::Bin)
+        .delete_entries(&[(first, Deletion::Bin)])
         .expect("it goes to the bin");
 
     // Out of the file, which does. The last file in the pool is held by the
@@ -851,7 +872,9 @@ fn a_file_an_earlier_version_still_holds_is_not_taken_away_from_it() {
     let id = {
         let mut vault = open(&path, BUILT_PASSWORD);
         let root = root_of(&vault);
-        let id = vault.create_entry(root).expect("the entry is made");
+        let id = vault
+            .create_entry(root, Kind::Login)
+            .expect("the entry is made");
         support::attach(&mut vault, id, "key.pem", b"a private key");
         // A change to the files writes no version. A change to a field does,
         // and that version holds the file the entry had at the time.
@@ -911,10 +934,10 @@ fn deleting_an_entry_takes_its_files_and_leaves_everybody_elses() {
         // Straight out of the file: the recycle bin would only move it, and a
         // moved entry still holds its files.
         vault
-            .delete_entry(middle, Deletion::Bin)
+            .delete_entries(&[(middle, Deletion::Bin)])
             .expect("the entry goes to the bin");
         vault
-            .delete_entry(middle, Deletion::Forever)
+            .delete_entries(&[(middle, Deletion::Forever)])
             .expect("the entry is deleted");
         vault.save().expect("the database saves");
     }
@@ -976,7 +999,9 @@ fn a_file_larger_than_a_vault_holds_is_refused_before_it_is_read_in() {
     let mut vault = open(&path, BUILT_PASSWORD);
 
     let root = root_of(&vault);
-    let id = vault.create_entry(root).expect("the entry is made");
+    let id = vault
+        .create_entry(root, Kind::Login)
+        .expect("the entry is made");
 
     // The inner header keeps a file's length in four bytes, so a file past four
     // gigabytes is written truncated and the database cannot be opened again.
@@ -1019,7 +1044,9 @@ fn a_name_the_file_can_hold_is_stored_exactly_as_it_was_given() {
     let id = {
         let mut vault = open(&path, BUILT_PASSWORD);
         let root = root_of(&vault);
-        let id = vault.create_entry(root).expect("the entry is made");
+        let id = vault
+            .create_entry(root, Kind::Login)
+            .expect("the entry is made");
         for (round, name) in awkward.iter().enumerate() {
             support::attach(&mut vault, id, name, &[round as u8; 8]);
         }
@@ -1331,7 +1358,9 @@ fn a_file_written_before_the_edit_stops_the_save_just_the_same() {
     // Keeping both is the way out that loses nothing: this version goes beside
     // the database, and the database keeps theirs.
     let beside = database.with_extension("mine.kdbx");
-    ours.save_copy(&beside).expect("the copy is written");
+    ours.encrypt_copy(&beside)
+        .and_then(EncryptedCopy::write)
+        .expect("the copy is written");
     ours.reload().expect("the file reads again");
     drop(ours);
 
@@ -1351,7 +1380,7 @@ fn emptying_the_recycle_bin_takes_what_is_in_it_out_of_the_file() {
     let deleted = only_entry(&vault, "deleted entry");
     let living = only_entry(&vault, "basic");
     vault
-        .delete_entry(living, Deletion::Bin)
+        .delete_entries(&[(living, Deletion::Bin)])
         .expect("the entry is deleted");
 
     // A folder in the bin, with a folder in that. Emptying has to take the
@@ -1632,7 +1661,10 @@ fn a_copy_is_a_database_of_its_own_and_the_original_is_untouched() {
             NewValue::Open("only in the copy".to_owned()),
         )
         .expect("the note is written");
-    vault.save_copy(&beside).expect("the copy is written");
+    vault
+        .encrypt_copy(&beside)
+        .and_then(EncryptedCopy::write)
+        .expect("the copy is written");
     drop(vault);
 
     let copy = open(&beside, SECRET);
@@ -1649,7 +1681,7 @@ fn a_copy_is_a_database_of_its_own_and_the_original_is_untouched() {
 
     let mut vault = open(&database, SECRET);
     assert!(matches!(
-        vault.save_copy(&database),
+        vault.encrypt_copy(&database).and_then(EncryptedCopy::write),
         Err(VaultError::CopyOntoItself)
     ));
 }
@@ -1686,12 +1718,12 @@ fn a_snapshot_is_opened_to_read_and_never_written_back() {
     let mut vault = open(&snapshot, SECRET);
     let id = only_entry(&vault, "basic");
 
-    assert!(vault.is_read_only());
+    assert_eq!(vault.read_only(), Some(vault_core::ReadOnly::Snapshot));
     for refused in [
         vault.set_field(id, fields::NOTES, NewValue::Open("x".to_owned())),
         vault.set_protection(id, "x", true),
         vault.rename_field(id, "x", "y"),
-        vault.delete_entry(id, Deletion::Bin),
+        vault.delete_entries(&[(id, Deletion::Bin)]),
         vault.clear_history(id),
         vault.add_attachment(id, "x", b"x").map(drop),
         vault.keep_both(id, "x", b"x"),
@@ -1707,8 +1739,11 @@ fn a_snapshot_is_opened_to_read_and_never_written_back() {
 
     // A copy is the way out, and it is a database like any other.
     let beside = database.with_extension("recovered.kdbx");
-    vault.save_copy(&beside).expect("the copy is written");
-    assert!(!open(&beside, SECRET).is_read_only());
+    vault
+        .encrypt_copy(&beside)
+        .and_then(EncryptedCopy::write)
+        .expect("the copy is written");
+    assert_eq!(open(&beside, SECRET).read_only(), None);
 }
 
 #[test]
@@ -1774,7 +1809,9 @@ fn a_file_with_no_bytes_in_it_survives_being_added_and_taken_away() {
     let id = {
         let mut vault = open(&path, BUILT_PASSWORD);
         let root = root_of(&vault);
-        let id = vault.create_entry(root).expect("the entry is made");
+        let id = vault
+            .create_entry(root, Kind::Login)
+            .expect("the entry is made");
         support::attach(&mut vault, id, "nothing.txt", &[]);
         support::attach(&mut vault, id, "something.txt", b"a byte or two");
         vault.save().expect("the database saves");
@@ -2070,8 +2107,9 @@ fn a_file_four_entries_share_stays_whole_as_the_names_come_off_one_by_one() {
         let vault = open(&path, SECRET);
         // `QualityCheck` is what makes keepassxc write KDBX 4.1, which is the
         // format that keeps its files where Coffer can read them.
-        assert!(
-            !vault.is_read_only(),
+        assert_eq!(
+            vault.read_only(),
+            None,
             "the import came back in a format Coffer will not write"
         );
         assert_eq!(
@@ -2204,7 +2242,9 @@ fn a_database_that_would_be_too_large_to_open_again_is_not_written() {
 
     let mut vault = open(&path, BUILT_PASSWORD);
     let root = root_of(&vault);
-    let id = vault.create_entry(root).expect("the entry is made");
+    let id = vault
+        .create_entry(root, Kind::Login)
+        .expect("the entry is made");
 
     // Five files of a quarter of a gigabyte: each one is inside the limit on a
     // single file, and together they are past the limit on the database.
@@ -2302,7 +2342,9 @@ fn only_the_versions_that_hold_a_file_go_with_it() {
 
     let mut vault = open(&path, BUILT_PASSWORD);
     let root = root_of(&vault);
-    let id = vault.create_entry(root).expect("the entry is made");
+    let id = vault
+        .create_entry(root, Kind::Login)
+        .expect("the entry is made");
 
     // Two edits before the file, so their versions name nothing.
     for round in 0..2 {

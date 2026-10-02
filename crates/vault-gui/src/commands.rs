@@ -10,41 +10,47 @@
 //! and a file dialog there deadlocks, because the panel needs the run loop that
 //! the call is blocking.
 //!
-//! The two that are not are the two that reach neither the session, the lock
-//! nor the disk: the one that reads what the reader chose, and the one that
-//! reads what the generator was last asked for. Neither can wait on anything,
-//! and a hop onto another thread for them would be latency bought with
-//! nothing. Making a password is not one of them any more: it writes down the
-//! recipe it was made from.
+//! The three that are not are the three that reach neither the session, the
+//! lock nor the disk: the one that reads what the reader chose, the one that
+//! reads what the generator was last asked for, and the one that lists the
+//! kinds of entry Coffer makes. None of them can wait on anything, and a hop
+//! onto another thread for them would be latency bought with nothing. Making a
+//! password is not one of them any more: it writes down the recipe it was made
+//! from.
 //!
 //! The message the window sends to say somebody is there is not one of them,
 //! however often it comes. A stir that finds the time already spent - the first
 //! key pressed after a Mac slept through the deadline - locks the vault, and a
 //! lock runs on the thread that asked for it.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tauri::ipc::{InvokeBody, Request};
-use tauri::{AppHandle, Manager, State};
+use tauri::ipc::{Channel, InvokeBody, Request};
+use tauri::{AppHandle, Manager, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 use vault_core::storage::{self, snapshot, unsaved};
 use zeroize::Zeroizing;
 
 use vault_core::generate::Recipe;
 use vault_core::kdf;
+use vault_core::model::EntryId;
 use vault_core::{LockPolicy, NewValue, Typing, Vault};
 
 use crate::autolock::timer::Timer;
 use crate::autolock::{Event, Reason};
 use crate::drafts::{Over, Typed};
 use crate::dto::{
-    self, Database, Entry, Group, Made, Revealed, Rival, Snapshot, Status, Target, Versions,
+    self, Action, Database, Entry, Group, Made, Moved, Removed, Revealed, Rival, Snapshot, Status,
+    Target, Versions,
 };
 use crate::error::Failure;
 use crate::home::Standing;
-use crate::session::Session;
-use crate::{clipboard, generator, home, lock, opener, settings, window};
+use crate::menu::{self, Command};
+use crate::route::Route;
+use crate::session::{Looking, Session};
+use crate::{clipboard, closing, context, copies, generator, home, lock, opener, settings, window};
 
 /// The session is behind an `Arc` so that a command can take it onto a blocking
 /// thread, which is where key derivation belongs.
@@ -63,10 +69,21 @@ const KDBX: &str = "KDBX database";
 
 #[tauri::command(async)]
 pub fn status(app: AppHandle, session: Held<'_>) -> Status {
-    let (entries, read_only) = session
-        .with(|vault| (vault.count(), vault.is_read_only()))
-        .unwrap_or((0, false));
+    let record = app.try_state::<Arc<copies::Record>>();
+    let (entries, read_only, copyable, elsewhere) = session
+        .with(|vault| {
+            (
+                vault.count(),
+                vault.read_only(),
+                vault.copyable(),
+                record
+                    .as_ref()
+                    .and_then(|record| record.told(vault, copies::now())),
+            )
+        })
+        .unwrap_or((0, None, false, None));
     let database = session.database();
+    let (copy, snapshot) = beside(&session);
 
     Status {
         found: looked_home(&session, home_of(&app).ok().as_deref())
@@ -87,24 +104,55 @@ pub fn status(app: AppHandle, session: Held<'_>) -> Status {
         file: database
             .as_deref()
             .map(|chosen| dto::OnDisk::of(storage::on_disk(chosen))),
-        // What is said here about the vault's file is what "Make this my
-        // vault" is then held to, so it is the session that reads it.
-        copy: database.as_deref().and_then(|copy| {
-            let (vault, vault_file) = session.telling()?;
-            Some(dto::CopyOf::of(&vault, storage::on_disk(copy), vault_file))
-        }),
+        copy,
+        snapshot,
         typed: session.typed(),
         typed_beside: session.typed_beside(),
+        rekeyed: session.rekeyed(),
+        adopted: session
+            .adopted()
+            .zip(database.as_deref())
+            .map(|(adopted, vault)| dto::Adopted::of(vault, &adopted)),
+        backup_gone: session.backup_gone(),
         database: database.as_deref().map(Database::of),
         key_file: session.key_file().as_deref().map(Database::of),
         unlocked: session.is_unlocked(),
         entries,
-        read_only,
+        read_only: read_only.is_some(),
+        read_only_because: read_only.map(dto::ReadOnly::of),
+        copyable,
+        elsewhere: elsewhere.map(dto::Elsewhere::of),
         locked_by: session.locked_by().and_then(Reason::explained),
         locks_in: app
             .try_state::<Arc<Timer>>()
             .and_then(|timer| timer.left())
             .map(|left| left.as_secs()),
+    }
+}
+
+/// The vault the chosen file belongs to, for the strip across the top of the
+/// window and the card on its unlock screen: as the copy a lock left, as one of
+/// its backups, or neither. Which one is read off the chosen file's name, and
+/// it decides which strip is drawn - a backup given the copy's would offer to
+/// make it the vault through a press that refuses anything but a copy.
+///
+/// What is said here about the vault's file is what "Make this my vault" and
+/// "Use this copy as my vault" are then held to, so it is the session that
+/// reads it, once, for whichever of the two the chosen file is.
+fn beside(session: &Session) -> (Option<dto::CopyOf>, Option<dto::SnapshotOf>) {
+    let Some((chosen, (vault, vault_file))) = session.database().zip(session.telling()) else {
+        return (None, None);
+    };
+    let file = storage::on_disk(&chosen);
+
+    if snapshot::slot_of(&chosen).is_some() {
+        let because = session.looking().unwrap_or(Looking::Asked);
+        (
+            None,
+            Some(dto::SnapshotOf::of(&vault, file, vault_file, because)),
+        )
+    } else {
+        (Some(dto::CopyOf::of(&vault, file, vault_file)), None)
     }
 }
 
@@ -331,20 +379,63 @@ fn opened(app: &AppHandle) {
     }
 }
 
-/// The master password out of a message, and only out of a message that
-/// carried it as bytes.
+/// The bytes of a message that carried its body as bytes, and only of one that
+/// did.
 ///
 /// A JSON body means the webview's IPC fell back to `postMessage`, where the
 /// password would have travelled through a JavaScript string and a JSON
 /// document. Refusing is the only safe answer: accepting it would make a broken
 /// Content-Security-Policy invisible, and a broken one is silent.
-fn password_of(body: &InvokeBody) -> Result<Zeroizing<Vec<u8>>, Failure> {
+fn raw_of(body: &InvokeBody) -> Result<&[u8], Failure> {
     match body {
-        InvokeBody::Raw(password) => Ok(Zeroizing::new(password.clone())),
+        InvokeBody::Raw(bytes) => Ok(bytes),
         InvokeBody::Json(_) => Err(Failure::refused(
             "the master password must be sent as bytes",
         )),
     }
+}
+
+/// The master password out of a message, and only out of a message that
+/// carried it as bytes.
+fn password_of(body: &InvokeBody) -> Result<Zeroizing<Vec<u8>>, Failure> {
+    Ok(Zeroizing::new(raw_of(body)?.to_vec()))
+}
+
+/// The two passwords a change of the master password carries. Wiped when they
+/// go.
+struct Rekeying {
+    current: Zeroizing<Vec<u8>>,
+    new: Zeroizing<Vec<u8>>,
+}
+
+impl fmt::Debug for Rekeying {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Rekeying")
+            .field("current", &"[redacted]")
+            .field("new", &"[redacted]")
+            .finish()
+    }
+}
+
+/// The current and the new master password out of one body, framed the way
+/// `ipc.ts` frames them: the current one's length in four bytes, big-endian,
+/// then the current one, then the new one to the end. A raw body cannot sit
+/// beside named arguments, so both travel in it.
+///
+/// A length the body does not hold is refused rather than read as far as it
+/// goes: a password cut short is not one the reader typed.
+fn passwords_of(body: &InvokeBody) -> Result<Rekeying, Failure> {
+    let malformed =
+        || Failure::refused("the two passwords did not arrive the way a change sends them");
+    let (length, rest) = raw_of(body)?
+        .split_first_chunk::<4>()
+        .ok_or_else(malformed)?;
+    let length = usize::try_from(u32::from_be_bytes(*length)).map_err(|_| malformed())?;
+    let (current, new) = rest.split_at_checked(length).ok_or_else(malformed)?;
+    Ok(Rekeying {
+        current: Zeroizing::new(current.to_vec()),
+        new: Zeroizing::new(new.to_vec()),
+    })
 }
 
 /// Where a first vault goes when nobody has said otherwise: see [`home`].
@@ -415,7 +506,7 @@ pub async fn choose_new_database(
     };
     let path = chosen
         .into_path()
-        .map_err(|_| Failure::refused("that place has no path Coffer can write"))?;
+        .map_err(|_| Failure::no_path_to_write())?;
 
     // The panel asks whether to replace a file that is there, and a reader who
     // says yes is still refused: a creation takes no snapshot, so what was
@@ -512,6 +603,85 @@ pub fn stirred(app: AppHandle) -> Option<u64> {
     let timer = app.try_state::<Arc<Timer>>()?;
     timer.post(Event::Stirred);
     timer.left().map(|left| left.as_secs())
+}
+
+/// Hands Rust the page's way in: what the reader chooses in the menu bar, and
+/// the close button, arrive through this channel (see `route.rs`). One per
+/// window; the next window's page replaces it, and Rust lets go of it when the
+/// window goes.
+#[tauri::command(async)]
+pub fn listen(channel: Channel<Action>, window: WebviewWindow) {
+    if let Some(route) = window.try_state::<Route>() {
+        route.listen(window.label(), channel);
+    }
+}
+
+/// Which of Coffer's items in the menu bar the page's screens can do now, for
+/// the bar to grey out the rest.
+///
+/// Locking and opening another vault follow the session as well: a bar that
+/// offered Open Vault… over an open vault would offer a choice Rust refuses.
+/// Whether one is open is read without waiting for the session, which a save
+/// holds for seconds: a report stuck behind it would leave an item grey that
+/// applies, and AppKit drops the key of a grey item. The items are AppKit's,
+/// and are changed on the thread the window is drawn on by a message posted
+/// there rather than waited for. A report from a page that is no longer the
+/// one listening is dropped: it can arrive after the next window's page has
+/// said what it offers.
+#[tauri::command(async)]
+pub fn menu_state(enabled: Vec<Command>, window: WebviewWindow, session: Held<'_>) {
+    let unlocked = session.is_unlocked();
+    let said: Vec<Command> = enabled
+        .into_iter()
+        .filter(|command| command.allowed(unlocked))
+        .collect();
+    let app = window.app_handle().clone();
+    let label = window.label().to_owned();
+    let _ = window.run_on_main_thread(move || {
+        if app
+            .try_state::<Route>()
+            .is_some_and(|route| route.hears(&label))
+        {
+            menu::enable(&app, Some(&said));
+        }
+    });
+}
+
+/// Locks the vault and takes the window down without building it again,
+/// because the reader closed it. Asked by the page once what was being typed
+/// has reached Rust; Coffer then waits in the Dock.
+#[tauri::command(async)]
+pub fn close_window(window: WebviewWindow) {
+    closing::lock(window.app_handle());
+    // The lock takes the window down when a vault was open; with none open it
+    // still has to go.
+    let _ = window.destroy();
+}
+
+/// Draws Coffer's menu under the pointer for what the reader right-clicked,
+/// in place of WebKit's, and answers once it has closed.
+///
+/// What is offered is read from the vault, which is let go of before anything
+/// is asked of the thread the window is drawn on: that thread tracks the menu
+/// until it closes and runs nothing else meanwhile, and it must never wait for
+/// a save. The item chosen is not the answer. It arrives through the window's
+/// channel as `Action::Context` with `serial`, before or after this answers,
+/// and the window runs the button's own function on the ids it carries.
+#[tauri::command]
+pub async fn context_menu(
+    serial: u64,
+    subject: dto::Subject,
+    at: dto::Point,
+    window: WebviewWindow,
+    app: AppHandle,
+    session: Held<'_>,
+) -> Result<(), Failure> {
+    let label = window.label().to_owned();
+    // Before the vault is waited for: a second right-click while this one
+    // waits behind a save is the menu the reader is looking for.
+    context::ask(&app, &label, serial);
+    let items = session.with(|vault| context::offered(vault, &subject))??;
+    context::pop(&app, label, serial, subject, items, at).await
 }
 
 #[tauri::command(async)]
@@ -665,41 +835,38 @@ pub fn open_url(entry: String, session: Held<'_>) -> Result<(), Failure> {
     }
 }
 
-/// The snapshots beside the chosen database, most recent first. The unlock
-/// screen offers them when the database itself will not open.
+/// The snapshots beside the chosen database - or, when it is one of them,
+/// beside the vault it was taken from - most recent first. The unlock screen
+/// offers them when the database itself will not open, and the settings offer
+/// them to look at. Rust keeps the list, and a slot sent back means what it
+/// meant in it (see [`Session::snapshots`]).
 #[tauri::command(async)]
 pub fn snapshots(session: Held<'_>) -> Result<Vec<Snapshot>, Failure> {
-    let database = session.database().ok_or_else(Failure::no_vault)?;
-    let taken = snapshot::taken(&database).map_err(Failure::io)?;
-    Ok(taken.iter().map(Snapshot::of).collect())
+    Ok(session.snapshots()?.iter().map(Snapshot::of).collect())
 }
 
-/// Points the session at one of those snapshots.
+/// Points the session at the snapshot the last list showed at `index`, and
+/// answers with what is chosen afterwards: see [`Session::look`].
 ///
-/// The index is all the webview sends; the path is built here from the database
-/// the user chose, so no message from the screen can name a file.
+/// The index is all the webview sends, and the file is the one the list Rust
+/// kept named, so no message from the screen can name a file. With a vault
+/// open, that vault is locked first the way any is: this window may be gone
+/// before the answer, and what is chosen afterwards is the vault itself when
+/// the lock kept its work elsewhere, lost it, or pushed the snapshot out of
+/// the chain with its own save.
 #[tauri::command(async)]
-pub fn choose_snapshot(index: u32, session: Held<'_>) -> Result<Database, Failure> {
-    if session.is_unlocked() {
-        return Err(Failure::lock_first());
+pub fn choose_snapshot(index: u32, app: AppHandle, session: Held<'_>) -> Result<Database, Failure> {
+    if session.look(index)? {
+        by_hand(&app);
     }
-
-    let database = session.database().ok_or_else(Failure::no_vault)?;
-    let path = snapshot::slot(&database, index).map_err(Failure::io)?;
-
-    if !path.is_file() {
-        return Err(Failure::gone());
-    }
-
-    session.choose_sibling(path.clone());
-    Ok(Database::of(&path))
+    let chosen = session.database().ok_or_else(Failure::no_vault)?;
+    Ok(Database::of(&chosen))
 }
 
 /// Points the session at the unsaved copy a lock left beside the database.
 ///
 /// Nothing is sent: the path is built here from the database the reader chose,
-/// so no message from the window can name a file. The same shape as
-/// `choose_snapshot`, for the same reason.
+/// so no message from the window can name a file, as none names a snapshot.
 #[tauri::command(async)]
 pub fn choose_rescue(session: Held<'_>) -> Result<Database, Failure> {
     if session.is_unlocked() {
@@ -767,18 +934,38 @@ pub async fn promote_rescue(session: Held<'_>) -> Result<Database, Failure> {
     Ok(Database::of(&vault))
 }
 
-/// Goes back from the copy a lock left to the vault it was taken from, and
-/// answers with what is chosen afterwards.
+/// Makes the open snapshot the vault it was taken beside, with the vault's
+/// file as it stood kept as the newest snapshot - and under a name of its own
+/// as well when it does not open with the snapshot's password: see
+/// [`vault_core::Vault::adopt`]. Answers with the vault, which is what is open
+/// now, and what became of that file.
 ///
-/// A copy that is open is locked on the way, which is how any open vault is
-/// left: what it holds is written out into the copy, its window goes, and the
+/// No password: the snapshot opened with the one it was written under, and
+/// the vault opens with that one from then on. Two key derivations - one to
+/// ask whether the vault's file opens, one for the write - so it happens on a
+/// thread that is allowed to block.
+#[tauri::command]
+pub async fn adopt_snapshot(session: Held<'_>) -> Result<dto::Adopted, Failure> {
+    let session = Arc::clone(&session);
+    let (vault, adopted) = tauri::async_runtime::spawn_blocking(move || session.adopt())
+        .await
+        .map_err(|_| Failure::internal("the backup could not be made the vault"))??;
+
+    Ok(dto::Adopted::of(&vault, &adopted))
+}
+
+/// Goes back from the copy a lock left, or from a snapshot, to the vault it
+/// was taken from, and answers with what is chosen afterwards.
+///
+/// A file that is open is locked on the way, which is how any open vault is
+/// left: what it holds is written out into it, its window goes, and the
 /// window that comes back asks for the vault's password - or for the copy's,
 /// when the lock had to keep the copy's work somewhere else or lost it, so
 /// that the screen saying so is the one about the copy (see
-/// [`Session::back_to_vault`]). A copy that is only chosen is simply not
+/// [`Session::back_to_vault`]). A file that is only chosen is simply not
 /// chosen any more, and nothing is locked.
 #[tauri::command(async)]
-pub fn leave_rescue(app: AppHandle, session: Held<'_>) -> Result<Database, Failure> {
+pub fn back_to_vault(app: AppHandle, session: Held<'_>) -> Result<Database, Failure> {
     session.back_to_vault()?;
     by_hand(&app);
     let chosen = session.database().ok_or_else(Failure::no_vault)?;
@@ -796,34 +983,82 @@ fn entry_of(session: &Session, id: &str) -> Result<Entry, Failure> {
     Ok(Entry::of(&session.entry(dto::entry_id(id)?)?))
 }
 
-#[tauri::command(async)]
-pub fn create_entry(group: String, session: Held<'_>) -> Result<Made, Failure> {
-    let group = dto::group_id(&group)?;
-    let made = session.with_mut(|vault| vault.create_entry(group))??;
-
+/// The tree after an entry was made, and the entry: what every way of making
+/// one answers with.
+fn made(session: &Session, entry: EntryId) -> Result<Made, Failure> {
     Ok(Made {
-        tree: tree_of(&session)?,
-        entry: made.to_string(),
+        tree: tree_of(session)?,
+        entry: entry.to_string(),
     })
 }
 
-/// Deletes an entry, and lets go of anything typed into it that the window
-/// said before it asked: the pane it was typed in goes with the entry.
-///
-/// `deletion` is what the window showed the deletion would do. Two deletions
-/// can wait behind one save, and the thread that takes the session first is
-/// not the one that asked first, so an entry whose folder went into the bin
-/// ahead of it is refused with `deletionChanged` rather than erased.
+/// What a new entry can start as, a login first, and the names offered for a
+/// field of the reader's own. The same answer every time; see [`dto::Kinds`].
+#[tauri::command]
+pub fn kinds() -> dto::Kinds {
+    dto::Kinds::of()
+}
+
+/// Makes an entry of a kind in a folder. See
+/// [`vault_core::Vault::create_entry`].
 #[tauri::command(async)]
-pub fn delete_entry(
-    entry: String,
-    deletion: dto::Deletion,
+pub fn create_entry(group: String, kind: dto::Kind, session: Held<'_>) -> Result<Made, Failure> {
+    let group = dto::group_id(&group)?;
+    let entry = session.with_mut(|vault| vault.create_entry(group, kind.wanted()))??;
+    made(&session, entry)
+}
+
+/// Makes an entry in a folder from one of the vault's templates, refused for
+/// an entry that is not one. See [`vault_core::Vault::create_from_template`].
+#[tauri::command(async)]
+pub fn create_from_template(
+    group: String,
+    template: String,
+    session: Held<'_>,
+) -> Result<Made, Failure> {
+    let group = dto::group_id(&group)?;
+    let template = dto::entry_id(&template)?;
+    let entry = session.with_mut(|vault| vault.create_from_template(template, group))??;
+    made(&session, entry)
+}
+
+/// Makes a copy of an entry beside it. See
+/// [`vault_core::Vault::duplicate_entry`].
+///
+/// Every value and file is copied inside Rust, and the copy is a new entry:
+/// nothing typed into the original and not yet written goes with it, and
+/// neither does a file waiting on the original's answer. The window writes
+/// what was typed before it asks.
+#[tauri::command(async)]
+pub fn duplicate_entry(entry: String, session: Held<'_>) -> Result<Made, Failure> {
+    let entry = dto::entry_id(&entry)?;
+    let copy = session.with_mut(|vault| vault.duplicate_entry(entry))??;
+    made(&session, copy)
+}
+
+/// Deletes entries, every one of them or none, and lets go of anything typed
+/// into them that the window said before it asked: the pane it was typed in
+/// goes with them. The entry the pane deletes is a batch of one. See
+/// [`vault_core::Vault::delete_entries`].
+///
+/// Each entry comes with what the window showed deleting it would do. Two
+/// deletions can wait behind one save, and the thread that takes the session
+/// first is not the one that asked first, so an entry whose folder went into
+/// the bin ahead of it refuses the whole batch with `deletionChanged` rather
+/// than being erased.
+#[tauri::command(async)]
+pub fn delete_entries(
+    entries: Vec<dto::Deleting>,
     sequence: u64,
     session: Held<'_>,
 ) -> Result<Group, Failure> {
-    let id = dto::entry_id(&entry)?;
-    session.overtaking(Over::Entry(id), sequence, |vault| {
-        vault.delete_entry(id, deletion.shown())
+    let shown = entries
+        .iter()
+        .map(dto::Deleting::shown)
+        .collect::<Result<Vec<_>, _>>()?;
+    let ids: Vec<_> = shown.iter().map(|&(id, _)| id).collect();
+    session.overtaking(Over::Entries(&ids), sequence, |vault| {
+        vault.delete_entries(&shown)
     })??;
     tree_of(&session)
 }
@@ -842,7 +1077,7 @@ pub fn rename_group(group: String, name: String, session: Held<'_>) -> Result<Gr
     tree_of(&session)
 }
 
-/// Deletes a folder, on the terms [`delete_entry`] gives.
+/// Deletes a folder, on the terms [`delete_entries`] gives an entry.
 #[tauri::command(async)]
 pub fn delete_group(
     group: String,
@@ -854,13 +1089,42 @@ pub fn delete_group(
     tree_of(&session)
 }
 
-/// Takes an entry out of the recycle bin, back to the folder it was deleted
-/// from, or to the top of the vault when that folder is nowhere to go. The
-/// undo of a move to the bin, and the bin's own way out.
+/// Takes entries out of the recycle bin, every one of them or none, each back
+/// to the folder it was deleted from, or to the top of the vault when that
+/// folder is nowhere to go. The bin's own way out, for the entry in the pane
+/// as a batch of one and for the rows chosen in the bin, and the undo of
+/// entries moved to the bin. See [`vault_core::Vault::put_back_entries`].
 #[tauri::command(async)]
-pub fn put_back_entry(entry: String, session: Held<'_>) -> Result<Group, Failure> {
-    let id = dto::entry_id(&entry)?;
-    session.with_mut(|vault| vault.put_back_entry(id))??;
+pub fn put_back_entries(entries: Vec<String>, session: Held<'_>) -> Result<Group, Failure> {
+    let ids = dto::entry_ids(&entries)?;
+    session.with_mut(|vault| vault.put_back_entries(&ids))??;
+    tree_of(&session)
+}
+
+/// Puts a tag on every entry named that does not have it, one version each,
+/// and answers with the tree and with the entries it went on, which are what
+/// its undo sends to `untag_entries`. See [`vault_core::Vault::tag_entries`].
+#[tauri::command(async)]
+pub fn tag_entries(
+    entries: Vec<String>,
+    tag: String,
+    session: Held<'_>,
+) -> Result<dto::Tagged, Failure> {
+    let ids = dto::entry_ids(&entries)?;
+    let changed = session.with_mut(|vault| vault.tag_entries(&ids, &tag))??;
+    Ok(dto::Tagged::of(&session.tree()?, &changed))
+}
+
+/// Takes a tag off every entry named that has it: the undo of `tag_entries`,
+/// sent the entries that one answered it changed.
+#[tauri::command(async)]
+pub fn untag_entries(
+    entries: Vec<String>,
+    tag: String,
+    session: Held<'_>,
+) -> Result<Group, Failure> {
+    let ids = dto::entry_ids(&entries)?;
+    session.with_mut(|vault| vault.untag_entries(&ids, &tag))??;
     tree_of(&session)
 }
 
@@ -870,6 +1134,74 @@ pub fn put_back_entry(entry: String, session: Held<'_>) -> Result<Group, Failure
 pub fn put_back_group(group: String, session: Held<'_>) -> Result<Group, Failure> {
     let group = dto::group_id(&group)?;
     session.with_mut(|vault| vault.put_back_group(group))??;
+    tree_of(&session)
+}
+
+/// Moves entries into a folder, or to the top of the vault, every one of them
+/// or none, and answers with the tree and each entry that changed folder. See
+/// [`vault_core::Vault::move_entries`].
+///
+/// An id that does not parse refuses the whole batch, like one that names
+/// nothing. Nothing typed into the entries is let go, and neither is a file
+/// waiting on one: an entry keeps its id wherever it goes, so a lock writes
+/// what was typed into it where it now stands.
+#[tauri::command(async)]
+pub fn move_entries(
+    entries: Vec<String>,
+    into: String,
+    session: Held<'_>,
+) -> Result<Moved, Failure> {
+    let ids = dto::entry_ids(&entries)?;
+    let into = dto::group_id(&into)?;
+    let moved = session.with_mut(|vault| vault.move_entries(&ids, into))??;
+    Ok(Moved {
+        tree: tree_of(&session)?,
+        moved: moved.into_iter().map(dto::Move::of).collect(),
+    })
+}
+
+/// Takes a move back: each entry `move_entries` answered goes back out of
+/// `into` to the folder it left, every one of them or none, and only while the
+/// file still says that is where it came from. See
+/// [`vault_core::Vault::move_entries_back`].
+#[tauri::command(async)]
+pub fn move_entries_back(
+    moved: Vec<dto::Move>,
+    into: String,
+    session: Held<'_>,
+) -> Result<Group, Failure> {
+    let moved = moved
+        .iter()
+        .map(dto::Move::parsed)
+        .collect::<Result<Vec<_>, _>>()?;
+    let into = dto::group_id(&into)?;
+    session.with_mut(|vault| vault.move_entries_back(&moved, into))??;
+    tree_of(&session)
+}
+
+/// Moves a folder with everything in it, on the terms `move_entries` gives.
+#[tauri::command(async)]
+pub fn move_group(group: String, into: String, session: Held<'_>) -> Result<Group, Failure> {
+    let group = dto::group_id(&group)?;
+    let into = dto::group_id(&into)?;
+    session.with_mut(|vault| vault.move_group(group, into))??;
+    tree_of(&session)
+}
+
+/// Takes a folder's move back out of `into` to `from`, the folder it left,
+/// only while the file still says that is where it came from. See
+/// [`vault_core::Vault::move_group_back`].
+#[tauri::command(async)]
+pub fn move_group_back(
+    group: String,
+    from: String,
+    into: String,
+    session: Held<'_>,
+) -> Result<Group, Failure> {
+    let group = dto::group_id(&group)?;
+    let from = dto::group_id(&from)?;
+    let into = dto::group_id(&into)?;
+    session.with_mut(|vault| vault.move_group_back(group, from, into))??;
     tree_of(&session)
 }
 
@@ -1156,7 +1488,7 @@ pub async fn export_attachment(
     };
     let path = chosen
         .into_path()
-        .map_err(|_| Failure::refused("that place has no path Coffer can write"))?;
+        .map_err(|_| Failure::no_path_to_write())?;
 
     vault_core::storage::atomic::write_atomic::<std::io::Error, _>(
         &path,
@@ -1334,6 +1666,12 @@ pub async fn save_over(session: Held<'_>) -> Result<(), Failure> {
 /// Writes what is in the window to a file of its own, leaving the database
 /// alone. The way out of a conflict that keeps both, and the way out of a
 /// snapshot.
+///
+/// Never over a file that is there, whatever the panel was answered: the
+/// panel opens beside the vault, and the files there that must not go are
+/// the ones its filter shows (see [`vault_core::EncryptedCopy::write`]). And
+/// only from the file that was open when it was pressed (see
+/// [`Session::copy_to`]).
 #[tauri::command]
 pub async fn save_copy(app: AppHandle, session: Held<'_>) -> Result<Option<Database>, Failure> {
     let database = session.database().ok_or_else(Failure::no_vault)?;
@@ -1357,18 +1695,103 @@ pub async fn save_copy(app: AppHandle, session: Held<'_>) -> Result<Option<Datab
     };
     let path = chosen
         .into_path()
-        .map_err(|_| Failure::refused("that place has no path Coffer can write"))?;
+        .map_err(|_| Failure::no_path_to_write())?;
 
-    let writing = Arc::clone(&session);
-    let target = path.clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), Failure> {
-        writing.with_mut(|vault| vault.save_copy(&target))??;
-        Ok(())
-    })
-    .await
-    .map_err(|_| Failure::internal("the copy could not be written"))??;
-
+    write_copy(&session, database, path.clone()).await?;
     Ok(Some(Database::of(&path)))
+}
+
+/// Saves a copy of the open vault on another disk, where the reader says, for
+/// the day the disk the vault is on fails, and writes down when and where (see
+/// `copies.rs`). Answers with which disk it went to and what is known of copies
+/// now, or nothing when the panel was closed.
+///
+/// What is open is asked about before the panel, so that a refusal is said
+/// before a place is picked: a format Coffer will not write anywhere, and a
+/// snapshot or the copy a lock left, whose copy would not be one of the vault.
+/// The panel opens on the folder the last copy on another disk went to while
+/// that is a folder, on another disk this Mac has mounted when it is not, then
+/// on the folder the last copy on the vault's own disk went to, and beside the
+/// vault when there is none. It offers the vault's name and the day, numbered
+/// past any name that folder holds.
+///
+/// The write is the one every copy makes (see [`Session::copy_to`]): the same
+/// credentials, every field, owner-only, staged and renamed, and never over a
+/// file that is there, whatever the panel was answered - `taken` for a name
+/// that holds one, and nothing replaced. A copy that was written and could not
+/// be written down costs the next launch its date, and nothing else.
+#[tauri::command]
+pub async fn copy_vault(
+    app: AppHandle,
+    session: Held<'_>,
+) -> Result<Option<dto::SavedCopy>, Failure> {
+    let vault = session.with(|open| copies::source(open).map(Path::to_path_buf))??;
+    let record = app
+        .try_state::<Arc<copies::Record>>()
+        .map(|held| Arc::clone(held.inner()))
+        .ok_or_else(|| Failure::internal("Coffer has nowhere to write down its copies"))?;
+
+    let opening = copies::offer::starting_in(&record.of(&vault, copies::now()), &vault);
+    let today = chrono::Local::now().date_naive();
+    let mut panel = app
+        .dialog()
+        .file()
+        .set_title("Save a copy of your vault on another disk")
+        .add_filter(KDBX, &["kdbx"])
+        .set_file_name(copies::offer::name(&vault, today, opening.as_deref()));
+    if let Some(folder) = opening {
+        panel = panel.set_directory(folder);
+    }
+
+    let Some(chosen) = panel.blocking_save_file() else {
+        return Ok(None);
+    };
+    let path = chosen
+        .into_path()
+        .map_err(|_| Failure::no_path_to_write())?;
+
+    write_copy(&session, vault.clone(), path.clone()).await?;
+
+    let now = copies::now();
+    let landed = copies::Landed::at(&vault, path.parent().unwrap_or(&path), now);
+    let _ = record.note(&vault, &landed);
+    let told = session
+        .with(|open| record.told(open, now))?
+        .ok_or_else(Failure::no_vault)?;
+    Ok(Some(dto::SavedCopy::of(&landed, told)))
+}
+
+/// Writes the open vault to `target`, while it is the vault at `vault`, on a
+/// thread that may block: a copy derives the key and encrypts the whole file,
+/// as a save does.
+async fn write_copy(
+    session: &Arc<Session>,
+    vault: PathBuf,
+    target: PathBuf,
+) -> Result<(), Failure> {
+    let session = Arc::clone(session);
+    tauri::async_runtime::spawn_blocking(move || session.copy_to(&vault, &target))
+        .await
+        .map_err(|_| Failure::internal("the copy could not be written"))?
+}
+
+/// Shows the chosen vault's file in the Finder, selected.
+///
+/// Nothing is sent: the file is the one the session chose, so the window
+/// cannot point the Finder anywhere else. Whether there is a file to show is
+/// decided here, off the thread the window is drawn on, and only the Finder is
+/// asked on that thread, posted there and not waited for. The encrypted file is
+/// what a reader carries to a stick by hand, so this answers on the unlock
+/// screen as well.
+#[tauri::command(async)]
+pub fn show_in_finder(app: AppHandle, session: Held<'_>) -> Result<(), Failure> {
+    let file = session.database().ok_or_else(Failure::no_vault)?;
+    opener::showable(&file).map_err(|unshown| match unshown {
+        opener::Unshown::Gone => Failure::gone(),
+        opener::Unshown::Unusable => Failure::refused("that file has no path the Finder can show"),
+    })?;
+    app.run_on_main_thread(move || opener::show(&file))
+        .map_err(|_| Failure::internal("the Finder could not be asked"))
 }
 
 /// Throws away what is in the window and reads the file again, typing that
@@ -1384,6 +1807,44 @@ pub async fn reload(sequence: u64, session: Held<'_>) -> Result<Group, Failure> 
     .map_err(|_| Failure::internal("the database could not be read"))??;
 
     tree_of(&session)
+}
+
+/// Gives the open vault a new master password, and answers with how many
+/// snapshots beside it still open with the old one.
+///
+/// Both passwords are the whole body, framed by `passwords_of`, for the reason
+/// an unlock's is. The change is a save under another key - a key derivation
+/// and the whole file encrypted - so it happens on a thread that is allowed to
+/// block, holding the session as a save does, and the stack it ran on is
+/// written over afterwards. A wrong current password is answered only after
+/// the wait an unlock costs, on the same thread. See
+/// [`Session::change_master_password`].
+#[tauri::command]
+pub async fn change_master_password(
+    request: Request<'_>,
+    session: Held<'_>,
+) -> Result<usize, Failure> {
+    let Rekeying { current, new } = passwords_of(request.body())?;
+    let session = Arc::clone(&session);
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let changed = session.change_master_password(&current, new);
+        vault_core::scrub::stack();
+        changed
+    })
+    .await
+    .map_err(|_| Failure::internal("the password could not be changed"))?
+}
+
+/// Removes the snapshots that open with the password the vault had before its
+/// last change: see [`Vault::remove_old_snapshots`]. Nothing is sent - the
+/// files are the ones Rust recorded - and it is only ever the reader's answer
+/// to the question that change put. Answers with how many went, and with how
+/// many would not go and why, rather than failing, so that the question the
+/// window goes on asking is about the ones that are left.
+#[tauri::command(async)]
+pub fn remove_old_snapshots(session: Held<'_>) -> Result<Removed, Failure> {
+    Ok(Removed::of(session.with_mut(Vault::remove_old_snapshots)?))
 }
 
 /// What the file on disk holds, for the dialog that asks which version to keep.
@@ -1521,24 +1982,133 @@ mod tests {
             }
         }
 
-        // The four that reach it, each of which the check above would catch
-        // anyway, named so that the reason survives a rewrite of their bodies.
-        // Locking wipes the tree, which takes the same mutex a save is holding
-        // - and writes the vault out first, so it costs a key derivation as
-        // well - and going back from an open copy to its vault is a lock. A
-        // shortened timeout that has already gone, and a stir that arrives
-        // after the time ran out, are both answered by a lock on the thread
-        // that posted them.
+        // The ones that reach it, named so that the reason survives a rewrite
+        // of their bodies. Locking wipes the tree, which takes the same mutex a
+        // save is holding - and writes the vault out first, so it costs a key
+        // derivation as well - and going back from an open copy or backup to
+        // its vault is a lock, and so is looking at a backup with a vault
+        // open. A shortened timeout that has already gone, and a stir
+        // that arrives after the time ran out, are both answered by a lock on
+        // the thread that posted them. Closing the window is a lock reached
+        // through `closing::lock`, which the check above cannot see into.
         for reaching in [
             "pub fn lock(",
-            "pub fn leave_rescue(",
+            "pub fn back_to_vault(",
+            "pub fn choose_snapshot(",
             "pub fn set_settings(",
             "pub fn stirred(",
+            "pub fn close_window(",
         ] {
             assert!(
                 source.contains(&format!("#[tauri::command(async)]\n{reaching}")),
                 "{reaching} reaches the lock and must not be answered inline"
             );
+        }
+    }
+
+    /// The menu bar and the close button reach Rust on the thread AppKit draws
+    /// on, outside any command: a menu event, the run callback's arms, the
+    /// change to the bar `menu_state` posts there, and a menu under the
+    /// pointer, which is built and tracked there. The close button's lock is
+    /// held off that thread by `closing.rs`, whose tests say so. Every other
+    /// way in is read here, with the functions each one calls in this crate,
+    /// because the check above sees commands only, and a session read or a lock
+    /// added the obvious way - in an arm, or in one of the functions behind it -
+    /// freezes the window behind a save.
+    #[test]
+    fn nothing_the_menu_bar_or_the_close_button_runs_where_the_window_is_drawn_waits() {
+        fn after<'a>(source: &'a str, from: &str, to: &str) -> &'a str {
+            let start = source
+                .find(from)
+                .unwrap_or_else(|| panic!("{from} is no longer there"));
+            let rest = &source[start..];
+            &rest[..rest.find(to).unwrap_or(rest.len())]
+        }
+
+        /// The function of `file` whose head is `head`.
+        fn function(file: &str, head: &str) -> String {
+            functions(shipped(file))
+                .into_iter()
+                .find(|body| body.trim_start().starts_with(head))
+                .unwrap_or_else(|| panic!("{head} is no longer there"))
+        }
+
+        let commands = shipped(include_str!("commands.rs"));
+        let route = include_str!("route.rs");
+        let window = include_str!("window.rs");
+        let context = include_str!("context/shown.rs");
+        let run = shipped(include_str!("lib.rs"));
+        let mut drawn: Vec<(&str, String)> = vec![
+            (
+                "the change menu_state posts",
+                after(
+                    after(commands, "pub fn menu_state(", "\n}\n"),
+                    "run_on_main_thread(move ||",
+                    "\n}\n",
+                )
+                .to_owned(),
+            ),
+            (
+                "the close button",
+                after(run, "WindowEvent::CloseRequested", "WindowEvent::Destroyed").to_owned(),
+            ),
+            (
+                "a window that went",
+                after(run, "WindowEvent::Destroyed", "RunEvent::ExitRequested").to_owned(),
+            ),
+            (
+                "the Dock icon",
+                after(run, "RunEvent::Reopen", "RunEvent::Exit =>").to_owned(),
+            ),
+        ];
+        for (what, file, head) in [
+            ("a menu event", route, "pub fn chosen<"),
+            ("telling the page", route, "pub fn tell("),
+            ("handing the page a choice", route, "pub fn deliver("),
+            ("reaching the page", route, "fn reach("),
+            ("forgetting the page", route, "pub fn forget("),
+            ("drawing a menu under the pointer", context, "fn show("),
+            ("building that menu", context, "fn built("),
+            ("building its items", context, "fn kinds("),
+            ("a choice from that menu", context, "pub fn picked<"),
+            ("greying the bar", include_str!("menu.rs"), "pub fn enable<"),
+            ("bringing the window back", window, "pub fn bring_back<"),
+            ("building it again", window, "pub fn again<"),
+            ("building it", window, "fn open<"),
+            (
+                "asking the page to close",
+                include_str!("closing.rs"),
+                "pub fn requested<",
+            ),
+        ] {
+            drawn.push((what, function(file, head)));
+        }
+
+        for (what, code) in drawn {
+            assert!(code.len() > 40, "{what} was not found:\n{code}");
+            let code: String = code
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            // `.post(` rather than `Event::`, which every window event's arm
+            // spells: posting to the timer is what reaches the lock.
+            for waiting in [
+                "Held<",
+                "Session",
+                "session",
+                "is_unlocked",
+                "busy(",
+                "Timer",
+                ".post(",
+                "lock::lock(",
+                "closing::lock(",
+            ] {
+                assert!(
+                    !code.contains(waiting),
+                    "{what} reaches {waiting} on the thread the window is drawn on:\n{code}"
+                );
+            }
         }
     }
 
@@ -1836,6 +2406,163 @@ mod tests {
         session.making(at("gone.kdbx"));
         assert!(existing_chosen(&session).is_ok());
         assert_eq!(session.database(), Some(at("gone.kdbx")));
+    }
+
+    /// The two passwords of a change travel the way one does, and a body that
+    /// fell back to JSON is refused before anything is read out of it - in
+    /// whatever shape a page that went wrong might send them.
+    #[test]
+    fn two_passwords_that_did_not_arrive_as_bytes_are_refused() {
+        for body in [
+            serde_json::json!([0, 0, 0, 3, 111, 108, 100, 110, 101, 119]),
+            serde_json::json!("old password\u{0}new password"),
+            serde_json::json!({ "current": "old password", "new": "new password" }),
+        ] {
+            let failure =
+                passwords_of(&InvokeBody::Json(body)).expect_err("a JSON body is refused");
+            let printed = format!("{failure:?}");
+            assert!(printed.contains("must be sent as bytes"), "{printed}");
+            assert!(!printed.contains("old password") && !printed.contains("new password"));
+            assert_eq!(code_of(failure), "refused");
+        }
+    }
+
+    fn frame(current: &[u8], new: &[u8]) -> Vec<u8> {
+        let length = u32::try_from(current.len()).expect("a length four bytes can hold");
+        [&length.to_be_bytes()[..], current, new].concat()
+    }
+
+    /// A frame cut short, or one whose length says more than it holds, is
+    /// not read as far as it goes: the password it would give is one nobody
+    /// typed, and the vault would be given it.
+    #[test]
+    fn a_frame_that_does_not_hold_what_its_length_says_is_refused() {
+        for (what, body) in [
+            ("nothing at all", Vec::new()),
+            ("three bytes", vec![0, 0, 0]),
+            (
+                "a length of five and four bytes",
+                vec![0, 0, 0, 5, 1, 2, 3, 4],
+            ),
+            (
+                "the largest length and two bytes",
+                vec![0xff, 0xff, 0xff, 0xff, 1, 2],
+            ),
+            ("a length of one and nothing", vec![0, 0, 0, 1]),
+        ] {
+            let failure = passwords_of(&InvokeBody::Raw(body)).expect_err(what);
+            assert_eq!(code_of(failure), "refused", "{what}");
+        }
+    }
+
+    #[test]
+    fn two_passwords_are_cut_exactly_where_the_frame_says() {
+        let cut = |body: Vec<u8>| {
+            let taken = passwords_of(&InvokeBody::Raw(body)).expect("the frame is taken");
+            (taken.current.to_vec(), taken.new.to_vec())
+        };
+
+        // The frame `ipc.test.ts` builds for "é" and "x\0y", byte for byte.
+        assert_eq!(
+            cut(vec![0, 0, 0, 2, 0xc3, 0xa9, 0x78, 0x00, 0x79]),
+            ("é".as_bytes().to_vec(), b"x\0y".to_vec())
+        );
+
+        let long = vec![b'n'; 10 * 1024 * 1024];
+        for (current, new) in [
+            (&b""[..], &b""[..]),
+            (b"", b"new"),
+            (b"old", b""),
+            (&[0xff, 0x00, 0xff], &[0x00, 0xff, 0x00]),
+            // A current password whose bytes read as another frame's length.
+            (&[0, 0, 0, 9], b"new"),
+            (b"old", &long),
+        ] {
+            assert_eq!(
+                cut(frame(current, new)),
+                (current.to_vec(), new.to_vec()),
+                "a frame of {} and {} bytes",
+                current.len(),
+                new.len()
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_a_change_carries_prints_its_passwords() {
+        let taken = passwords_of(&InvokeBody::Raw(frame(b"the old one", b"the new one")))
+            .expect("the frame is taken");
+        let printed = format!("{taken:?}");
+        assert!(printed.contains("[redacted]"), "{printed}");
+        assert!(!printed.contains("the old one") && !printed.contains("the new one"));
+    }
+
+    /// What the strip over the chosen file is told: the vault it belongs to,
+    /// as the copy a lock left or as a backup, and for a backup why it is open.
+    /// Read off the chosen file's name, and the name decides which strip is
+    /// drawn - a backup drawn as a copy would offer "Make this my vault", which
+    /// refuses anything but a copy.
+    #[test]
+    fn the_strip_over_a_chosen_file_is_the_one_its_name_calls_for() {
+        let folder = tempfile::tempdir().expect("a scratch directory");
+        let vault = folder.path().join("vault.kdbx");
+        let said = |chosen: &Path| {
+            let (copy, snapshot) = beside(&Session::new(Some(chosen.to_path_buf()), None));
+            let copy = copy.map(|copy| serde_json::to_value(copy).expect("the copy serialises"));
+            let snapshot = snapshot
+                .map(|snapshot| serde_json::to_value(snapshot).expect("the backup serialises"));
+            (
+                copy.map(|copy| copy["vault"].clone()),
+                snapshot.map(|snapshot| (snapshot["vault"].clone(), snapshot["because"].clone())),
+            )
+        };
+
+        assert_eq!(said(&vault), (None, None), "a vault");
+        assert_eq!(
+            said(&folder.path().join("vault.kdbx.unsaved.kdbx")),
+            (Some(serde_json::json!("vault.kdbx")), None),
+            "a lock's copy"
+        );
+        assert_eq!(
+            said(&folder.path().join("vault.kdbx.2.bak")),
+            (
+                None,
+                Some((serde_json::json!("vault.kdbx"), serde_json::json!("asked")))
+            ),
+            "a backup"
+        );
+        assert_eq!(
+            said(&folder.path().join("vault.kdbx.unsaved.kdbx.2.bak")),
+            (
+                None,
+                Some((
+                    serde_json::json!("vault.kdbx.unsaved.kdbx"),
+                    serde_json::json!("asked")
+                ))
+            ),
+            "a backup of a lock's copy"
+        );
+
+        // Opened from the list a vault file that would not open was answered
+        // with, a backup says that is why.
+        std::fs::write(&vault, b"not a database").expect("the file is written");
+        std::fs::write(folder.path().join("vault.kdbx.1.bak"), b"nor this")
+            .expect("the file is written");
+        let session = Session::new(Some(vault), None);
+        let refused = session
+            .unlock(
+                Zeroizing::new(b"coffer-test".to_vec()),
+                vault_core::LockPolicy::Respect,
+            )
+            .expect_err("the file is not a database");
+        assert_eq!(code_of(refused), "notADatabase");
+        session.snapshots().expect("the backups are listed");
+        session.look(1).expect("the backup is there");
+        let (copy, snapshot) = beside(&session);
+        assert!(copy.is_none());
+        let snapshot = serde_json::to_value(snapshot.expect("a backup is chosen"))
+            .expect("the backup serialises");
+        assert_eq!(snapshot["because"], "unopened");
     }
 
     #[test]

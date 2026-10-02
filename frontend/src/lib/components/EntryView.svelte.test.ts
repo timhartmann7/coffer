@@ -1,43 +1,17 @@
-import { flushSync, mount, unmount } from 'svelte';
+import { flushSync, mount, unmount, type ComponentProps } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { attachment, drawing, entry, field, generated, group } from '$lib/fixtures';
+import { chosen as picked, forget } from '$lib/context.svelte';
+import { attachment, drawing, entry, field, generated, group, kinds } from '$lib/fixtures';
 import { typing } from '$lib/keys';
 import type { Attached, Clash, Entry, Generated, Purpose, Recipe } from '$lib/model';
 import { reactive } from '$lib/props.svelte';
+import type { Stubbed } from '$lib/stubbed';
 import EntryView from './EntryView.svelte';
 
-const ipc = vi.hoisted(() => ({
-	reveal: vi.fn(),
-	openUrl: vi.fn(),
-	setField: vi.fn(),
-	draft: vi.fn(),
-	removeField: vi.fn(),
-	setProtection: vi.fn(),
-	renameField: vi.fn(),
-	setTags: vi.fn(),
-	addAttachment: vi.fn(),
-	keepBothAttachments: vi.fn(),
-	replaceAttachment: vi.fn(),
-	withdrawAttachment: vi.fn(),
-	exportAttachment: vi.fn(),
-	removeAttachment: vi.fn(),
-	generator: vi.fn(),
-	generatePassword: vi.fn(),
-	versions: vi.fn(),
-	version: vi.fn(),
-	revealVersion: vi.fn(),
-	restoreVersion: vi.fn(),
-	deleteVersion: vi.fn(),
-	clearHistory: vi.fn(),
-	removeAttachmentAndVersions: vi.fn(),
-	// The same reading the real one does: a command rejects with the value Rust
-	// serialised, and anything else is not one.
-	asFailure: (thrown: unknown) =>
-		thrown && typeof (thrown as { message?: unknown }).message === 'string'
-			? (thrown as { code: string; message: string })
-			: { code: 'other', message: 'Coffer could not finish that.' }
-}));
-vi.mock('$lib/ipc', () => ipc);
+const ipc = vi.hoisted(() => ({}) as Stubbed);
+vi.mock(import('$lib/ipc'), async (real) =>
+	Object.assign(ipc, (await import('$lib/stubbed')).stubbed(await real()))
+);
 
 const SECRET = 'correct horse battery staple';
 const MARKUP = '<script>alert(1)</script>';
@@ -52,9 +26,11 @@ beforeEach(() => {
 	ipc.withdrawAttachment.mockResolvedValue(undefined);
 	ipc.draft.mockResolvedValue(undefined);
 	ipc.generator.mockResolvedValue(drawing());
+	ipc.contextMenu.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
+	forget();
 	host.remove();
 	localStorage.clear();
 	// A selection one test made is still standing in the next one otherwise,
@@ -63,25 +39,37 @@ afterEach(() => {
 	document.getSelection()?.removeAllRanges();
 });
 
+/**
+ * What the window hands the pane, with what a test is about put over it: the
+ * entry, and the callbacks whose calls it reads. One place, so that a prop the
+ * pane comes to need is given a default once rather than at every mount.
+ */
+function props<Over extends Partial<ComponentProps<typeof EntryView>>>(over: Over) {
+	return {
+		root: group({ name: 'Root' }),
+		path: [group({ name: 'Work' })],
+		history: null,
+		now: new Date('2026-08-29T14:30:00Z'),
+		readOnly: false,
+		suggested: kinds().suggested,
+		onCopy: vi.fn(),
+		onChanged: vi.fn(),
+		onVersions: vi.fn(),
+		onClose: vi.fn(),
+		onDuplicate: vi.fn(),
+		onDelete: vi.fn(),
+		onPutBack: vi.fn(),
+		onMove: vi.fn(),
+		onFieldRemoved: vi.fn(),
+		onFailure: vi.fn(),
+		...over
+	};
+}
+
 function show(entryOver: Parameters<typeof entry>[0]) {
 	return mount(EntryView, {
 		target: host,
-		props: {
-			entry: entry(entryOver),
-			root: group({ name: 'Root' }),
-			path: [group({ name: 'Work' })],
-			history: null,
-			now: new Date('2026-08-29T14:30:00Z'),
-			readOnly: false,
-			onCopy: vi.fn(),
-			onChanged: vi.fn(),
-			onVersions: vi.fn(),
-			onClose: vi.fn(),
-			onDelete: vi.fn(),
-			onPutBack: vi.fn(),
-			onFieldRemoved: vi.fn(),
-			onFailure: vi.fn()
-		}
+		props: props({ entry: entry(entryOver) })
 	});
 }
 
@@ -162,6 +150,18 @@ function choose(node: HTMLElement, from: number, to: number) {
 	const selection = document.getSelection();
 	selection?.removeAllRanges();
 	selection?.addRange(range);
+}
+
+/** A right-click on `target`, and the menu the window asked Rust for: what it
+ * is about, and the number an item chosen from it comes back with. */
+function menuOn(target: Element): { event: MouseEvent; serial: number; subject: unknown } {
+	const before = ipc.contextMenu.mock.calls.length;
+	const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+	target.dispatchEvent(event);
+	const call = ipc.contextMenu.mock.calls.at(-1);
+	if (ipc.contextMenu.mock.calls.length === before || !call)
+		return { event, serial: -1, subject: null };
+	return { event, serial: call[0] as number, subject: call[1] };
 }
 
 /** What the system's Copy or Cut menu item fires at the node holding the
@@ -829,24 +829,12 @@ it('shows a file under the name the database holds and exports it under a safe o
 
 	const component = mount(EntryView, {
 		target: host,
-		props: {
+		props: props({
 			entry: entry({
 				attachments: [attachment({ name: '../../escape.txt', fileName: 'escape.txt', size: 12 })]
 			}),
-			root: group({ name: 'Root' }),
-			path: [group({ name: 'Work' })],
-			history: null,
-			now: new Date('2026-08-29T14:30:00Z'),
-			readOnly: false,
-			onCopy: vi.fn(),
-			onChanged,
-			onVersions: vi.fn(),
-			onClose: vi.fn(),
-			onDelete: vi.fn(),
-			onPutBack: vi.fn(),
-			onFieldRemoved: vi.fn(),
-			onFailure: vi.fn()
-		}
+			onChanged
+		})
 	});
 	flushSync();
 
@@ -1071,22 +1059,12 @@ it('offers to clear the versions that are holding a file back', async () => {
 
 	const component = mount(EntryView, {
 		target: host,
-		props: {
+		props: props({
 			entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
-			root: group({ name: 'Root' }),
-			path: [group({ name: 'Work' })],
-			history: null,
-			now: new Date('2026-08-29T14:30:00Z'),
-			readOnly: false,
-			onCopy: vi.fn(),
 			onChanged,
 			onVersions,
-			onClose: vi.fn(),
-			onDelete: vi.fn(),
-			onPutBack: vi.fn(),
-			onFieldRemoved: vi.fn(),
 			onFailure
-		}
+		})
 	});
 	flushSync();
 
@@ -1123,27 +1101,15 @@ it('refuses a new field named after one the entry already has', async () => {
 	const onFailure = vi.fn();
 	const component = mount(EntryView, {
 		target: host,
-		props: {
+		props: props({
 			entry: entry({
 				fields: [
 					field({ name: 'Password', kind: 'password', value: null, empty: false }),
 					field({ name: 'Notes', kind: 'notes', value: 'root access', empty: false })
 				]
 			}),
-			root: group({ name: 'Root' }),
-			path: [group({ name: 'Work' })],
-			history: null,
-			now: new Date('2026-08-29T14:30:00Z'),
-			readOnly: false,
-			onCopy: vi.fn(),
-			onChanged: vi.fn(),
-			onVersions: vi.fn(),
-			onClose: vi.fn(),
-			onDelete: vi.fn(),
-			onPutBack: vi.fn(),
-			onFieldRemoved: vi.fn(),
 			onFailure
-		}
+		})
 	});
 	flushSync();
 
@@ -1179,23 +1145,10 @@ it('says nothing about the entry that was open once another one is', async () =>
 
 	// A props object the test can change, which is how the window hands the pane
 	// another entry.
-	const props = reactive({
-		entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
-		root: group({ name: 'Root' }),
-		path: [group({ name: 'Work' })],
-		history: null,
-		now: new Date('2026-08-29T14:30:00Z'),
-		readOnly: false,
-		onCopy: vi.fn(),
-		onChanged: vi.fn(),
-		onVersions: vi.fn(),
-		onClose: vi.fn(),
-		onDelete: vi.fn(),
-		onPutBack: vi.fn(),
-		onFieldRemoved: vi.fn(),
-		onFailure: vi.fn()
-	});
-	const component = mount(EntryView, { target: host, props });
+	const handed = reactive(
+		props({ entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }) })
+	);
+	const component = mount(EntryView, { target: host, props: handed });
 	flushSync();
 
 	host.querySelector<HTMLButtonElement>('[aria-label="Remove id_ed25519"]')?.click();
@@ -1204,7 +1157,7 @@ it('says nothing about the entry that was open once another one is', async () =>
 	await vi.waitFor(() => expect(host.textContent).toContain('2 earlier versions still hold'));
 	flushSync();
 
-	props.entry = entry({ attachments: [attachment({ name: 'other.pem' })] });
+	handed.entry = entry({ attachments: [attachment({ name: 'other.pem' })] });
 	flushSync();
 
 	expect(host.textContent).not.toContain('2 earlier versions still hold');
@@ -1217,7 +1170,7 @@ it('says nothing about the entry that was open once another one is', async () =>
 it('offers no change on a database it cannot write', () => {
 	const component = mount(EntryView, {
 		target: host,
-		props: {
+		props: props({
 			entry: entry({
 				fields: [
 					field({ name: 'Title', kind: 'title', value: 'node-3', empty: false }),
@@ -1226,20 +1179,8 @@ it('offers no change on a database it cannot write', () => {
 				tags: ['prod'],
 				attachments: [attachment({ name: 'id_ed25519' })]
 			}),
-			root: group({ name: 'Root' }),
-			path: [group({ name: 'Work' })],
-			history: null,
-			now: new Date('2026-08-29T14:30:00Z'),
-			readOnly: true,
-			onCopy: vi.fn(),
-			onChanged: vi.fn(),
-			onVersions: vi.fn(),
-			onClose: vi.fn(),
-			onDelete: vi.fn(),
-			onPutBack: vi.fn(),
-			onFieldRemoved: vi.fn(),
-			onFailure: vi.fn()
-		}
+			readOnly: true
+		})
 	});
 	flushSync();
 
@@ -1401,37 +1342,38 @@ it('keeps the password field the same box whether or not it is revealed', async 
  * the way out and nothing else; deleting is a labelled action at the foot of
  * the pane, after everything else in it.
  */
-it('offers a way out of the entry, and it is not the way to delete one', () => {
+it('offers a way out of the entry and a copy of it, and neither is the way to delete one', () => {
 	const onClose = vi.fn();
 	const onDelete = vi.fn();
+	const onDuplicate = vi.fn();
 	const component = mount(EntryView, {
 		target: host,
-		props: {
+		props: props({
 			entry: entry({ fields: [field({ name: 'Title', kind: 'title', value: 'node-3' })] }),
-			root: group({ name: 'Root' }),
-			path: [group({ name: 'Work' })],
-			history: null,
-			now: new Date('2026-08-29T14:30:00Z'),
-			readOnly: false,
-			onCopy: vi.fn(),
-			onChanged: vi.fn(),
-			onVersions: vi.fn(),
 			onClose,
 			onDelete,
-			onPutBack: vi.fn(),
-			onFieldRemoved: vi.fn(),
-			onFailure: vi.fn()
-		}
+			onDuplicate
+		})
 	});
 	flushSync();
 
 	const header = host.querySelector('header');
-	const buttons = [...(header?.querySelectorAll('button') ?? [])].map((each) =>
-		each.getAttribute('aria-label')
+	// The line above the title opens a list of folders, which moves the entry
+	// and loses nothing; Duplicate makes another, which loses nothing either.
+	const buttons = [...(header?.querySelectorAll('button:not([aria-haspopup])') ?? [])].map(
+		(each) => each.getAttribute('aria-label') ?? each.textContent?.trim()
 	);
 	expect(buttons, 'something that loses the entry is back beside the close').toEqual([
+		'Duplicate',
 		'Close this entry'
 	]);
+	const copy = button('Duplicate');
+	expect(copy.title).toBe('Duplicate · ⌘D');
+	expect(copy.getAttribute('aria-keyshortcuts')).toBe('Meta+D');
+	copy.click();
+	flushSync();
+	expect(onDuplicate).toHaveBeenCalledTimes(1);
+	expect(onDelete, 'the copy deleted the entry').not.toHaveBeenCalled();
 
 	// The last button in the pane, in words.
 	const all = [...host.querySelectorAll('button')];
@@ -1452,22 +1394,11 @@ it('still offers the way out when there is nothing else in the header', () => {
 	const onClose = vi.fn();
 	const component = mount(EntryView, {
 		target: host,
-		props: {
+		props: props({
 			entry: entry({ fields: [field({ name: 'Title', kind: 'title', value: 'node-3' })] }),
-			root: group({ name: 'Root' }),
-			path: [group({ name: 'Work' })],
-			history: null,
-			now: new Date('2026-08-29T14:30:00Z'),
 			readOnly: true,
-			onCopy: vi.fn(),
-			onChanged: vi.fn(),
-			onVersions: vi.fn(),
-			onClose,
-			onDelete: vi.fn(),
-			onPutBack: vi.fn(),
-			onFieldRemoved: vi.fn(),
-			onFailure: vi.fn()
-		}
+			onClose
+		})
 	});
 	flushSync();
 
@@ -1491,22 +1422,11 @@ it('does not report a change when the file panel was closed without one', async 
 
 	const component = mount(EntryView, {
 		target: host,
-		props: {
+		props: props({
 			entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
-			root: group({ name: 'Root' }),
-			path: [group({ name: 'Work' })],
-			history: null,
-			now: new Date('2026-08-29T14:30:00Z'),
-			readOnly: false,
-			onCopy: vi.fn(),
 			onChanged,
-			onVersions: vi.fn(),
-			onClose: vi.fn(),
-			onDelete: vi.fn(),
-			onPutBack: vi.fn(),
-			onFieldRemoved: vi.fn(),
 			onFailure
-		}
+		})
 	});
 	flushSync();
 
@@ -1717,23 +1637,8 @@ it('offers the name itself once the file there has gone', async () => {
 	ipc.addAttachment.mockReset();
 	ipc.addAttachment.mockResolvedValue(taken());
 	const first = entry({ attachments: [attachment({ name: SCAN })] });
-	const props = reactive({
-		entry: first,
-		root: group({ name: 'Root' }),
-		path: [group({ name: 'Work' })],
-		history: null,
-		now: new Date('2026-08-29T14:30:00Z'),
-		readOnly: false,
-		onCopy: vi.fn(),
-		onChanged: vi.fn(),
-		onVersions: vi.fn(),
-		onClose: vi.fn(),
-		onDelete: vi.fn(),
-		onPutBack: vi.fn(),
-		onFieldRemoved: vi.fn(),
-		onFailure: vi.fn()
-	});
-	const component = mount(EntryView, { target: host, props });
+	const handed = reactive(props({ entry: first }));
+	const component = mount(EntryView, { target: host, props: handed });
 	flushSync();
 
 	icon('Add a file').click();
@@ -1742,7 +1647,7 @@ it('offers the name itself once the file there has gone', async () => {
 	await vi.waitFor(() => expect(question()).toContain('Earlier versions are holding'));
 
 	// The file there, and the versions holding it, taken off by its own trash.
-	props.entry = { ...first, attachments: [] };
+	handed.entry = { ...first, attachments: [] };
 	flushSync();
 
 	expect(question()).toContain(`“\u2068${SCAN}\u2069” is no longer on this entry`);
@@ -1750,7 +1655,7 @@ it('offers the name itself once the file there has gone', async () => {
 	expect(answers.map((each) => each.textContent?.trim())).toEqual(['Don’t add it', 'Add it']);
 
 	button('Add it').click();
-	await vi.waitFor(() => expect(props.onChanged).toHaveBeenCalledWith(only));
+	await vi.waitFor(() => expect(handed.onChanged).toHaveBeenCalledWith(only));
 	expect(ipc.keepBothAttachments).toHaveBeenCalledWith(first.id);
 	expect(ipc.withdrawAttachment).not.toHaveBeenCalled();
 
@@ -1789,29 +1694,14 @@ it('lets the file go when the pane shows another entry or none', async () => {
 	ipc.addAttachment.mockReset();
 	ipc.addAttachment.mockResolvedValue(taken());
 	const first = entry({ attachments: [attachment({ name: SCAN })] });
-	const props = reactive({
-		entry: first,
-		root: group({ name: 'Root' }),
-		path: [group({ name: 'Work' })],
-		history: null,
-		now: new Date('2026-08-29T14:30:00Z'),
-		readOnly: false,
-		onCopy: vi.fn(),
-		onChanged: vi.fn(),
-		onVersions: vi.fn(),
-		onClose: vi.fn(),
-		onDelete: vi.fn(),
-		onPutBack: vi.fn(),
-		onFieldRemoved: vi.fn(),
-		onFailure: vi.fn()
-	});
-	const component = mount(EntryView, { target: host, props });
+	const handed = reactive(props({ entry: first }));
+	const component = mount(EntryView, { target: host, props: handed });
 	flushSync();
 
 	icon('Add a file').click();
 	await vi.waitFor(() => expect(host.querySelector('[data-confirm]')).not.toBeNull());
 
-	props.entry = entry({ attachments: [attachment({ name: SCAN })] });
+	handed.entry = entry({ attachments: [attachment({ name: SCAN })] });
 	flushSync();
 
 	expect(host.querySelector('[data-confirm]')).toBeNull();
@@ -1822,7 +1712,7 @@ it('lets the file go when the pane shows another entry or none', async () => {
 	// both look from here.
 	icon('Add a file').click();
 	await vi.waitFor(() => expect(host.querySelector('[data-confirm]')).not.toBeNull());
-	const second = props.entry.id;
+	const second = handed.entry.id;
 	unmount(component);
 	expect(ipc.withdrawAttachment).toHaveBeenLastCalledWith(second);
 	expect(ipc.keepBothAttachments).not.toHaveBeenCalled();
@@ -1839,29 +1729,14 @@ it('keeps the question while the entry it is about changes', async () => {
 	ipc.addAttachment.mockReset();
 	ipc.addAttachment.mockResolvedValue(taken());
 	const first = entry({ attachments: [attachment({ name: SCAN })] });
-	const props = reactive({
-		entry: first,
-		root: group({ name: 'Root' }),
-		path: [group({ name: 'Work' })],
-		history: null,
-		now: new Date('2026-08-29T14:30:00Z'),
-		readOnly: false,
-		onCopy: vi.fn(),
-		onChanged: vi.fn(),
-		onVersions: vi.fn(),
-		onClose: vi.fn(),
-		onDelete: vi.fn(),
-		onPutBack: vi.fn(),
-		onFieldRemoved: vi.fn(),
-		onFailure: vi.fn()
-	});
-	const component = mount(EntryView, { target: host, props });
+	const handed = reactive(props({ entry: first }));
+	const component = mount(EntryView, { target: host, props: handed });
 	flushSync();
 
 	icon('Add a file').click();
 	await vi.waitFor(() => expect(host.querySelector('[data-confirm]')).not.toBeNull());
 
-	props.entry = { ...first, fields: [field({ name: 'Title', value: 'Passport', empty: false })] };
+	handed.entry = { ...first, fields: [field({ name: 'Title', value: 'Passport', empty: false })] };
 	flushSync();
 
 	expect(question()).toContain(`This entry already has “\u2068${SCAN}\u2069”`);
@@ -1877,27 +1752,12 @@ it('asks nothing when the pane has moved on by the time the answer comes', async
 	ipc.addAttachment.mockReset();
 	ipc.addAttachment.mockReturnValue(new Promise<Attached>((resolve) => (answer = resolve)));
 	const first = entry({ attachments: [attachment({ name: SCAN })] });
-	const props = reactive({
-		entry: first,
-		root: group({ name: 'Root' }),
-		path: [group({ name: 'Work' })],
-		history: null,
-		now: new Date('2026-08-29T14:30:00Z'),
-		readOnly: false,
-		onCopy: vi.fn(),
-		onChanged: vi.fn(),
-		onVersions: vi.fn(),
-		onClose: vi.fn(),
-		onDelete: vi.fn(),
-		onPutBack: vi.fn(),
-		onFieldRemoved: vi.fn(),
-		onFailure: vi.fn()
-	});
-	const component = mount(EntryView, { target: host, props });
+	const handed = reactive(props({ entry: first }));
+	const component = mount(EntryView, { target: host, props: handed });
 	flushSync();
 
 	icon('Add a file').click();
-	props.entry = entry({ attachments: [attachment({ name: SCAN })] });
+	handed.entry = entry({ attachments: [attachment({ name: SCAN })] });
 	flushSync();
 	answer(taken());
 
@@ -1985,26 +1845,14 @@ it('copies a protected own field through rust rather than off the screen', async
 	const onCopy = vi.fn();
 	const component = mount(EntryView, {
 		target: host,
-		props: {
+		props: props({
 			entry: entry({
 				fields: [
 					field({ name: 'API token', kind: 'custom', protected: true, value: null, empty: false })
 				]
 			}),
-			root: group({ name: 'Root' }),
-			path: [group({ name: 'Work' })],
-			history: null,
-			now: new Date('2026-08-29T14:30:00Z'),
-			readOnly: false,
-			onCopy,
-			onChanged: vi.fn(),
-			onVersions: vi.fn(),
-			onClose: vi.fn(),
-			onDelete: vi.fn(),
-			onPutBack: vi.fn(),
-			onFieldRemoved: vi.fn(),
-			onFailure: vi.fn()
-		}
+			onCopy
+		})
 	});
 	flushSync();
 
@@ -2171,11 +2019,17 @@ it('hands a copy or a cut of a revealed value to Rust, the part selected and no 
 /**
  * The menu WebKit draws under the pointer offers Look Up, Translate, Search
  * and Share, each of which hands the value to another application, and a
- * selection dragged out of the window goes wherever it is dropped. Neither
- * starts on a revealed value, wherever in the pane that value is.
+ * selection dragged out of the window goes wherever it is dropped. On a
+ * revealed value, wherever in the pane it is, the menu is Coffer's - Copy,
+ * through Rust, and Hide - and the drag does not start. What Rust is asked
+ * for names the field, and holds nothing of the value.
  */
-it('draws no menu and starts no drag on a revealed value', async () => {
-	const { component } = pane({
+it('asks for Coffer’s menu and never WebKit’s on a revealed value, and sends none of it', async () => {
+	const {
+		component,
+		entry: shown,
+		onCopy
+	} = pane({
 		fields: [
 			field({ name: 'UserName', kind: 'username', value: null, empty: false }),
 			field({ name: 'Password', kind: 'password', value: null, empty: false }),
@@ -2192,13 +2046,261 @@ it('draws no menu and starts no drag on a revealed value', async () => {
 			eye.click();
 	await vi.waitFor(() => expect(nodes.every((node) => node.textContent === SECRET)).toBe(true));
 
-	for (const node of nodes) {
-		for (const kind of ['contextmenu', 'dragstart']) {
-			const event = new MouseEvent(kind, { bubbles: true, cancelable: true });
-			node.dispatchEvent(event);
-			expect(event.defaultPrevented, `${kind} was left to the system`).toBe(true);
-		}
+	const names = ['UserName', 'Password', 'Notes', 'PIN'];
+	for (const [at, node] of nodes.entries()) {
+		const { event, subject } = menuOn(node);
+		expect(event.defaultPrevented, `${names[at]}: WebKit's menu`).toBe(true);
+		expect(subject).toEqual({ kind: 'value', entry: shown.id, field: names[at], range: null });
+		const drag = new MouseEvent('dragstart', { bubbles: true, cancelable: true });
+		node.dispatchEvent(drag);
+		expect(drag.defaultPrevented, `${names[at]}: a drag`).toBe(true);
 	}
+	expect(ipc.contextMenu).toHaveBeenCalledTimes(4);
+	expect(JSON.stringify(ipc.contextMenu.mock.calls)).not.toContain(SECRET);
+
+	// Copy from the menu over the password: that field, through Rust.
+	const copying = menuOn(nodes[1]);
+	picked(copying.serial, { item: 'copyValue', entry: shown.id, field: 'Password', range: null });
+	expect(onCopy).toHaveBeenLastCalledWith(shown.id, 'Password', null);
+
+	// Hide from the menu over the PIN takes that value off the screen, and no
+	// other.
+	const hiding = menuOn(nodes[3]);
+	picked(hiding.serial, { item: 'hideField', entry: shown.id, field: 'PIN' });
+	flushSync();
+	expect(nodes[3].textContent).toBe('');
+	expect(nodes.slice(0, 3).map((node) => node.textContent)).toEqual([SECRET, SECRET, SECRET]);
+
+	return unmount(component);
+});
+
+/** Every item of a hidden field's menu is one of the row's own buttons: the
+ * eye, the copy, Change, Make one and the trash, which takes the field off the
+ * way its trash does. */
+it('answers a hidden field’s menu with the row’s own buttons', async () => {
+	ipc.removeField.mockResolvedValue(entry());
+	const {
+		component,
+		entry: shown,
+		onCopy
+	} = pane({
+		fields: [field({ name: 'PIN', kind: 'custom', protected: true, value: null, empty: false })]
+	});
+	const name = icon('Rename PIN');
+
+	let menu = menuOn(name);
+	expect(menu.event.defaultPrevented).toBe(true);
+	expect(menu.subject).toEqual({ kind: 'field', entry: shown.id, field: 'PIN', shown: false });
+	picked(menu.serial, { item: 'showField', entry: shown.id, field: 'PIN' });
+	await vi.waitFor(() => expect(ipc.reveal).toHaveBeenCalledWith(shown.id, 'PIN'));
+	flushSync();
+	expect(menuOn(name).subject, 'Hide is offered once it is shown').toMatchObject({ shown: true });
+
+	menu = menuOn(name);
+	picked(menu.serial, { item: 'copyField', entry: shown.id, field: 'PIN' });
+	expect(onCopy).toHaveBeenLastCalledWith(shown.id, 'PIN', null);
+
+	menu = menuOn(name);
+	picked(menu.serial, { item: 'changeField', entry: shown.id, field: 'PIN' });
+	flushSync();
+	expect(changer('New value of PIN')).not.toBeNull();
+
+	menu = menuOn(changer('New value of PIN'));
+	expect(menu.event.defaultPrevented, 'the Change field lost WebKit’s menu').toBe(false);
+	expect(menu.serial, 'the Change field is the reader’s typing').toBe(-1);
+
+	return unmount(component);
+});
+
+it('makes a value for a hidden field and takes it off from the row’s menu', async () => {
+	ipc.removeField.mockResolvedValue(entry());
+	const { component, entry: shown } = pane({
+		fields: [field({ name: 'PIN', kind: 'custom', protected: true, value: null, empty: false })]
+	});
+
+	let menu = menuOn(icon('Rename PIN'));
+	picked(menu.serial, { item: 'makeOne', entry: shown.id, field: 'PIN' });
+	flushSync();
+	expect(host.querySelector('[aria-label="Generator for PIN"]')).not.toBeNull();
+
+	menu = menuOn(icon('Keep PIN hidden'));
+	picked(menu.serial, { item: 'removeField', entry: shown.id, field: 'PIN' });
+	await vi.waitFor(() => expect(ipc.removeField).toHaveBeenCalledWith(shown.id, 'PIN', false));
+
+	return unmount(component);
+});
+
+/** The password's row is its name, its value and its buttons, and its menu
+ * offers what the buttons do. Its Change field is the reader's typing, and
+ * keeps WebKit's menu for it. */
+it('answers the password row’s menu with Show, Copy, Change and Make one', async () => {
+	const {
+		component,
+		entry: shown,
+		onCopy
+	} = pane({
+		fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+	});
+	const label = [...host.querySelectorAll('span')].find(
+		(each) => each.textContent.trim() === 'Password'
+	);
+	if (!label) throw new Error('the password row has no name');
+
+	let menu = menuOn(label);
+	expect(menu.subject).toEqual({ kind: 'field', entry: shown.id, field: 'Password', shown: false });
+	picked(menu.serial, { item: 'showField', entry: shown.id, field: 'Password' });
+	await vi.waitFor(() => expect(value()).toBe(SECRET));
+
+	menu = menuOn(button('Hide'));
+	expect(menu.subject).toMatchObject({ shown: true });
+	picked(menu.serial, { item: 'hideField', entry: shown.id, field: 'Password' });
+	flushSync();
+	expect(value()).toBe('');
+
+	menu = menuOn(button('Copy'));
+	picked(menu.serial, { item: 'copyField', entry: shown.id, field: 'Password' });
+	expect(onCopy).toHaveBeenLastCalledWith(shown.id, 'Password', null);
+
+	menu = menuOn(label);
+	picked(menu.serial, { item: 'makeOne', entry: shown.id, field: 'Password' });
+	flushSync();
+	expect(host.querySelector('[aria-label="Password generator"]')).not.toBeNull();
+
+	menu = menuOn(label);
+	picked(menu.serial, { item: 'changeField', entry: shown.id, field: 'Password' });
+	flushSync();
+	const typing = changer('New password');
+	const typed = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+	const asked = ipc.contextMenu.mock.calls.length;
+	typing.dispatchEvent(typed);
+	expect(typed.defaultPrevented, 'the Change field lost WebKit’s menu').toBe(false);
+	expect(ipc.contextMenu).toHaveBeenCalledTimes(asked);
+
+	return unmount(component);
+});
+
+/** A file's menu is its two buttons: the save panel, and the question in its
+ * row before it goes. Nothing is removed from the menu alone. */
+it('saves a file from its menu through the panel, and asks before removing it', () => {
+	ipc.exportAttachment.mockResolvedValue(undefined);
+	const { component, entry: shown } = pane({
+		attachments: [attachment({ name: '../../escape.txt', fileName: 'escape.txt' })]
+	});
+	const card = icon('Remove ../../escape.txt').closest('[role="presentation"]');
+	if (!card) throw new Error('the file has no row');
+
+	let menu = menuOn(card);
+	flushSync();
+	expect(menu.subject).toEqual({ kind: 'file', entry: shown.id, name: '../../escape.txt' });
+	expect(card.hasAttribute('data-menu'), 'the row is marked while the menu is open').toBe(true);
+	picked(menu.serial, { item: 'saveFile', entry: shown.id, name: '../../escape.txt' });
+	expect(ipc.exportAttachment).toHaveBeenCalledWith(shown.id, '../../escape.txt');
+
+	menu = menuOn(card);
+	picked(menu.serial, { item: 'removeFile', entry: shown.id, name: '../../escape.txt' });
+	flushSync();
+	expect(host.querySelector('[data-confirm]')?.textContent).toContain('can’t be undone');
+	expect(ipc.removeAttachment).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/** The menu was about a field of one entry, and the pane is on another by the
+ * time the item comes - with a field of the same name. Nothing happens to
+ * either. The row of a field of the reader's own is drawn again for the next
+ * entry, so the row the menu was asked on has left the screen and that is
+ * what drops its item (`chosen` in `context.svelte.ts`); the password's row
+ * and a file's stay, and their answers compare the ids (`about`). */
+it('changes nothing from an item chosen for an entry the pane no longer shows', () => {
+	const first = entry({
+		fields: [field({ name: 'PIN', kind: 'custom', protected: true, value: null, empty: false })],
+		attachments: [attachment({ name: 'scan.pdf' })]
+	});
+	const handed = reactive(props({ entry: first }));
+	const component = mount(EntryView, { target: host, props: handed });
+	flushSync();
+	const own = menuOn(icon('Rename PIN'));
+	const label = [...host.querySelectorAll('span')].find(
+		(each) => each.textContent.trim() === 'Password'
+	);
+	if (!label) throw new Error('the password row has no name');
+
+	handed.entry = entry({
+		fields: [field({ name: 'PIN', kind: 'custom', protected: true, value: null, empty: false })],
+		attachments: [attachment({ name: 'scan.pdf' })]
+	});
+	flushSync();
+	picked(own.serial, { item: 'removeField', entry: first.id, field: 'PIN' });
+	const password = menuOn(label);
+	picked(password.serial, { item: 'changeField', entry: first.id, field: 'Password' });
+	const card = icon('Remove scan.pdf').closest('[role="presentation"]');
+	if (!card) throw new Error('the file has no row');
+	const file = menuOn(card);
+	picked(file.serial, { item: 'removeFile', entry: first.id, name: 'scan.pdf' });
+	flushSync();
+
+	expect(ipc.removeField).not.toHaveBeenCalled();
+	expect(host.querySelector('textarea[aria-label="New password"]')).toBeNull();
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+
+	return unmount(component);
+});
+
+/** The question that deletes an entry for good is put on its bin card while
+ * it is in the bin, and at the foot of the pane while it is not. An entry put
+ * back under the card's question is asked about nowhere: at the foot the
+ * question would stand over a button that moves the entry to the bin. */
+it('drops the bin card’s question when the entry leaves the bin under it', () => {
+	const binned = entry({
+		fields: titled('Bank'),
+		binned: { since: '2026-08-27T10:00:00Z', within: null, from: null },
+		deletion: 'forever'
+	});
+	const handed = reactive(props({ entry: binned }));
+	const component = mount(EntryView, { target: host, props: handed });
+	flushSync();
+	button('Delete forever…').click();
+	flushSync();
+	expect(host.querySelector('[data-binned] [data-confirm]')).not.toBeNull();
+
+	handed.entry = { ...binned, binned: null, deletion: 'bin' };
+	flushSync();
+	expect(host.querySelector('[data-binned]')).toBeNull();
+	expect(host.querySelector('[data-confirm]'), 'asked at the foot').toBeNull();
+	button('Move to Recycle Bin').click();
+	expect(handed.onDelete).toHaveBeenCalledTimes(1);
+
+	return unmount(component);
+});
+
+/** A vault Coffer will not write back still shows its menus - a value is
+ * still copied and shown - and nothing chosen from one changes anything. */
+it('changes nothing from a menu in a pane that cannot be written', () => {
+	const { component, entry: shown } = pane(
+		{
+			fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })],
+			attachments: [attachment({ name: 'scan.pdf' })]
+		},
+		true
+	);
+	const card = [...host.querySelectorAll('[role="presentation"]')].find((each) =>
+		each.textContent?.includes('scan.pdf')
+	);
+	if (!card) throw new Error('the file has no row');
+	const label = [...host.querySelectorAll('span')].find(
+		(each) => each.textContent.trim() === 'Password'
+	);
+	if (!label) throw new Error('the password row has no name');
+
+	const file = menuOn(card);
+	expect(file.event.defaultPrevented).toBe(true);
+	picked(file.serial, { item: 'removeFile', entry: shown.id, name: 'scan.pdf' });
+	const password = menuOn(label);
+	picked(password.serial, { item: 'changeField', entry: shown.id, field: 'Password' });
+	flushSync();
+
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+	expect(host.querySelector('textarea[aria-label="New password"]')).toBeNull();
 
 	return unmount(component);
 });
@@ -2302,25 +2404,10 @@ it('names a new field to be written in lines', async () => {
 
 /** The pane with its callbacks as mocks the test can read. */
 function pane(over: Parameters<typeof entry>[0], readOnly = false) {
-	const props = {
-		entry: entry(over),
-		root: group({ name: 'Root' }),
-		path: [group({ name: 'Work' })],
-		history: null,
-		now: new Date('2026-08-29T14:30:00Z'),
-		readOnly,
-		onCopy: vi.fn(),
-		onChanged: vi.fn(),
-		onVersions: vi.fn(),
-		onClose: vi.fn(),
-		onDelete: vi.fn(),
-		onPutBack: vi.fn(),
-		onFieldRemoved: vi.fn(),
-		onFailure: vi.fn()
-	};
-	const component = mount(EntryView, { target: host, props });
+	const handed = props({ entry: entry(over), readOnly });
+	const component = mount(EntryView, { target: host, props: handed });
 	flushSync();
-	return { component, ...props };
+	return { component, ...handed };
 }
 
 /**
@@ -2423,30 +2510,17 @@ it('keeps the question when the copy could not be saved', async () => {
 /** The pane is handed one entry after another. A question about a file on the
  * entry that was open would otherwise be answered against the next one. */
 it('asks nothing about a file once another entry is open', () => {
-	const props = reactive({
-		entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }),
-		root: group({ name: 'Root' }),
-		path: [group({ name: 'Work' })],
-		history: null,
-		now: new Date('2026-08-29T14:30:00Z'),
-		readOnly: false,
-		onCopy: vi.fn(),
-		onChanged: vi.fn(),
-		onVersions: vi.fn(),
-		onClose: vi.fn(),
-		onDelete: vi.fn(),
-		onPutBack: vi.fn(),
-		onFieldRemoved: vi.fn(),
-		onFailure: vi.fn()
-	});
-	const component = mount(EntryView, { target: host, props });
+	const handed = reactive(
+		props({ entry: entry({ attachments: [attachment({ name: 'id_ed25519' })] }) })
+	);
+	const component = mount(EntryView, { target: host, props: handed });
 	flushSync();
 
 	icon('Remove id_ed25519').click();
 	flushSync();
 	expect(host.querySelector('[data-confirm]')).not.toBeNull();
 
-	props.entry = entry({ attachments: [attachment({ name: 'id_ed25519' })] });
+	handed.entry = entry({ attachments: [attachment({ name: 'id_ed25519' })] });
 	flushSync();
 	expect(host.querySelector('[data-confirm]')).toBeNull();
 
@@ -2482,35 +2556,23 @@ it('tells the window which field came off, once the change is in', async () => {
 	let settle: () => void = () => {};
 	const onChanged = vi.fn(() => new Promise<void>((resolve) => (settle = resolve)));
 	ipc.removeField.mockResolvedValue(entry());
-	const props = {
+	const handed = props({
 		entry: entry({
 			fields: [field({ name: 'PIN', kind: 'custom', protected: true, value: null, empty: false })]
 		}),
-		root: group({ name: 'Root' }),
-		path: [group({ name: 'Work' })],
-		history: null,
-		now: new Date('2026-08-29T14:30:00Z'),
-		readOnly: false,
-		onCopy: vi.fn(),
-		onChanged,
-		onVersions: vi.fn(),
-		onClose: vi.fn(),
-		onDelete: vi.fn(),
-		onPutBack: vi.fn(),
-		onFieldRemoved: vi.fn(),
-		onFailure: vi.fn()
-	};
-	const component = mount(EntryView, { target: host, props });
+		onChanged
+	});
+	const component = mount(EntryView, { target: host, props: handed });
 	flushSync();
 
 	icon('Remove the field PIN').click();
 	await vi.waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
-	expect(ipc.removeField).toHaveBeenCalledWith(props.entry.id, 'PIN', false);
-	expect(props.onFieldRemoved, 'the window heard before the save was done').not.toHaveBeenCalled();
+	expect(ipc.removeField).toHaveBeenCalledWith(handed.entry.id, 'PIN', false);
+	expect(handed.onFieldRemoved, 'the window heard before the save was done').not.toHaveBeenCalled();
 
 	settle();
 	await vi.waitFor(() =>
-		expect(props.onFieldRemoved).toHaveBeenCalledWith(props.entry.id, 'PIN', false)
+		expect(handed.onFieldRemoved).toHaveBeenCalledWith(handed.entry.id, 'PIN', false)
 	);
 	expect(host.querySelector('[data-confirm]'), 'a removal that can be undone asked').toBeNull();
 
@@ -2581,35 +2643,20 @@ it('asks nothing in an entry the pane has left', async () => {
 	ipc.removeField.mockReset();
 	ipc.removeField.mockReturnValueOnce(refusing.promise);
 	const pin = field({ name: 'PIN', kind: 'custom', protected: true, value: null, empty: false });
-	const props = reactive({
-		entry: entry({ fields: [pin] }),
-		root: group({ name: 'Root' }),
-		path: [group({ name: 'Work' })],
-		history: null,
-		now: new Date('2026-08-29T14:30:00Z'),
-		readOnly: false,
-		onCopy: vi.fn(),
-		onChanged: vi.fn(),
-		onVersions: vi.fn(),
-		onClose: vi.fn(),
-		onDelete: vi.fn(),
-		onPutBack: vi.fn(),
-		onFieldRemoved: vi.fn(),
-		onFailure: vi.fn()
-	});
-	const component = mount(EntryView, { target: host, props });
+	const handed = reactive(props({ entry: entry({ fields: [pin] }) }));
+	const component = mount(EntryView, { target: host, props: handed });
 	flushSync();
 
 	icon('Remove the field PIN').click();
-	props.entry = entry({ fields: [pin] });
+	handed.entry = entry({ fields: [pin] });
 	flushSync();
 	refusing.reject(FOR_GOOD);
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	flushSync();
 
 	expect(host.querySelector('[data-confirm]')).toBeNull();
-	expect(props.onFailure).not.toHaveBeenCalled();
-	expect(props.onFieldRemoved).not.toHaveBeenCalled();
+	expect(handed.onFailure).not.toHaveBeenCalled();
+	expect(handed.onFieldRemoved).not.toHaveBeenCalled();
 
 	return unmount(component);
 });
@@ -2681,25 +2728,10 @@ it("keeps a field's trash at the far end of its row, out of sight until it is wa
 
 /** The pane on an entry, with the tree around it that names folders. */
 function deleting(over: Parameters<typeof entry>[0], readOnly = false, root = group()) {
-	const props = reactive({
-		entry: entry(over),
-		root,
-		path: [group({ name: 'Work' })],
-		history: null,
-		now: new Date('2026-08-29T14:30:00Z'),
-		readOnly,
-		onCopy: vi.fn(),
-		onChanged: vi.fn(),
-		onVersions: vi.fn(),
-		onClose: vi.fn(),
-		onDelete: vi.fn(),
-		onPutBack: vi.fn(),
-		onFieldRemoved: vi.fn(),
-		onFailure: vi.fn()
-	});
-	const component = mount(EntryView, { target: host, props });
+	const handed = reactive(props({ entry: entry(over), root, readOnly }));
+	const component = mount(EntryView, { target: host, props: handed });
 	flushSync();
-	return { component, props };
+	return { component, props: handed };
 }
 
 const titled = (title: string | null) => [
@@ -5125,5 +5157,275 @@ it("asks the password's generator and a field's as what each is, and puts each o
 	expect(screen()).not.toContain('Made-Password-123');
 	expect(onFailure).not.toHaveBeenCalled();
 
+	return unmount(component);
+});
+
+/**
+ * The line above the title is where the entry is and the way to move it, in an
+ * entry Coffer can write. In the bin, and in a vault it will not write back, it
+ * is the line the mockup draws and nothing more: nothing there moves.
+ */
+it('the line above the title moves the entry, and is plain text in the bin and in a vault it cannot write', () => {
+	const work = group({ name: 'Work' });
+	const banking = group({ name: 'Banking' });
+	const root = group({ name: 'Root', sections: [work, banking] });
+	const onMove = vi.fn();
+	const component = mount(EntryView, {
+		target: host,
+		props: props({ entry: entry({ group: work.id }), root, path: [work], onMove })
+	});
+	flushSync();
+
+	const line = host.querySelector<HTMLButtonElement>('header button[aria-haspopup="listbox"]');
+	expect(line?.textContent).toContain('Work');
+	expect(line?.getAttribute('aria-expanded')).toBe('false');
+	line?.click();
+	flushSync();
+	expect(line?.getAttribute('aria-expanded')).toBe('true');
+	const filter = host.querySelector<HTMLInputElement>('input[role="combobox"]');
+	expect(document.activeElement).toBe(filter);
+	expect(host.querySelector('[aria-current="location"]')?.textContent).toContain('Work');
+
+	filter?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+	flushSync();
+	filter?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+	flushSync();
+	expect(onMove).toHaveBeenCalledWith(banking.id);
+	expect(host.querySelector('input[role="combobox"]'), 'the list stayed open').toBeNull();
+	// The entry stays in the pane wherever it goes, and the keys stay on the
+	// line that moved it rather than falling to the top of the window.
+	expect(document.activeElement, 'the focus fell out of the pane').toBe(line);
+	unmount(component);
+
+	for (const over of [
+		{ readOnly: true },
+		{ entry: entry({ group: work.id, binned: { since: null, within: null, from: work.id } }) }
+	]) {
+		const still = mount(EntryView, {
+			target: host,
+			props: props({ entry: entry({ group: work.id }), root, path: [work], onMove, ...over })
+		});
+		flushSync();
+		expect(host.querySelector('header button[aria-haspopup]'), JSON.stringify(over)).toBeNull();
+		expect(host.querySelector('header')?.textContent).toContain('Work');
+		unmount(still);
+	}
+	expect(onMove).toHaveBeenCalledTimes(1);
+});
+
+/** The mockup leaves the line out at the top of the vault. An entry that can
+ * be moved says where it is there too, because the line is the way out of it. */
+it('an entry at the top of the vault says so above its title', () => {
+	const root = group({ name: 'Passwords', sections: [group({ name: 'Work' })] });
+	const component = mount(EntryView, {
+		target: host,
+		props: props({ entry: entry({ group: root.id }), root, path: [] })
+	});
+	flushSync();
+
+	const line = host.querySelector('header button[aria-haspopup="listbox"]');
+	expect(line?.textContent).toContain('Top of the vault');
+	expect(line?.textContent, 'the top group was named').not.toContain('Passwords');
+
+	// Escape closes the list and gives the focus back to the line.
+	(line as HTMLButtonElement | null)?.click();
+	flushSync();
+	host
+		.querySelector('input[role="combobox"]')
+		?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+	flushSync();
+	expect(host.querySelector('input[role="combobox"]')).toBeNull();
+	expect(document.activeElement).toBe(line);
+
+	return unmount(component);
+});
+
+/**
+ * The window hands the pane one entry and then another. A folder list opened
+ * over the first is not open over the second, where a Return meant for the
+ * first would move the second.
+ */
+it('a folder list open over one entry is not open over the next', () => {
+	const work = group({ name: 'Work' });
+	const banking = group({ name: 'Banking' });
+	const root = group({ name: 'Root', sections: [work, banking] });
+	const onMove = vi.fn();
+	const handed = reactive(props({ entry: entry({ group: work.id }), root, path: [work], onMove }));
+	const component = mount(EntryView, { target: host, props: handed });
+	flushSync();
+
+	host.querySelector<HTMLButtonElement>('header button[aria-haspopup="listbox"]')?.click();
+	flushSync();
+	const filter = host.querySelector<HTMLInputElement>('input[role="combobox"]');
+	expect(filter).not.toBeNull();
+	filter?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+	flushSync();
+
+	handed.entry = entry({ group: work.id });
+	flushSync();
+	expect(
+		host.querySelector('input[role="combobox"]'),
+		'the list stayed over the next entry'
+	).toBeNull();
+	expect(
+		host.querySelector('header button[aria-haspopup="listbox"]')?.getAttribute('aria-expanded')
+	).toBe('false');
+	filter?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+	document.activeElement?.dispatchEvent(
+		new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+	);
+	flushSync();
+	expect(onMove).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/** The suggestions under the name of a new field, by name. */
+function suggestions(): string[] {
+	return [...host.querySelectorAll<HTMLButtonElement>('button[aria-label^="Add the field "]')].map(
+		(each) => each.textContent?.trim() ?? ''
+	);
+}
+
+/** The names a reader adds most often are offered under the name of a new
+ * field: only those the entry does not have yet, and only those that start
+ * with what is typed, in either case. With none left, the line goes. */
+it('suggests names for a new field, narrowed by what is typed and by what is there', async () => {
+	const { component } = landing({
+		fields: [PASSWORD, field({ name: 'PIN', kind: 'custom', value: '', empty: true })]
+	});
+	icon('Add a field').click();
+	flushSync();
+	await Promise.resolve();
+	expect(host.textContent).toContain('Suggested');
+	expect(suggestions(), 'a name the entry has was suggested').toEqual([
+		'Account number',
+		'Security answer'
+	]);
+
+	for (const [typed, offered] of [
+		['acc', ['Account number']],
+		['  SEC', ['Security answer']],
+		['pin', []],
+		['', ['Account number', 'Security answer']]
+	] as const) {
+		named().value = typed;
+		named().dispatchEvent(new Event('input', { bubbles: true }));
+		flushSync();
+		expect(suggestions(), typed).toEqual(offered);
+		expect(host.textContent?.includes('Suggested'), typed).toBe(offered.length > 0);
+	}
+
+	// Put away and opened again, nothing typed is remembered.
+	named().value = 'acc';
+	named().dispatchEvent(new Event('input', { bubbles: true }));
+	icon('Never mind the new field').click();
+	flushSync();
+	icon('Add a field').click();
+	flushSync();
+	expect(suggestions()).toEqual(['Account number', 'Security answer']);
+
+	return unmount(component);
+});
+
+/** A suggestion is a name already chosen: the field is made at once, hidden
+ * or not as the suggestion says whatever the pill beside the name says, and
+ * its value takes the focus. The typed half of a name is not made first. */
+it('makes a suggested field the way it is suggested, and puts the reader in its value', async () => {
+	ipc.setField.mockReset();
+	const { component, props } = landing({ fields: [PASSWORD] });
+	const made: Entry = {
+		...props.entry,
+		fields: [PASSWORD, field({ name: 'Account number', kind: 'custom', value: '', empty: true })]
+	};
+	ipc.setField.mockResolvedValue(made);
+
+	icon('Add a field').click();
+	flushSync();
+	await Promise.resolve();
+	named().value = 'Acc';
+	named().dispatchEvent(new Event('input', { bubbles: true }));
+	flushSync();
+	const offer = icon('Add the field Account number');
+	const press = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+	offer.dispatchEvent(press);
+	expect(press.defaultPrevented, 'the suggestion took the focus off the name').toBe(true);
+	offer.click();
+	flushSync();
+
+	expect(ipc.setField).toHaveBeenCalledTimes(1);
+	expect(ipc.setField).toHaveBeenCalledWith(
+		made.id,
+		'Account number',
+		'',
+		false,
+		expect.any(Number)
+	);
+	await vi.waitFor(() =>
+		expect(document.activeElement).toBe(host.querySelector('textarea[aria-label="Account number"]'))
+	);
+	expect(host.querySelector('[aria-label="The name of the new field"]')).toBeNull();
+	return unmount(component);
+});
+
+/** An entry just made opens with its name selected, to be typed over; one
+ * opened any other way leaves the focus alone. A name the database protects
+ * is drawn as the mask and takes nothing. */
+it('puts the reader in the name of an entry just made, and only then', async () => {
+	const named = [field({ name: 'Title', kind: 'title', value: 'Gmail copy', empty: false })];
+	for (const [made, takes] of [
+		[true, true],
+		[false, false]
+	] as const) {
+		const component = mount(EntryView, {
+			target: host,
+			props: props({ entry: entry({ fields: named }), made })
+		});
+		flushSync();
+		const title = host.querySelector<HTMLInputElement>('h1 input');
+		expect(document.activeElement === title, String(made)).toBe(takes);
+		if (takes) {
+			expect(title?.selectionStart).toBe(0);
+			expect(title?.selectionEnd).toBe('Gmail copy'.length);
+		}
+		title?.blur();
+		await unmount(component);
+	}
+
+	const masked = mount(EntryView, {
+		target: host,
+		props: props({ entry: entry({ fields: titled(null) }), made: true })
+	});
+	flushSync();
+	expect(document.activeElement, 'a protected name took the focus').toBe(document.body);
+	return unmount(masked);
+});
+
+/** The fields an entry's kind writes in lines are written in lines from the
+ * start, four lines tall, where Return starts a line: ten recovery codes are
+ * not pasted into one. The rest of its fields of the reader's own are not. */
+it('writes the fields its kind names in lines in lines while they are empty', () => {
+	const component = mount(EntryView, {
+		target: host,
+		props: props({
+			entry: entry({
+				fields: [
+					field({ name: 'Recovery codes', kind: 'custom', value: null, protected: true }),
+					field({ name: 'Account', kind: 'custom', value: '' })
+				]
+			}),
+			lined: ['Recovery codes']
+		})
+	});
+	flushSync();
+	const codes = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Recovery codes"]');
+	expect(codes?.getAttribute('rows')).toBe('4');
+	const returned_ = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+	codes?.dispatchEvent(returned_);
+	expect(returned_.defaultPrevented, 'Return finished the codes').toBe(false);
+	expect(
+		host.querySelector('textarea[aria-label="Account"]')?.getAttribute('rows'),
+		'a field the kind does not write in lines was'
+	).toBe('1');
 	return unmount(component);
 });

@@ -115,8 +115,13 @@ impl Stopwatch for Machine {
     }
 }
 
-/// What key derivation should take on the machine that made the database.
-const TARGET: Duration = Duration::from_millis(1000);
+/// What key derivation should take on the machine that made the database,
+/// which is what one wrong password costs at the unlock screen.
+///
+/// Public because the one other place a password is checked - the current one,
+/// when the master password is changed - is checked without a derivation, and
+/// a wrong guess there is made to cost this instead.
+pub const TARGET: Duration = Duration::from_millis(1000);
 /// The band the answer has to land in, which is the one in the spec.
 const FLOOR: Duration = Duration::from_millis(800);
 const CEILING: Duration = Duration::from_millis(1200);

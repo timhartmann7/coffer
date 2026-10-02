@@ -17,7 +17,7 @@ travels the other way, as bytes.
 
 | Action | What reaches the webview |
 |---|---|
-| Tree and list | id, title, username, URL, tags, dates, whether there is a password, how many attachments, and for anything in the recycle bin when it went in and the folder it came from |
+| Tree and list | id, title, username, URL, tags, dates, whether there is a password, how many attachments, what deleting it would do, and for anything in the recycle bin when it went in and the folder it came from |
 | Open an entry | the same, plus every field's name, kind, whether it is empty and whether it is in lines, plus attachment names and sizes, plus what deleting it would do |
 | Reveal a field | the value, one field, once |
 | Read a previous version | the same as an entry, and one value at a time on a reveal |
@@ -25,9 +25,13 @@ travels the other way, as bytes.
 | Open an address | nothing; Rust hands the URL to the system |
 | Add a file | nothing; Rust opens the panel and reads the file |
 | Write a file out | nothing; Rust opens the panel and writes it |
+| Save a copy of the vault on another disk | nothing of the vault; Rust opens the panel and writes it, and dates and a disk's name come back |
+| Show the vault in the Finder | nothing; Rust hands the file the session chose to the Finder |
 | Make a password | the password, once, the way a reveal answers, and which of the kinds of character asked for it happens to lack |
 | Hide a field, or rename it | nothing new; the value moves inside Rust, and a hidden field comes back with no value |
 | Show a field | its value, in the entry that comes back: it is an open field from then on, and crosses as every open value does |
+| Make an entry of a kind, from a template, or as a copy | the tree and the new entry's id; every value and file is copied inside Rust |
+| Ask for a menu under the pointer | nothing; Rust draws it from the vault, and the item chosen comes back with the ids it is about |
 
 A field's `value` is `null` exactly when it does not cross: the database
 protects it, or it is the password. **A password never crosses, protected or
@@ -45,7 +49,7 @@ the first over all ten. Rust reads it off the value in
 
 | Command | Takes | Answers |
 |---|---|---|
-| `status` | | the chosen database, whether it is open, how many entries, whether it can be written, why it locked, whether that lock saved something being typed and whether some of it was kept beside the value it was for, the unsaved copy sitting beside it, the chosen file as it stands on disk, the vault it was copied from when it is a lock's copy, and - when nothing is remembered - a vault found in Coffer's own folder |
+| `status` | | the chosen database, whether it is open, how many entries, whether it can be written and why not, whether what is open can be written to a file somewhere else, why it locked, whether that lock saved something being typed and whether some of it was kept beside the value it was for, whether the vault it closed had been given a new master password, what became of the vault's file when that vault had just been made from a backup, whether the backup asked for on the way was pushed out by that lock's save, the unsaved copy sitting beside it, the chosen file as it stands on disk, the vault it was copied from when it is a lock's copy, the vault it was taken beside, why it is open and the vault's file as it stands when it is one of that vault's backups, what is known of copies of the open vault kept on another disk, and - when nothing is remembered - a vault found in Coffer's own folder |
 | `choose_database` | | the database the user picked, or nothing if they closed the dialog |
 | `choose_found` | | the vault the last `status` found in Coffer's own folder, now chosen |
 | `unlock` | the master password, as the raw body | nothing |
@@ -55,25 +59,30 @@ the first over all ten. Rust reads it off the value in
 | `reveal` | `entry`, `field` | the value of that field |
 | `copy` | `entry`, `field`, `range` | the seconds until Coffer clears the pasteboard |
 | `open_url` | `entry` | nothing |
-| `snapshots` | | the `.bak` files beside the chosen database, newest first |
-| `choose_snapshot` | `index` | the snapshot now chosen |
+| `snapshots` | | the `.bak` files beside the chosen database - or, when it is one of them, beside the vault it was taken from - newest first; Rust keeps the list it answered |
+| `choose_snapshot` | `index` | what is chosen afterwards: the snapshot that list showed at that slot, wherever saves have moved it since, or the vault when the lock on the way kept its work elsewhere, lost it or pushed the snapshot out |
 | `choose_rescue` | | the unsaved copy now chosen |
 | `discard_rescue` | | |
 | `put_back_rescue` | | the vault, now at its own name again |
 | `promote_rescue` | | the vault, which is what is open now |
-| `leave_rescue` | | what is chosen afterwards: the vault the copy was taken from, or the copy when the lock that closed it kept its work elsewhere or lost it |
+| `adopt_snapshot` | | the vault, which is what is open now, and what became of its file: kept as the newest snapshot, or beside the vault under a name of its own |
+| `back_to_vault` | | what is chosen afterwards: the vault the copy or the snapshot was taken from, or the copy when the lock that closed it kept its work elsewhere or lost it |
 
 Everything slice 3 added:
 
 | Command | Takes | Answers |
 |---|---|---|
-| `create_entry` | `group` | the tree, and the entry it made |
-| `delete_entry` | `entry`, `deletion`, `sequence` | the tree |
+| `create_entry` | `group`, `kind` | the tree, and the entry it made |
+| `delete_entries` | `entries` (each an `entry` and the `deletion` the window showed), `sequence` | the tree |
 | `create_group` | `parent`, `name` | the tree |
 | `rename_group` | `group`, `name` | the tree |
 | `delete_group` | `group`, `deletion` | the tree |
-| `put_back_entry` | `entry` | the tree |
+| `put_back_entries` | `entries` | the tree |
 | `put_back_group` | `group` | the tree |
+| `move_entries` | `entries`, `into` | the tree, and each entry that changed folder with the folder it left |
+| `move_entries_back` | `moved`, `into` | the tree |
+| `move_group` | `group`, `into` | the tree |
+| `move_group_back` | `group`, `from`, `into` | the tree |
 | `empty_recycle_bin` | | the tree |
 | `set_field` | `entry`, `field`, `value`, `protect`, `sequence` | the entry |
 | `remove_field` | `entry`, `field`, `forever` | the entry |
@@ -99,7 +108,7 @@ Everything slice 3 added:
 | `generate_password` | `recipe`, `purpose` | a password, the kinds asked for that it lacks, and the generator as that recipe settles it |
 | `save` | | nothing |
 | `save_over` | | nothing |
-| `save_copy` | | the file it wrote, or nothing if the panel was closed |
+| `save_copy` | | the file it wrote, or nothing if the panel was closed; `taken` for a name that holds a file, `refused` for a name Coffer keeps beside a vault |
 | `reload` | `sequence` | the tree |
 | `rival` | | when the file on disk was written and how many entries it holds |
 
@@ -240,7 +249,9 @@ does not know settles on dark rather than being refused: a later Coffer offering
 a fourth look would otherwise take both timers down with its own name.
 
 **`stirred` is deliberately rare, and it can lock.** The window sends it on real
-input and at most once every fifteen seconds. A status bar that asked once a
+input and at most once every fifteen seconds. A key counts on its way in, before
+anything on the page answers it, so one a sheet over the window keeps to itself
+still says the reader is there. A status bar that asked once a
 second would be an idle timer resetting itself, and a vault that never locks. A
 stir that arrives after the time has already run out locks the vault rather than
 starting the clock again: the timer's own wait is counted on the clock that
@@ -249,6 +260,77 @@ there before it does, and a stir that restarted the clock would hand a fresh
 timeout to whoever sat down. The lock runs on the thread that posted the stir, so
 `stirred` is answered off the thread the window is drawn on, like every command
 that can reach the lock.
+
+Keeping a copy on another disk:
+
+| Command | Takes | Answers |
+|---|---|---|
+| `copy_vault` | | whether the copy went to the vault's own disk, the disk's name, and what is known of copies of the open vault now; or nothing if the panel was closed; `taken` for a name that holds a file |
+| `show_in_finder` | | nothing; `gone` when nothing is at the chosen file's name |
+
+**A copy on another disk is a file the reader picks and a line Coffer keeps.**
+`copy_vault` refuses before any panel what has no copy of its own to keep: a
+format Coffer will not write anywhere (`readOnly`), and a snapshot or the copy a
+lock left (`refused`), which hold an older state of a vault. Then Rust opens a
+save panel on the folder the last copy on another disk went to while that is
+still a folder; otherwise on the first other disk mounted in `/Volumes` that the
+Finder shows and that takes writes; otherwise on the folder the last copy on the
+vault's own disk went to, and otherwise beside the vault. It offers
+`<vault> YYYY-MM-DD.kdbx`, numbered past any name that folder holds, and writes
+the conflict dialog's copy: the same credentials, every field, owner-only,
+staged and renamed, never over a file that is there - `taken`, after the
+panel's own "Replace", and nothing replaced - and never at a name Coffer keeps
+beside a vault. Then Rust writes down when, the folder, the
+disk's name and whether it is the vault's own disk, in `copies.json` beside the
+settings (`copies.rs`), keyed by the vault's path. Never in the vault: the format
+has no field for it, and `SPEC.md` section 12 forbids one of Coffer's own. A
+record that will not write costs the next launch the date, not the copy. Both
+copy commands go through one door, `Session::copy_to` (a test reads the source
+for any other): the panel is a sheet, the clock that locks keeps running behind
+it, and the vault asked about before it opened is the only one written - a
+vault that locked meanwhile answers `noVault`, and another opened after that
+lock is refused. The door holds the session only to encrypt the copy, its key
+derivation included (`Vault::encrypt_copy`), as a save does, and lets it go to
+write the bytes (`EncryptedCopy::write`): the write goes to the disk the reader
+picked, and a stick pulled out half way or a share whose server went to sleep
+holds it until the system gives up on that disk, which no lock, sleep or Quit
+waits for. Copies are written one at a time. Encrypting settles every entry's
+history the way a save does, so the revision moves and the window reads its
+versions again whether or not the write then goes through; what is still being
+typed is not in the copy and stays for the next lock to write into the vault.
+
+**What crosses is `status.elsewhere`, and the answer to a copy.** `otherDisk` is
+the newest copy on another disk: when, and the disk's name (`volume`, only for a
+disk mounted in `/Volumes`). `sameDiskAt` is when the newest copy was made, while
+that one went to the vault's own disk. `overdue` is the whole days without a
+copy on another disk once that reaches thirty and the vault holds entries,
+counted from the last such copy or, when there was none, from the date the
+vault's top group was made (`Vault::made`). Only a copy on another disk resets
+it: one on the vault's disk is made, written down and said to be where it is,
+and the count goes on, because it fails with the vault. A copy dated more than a
+day ahead of the clock is not believed, and a vault that does not say when it
+was made is not counted. `elsewhere` is null while nothing is open, and for a
+snapshot, a lock's copy and a format Coffer will not write anywhere. It is read
+when the vault opens and comes back with every copy, whose answer also says
+whether that copy went to the vault's own disk and what the disk is called, for
+the notice. No path crosses, not even the folder. Which disk is "the same" is
+the one IOKit stores the volume on (`disks.rs`): the topmost `IOMedia` above
+the BSD device the mount table names, so every volume, container and partition
+of the Mac's own SSD is one disk, and a stick is another. A share is a disk of
+its own, by its address. A disk image is a file on a disk Coffer does not
+follow it to, and is never called another disk or offered as one - a sparse
+bundle kept on the Mac's SSD would otherwise be a "copy on another disk" that
+dies with the SSD - and neither is a folder that cannot be asked about or a
+device IOKit will not place. Copies made through `save_copy` are not written
+down: they are ways out of a question, not backups.
+
+**`show_in_finder` takes nothing.** It selects the file the session chose in a
+Finder window. Whether something is at the name is decided off the thread the
+window is drawn on, and answered `gone` when nothing is; only the Finder is asked
+on the main thread, posted there and not waited for. File ▸ Show in Finder
+answers it on the unlock screen too, where nothing is drawn for it: the
+encrypted file is what a reader carries to a stick by hand, and it needs no
+password.
 
 **A command that changes something answers with what it changed.** A change to
 one entry answers with that entry; a change to the shape of the vault answers
@@ -299,12 +381,12 @@ Tauri runs commands side by side, so a draft sent before its field was written
 can arrive after it. Rust drops a draft that is no newer than the last word it
 heard about the field - a draft, a draft taken back, or the value `set_field`
 wrote, which carries its own number and ends the draft under the same lock as the
-write - or than a `delete_entry` of its entry or a `reload`, which carry one too
-and let go of everything typed into what they take away. A restore is not on
-that list, because nothing on the screen goes with it: every value typed into a
-field of the entry was written when the field was left, before the Restore
-button could be pressed, and a new password still waiting in its own field with
-the question under it is still the reader's.
+write - or than a `delete_entries` naming its entry or a `reload`, which carry
+one too and let go of everything typed into what they take away. A restore is
+not on that list, because nothing on the screen goes with it: every value typed
+into a field of the entry was written when the field was left, before the
+Restore button could be pressed, and a new password still waiting in its own
+field with the question under it is still the reader's.
 
 A draft is written only into a field the entry still has, or one of the five
 standard ones every entry is drawn with, and only when it differs from what the
@@ -433,10 +515,11 @@ function the deletion asks, so the answer the window drew is the thing that
 happens. The window asks before a deletion that is `forever` and offers the
 other kind back from its notice.
 
-`delete_entry` and `delete_group` take back the `deletion` the window showed,
-and Rust refuses with `deletionChanged`, deleting nothing, when deleting the
-thing would now do the other. Two deletions can wait on the session behind one
-save, and the thread that takes it first is not the one that asked first: a
+`delete_entries` and `delete_group` take back the `deletion` the window showed -
+for each entry, in the first - and Rust refuses with `deletionChanged`, deleting
+nothing, when deleting the thing would now do the other. Two deletions can wait
+on the session behind one save, and the thread that takes it first is not the
+one that asked first: a
 folder that goes into the bin ahead of an entry in it, or ahead of a folder in
 it, makes the move the reader agreed to an erasure. Something put back out of
 the bin before its erasure arrives is refused the same way. The window says
@@ -450,7 +533,7 @@ rewrote may have stopped keeping a bin. A flag read at unlock would go on
 promising the bin to a deletion that erases.
 
 What the window says afterwards is read off the answer rather than off that
-promise: `delete_entry` and `delete_group` answer with the tree, and the window
+promise: `delete_entries` and `delete_group` answer with the tree, and the window
 offers Undo only for something still in it.
 
 **The bin says when and where from.** Anything inside the bin - an entry row,
@@ -470,7 +553,7 @@ folder it was not in when it was deleted. The window says "Deleted with
 cross as ids and the window names them from the tree, so a folder renamed since
 is called what it is called now.
 
-**`put_back_entry` and `put_back_group` take something out of the bin** and
+**`put_back_entries` and `put_back_group` take something out of the bin** and
 answer with the tree. It goes back into `from`, or to the top of the vault when
 `from` is `null`, and the window reads where it went off the tree. A folder goes
 with everything in it. Both refuse with `refused` for anything not in the bin -
@@ -479,6 +562,171 @@ that arrives after the thing came back moves nothing, and with `readOnly` on a
 database Coffer will not write back. Putting back is a move and not an edit: no
 version is written, the modification time stays, and nothing is added to
 `DeletedObjects`; the same is true of the move into the bin.
+
+**`move_entries` and `move_group` move things between folders, and a batch
+moves whole.** `move_entries` takes the ids of entries and the folder they go
+into - the top of the vault is the root's id, which the tree already carries -
+and `move_group` one folder and where it goes. Rust checks everything before
+anything moves, so a batch holding one entry it refuses moves none: anything in
+the recycle bin, the bin itself included, is refused with `refused`, because
+putting back is the way out of it, and so is a destination in the bin, because
+deleting is the way in and says first whether it can be undone. A folder cannot
+go inside itself or anything under it, and the top of the vault goes nowhere.
+Something already where it is sent stays, in its place in the folder, and a
+move that finds nothing to do leaves nothing to save and the revision where it
+was. A move is not an edit, exactly as a move to the bin is not: no version,
+the modification time kept, nothing in `DeletedObjects`, and `LocationChanged`
+and `PreviousParentGroup` written the way KeePass and KeePassXC write them. It
+lets go of no typing and of no file waiting: an entry keeps its id wherever it
+goes, so a lock writes what was being typed into it where it now stands.
+
+**A move is taken back by what the file says of it.** `move_entries` answers
+with the tree and `moved`: each entry that changed folder, in the order sent,
+with `from`, the folder it left. That list is the undo. `move_entries_back`
+takes it and the folder the entries went into, and moves each back to its
+`from`, every one or none, only while the file still says the same: every entry
+still in that folder, its `PreviousParentGroup` still the `from` it was answered
+with, and neither folder gone or in the bin. Anything else is something done
+after the move - another move of the reader's, or another client's read in by a
+reload, an entry moved away and back by way of a third folder included - and
+the undo is refused with `superseded`, moving nothing. The list is only a claim
+the window makes: Rust checks it against the file and takes back nothing the
+file does not bear out. Each entry goes to the end of the folder it came from,
+because the library has no way to put one back where it stood. A folder's undo
+is `move_group_back`, on the same terms: the folder, the folder it left
+(`from`, which the window read off its tree before the move) and the one it
+went into. Rust moves it back only while the file says the folder is in `into`
+with `from` as its `PreviousParentGroup`, neither of them in the bin and `from`
+not since moved inside it, and answers `superseded` otherwise. The window sends
+neither undo while anything it is about - what moved, or a folder it comes out
+of or goes back to - is still on its way somewhere: the undo and that move
+would reach Rust in no fixed order.
+
+Acting on several entries chosen in the list:
+
+| Command | Takes | Answers |
+|---|---|---|
+| `tag_entries` | `entries`, `tag` | the tree, and the entries the tag went on |
+| `untag_entries` | `entries`, `tag` | the tree |
+
+`delete_entries`, `put_back_entries` and `move_entries` above are batches as
+well; the entry the pane deletes or puts back is a batch of one, so there is one
+deletion, one way out of the bin, and one rule for each.
+
+**A batch is one call, one save and one undo.** Whatever the window does to
+several chosen entries goes to Rust as one command naming all of them, is
+written by one save and is offered back from one notice. Twelve commands would
+be twelve saves - twelve key derivations, and twelve of the ten snapshots, so
+the vault of an hour ago gone - and twelve notices, each withdrawing the undo of
+the one before.
+
+**A batch is all of them or none.** Every entry a batch names is checked before
+any is changed, under the lock the change runs in: an entry that has gone, one
+whose deletion would now do something other than the window showed, one
+`put_back_entries` names that is not in the bin, a tag the format would split or
+trim. One refusal is the whole batch's, nothing changes, and `revision` does not
+move. An id that does not parse refuses the batch before the vault is asked.
+Erasing files out of the pool, the one step that can still say no once the
+checks are passed, is worked out for every entry together before anything is
+written, and runs first (see `docs/vault-core.md`).
+
+**A row says what deleting it would do.** `deletion` travels on every row of the
+tree as it does on an entry and a folder, so the window knows before the press
+which chosen entries go to the bin and which go for good, asks before the second
+kind, and sends each back with the answer it showed. `sequence` lets go of every
+draft of every entry named that was said before it, whether or not the deletion
+goes through, and every file waiting on one of them goes under the same lock.
+
+**A tag goes on where it is missing, and comes off only where it went on.**
+`tag_entries` writes a version on each entry that lacked the tag and on no
+other, and answers which those were; the undo sends exactly those to
+`untag_entries`, so an entry that already had the tag keeps it. A tag every one
+of them had already writes nothing, and the window says so and offers nothing.
+`untag_entries` takes off every copy of the tag and holds it to no spelling
+rule, since it is a tag the file holds; only an empty one is refused. A tag the
+format would split, trim or drop is refused with `refused` and a sentence about
+tags, which the window shows as it is, on the bar as on an entry's own chip.
+
+**Putting back is a batch too.** `put_back_entries` is the undo of entries moved
+to the bin, the bin's own Put back for several, and the pane's for the entry in
+it, which offers nothing back: the pane stays on the entry and says where it
+went. The bar's is offered back with `delete_entries`, each entry shown as going
+to the bin, and only when the tree it answered says every one of them would: a
+file whose bin was switched off after it filled still lists what is in it and
+puts it back, but deletes nothing into a bin, and an undo that could only be
+refused is no offer. An undo that would send the entry in the pane back to the
+bin asks the pane first, as everything that takes an entry from it does, and
+sends nothing while a new value typed into it waits there.
+
+**An undo that came too late says so, in one sentence.** Every undo names the
+refusals that mean the vault has moved on since: `superseded` for a removed
+field or a move, `refused` for an entry no longer in the bin to put back,
+`noSuchEntry` for one gone out of the file, `deletionChanged` for one that would
+no longer go to the bin. Any of those did nothing, and the window says that
+something has changed since, so that can no longer be undone, and reads the tree
+again (`overtaken.ts`). Any other refusal is shown as Rust wrote it.
+
+Making an entry of a kind, from one of the vault's templates, or as a copy of
+another:
+
+| Command | Takes | Answers |
+|---|---|---|
+| `kinds` | | the kinds of entry Coffer makes, a login first, each with the word that names it, what to call it and the fields it writes in lines, and the names suggested for a field of the reader's own |
+| `create_from_template` | `group`, `template` | the tree, and the entry it made |
+| `duplicate_entry` | `entry` | the tree, and the copy |
+
+`create_entry` above takes the `kind` too.
+
+**What a new entry starts as is Rust's.** `kinds` answers `offered`, a login
+first, and `suggested`: for each kind the word the window sends back as
+`create_entry`'s `kind` (`login`, `bankCard`, `wifi`, `identity`, `licence`,
+`recoveryCodes`, `secureNote`, `sshKey`), its name, and `lined`, the fields it
+writes in lines, which the window draws as text areas before anything is in
+them; for each suggestion its name and whether a field made under it is
+hidden. The window holds no list of either and treats the words as opaque: it
+sends back the one that came with what was pressed, and a word it made up is
+refused by Tauri before the command runs, rather than read as the nearest kind.
+The fields themselves, their protection, the tag and the icon arrive with the
+entry that is made (see `docs/vault-core.md`, "Kinds, templates and copies").
+The first offer is what "+ Entry" and New Entry make unasked. Like `settings`
+and `generator`, `kinds` reaches neither the session, the lock nor the disk, so
+it is answered on the thread that asked; the window reads it once a boot,
+beside the settings.
+
+**A copy is made in Rust.** `duplicate_entry` names the entry and nothing else:
+every value, the protected ones included, and every file is copied inside the
+vault, and nothing of either crosses. The copy is a new entry beside the
+original, with " copy" after its title - an untitled entry's copy stays
+untitled - every field under the protection it has, tags, icon, colours,
+custom data and expiry, a file of its own for every file, no versions and every
+other date now. It is not numbered. What was typed into the original and not
+yet written is the original's: drafts and a file waiting on an answer are kept
+by entry id, so a lock writes the typing into the original and the answer
+still goes on it, never on the copy. The window writes the field being typed in
+before it asks, and waits for that write, and for a tag or a field's new name
+the same press left, to arrive (`flush` and `track` in `drafts.ts`), so the
+copy holds what is on the screen. An entry in the recycle bin is refused with
+`refused` - its copy would be a deleted entry nobody deleted - and so is any
+making into the bin or a folder in it: `create_entry`, `create_from_template`
+and the copy ask the question a move asks of where it goes. A vault Coffer will
+not write answers `readOnly`.
+
+**The vault's templates are its templates group's own entries.** A tree marks
+at most one group `isTemplates`: the one `Meta/EntryTemplatesGroup` names, while
+it is there, is not the top of the vault and is not in the bin. The window lists
+that group's own entries after the kinds; `create_from_template` copies one into
+`group` on the terms of a copy, keeping its title, and refuses with `refused`
+any entry the group does not hold itself - one outside it, one in a folder
+inside it, one whose group went to the bin or was erased since the list was
+drawn. A list drawn before a `reload` is answered the same way, from the file
+as it is.
+
+**Making an entry answers with the entry it made.** All three answer
+`{ tree, entry }` (`Made`), the id of what was made in the tree it was made in,
+and the window opens it - unless the reader chose another entry after the
+press, while Rust was making it or while a copy waited for the write before it,
+or the pane has to stay, in which case it waits in the list. No undo is
+offered: deleting it is the way back.
 
 **`add_attachment` and `export_attachment` open their panel in Rust.** The
 bytes of a file never cross in either direction and neither does a path: the
@@ -519,10 +767,11 @@ It goes with the vault on a lock or when another database is chosen, when the
 button is pressed again, when another file is picked for any entry, and when the
 window stops showing the question. It also goes in Rust, under the lock of the
 change itself, with a `reload` and with any change that leaves its entry
-deleted or in the recycle bin: `delete_entry`, `delete_group` on a folder
-holding it, `empty_recycle_bin`. An answer already on its way, or queued behind
-the change, is then refused rather than landing on a vault the reader was never
-asked about, and nothing hangs on the window's `withdraw_attachment` arriving.
+deleted or in the recycle bin: `delete_entries` naming it, `delete_group` on a
+folder holding it, `empty_recycle_bin`. An answer already on its way, or queued
+behind the change, is then refused rather than landing on a vault the reader was
+never asked about, and nothing hangs on the window's `withdraw_attachment`
+arriving.
 
 A name that differs only in letter case is not taken. The format and every
 KeePass client keep `Scan.pdf` and `scan.pdf` apart, so adding the second loses
@@ -536,10 +785,11 @@ bytes, and the question is about what the entry has now.
 
 Nothing that names a file comes from the webview. `choose_database` opens the
 system's own dialog and keeps the answer; `choose_snapshot` takes a slot number
-and builds the path from the database the user already chose; `choose_found`
+from the list Rust last sent and opens the file that list named; `choose_found`
 takes the vault the session is holding from the last `status`, and
-`choose_existing` the place it is holding for a new vault. There is no command
-that opens a path the frontend sends.
+`choose_existing` the place it is holding for a new vault. `copy_vault` opens
+its own panel on a folder Rust remembers, and `show_in_finder` shows the file
+the session chose. There is no command that opens a path the frontend sends.
 
 `open_url` reads the address out of the entry rather than accepting one, so the
 only thing the webview can ask Coffer to open is an address it can already see -
@@ -560,17 +810,22 @@ the screen branches on: `wrongCredentials`, `notADatabase`, `unsupportedFormat`,
 Where the right words depend on what the screen showed, the window writes the
 sentence and the message is only a description of the refusal, kept out of
 sight: `needsOpening` from `put_back_rescue` (the unlock screen's card), and
-`externalChange` from `promote_rescue` (the banner over a copy). One sentence
-lives in one place.
+`externalChange` from `promote_rescue` and `adopt_snapshot` (the strip over a
+copy or a backup, which share the sentence in `replacing.ts`), and `taken` from
+`copy_vault` (the status bar's notice and the settings' row, which share the
+sentence in `copies.ts`: a file by that name is already there, nothing was
+replaced, and the copy goes under another name). One sentence lives in one
+place.
 
 `versionsChanged` is a position read at a revision the vault has moved on from
 (see above). Nothing was done, so it is not shown as a failure: the window
 reads the list again and says the versions changed while the reader was
 choosing.
 
-`forGood` and `superseded` are about a removed field (see above), and neither
-did anything. `forGood` is answered with a question, and `superseded` with the
-sentence that the removal can no longer be undone.
+`forGood` and `superseded` are about a removed field (see above), and
+`superseded` about a move taken back as well; neither did anything. `forGood`
+is answered with a question, and `superseded` with the sentence every undo that
+came too late has (see above).
 
 `deletionChanged` is a deletion that would no longer do what the window showed
 (see above), and nothing was deleted.
@@ -579,6 +834,12 @@ sentence that the removal can no longer be undone.
 file, and nothing was moved: the unlock screen offers to open the copy instead
 (see below).
 
+`gone` from `choose_snapshot` is a backup the list showed that has since been
+pushed out of the chain or taken away, or a slot no list showed. Nothing was
+chosen, and a vault that was open was not locked: the list says the backup is
+not there any more and is read again, and says so as well when nothing is left
+in it (see Backups).
+
 `taken` is `create_database` finding a file where the new vault would go, or the
 copy a lock left of a vault by that name beside it. The creation screen reads
 the place again with `target`, says what is there in its own sentence, which
@@ -586,7 +847,12 @@ names the place and the way on, and hands back the two passwords it emptied on
 submit: this is the one refusal that says nothing about them. It is also
 `put_back_rescue` finding something at the vault's name by the time the copy
 would go there, and the unlock screen says so in a sentence about the move (see
-below).
+below); and `save_copy` aimed at a name that holds a file, which is said in
+Rust's words where the copy was pressed for, and `copy_vault`, said in the
+window's (see above).
+
+`wrongCredentials` from `change_master_password` is the current password typed
+wrong, and is said under the form, never on the unlock screen.
 
 `attachmentInHistory` is the one the entry screen has an answer for. Removing a
 file is refused while previous versions of the entry still hold it - the format
@@ -606,6 +872,17 @@ something: `reload` takes the version on disk and drops what is in the window,
 `save_over` writes over the file - with the version that was there going into
 `<database>.1.bak` on the way, so it can still be opened afterwards.
 
+**A copy never replaces a file.** `save_copy` takes no snapshot of what is at
+the name the panel answered with, and the panel opens in the vault's own folder,
+where the vault a backup was taken of, the copy a lock left and a file a backup
+made the vault kept aside all end in `.kdbx` and pass its filter. So a name that
+holds anything - a link that leads nowhere included - is refused with `taken`
+after the panel's own "Replace" was answered, as `create_database` refuses one,
+and a name Coffer keeps beside a vault (a snapshot's, a lock's copy's) with
+`refused`. The window says Rust's sentence where the press was. The copy is
+encrypted beside the name first and the name taken only then, so nothing at it
+is ever part of a copy.
+
 A rejected command rejects with that object and not with an `Error`, so
 `instanceof` and `.message` are both useless on the raw value. `asFailure` in
 `src/lib/ipc.ts` is the one place that reads it.
@@ -622,8 +899,9 @@ construction, and no shape of message changes that. It is the reader's own,
 typed by them; a value Coffer revealed is never in a field anything can type
 into. The master password is different in one
 way that matters - it is never displayed, never edited in place, and it opens
-everything - so it is worth the machinery of a raw body, and `unlock` is the
-only command that gets it.
+everything - so it is worth the machinery of a raw body, and the four commands
+that carry one - `unlock`, `unlock_over`, `create_database` and
+`change_master_password` - get it as the whole body and nothing else.
 
 What the boundary is for still holds in both directions: a value the database
 protects **leaves** the vault only through `reveal`, `reveal_version` or
@@ -664,10 +942,22 @@ positions counted in UTF-16 code units the way the text node counts them, or
 Rust and refuses a range the value does not have, an empty one, or one with an
 end between the two halves of a character outside the basic plane. The
 positions come from the selection's own offsets and never from its text, which
-would be a copy of the secret in a JavaScript string. A right-click or a drag on anything inside such a
-selection draws no WebKit menu and starts no drag. The generator's value is the
-one revealed value with nothing in the vault to copy by name, and its copy is
-refused with a sentence that says to put it in the field first.
+would be a copy of the secret in a JavaScript string. A drag on anything inside
+such a selection starts nothing. A right-click on a revealed value, or on chrome
+inside a selection that runs into one, draws Coffer's menu about that value -
+Copy, through Rust, and Hide - and never WebKit's (see A menu under the
+pointer); one that reaches two values draws no menu at all. A right-click
+anywhere else draws what is there, but never WebKit's menu while the selection
+still covers part of a value, because that menu is about the selection and not
+about what the pointer is on: in the search field, or any field being typed in,
+which otherwise keeps WebKit's menu, it then draws none. WebKit selects the
+word under a right-click before the page hears of the menu, so the guard keeps
+the selection as it stood when the button went down: a word WebKit chose is not
+a part the reader chose, and Copy then copies the whole value; when the pointer
+was beside the reader's own selection, that selection is put back. The
+generator's value is the one revealed value with nothing in the vault to copy
+by name: its copy is refused with a sentence that says to put it in the field
+first, and it draws no menu.
 
 `Cmd+C` follows the same rule. With the focus on the row of a protected value -
 which is where Show puts it - it copies that row's value; with nothing selected
@@ -681,7 +971,8 @@ Services submenu is the one way in the menu bar: a service is handed the
 selection by WebKit directly, with no copy event for the guard to take, and New
 Sticky Note or a TextEdit window containing the selection keeps a revealed value
 in plain text in another application. So Coffer builds its own menu bar
-(`menu.rs`), Tauri's item for item less Services. What is still open:
+(`menu.rs`), Tauri's item for item less Services, with Coffer's own items among
+them (see The menu bar). What is still open:
 
 - A service's keyboard shortcut, such as Shift+Cmd+Y for a new sticky note, is
   the system's and not the menu's. Whether AppKit still runs one with no
@@ -705,6 +996,213 @@ in, a version restored, any change at all (`conceal` in `reveal.svelte.ts`,
 from the window's one place a change lands). A reveal left up from before the
 change was the old password under the label of the new one, and a part of it
 selected and copied was cut out of the new value.
+
+## The menu bar
+
+Coffer's own items sit in the bar among AppKit's: Settings… (Cmd+,) and Lock
+Vault (Cmd+L) in the application menu; New Entry (Cmd+N), New Folder
+(Shift+Cmd+N), Duplicate (Cmd+D), Open Vault… (Cmd+O), Save a Copy… (Shift+Cmd+S)
+and Show in Finder (Alt+Cmd+R) in File; Find… (Cmd+F), Copy Login (Cmd+B), Copy
+Password (Shift+Cmd+C) and Move to Recycle Bin (Cmd+Backspace) in Edit, under
+the system's own; Keyboard Shortcuts in Help. `menu.rs` names each
+and gives it its key, and the window knows each by the same word (`COMMANDS` in
+`model.ts`) and draws the same key (`KEYS` in `shortcuts.ts`).
+`shortcuts.test.ts` reads `menu.rs` and fails when the two disagree.
+
+The commands the menu bar added:
+
+| Command | Takes | Answers |
+|---|---|---|
+| `listen` | `channel` | nothing; what the reader chooses outside the page arrives through the channel |
+| `menu_state` | `enabled` | nothing |
+| `close_window` | | nothing |
+
+**One route from the bar to the page.** Each item is a press the page answers
+with the function its button runs - New Entry is the + Entry button's, Lock
+Vault the Lock button's - so nothing on the screen is done two ways. Rust hears
+the choice as a `MenuEvent` on the main thread (`route::chosen`) and sends it as
+an `Action`, `{ action: 'command', command }`, through the `Channel` the page
+handed over with `listen` once its screens were drawn. The page a lock builds
+next hands over its own, which replaces it, and Rust lets go of it in the
+`Destroyed` arm of the run callback. A page is known by its window's label, so
+something the last page sent that lands after the next one is listening is not
+taken for the new page's, and a window's `Destroyed` handled after the next
+page listened leaves that page and its bar alone. Each screen says what it
+answers (`answer` in `menu.svelte.ts`), and where two answer the same item at
+once, the newest that can is the one that does, because a screen drawn over
+another was drawn after it. Two items are answered twice: with the settings
+drawn over an open vault, Show in Finder and Save a Copy… are answered by the
+vault's screen and by the settings, and the settings, being newer, take them -
+Show in Finder refused is said in the settings' failure line rather than in a
+notice, and the vault's own Save a Copy… is greyed while the settings are up.
+The title bar's Settings… is offered only where the vault's status bar is not
+drawn, so it is answered once.
+
+A choice runs the way a press on its button would. A sheet over the window goes
+first. Then the field being written in is left: a press on a button takes the
+focus out of the field before the button runs, and leaving is when a field
+writes what was typed into it, while a choice from the menu bar takes no focus.
+Without it New Entry took the field off the screen with the value still in it -
+WebKit tells nothing it removes that it lost the focus - and the value was
+written only by the next lock. Keyboard Shortcuts leaves the field alone: its
+sheet takes the focus and gives it back. So does the search field
+(`role="searchbox"`), whose leaving writes nothing: a reader who copies a login
+from the menu while searching goes on typing in it.
+
+What was chosen happens in the window, so the window comes forward for it
+(`window::bring_back`). A minimised window still has its page listening and the
+bar as that page left it, and AppKit hands the bar its keys with no window in
+front: Move to Recycle Bin would otherwise run out of sight, and its offer to
+undo run out unread. Lock Vault alone is left where it is, because it takes the
+window down and the one it builds comes forward asking for the password.
+
+**The page says what applies; the session has the last word on three.** Whenever
+the items its screens can do change - each on the condition its button is drawn
+on - the page sends `menu_state` with the list (`greying.ts`). One message at a
+time: Rust answers two side by side and in either order, so the bar would
+otherwise be left as whichever finished last said. Rust filters the list through
+the session - Lock Vault and Save a Copy… only with a vault open, Open Vault…
+never then, because it refuses to point the session at another file while one
+is - reading whether one is open without waiting for the session, which a save
+holds for seconds: a report stuck behind it left an item grey that applied, and
+AppKit drops the key of a grey item. It greys the rest out on the main thread, by a message posted
+there rather than waited for. A choice that crossed with a change on its way is
+asked again when it arrives, and one nothing can do any more does nothing - it
+does not even put a sheet away. Open Vault… applies wherever no vault is open:
+on the unlock screen and the creation screen - except while a key is derived
+there or a vault made, because a file picked then would make the work in flight
+land stale - and on the settings with nothing open. With no page listening only
+Open Vault… and Settings… can be chosen. Either builds the window again
+(`window::bring_back`), and the choice waits in Rust for the page that arrives:
+the reader closed the window and went to the menu bar to get it back. Only the
+last such choice waits. Whether there is a page and keeping the choice for the
+next are decided under one lock, so a choice made just as a page starts
+listening reaches that page rather than the window after it; a choice told to a
+page, or one whose send failed, is never kept.
+
+**A key the menu owns is not the page's.** WebKit hands the page a key before
+AppKit looks for it in the menu, and a key the page answered is gone, so a key
+both answered would happen twice. The page's `keydown` answers Escape, Cmd+Z
+(the notice's undo, see above), Cmd+C with nothing selected (the open entry's
+password, as the mockup has it) and Cmd+A with the focus on neither a field nor
+the entry pane (every row the list draws, see `docs/design.md`), and nothing
+else; every other Cmd key is the menu's, and works wherever the focus is.
+Duplicate is offered on the condition the pane's Duplicate is drawn on - an
+entry read, in a vault Coffer writes, out of the bin - and not while rows are
+chosen, when the bar's other verbs act on the choice rather than on the pane.
+Chosen with the focus in a field, it leaves the field first like every other
+item, so the copy holds what was typed. Cmd+B copies the open entry's login with
+the focus in a field too, where the page used to leave it to the field: it is a
+copy, through Rust, and the field is left first, as above. A login being
+changed in its own field is written, and the copy waits until every value on its
+way to Rust has arrived (`flush` in `drafts.ts`) before it is asked for: Tauri answers the two side by side, and once a save lets
+go the session goes to whichever asks first, so a copy sent beside the write
+could put the login as it was on the pasteboard. Copy Login is offered on the
+condition the row's copy button is drawn on - a login Rust holds - so one typed
+into an empty field is offered once that field is left. Copy Password is on
+Shift+Cmd+C because Cmd+C is Edit ▸ Copy, which is how every text field in the
+window copies: an item of Coffer's on it would take copying away from them all.
+Cmd+Backspace in a field deletes to the start of the line, so Move to Recycle
+Bin is greyed out while a field has the focus, and it is offered only for an
+entry whose deletion goes to the bin, which is what it says; one that goes for
+good asks first, from the pane. While rows are chosen in the list it moves them
+rather than the open entry, offered only when every one of them goes to the
+bin; a choice holding one that would go for good asks first, from its bar.
+
+**Closing the window locks, and Coffer waits in the Dock.** Before this the
+close button quit Coffer: the last window going asks the loop to exit
+(`ExitRequested` with no code), and nothing said no. Now the close is asked of
+the page first. `CloseRequested` sends `{ action: 'closing' }` and holds the
+window up; the page sends what is being typed, the way the Lock button does, and
+asks for `close_window`, which locks with `Reason::Closed` and takes the window
+down without building it again. A page that has not asked within three seconds
+is closed from Rust all the same - a close JavaScript can hold up is a lock
+JavaScript can refuse - and with no page listening the window goes at once and
+the lock runs off the main thread. The three seconds run only while nothing
+holds the session (`Session::busy`): the page's drafts wait behind a save for
+it, and a lock from Rust that took it first - the session is not handed out in
+the order it was asked for - would write the vault without what the reader
+typed during the save. The lock goes through the timer like every
+other, and then straight to the session as well, so that an unlock still
+deriving its key lands after it and is refused as stale rather than opening a
+vault behind a window that has gone. `ExitRequested` with no code is refused
+from then on. Quit never asks it - `terminate:` ends the loop and arrives as
+`Exit`, which locks with `Reason::Quitting` as before - and an exit with a code
+is one Coffer asked for itself. A click on the Dock icon (`RunEvent::Reopen`)
+brings the window back: forward, and out of the Dock when it was minimised, or
+built again where it was left when the reader had closed it. The unlock screen
+it comes back to says nothing about why: the reader asked.
+
+## A menu under the pointer
+
+WebKit's own menu is a web page's: Look Up, Translate, Search and Share, each
+of which hands what is under the pointer to another application. So the window
+prevents it everywhere (`plain` in `context.svelte.ts`, on the window under
+every screen), except in a field the reader types into, where its Cut, Copy,
+Paste and spelling are about their typing - and there too while a revealed
+value is selected (see A value selected on the screen). Where the window knows
+what was right-clicked, it asks Rust for Coffer's own menu instead.
+
+| Command | Takes | Answers |
+|---|---|---|
+| `context_menu` | `serial`, `subject`, `at` | nothing, once the menu has closed |
+
+**The page names the thing; Rust decides the menu.** `subject` is one of seven
+kinds, by id and name and never by value: a row (`entry`), the rows chosen
+(`entries`, when the right-click was on one of them), a folder (`folder`), the
+bin's own row (`bin`), a field's row (`field`, with whether its value is on the
+screen), a file (`file`) and a revealed value (`value`, with the positions of
+the part selected). `at` is where the pointer was, in the window's points. Rust
+reads the vault (`context::offered`): whether there is a login or a password to
+copy, whether the address is one it would open, whether it writes this vault
+back (`read_only`, whichever of the four reasons in Backups), whether its files
+can be read out (`files_readable`: not a `kdbx3` vault's), what deleting the
+thing does, whether the bin holds anything. An item
+that does not apply is drawn greyed out, so nothing is offered that the command
+behind its button would refuse. Something the vault does not have - gone a
+moment before, or an id that is not one - is refused `noSuchEntry`, and the
+window says so; a menu that could not be shown is `other`.
+
+**Move to is the window's list of places, sent flat.** `entry`, `entries` and
+`folder` carry `places`: the folder list's destinations in the tree's order
+(`placesFor` in `places.ts`), each with how deep it sits, its name already set
+apart and cut to sixty characters the way a sentence sets one apart
+(`isolated` in `format.ts`), and whether the move would be taken. Flat, because
+serde_json reads no deeper than 128 levels and a vault can be a hundred
+folders deep; Rust builds the submenus with a stack. Rust applies only what
+AppKit needs, to every title as it hands the menu to muda (`drawn` in
+`context/shown.rs`) - a control character or a line separator is a space, and
+muda's `&` and `[~~]` are escaped, or "R&D" would be offered as "RD" - and
+trusts no place: a move the window was wrong about is refused by the move
+itself.
+
+**The item chosen comes back by id, through the window's channel.** Every item
+is `context:<serial>:<n>`, and the `MenuEvent` AppKit sends carries that and
+nothing else. Rust keeps what the menu is about and answers the id with an
+`Action`, `{ action: 'context', serial, chosen }`, where `chosen` is the item
+and the ids it is about - `copyField`, `moveEntries`, `deleteEntries` with the
+deletion the menu showed for each entry, and so on. It is told only to the page
+listening, never kept for the next one (`route::chosen`), and only the newest
+menu of the window that asked is drawn and answered, once. The page runs the
+function the item's button runs, on those ids, and nothing when they are not
+what it shows any more or the thing right-clicked has left the screen. The
+command answers when the menu closes, and the item may reach the page before
+that answer or after it. A choice for fifty thousand rows is over the 8 KiB a
+channel evaluates straight into the page, and is fetched instead.
+
+**Nothing of AppKit's own is in these menus but a separator.** A predefined
+Copy would be the ordinary pasteboard write `guard.ts` exists to stop, and
+there is no Services item to hand a selection to anything. Copy is Coffer's, by
+entry and field, through `copy`.
+
+**The thread that draws the window tracks the menu.** AppKit shows a menu under
+the pointer modally, inside the call that shows it, on the main thread, and
+nothing else queued for that thread runs until it closes: tao handles what
+Tauri posts there only between callbacks (`app_state.rs` in tao 0.35.3), and
+the menu is shown from inside one. So the vault is read and let go of before
+anything is asked of that thread, the command waits for the menu off it
+(`main_thread::answer`), and nothing on that thread ever waits for a save. The
+item chosen is handled once the menu has gone, like every other menu event.
 
 ## The master password
 
@@ -737,6 +1235,198 @@ another process, and anything Objective-C allocated - the pasteboard's string
 included, which is why the clipboard is cleared on a timer rather than trusted
 to a wipe.
 
+Changing the master password added:
+
+| Command | Takes | Answers |
+|---|---|---|
+| `change_master_password` | the current master password and the new one, as the raw body | how many snapshots beside the vault still open with the old password |
+| `remove_old_snapshots` | | `Removed`: how many of those it took off the disk, how many would not go, and why the first would not |
+
+**Changing it sends two passwords in the one body a message has,** framed so
+that Rust can cut them apart:
+
+```ts
+const body = new Uint8Array(4 + current.length + next.length);
+new DataView(body.buffer).setUint32(0, current.length);
+body.set(current, 4);
+body.set(next, 4 + current.length);
+```
+
+A raw body cannot sit beside named arguments, so the two travel as one frame:
+the current password's length in four bytes, big-endian, then the current
+password, then the new one, which runs to the end of the body. `ipc.ts` builds
+the frame, wipes the two encoded passwords as soon as it holds them, and wipes
+the frame when the call is over, whatever it answered. Rust refuses a JSON body
+exactly as `unlock` does, and refuses a frame whose length the body does not
+hold rather than reading it as far as it goes. Both passwords are in
+`Zeroizing` the moment they are cut out, and the stack the change ran on is
+written over afterwards.
+
+**The current password is checked against the key the vault holds, not against
+the file.** The vault was opened with it, and a vault that can save already
+holds it. The two are compared digest against digest in constant time, so how
+long the refusal took says nothing about how close what was typed came, however
+long it was. From this command, `wrongCredentials` is only ever the current
+password typed wrong: a key file the vault was opened with is kept and stays
+part of the key. The check spends no key derivation, so on its own it would
+answer a guess in a millisecond where the unlock screen takes a second - to
+anybody at an unlocked Mac, driving the three fields by hand or by automation,
+without ever copying the file. And the answer would be the master password
+itself, which opens every snapshot, every copy made elsewhere and every later
+version of the file. So a wrong current password is answered only after
+`kdf::TARGET`, the second a calibrated unlock costs
+(`Session::change_master_password`). The wait runs on the command's blocking
+thread with the session let go, so no save and no lock waits behind it. Changes
+go one at a time, the wait included: guesses sent side by side still cost a
+second each, and a guess sent while a wrong one waits is not answered until that
+wait is over.
+
+**A change is a save with another key.** It writes the file the way `save` does:
+it is refused with `externalChange` or `gone` before anything is written, takes
+a snapshot first, keeps the same key derivation parameters, and sets
+`MasterKeyChanged` to now. Like `save` it runs on a blocking thread and holds
+the session for the whole second, and whatever the vault held that the file had
+not got is written with it. A write that does not go through leaves the vault on
+the old password, so what the reader was told did not change is what both the
+file and the vault still open with. These are refused before anything is
+written: a vault Coffer does not write back (`readOnly`); the copy a lock left,
+which can be written and is not the vault, and a vault with such a copy beside
+it (both `refused`, before the current password is asked about); a wrong current
+password (`wrongCredentials`); and an empty new password, one that is not text,
+or the one the vault already has (`refused`). A password given to the copy would
+be the copy's alone: the vault and every snapshot of it would go on opening with
+the old one, the count could only be the copy's own snapshots, and making the
+copy the vault afterwards leaves the vault's old chain under the old password
+with nothing remembered to offer. So the window does not offer the row inside a
+copy, and Rust refuses it there too; once the copy is made the vault, a change
+counts the vault's whole chain. Beside the vault, the copy opens with the
+password the vault has now, and every sentence the unlock screen says about it
+says so. A change there would make those sentences false, and "Make this my
+vault" or putting the copy back would then bring the old password back with
+nothing said. So while `status` reports a `rescue` beside the open vault, the
+row says the copy has to be made the vault or removed first and offers nothing
+to type, and Rust refuses the change there as well. The window checks that the
+new one was typed the same way twice; Rust never sees the second copy. In the
+window a change goes through the same object as a save (`saving.svelte.ts`), so
+a file somebody else wrote raises the conflict dialog over the settings, and a
+change that went through clears "Not saved".
+
+**The answer is about the snapshots, because they did not change.** Every
+`<vault>.N.bak` was written before the change and still opens with the old
+password, and the reason a reader changes a password is often that they believe
+the old one is known. `change_master_password` answers with how many there are,
+and the window asks whether to remove them. `remove_old_snapshots` takes nothing
+and removes exactly those files. Rust keeps them by what each file is, not by
+its slot, so a save between the answer and the press still removes the right
+ones: that save moves each one down a slot and puts a snapshot under the new
+password in slot 1. The chain is read one slot at a time, so a slot nobody can
+read - a link left there that leads round in a circle, a disk that answers with
+an error - hides none of the others from the count or from the removal. A file
+that will not go is kept for the next press. The removal answers rather than
+fails when some would not go - `{ gone, left, refused }`, with `refused` a
+`Failure` like any command's - so that the question the window goes on asking is
+about how many are left, not how many there were. Nothing else is touched: not
+the vault or its lock, not the copy a lock left beside it, not any copy
+elsewhere, and a link at a slot goes as a link. Each of those goes on opening
+with the password it was written under. Closing the settings is keeping them.
+
+**A lock that arrives during a change waits for it,** because the change holds
+the session as a save does. The vault locks under whichever key the file ended
+with, and the question goes with the window. The window keeps the settings open
+while the change is on its way (`holding.ts`), so the one place that says which
+password now opens the vault is not closed in the second before it says so - but
+nothing in a window holds off a lid closing or the idle timer. So the session
+remembers, with the vault, that its password changed while it was open, and a
+lock that closes such a vault leaves `status` answering `rekeyed`: the unlock
+screen says the master password was changed before locking and that the vault
+opens with the new one, until the next unlock or another file is chosen. The
+old-backups question does not come back with it: the answer that asked it went
+with the window, and a later change counts the whole chain again.
+
+## Backups, and a vault Coffer does not write
+
+The ten snapshots a save leaves beside the vault are called backups on the
+screen, which is the word a reader has for them. They are listed wherever they
+are offered - on the screen for a vault file that will not open, and in the
+settings - and any of them can be opened to look at and made the vault.
+
+**A backup is opened by the file that was shown, not by its slot.** `snapshots`
+answers with slot numbers, and Rust keeps what each one named: the file's
+inode, device, length and time, as `snapshot::Taken` holds them. Every save
+renames every backup one slot on, so a slot read before a save names the
+neighbour after it. `choose_snapshot` finds the file that was shown wherever
+the chain has moved it, and answers `gone` when it has been pushed out or was
+never listed. No path crosses: the window sends the slot it was shown.
+
+**Looking at a backup with a vault open is a lock first.** The settings list the
+backups of whatever is open and offer each one to look at. With a vault open,
+`choose_snapshot` locks it the ordinary way - what was being typed written, a
+save tried, a copy beside the vault when the file will not take it - and only
+when that lock kept everything where it belongs does the session point at the
+backup, with the key file kept, which is what `back_to_vault` does for a copy.
+A backup that has gone since the list was read is answered `gone` before
+anything is locked: the vault is never closed for a backup that is not there.
+When the lock kept its work beside the vault or lost it, the session stays on
+the vault, and its unlock screen says what the lock left. When its own save
+pushed the backup out of the chain - the oldest, with work the window had not
+saved - the session stays on the vault as well, and `status` sends
+`backupGone`, so that its unlock screen says why it is the vault's and not the
+backup's. The window sends what is being typed before it asks, as it does
+before a lock, and is gone by the time the answer comes. The command is
+answered off the drawing thread, like every command that reaches the lock.
+The settings read the list again after anything on the same screen moved it:
+a new master password, which is a save, and old backups removed.
+
+**Why a backup is open is Rust's to say.** `status` sends `snapshot` while the
+chosen file is one of the vault's backups: the vault's file name, when the
+backup was written, the name the vault's file will be kept under as the newest
+backup (`keptAs`), the vault's file as it stands (`vaultFile`), and `because`.
+That is `unopened` when the last unlock of the file chosen before was refused
+as damaged, not a database or gone - the refusals the unlock screen answers with
+the list - and `asked` otherwise. A backup that would not open either passes its
+reason on to the next one chosen; a wrong password is not a reason, since the
+file opens with another. Names and times, as for a copy; the strip over the
+backup and its unlock screen's card are drawn from them.
+
+**A backup becomes the vault in one press, and nothing is deleted on the way.**
+`adopt_snapshot` asks for no password: the backup opened with the one the vault
+had when it was taken, and the vault opens with that one from then on - which,
+after a change of the master password, is the old one, so the strip says so
+before the press. It is held to how `status` last said the vault's file stood,
+like `promote_rescue`, and refused with `externalChange` otherwise. A file that
+opens with the backup's key is written over the ordinary way and is the newest
+backup afterwards. One that does not - damaged, under another password, not a
+vault - is first given a name of its own beside the vault,
+`<vault>.replaced-YYYY-MM-DD.kdbx`, numbered past any name already taken, never
+written over and never removed, and is the newest backup as well. A vault whose
+file has gone takes the backup at its name. The answer says which of the three
+happened, by file name (`keptAs`, `setAside`), and the window says it in a
+notice. The vault is written down for the next launch and stays open. A refusal
+before the write touches nothing, and takes back the name it had just given
+the vault's file. A write that failed after the backups moved on leaves them
+moved, with the open backup followed to its new slot, or kept open from memory
+when it was the oldest; the backup is still open, read only, either way. A
+backup of the copy a lock left is refused with `refused`: it would go over that
+copy, which holds the only version of work its vault has not got.
+
+A lock that lands while the press runs - the idle deadline, sleep, Cmd+L, a
+backup asked for from the settings - takes the window before its notice can say
+what became of the file. The session keeps the answer with the vault, and the
+lock that ends it hands it to `status` as `adopted`, which the unlock screen
+says, with the password the vault opens with now, until the vault opens again;
+nothing is kept once anything else has happened in the vault, since a change is
+a reader at the window that said it and a save moves the name a file was kept
+under. A backup asked for, or a way back to the vault, pressed while the press
+ran was about the backup, which is the vault by then: both are let go, and the
+lock that follows stays on the vault.
+
+**Read only says why.** `status` sends `readOnlyBecause` beside `readOnly` -
+`snapshot`, `place`, `kdb` or `kdbx3` - and `copyable`, Rust's answer to whether
+`save_copy` would write what is open: everything but the two formats Coffer
+does not write, whose bytes a copy would carry. The status bar's "Read only" is
+a button whose note says the reason in words, and offers `save_copy` only where
+`copyable` is true.
+
 ## Why the shape of a command is what it is
 
 **`unlock` and `choose_database` are `async`.** A plain `#[tauri::command]` runs
@@ -768,6 +1458,11 @@ plugin commands, and application commands from a local origin bypass it unless
 the crate declares an ACL manifest of its own. The gate on `unlock` is that it
 is `unlock`, not that a capability lists it. Adding a `permissions/` directory
 to this crate would flip that and every command would then need an entry.
+`listen` takes a `Channel`, which needs nothing here either: the channel's own
+command, which a page uses to fetch a message too large to evaluate, is let past
+the ACL by name (`src/webview/mod.rs` in tauri 2.11.5). `context_menu` is an
+application command too, and the menu is built in Rust, so it needs no
+permission: the window cannot build a menu of its own.
 
 The dialog plugin is registered for its Rust API only. Its three webview-facing
 commands - `open`, `save`, `message` - are left unpermitted, so the file picker
@@ -802,6 +1497,11 @@ Two things follow from that, and both are traps:
   reaches elements that are in the HTML at build time. This is why the sprite is
   hidden with a class, and why the two timers that drain on screen are CSS
   animations of a fixed length rather than a width that JavaScript sets.
+- **A message through a channel is not governed by the policy.** Rust evaluates
+  it into the page with `evaluateJavaScript:` (`src/wkwebview/mod.rs` in wry
+  0.55.1), the route Tauri's own answers take, and every one Coffer sends is far
+  under the 8 KiB above which Tauri parks it in Rust and has the page fetch it
+  over `ipc:` instead.
 
 ## Locking
 
@@ -810,13 +1510,19 @@ still holding every value the reader looked at, in a heap nothing in this
 process can reach.
 
 One route in, whatever asked. The idle deadline, the machine's own
-notifications and the button all post to
-[`autolock::timer`](../crates/vault-gui/src/autolock/timer.rs), which is the
-only caller of [`lock.rs`](../crates/vault-gui/src/lock.rs). That order is the
-whole of what `lock.rs` is: the tree is wiped **first and synchronously**,
+notifications, the button, the close button and the two presses that leave an
+open file for another (`back_to_vault`, and `choose_snapshot` with a vault
+open) all post to
+[`autolock::timer`](../crates/vault-gui/src/autolock/timer.rs), which is what
+calls [`lock.rs`](../crates/vault-gui/src/lock.rs); a close calls it once more
+after the timer, for an unlock still in flight (see The menu bar). That order is
+the whole of what `lock.rs` is: the tree is wiped **first and synchronously**,
 because destroying a window is a message to the event loop and a Mac going to
-sleep will not wait for it; then the clipboard is taken back; then the stack the
-key was derived on is written over; and only then is the destroy queued.
+sleep will not wait for it; then what a menu under the pointer was about is
+forgotten (`context::forget`); then the clipboard is taken back; then the stack the
+key was derived on is written over; and only then is the destroy queued, with
+the window asked back unless Coffer is quitting or the reader closed it
+(`Reason::comes_back`).
 
 `Session::lock` answers whether it actually dropped a vault, and exactly one
 caller is told yes. Tauri goes on handing out the window between a destroy being
@@ -824,17 +1530,35 @@ queued and the event that says it happened, so a second trigger arriving at the
 same moment would otherwise destroy the window the first one's rebuild had just
 made.
 
-The window is built again in the `Destroyed` event of the run callback and
-nowhere else. A destroy followed by a build in one function always fails: the
-label is taken until the event is delivered. It is built from its entry in
-`tauri.conf.json` rather than by hand, so the rebuilt window is the same window,
-and it is put back where the reader left it.
+After a lock the window is built again in the `Destroyed` event of the run
+callback and nowhere else. A destroy followed by a build in one function always
+fails: the label is taken until the event is delivered. After the reader closed
+it, it is built on `Reopen` or a choice in the menu bar (`window::bring_back`).
+Every build after the first goes through `window::again`, under a label no
+window has carried, and from its entry in `tauri.conf.json` rather than by hand,
+so the rebuilt window is the same window, and it is put back where the reader
+left it.
 
 **No Tauri event goes the other way.** The rebuilt page asks `status` and gets
 the reason it is asking for a password again. An event would need two
 capabilities the window does not have, and Tauri never clears a destroyed
 window's listeners: a rebuilt window reuses the label `main`, so every emit
 after the first relock would serialise every dead listener id ever registered.
+
+One channel does. The menu bar's choices, the items of a menu under the
+pointer and the close button reach the page through the `Channel` it hands over
+with `listen` (see The menu bar). It needs no capability, and nothing of it
+outlives the window: Rust lets go of it in the `Destroyed` arm, and the next
+page hands over its own.
+
+**A lock while a menu under the pointer is open** wipes the tree and forgets
+what the menu was about at once. The window goes when the menu closes, as it
+does after a file panel: its destroy is queued for the thread the menu holds.
+An item chosen from that menu reaches nothing - Rust no longer knows what it
+was about, and the window that comes back has a label of its own and asked for
+no menu. A menu asked for before the lock and not drawn yet - the vault read,
+its turn on that thread still to come - is not drawn at all: the lock forgets
+which window asked, so it is no longer the newest of any.
 
 ## What the window does not do yet
 
@@ -843,7 +1567,13 @@ thousand entries, which is what `SPEC.md` sets a time budget for, draws in one
 pass and filters on the text it folded when the folder was opened. Fifty
 thousand would draw fifty thousand rows and take its time about it. The filter
 itself is tested at that size; the drawing is not, and the fix when it matters is
-to draw only the rows on screen.
+to draw only the rows on screen. Cmd+A over fifty thousand rows redraws every
+one of them on the selection plane, and that is not measured either.
+
+**Rows are chosen with the pointer and Cmd+A.** The list has no arrow keys and
+no focus of its own that moves from row to row, so there is no Shift+arrow and
+no Space to choose with; that belongs with the keyboard work on the list rather
+than with choosing.
 
 **The command layer itself has no tests.** What is under it does:
 `Session` is covered, `vault-core` is covered, and `contract.test.ts` checks
@@ -853,10 +1583,13 @@ command - the dialog it opens, the thread it moves work onto. Testing one needs
 Tauri's mock runtime and belongs with the window work rather than with this
 slice.
 
-**An entry cannot be moved between folders.** It is made in the folder that is
-open and it stays there until it is deleted, which moves it to the recycle bin,
-and put back from there, which returns it. The mockup shows dragging a row into
-another folder; nothing here does that yet.
+**A folder is moved with the pointer, or from its menu.** An entry moves from
+the line above its title, which the keyboard reaches like any other button; a
+folder has no such line. It is dragged onto another in the folders pane, or
+moved through Move to in the menu a right-click on it draws (see A menu under
+the pointer). VoiceOver's VO+Shift+M should open that menu on the folder's line
+with no pointer at all, which is on the release checks and not yet confirmed; a
+reader with only the keyboard and no VoiceOver cannot move a folder yet.
 
 **The three window buttons are not moved at all.** macOS puts the close,
 minimise and zoom buttons a fixed distance below the top of the window, and it
@@ -908,13 +1641,6 @@ read the vault. The status bar says `Saving…`. If that ever becomes a wait
 worth avoiding, the answer is to hold the write behind a short delay rather than
 to let two of them overlap.
 
-**A snapshot opened from the unlock screen becomes the chosen database for the
-rest of the session,** and it is read only. Writing to a `.bak` would put the
-change in a file the next save of the database beside it rotates away, so every
-change is refused with `readOnly` and `save_copy` is the way out: it writes what
-is in the window to a file of the reader's choosing, which then opens like any
-other database.
-
 **A lock writes the vault out before it wipes it.** A vault is dirty exactly
 when saving is what failed, so locking on its own would be a session's work
 ended by a timer. What the reader was typing and had not finished goes in first,
@@ -964,7 +1690,7 @@ said so, and `promote_rescue` is held to it.
   `externalChange` and nothing written, and the window reads `status` again so
   that the banner says how it stands now before the reader presses again. A
   refusal or a failure before the write lands leaves both files as they were,
-  and the copy still open. `leave_rescue` goes back instead: with the copy open
+  and the copy still open. `back_to_vault` goes back instead: with the copy open
   it locks, so what the copy holds is written into the copy on the way out.
   Only when that lock kept nothing beside the copy - nothing to write, or the
   copy took it - is the session pointed at the vault, and the window that comes
@@ -1009,7 +1735,8 @@ on a read-only disk image, inside a Time Machine snapshot, on a stick macOS
 mounted read-only or on a share the reader may only read cannot have a lock file
 written beside it, and used not to open at all. It opens, `read_only` is true in
 `status`, every change answers `readOnly`, and `save_copy` writes what is in the
-window somewhere the reader can write.
+window somewhere the reader can write. `readOnlyBecause` is `place`, and the
+status bar's note offers that copy (see Backups).
 
 ## Where this departs from SPEC.md
 
@@ -1032,6 +1759,39 @@ change count checked before the clear and the contents never read.
 default layout. Coffer has one workspace with two crates, as the same document
 says two paragraphs earlier, so the capability files, the configuration and the
 window icon live in the crate that runs `tauri_build::build()`.
+
+**The settings have rows section 8 does not name.** `SPEC.md` gives the screen
+the auto-lock timer, the clipboard timer, the theme and the database path, and
+says key derivation does not appear; it still does not. The rows it does not
+name:
+
+- Lock when this Mac goes to sleep, and Lock when the screen locks: section 7's
+  two triggers, which a reader may turn off one at a time.
+- Automatic backups: how many of the ten copies section 7 asks for are beside
+  the vault, and, shown, each of them by when it was taken, to open and look
+  at, so a reader can find them and get back to one (see Backups).
+- Master password, drawn only while a vault Coffer can write is open, and not
+  inside the copy a lock left until it is made the vault (see The master
+  password); beside such a copy it says what to do with the copy first.
+  Section 3 rules out recovering one and says nothing against changing one, and
+  a reader whose password was seen had nowhere to change it but another client.
+- Show in Finder beside the database path, which section 8 does name: a path a
+  reader cannot find in the Finder is a file they cannot carry anywhere.
+- Copy on another disk: when the last copy on another disk was made and on
+  which disk, with the way to save one (see Keeping a copy on another disk).
+  Section 11 calls a monthly copy on external media the only defence against a
+  dead disk, and Coffer never offered one. The unlocked window's status bar
+  says so once a month has gone by, and the unlock screen says nothing of it:
+  section 8 ends that screen with "Nothing else".
+
+**The unlock screen offers every backup, not only the most recent.** `SPEC.md`
+section 8 offers the most recent `.bak` for a corrupt file. When that one is
+damaged too - the power cut that broke the vault can break the save before it -
+the reader had nowhere to go, so all of them are listed, newest first, and the
+most recent is still the first offer. The same list is offered for a vault file
+that is not there at all, which section 8 does not name, and one opened backup
+can become the vault: section 3's "no merge" holds, because it is one whole file
+chosen over another, and the file it replaces is kept (see Backups).
 
 **TypeScript needs two majors installed.** `svelte-check` will not run against
 TypeScript 7 unless 6 is installed beside it and the check is given `--tsgo`,

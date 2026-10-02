@@ -22,6 +22,8 @@ pub struct Failure {
 #[serde(rename_all = "camelCase")]
 enum Code {
     /// The password, the key file, or both. One code, one message, no detail.
+    /// From `change_master_password`, the current password typed wrong, and
+    /// never the key file: the vault already holds that.
     WrongCredentials,
     NotADatabase,
     UnsupportedFormat,
@@ -65,8 +67,9 @@ enum Code {
     /// whether they mean it.
     ForGood,
     /// A removal the reader asked to take back is no longer the last thing
-    /// that happened to its entry. Nothing was done, and the screen says the
-    /// removal can no longer be undone.
+    /// that happened to its entry, or a move is no longer the last that
+    /// happened to where its entries are. Nothing was done, and the screen
+    /// says it can no longer be undone.
     Superseded,
     /// A deletion would no longer do what the window showed before the reader
     /// asked for it: a move to the bin would now erase, or the other way round,
@@ -114,6 +117,12 @@ impl Failure {
         Failure::refused("lock the vault before opening another")
     }
 
+    /// A save panel answered with a place that has no path: one sentence for
+    /// every panel that writes a file.
+    pub fn no_path_to_write() -> Failure {
+        Failure::refused("that place has no path Coffer can write")
+    }
+
     /// A new vault was asked for before anywhere had been settled for it. One
     /// sentence, because making one and opening what is at the place both ask.
     pub fn nowhere_chosen() -> Failure {
@@ -159,7 +168,9 @@ impl Failure {
 impl From<VaultError> for Failure {
     fn from(error: VaultError) -> Failure {
         let code = match error {
-            VaultError::WrongCredentials => Code::WrongCredentials,
+            VaultError::WrongCredentials | VaultError::NotTheCurrentPassword => {
+                Code::WrongCredentials
+            }
             VaultError::NotADatabase => Code::NotADatabase,
             VaultError::UnsupportedFormat => Code::UnsupportedFormat,
             VaultError::DamagedHeader | VaultError::DamagedPayload | VaultError::DamagedContent => {
@@ -182,10 +193,14 @@ impl From<VaultError> for Failure {
             | VaultError::NoSuchAttachment
             | VaultError::NoSuchVersion => Code::NoSuchEntry,
             VaultError::UnwritableText
+            | VaultError::UnwritableTag
             | VaultError::StandardField
             | VaultError::FieldNameTaken
             | VaultError::UnnamedField
             | VaultError::EmptyMasterPassword
+            | VaultError::SamePassword
+            | VaultError::PasswordOfACopy
+            | VaultError::PasswordBesideACopy
             | VaultError::ReservedName
             | VaultError::PasswordNotUtf8
             | VaultError::AbsurdKeyDerivation
@@ -196,13 +211,17 @@ impl From<VaultError> for Failure {
             | VaultError::CannotMoveRoot
             | VaultError::CannotMoveIntoItself
             | VaultError::NotInRecycleBin
+            | VaultError::InRecycleBin
+            | VaultError::IntoRecycleBin
+            | VaultError::NotATemplate
             | VaultError::NoSuchPart
             | VaultError::CopyOntoItself
             | VaultError::NotACopy
+            | VaultError::NotASnapshot
             | VaultError::NothingToGenerateFrom
             | VaultError::RandomnessUnavailable => Code::Refused,
             VaultError::RemovalForGood => Code::ForGood,
-            VaultError::RemovalSuperseded => Code::Superseded,
+            VaultError::RemovalSuperseded | VaultError::MoveSuperseded => Code::Superseded,
             VaultError::DeletionChanged => Code::DeletionChanged,
             VaultError::Io(_) => Code::Io,
             _ => Code::Other,
@@ -245,10 +264,15 @@ mod tests {
             (VaultError::TooLarge, "tooLarge"),
             (VaultError::NoSuchEntry, "noSuchEntry"),
             (VaultError::UnwritableText, "refused"),
+            (VaultError::UnwritableTag, "refused"),
             (VaultError::StandardField, "refused"),
             (VaultError::FieldNameTaken, "refused"),
             (VaultError::UnnamedField, "refused"),
             (VaultError::EmptyMasterPassword, "refused"),
+            (VaultError::NotTheCurrentPassword, "wrongCredentials"),
+            (VaultError::SamePassword, "refused"),
+            (VaultError::PasswordOfACopy, "refused"),
+            (VaultError::PasswordBesideACopy, "refused"),
             (VaultError::DatabaseExists, "taken"),
             (VaultError::CopyBeside, "taken"),
             (VaultError::ReservedName, "refused"),
@@ -268,12 +292,18 @@ mod tests {
             (VaultError::AttachmentPinned, "refused"),
             (VaultError::AttachmentTooLarge, "refused"),
             (VaultError::CannotMoveRoot, "refused"),
+            (VaultError::CannotMoveIntoItself, "refused"),
             (VaultError::NotInRecycleBin, "refused"),
+            (VaultError::InRecycleBin, "refused"),
+            (VaultError::IntoRecycleBin, "refused"),
+            (VaultError::NotATemplate, "refused"),
             (VaultError::NoSuchPart, "refused"),
             (VaultError::NotACopy, "refused"),
+            (VaultError::NotASnapshot, "refused"),
             (VaultError::NothingToGenerateFrom, "refused"),
             (VaultError::RemovalForGood, "forGood"),
             (VaultError::RemovalSuperseded, "superseded"),
+            (VaultError::MoveSuperseded, "superseded"),
             (VaultError::DeletionChanged, "deletionChanged"),
             (VaultError::Io(io::Error::other("a disk")), "io"),
         ] {

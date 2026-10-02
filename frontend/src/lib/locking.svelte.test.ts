@@ -1,9 +1,12 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import { drop, replacing, settle, typed, type Place } from './drafts';
-import { lockByHand } from './locking';
+import { closeByHand, lockByHand } from './locking';
+import type { Stubbed } from './stubbed';
 
-const ipc = vi.hoisted(() => ({ draft: vi.fn(), lock: vi.fn() }));
-vi.mock('./ipc', () => ipc);
+const ipc = vi.hoisted(() => ({}) as Stubbed);
+vi.mock(import('./ipc'), async (real) =>
+	Object.assign(ipc, (await import('./stubbed')).stubbed(await real()))
+);
 
 /** Everything Rust was told, in order: drafts as their value, and the lock. */
 function heard(): (string | null)[] {
@@ -84,4 +87,40 @@ it('clears the screen when the lock is refused, and says so to the caller', asyn
 		message: 'the lock failed'
 	});
 	expect(cleared).toBe(true);
+});
+
+/** Closing the window is a lock the reader asked for by another button, and
+ * it keeps the same order: what is typed reaches Rust before the close does. */
+it('tells Rust what is typed before it asks for the window to close', async () => {
+	const at = place('Notes');
+	typed(at, () => 'written as the window went');
+	ipc.closeWindow.mockResolvedValue(undefined);
+
+	await closeByHand();
+
+	expect(ipc.draft).toHaveBeenCalledWith(
+		at.entry,
+		'Notes',
+		'written as the window went',
+		false,
+		false,
+		expect.any(Number)
+	);
+	expect(ipc.closeWindow).toHaveBeenCalledTimes(1);
+	expect(ipc.draft.mock.invocationCallOrder[0]).toBeLessThan(
+		ipc.closeWindow.mock.invocationCallOrder[0]
+	);
+});
+
+/** A write that failed - the disk went, the vault was already locking - is
+ * no reason to leave the window up: the close still locks the vault. */
+it('asks for the close even when a write on its way failed', async () => {
+	const at = place();
+	typed(at, () => 'half a note');
+	ipc.draft.mockRejectedValueOnce({ code: 'noVault', message: 'no database is open' });
+	ipc.closeWindow.mockResolvedValue(undefined);
+
+	await closeByHand();
+
+	expect(ipc.closeWindow).toHaveBeenCalledTimes(1);
 });

@@ -7,13 +7,15 @@
 //! lock file all go with it.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
-use vault_core::kdf::Work;
+use vault_core::kdf::{self, Work};
 use vault_core::model::{Entry, EntryId, Project};
-use vault_core::storage::{OnDisk, Seen, unsaved};
+use vault_core::storage::{OnDisk, Seen, snapshot, unsaved};
 use vault_core::{
-    Attached, LockPolicy, MasterKey, Recipe, Rescue, SecretValue, Vault, VaultError, Written,
+    Adopted, Attached, LockPolicy, MasterKey, Recipe, Rescue, SecretValue, Vault, VaultError,
+    Written,
 };
 use zeroize::Zeroizing;
 
@@ -22,12 +24,35 @@ use crate::drafts::{Drafts, Over, Typed};
 use crate::error::Failure;
 use crate::offered::Waiting;
 use crate::recent;
+use backups::{Listing, Shown};
+use slot::Slot;
+
+pub use backups::Looking;
+
+mod backups;
+mod elsewhere;
 
 pub struct Session {
     held: Mutex<Held>,
+    /// Whether a vault is open, readable without waiting for `held`.
+    ///
+    /// A save holds that lock for a key derivation and the encryption of the
+    /// whole file, which on a vault carrying documents is seconds. The menu bar
+    /// asks whether there is anything to lock every time what the window offers
+    /// changes, and a question stuck behind a save left an item grey that
+    /// applied - and AppKit drops the key of a grey item. Shared with the
+    /// [`Slot`] the vault is held in, which is the one thing that changes it.
+    unlocked: Arc<AtomicBool>,
     /// Where the vault that opened is written down for the next launch, when
     /// this Mac gave Coffer a configuration directory to write it in.
     remembering: Option<PathBuf>,
+    /// Taken for the whole of a change of the master password, the wait a
+    /// wrong current password costs included: see
+    /// [`Session::change_master_password`].
+    guessing: Mutex<()>,
+    /// Taken for the write of a copy, which is done with `held` let go: see
+    /// [`Session::copy_to`].
+    copying: Mutex<()>,
 }
 
 struct Held {
@@ -47,6 +72,28 @@ struct Held {
     /// one. Where and nothing more: after a lock nothing of the vault may be
     /// left to name the entry it went into. Cleared with `locked_by`.
     typed: Written,
+    /// Whether the vault the last lock closed was given a new master password
+    /// while it was open. The window that said so goes with the lock, and a
+    /// change pressed in the second before a lid closed may never have been
+    /// said at all; the reader at the unlock screen would not know which of two
+    /// passwords to type. Cleared with `locked_by`.
+    rekeyed: bool,
+    /// What became of the vault's file, when the vault the last lock closed
+    /// had just been made from one of its backups and nothing had happened in
+    /// it since. The window that pressed says so in a notice, and a lock that
+    /// lands while the press runs - the idle deadline, sleep, Cmd+L, a backup
+    /// asked for from the settings - takes that window before it can: the
+    /// name a file was kept under, and the password the vault now opens with,
+    /// would be said nowhere. Nothing is said once anything else happened in
+    /// the vault: a change is a reader at the window that said it, and a save
+    /// since has moved the name a file was kept under. Cleared with
+    /// `locked_by`.
+    adopted: Option<Adopted>,
+    /// Whether the backup the reader asked to look at with a vault open was
+    /// not there once the lock that was to open it had closed the vault: that
+    /// lock's own save pushed it out of the chain. The session stayed on the
+    /// vault, and its screen says why. Cleared with `locked_by`.
+    backup_gone: bool,
     /// The key file the next unlock will use alongside the password, when the
     /// database asks for one.
     ///
@@ -77,7 +124,7 @@ struct Held {
     /// The open database, and the file waiting on the reader's word about one
     /// of its entries. Dropping it wipes the decrypted tree and the file, and
     /// removes the lock file beside the database.
-    open: Option<Open>,
+    open: Slot,
     /// Bumped every time the session is pointed somewhere else or emptied. Key
     /// derivation takes a second and does not hold the lock, so an unlock that
     /// started before such a change must not finish over it.
@@ -112,27 +159,76 @@ struct Held {
     /// The vault's [`Vault::edits`] when `revision` last caught up with it.
     edits: u64,
     /// How the vault's file stood when the window was last told, while the
-    /// chosen file is a copy a lock left. "Make this my vault" is held to it
-    /// (see [`Vault::promote`]): what the banner said is what the reader
-    /// decided on. Forgotten when the session is pointed somewhere else.
+    /// chosen file is a copy a lock left or a backup. "Make this my vault" and
+    /// "Use this copy as my vault" are held to it (see [`Vault::promote`] and
+    /// [`Vault::adopt`]): what the banner said is what the reader decided on.
+    /// Forgotten when the session is pointed somewhere else.
     shown: Option<Seen>,
-    /// Whether the open copy is being left for the vault it was taken from.
-    /// The lock that closes it decides where the session points afterwards:
-    /// see [`Session::back_to_vault`].
+    /// Whether the open copy or backup is being left for the vault it was
+    /// taken from. The lock that closes it decides where the session points
+    /// afterwards: see [`Session::back_to_vault`].
     returning: bool,
+    /// The backups [`Session::snapshots`] last answered with. A press names a
+    /// backup by the slot it was shown at, and this is what that slot meant.
+    listed: Option<Listing>,
+    /// Whether the last unlock of the chosen file was refused because the
+    /// file itself would not open - damaged, not a database, not there -
+    /// which is when the unlock screen offers the backups instead.
+    unopened: bool,
+    /// Why the chosen backup is chosen, while one is.
+    looking: Option<Looking>,
+    /// The backup the next lock points the session at, once the vault open
+    /// now has closed: see [`Session::look`].
+    looking_after: Option<Shown>,
 }
 
 impl Held {
+    /// Points the session at another file, and forgets everything that was
+    /// about the one before. Whatever was open is dropped without being
+    /// written: a caller that has to keep what it holds locks first.
+    fn point(&mut self, database: PathBuf) {
+        self.open.put(None);
+        self.database = Some(database);
+        // A key file belongs to the vault it opens. Carrying one over to a
+        // different file would turn a right password into a wrong one, with
+        // nothing on the screen to explain it.
+        self.key_file = None;
+        // A flag about the vault that was open says nothing about the one being
+        // chosen, for the same reason the key file does not carry over.
+        self.lost = false;
+        self.typed = Written::Nothing;
+        self.rekeyed = false;
+        self.adopted = None;
+        self.backup_gone = false;
+        self.shown = None;
+        self.returning = false;
+        self.found = None;
+        self.listed = None;
+        self.unopened = false;
+        self.looking = None;
+        self.looking_after = None;
+        self.generation += 1;
+    }
+
+    /// [`Held::point`] at another of the same vault's own files - its vault,
+    /// a backup, the copy a lock left - with the key file kept: they open
+    /// with the same credentials.
+    fn point_beside(&mut self, file: PathBuf) {
+        let key_file = self.key_file.take();
+        self.point(file);
+        self.key_file = key_file;
+    }
+
     /// The open vault, to be changed. The revision moves only if the vault
     /// says it did: see [`Held::revision`].
     fn changing(&mut self) -> Result<&mut Open, Failure> {
-        self.open.as_mut().ok_or_else(Failure::no_vault)
+        self.open.get_mut().ok_or_else(Failure::no_vault)
     }
 
     /// The revision of the vault as it is now. Every change the vault made
     /// since this was last asked moves it once.
     fn revision(&mut self) -> u64 {
-        if let Some(open) = &self.open {
+        if let Some(open) = self.open.get() {
             let edits = open.vault.edits();
             if edits != self.edits {
                 self.edits = edits;
@@ -144,7 +240,7 @@ impl Held {
 
     /// The open vault, when nothing has changed it since `revision`.
     fn at(&mut self, revision: u64) -> Result<&mut Open, Failure> {
-        if self.open.is_none() {
+        if self.open.get().is_none() {
             return Err(Failure::no_vault());
         }
         if revision != self.revision() {
@@ -167,6 +263,13 @@ struct Open {
     vault: Vault,
     offered: Waiting,
     drafts: Drafts,
+    /// Whether the vault was given a new master password since it opened,
+    /// for the lock that ends it to say: see [`Held::rekeyed`].
+    rekeyed: bool,
+    /// What became of the vault's file when a backup was made this vault, and
+    /// the vault's [`Vault::edits`] as that write left it, for the lock that
+    /// ends it to say: see [`Held::adopted`].
+    adopted: Option<(u64, Adopted)>,
 }
 
 impl Open {
@@ -175,7 +278,18 @@ impl Open {
             vault,
             offered: Waiting::default(),
             drafts: Drafts::default(),
+            rekeyed: false,
+            adopted: None,
         }
+    }
+
+    /// What became of the vault's file when a backup was made this vault,
+    /// while nothing else has happened in the vault since.
+    fn adopted(&self) -> Option<Adopted> {
+        self.adopted
+            .clone()
+            .filter(|(edits, _)| *edits == self.vault.edits())
+            .map(|(_, adopted)| adopted)
     }
 
     /// Writes what the reader was typing into the vault, the way leaving each
@@ -200,28 +314,84 @@ impl Open {
     }
 }
 
+mod slot {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::Open;
+
+    /// Where the open vault is held, and whether there is one, said where
+    /// [`Session::is_unlocked`](super::Session::is_unlocked) reads it without
+    /// waiting for the lock the vault is behind.
+    ///
+    /// A module of its own so that its fields are private to it: the vault
+    /// goes in and comes out through [`Slot::put`] and nowhere else, which
+    /// keeps the two in step whichever way a later change takes the vault -
+    /// `take`, `replace`, a plain assignment - because no other way compiles.
+    pub(super) struct Slot {
+        open: Option<Open>,
+        unlocked: Arc<AtomicBool>,
+    }
+
+    impl Slot {
+        /// An empty slot, saying so in `unlocked`.
+        pub(super) fn new(unlocked: Arc<AtomicBool>) -> Slot {
+            unlocked.store(false, Ordering::Release);
+            Slot {
+                open: None,
+                unlocked,
+            }
+        }
+
+        /// Puts a vault in, or takes the one there out - which wipes it.
+        pub(super) fn put(&mut self, open: Option<Open>) {
+            self.unlocked.store(open.is_some(), Ordering::Release);
+            self.open = open;
+        }
+
+        pub(super) fn get(&self) -> Option<&Open> {
+            self.open.as_ref()
+        }
+
+        pub(super) fn get_mut(&mut self) -> Option<&mut Open> {
+            self.open.as_mut()
+        }
+    }
+}
+
 impl Session {
     /// A session pointed at `database`, writing down in `remembering` every
     /// vault that opens.
     pub fn new(database: Option<PathBuf>, remembering: Option<PathBuf>) -> Session {
+        let unlocked = Arc::new(AtomicBool::new(false));
         Session {
             held: Mutex::new(Held {
                 database,
                 locked_by: None,
                 lost: false,
                 typed: Written::Nothing,
+                rekeyed: false,
+                adopted: None,
+                backup_gone: false,
                 key_file: None,
                 making: None,
                 found: None,
                 measured: None,
-                open: None,
+                open: Slot::new(Arc::clone(&unlocked)),
                 generation: 0,
                 revision: 0,
                 edits: 0,
                 shown: None,
                 returning: false,
+                listed: None,
+                unopened: false,
+                looking: None,
+                looking_after: None,
             }),
+            unlocked,
             remembering,
+            guessing: Mutex::new(()),
+            copying: Mutex::new(()),
         }
     }
 
@@ -249,26 +419,18 @@ impl Session {
     /// file rather than about a link to it. A path that is not there yet is
     /// kept as it was given; opening it is what will say so.
     pub fn choose(&self, database: PathBuf) {
-        let database = database.canonicalize().unwrap_or(database);
-        let mut held = self.held();
-        held.open = None;
-        held.database = Some(database);
-        // A key file belongs to the vault it opens. Carrying one over to a
-        // different file would turn a right password into a wrong one, with
-        // nothing on the screen to explain it.
-        held.key_file = None;
-        // A flag about the vault that was open says nothing about the one being
-        // chosen, for the same reason the key file does not carry over.
-        held.lost = false;
-        held.typed = Written::Nothing;
-        held.shown = None;
-        held.returning = false;
-        held.found = None;
-        held.generation += 1;
+        self.held().point(resolved(database));
     }
 
     pub fn is_unlocked(&self) -> bool {
-        self.held().open.is_some()
+        self.unlocked.load(Ordering::Acquire)
+    }
+
+    /// Whether something holds the session now - a save, usually - asked
+    /// without waiting for it to let go. A session left poisoned by a panic is
+    /// not held by anybody.
+    pub fn busy(&self) -> bool {
+        matches!(self.held.try_lock(), Err(TryLockError::WouldBlock))
     }
 
     /// The key file the next unlock will use, if one has been chosen.
@@ -281,22 +443,21 @@ impl Session {
         self.held().key_file = path;
     }
 
-    /// Points the session at one of this database's own files: a snapshot, or
-    /// the unsaved copy a lock left beside it.
+    /// Points the session at another of the chosen vault's own files: the
+    /// vault a copy or a backup was taken from, or the unsaved copy a lock left
+    /// beside it.
     ///
-    /// [`Session::choose`] with the key file put back. Both are copies of the
-    /// same vault and open with the same credentials, so forgetting the key
-    /// file - which is right for any other file - would leave one taken from a
-    /// database that wants one impossible to open.
+    /// [`Session::choose`] with the key file kept (see [`Held::point_beside`]).
+    /// They are copies of the same vault and open with the same credentials,
+    /// so forgetting the key file - which is right for any other file - would
+    /// leave one taken from a database that wants one impossible to open.
     pub fn choose_sibling(&self, sibling: PathBuf) {
-        let key_file = self.key_file();
-        self.choose(sibling);
-        self.use_key_file(key_file);
+        self.held().point_beside(resolved(sibling));
     }
 
-    /// Points the session back at the vault the chosen copy was taken from.
-    /// The path is read off the copy's name, so nothing the window sends names
-    /// it.
+    /// Points the session back at the vault the chosen copy or backup was
+    /// taken from. The path is read off the chosen file's name, so nothing the
+    /// window sends names it.
     ///
     /// A copy that is open stays open, and stays chosen: the lock that has to
     /// follow is what closes it, and it writes out whatever the copy holds the
@@ -306,14 +467,19 @@ impl Session {
     /// vault. A lock that had to put the copy's work in a copy of its own, or
     /// could put it nowhere, leaves the copy chosen, so that the screen that
     /// comes back is the copy's and offers that copy or says what was lost. The
-    /// vault's screen would find neither: they are about the copy.
+    /// vault's screen would find neither: they are about the copy. A backup
+    /// holds nothing to write, so its lock always leads back.
+    ///
+    /// The last press wins: going back takes the place of a backup the reader
+    /// asked to look at before the lock (see [`Session::look`]).
     pub fn back_to_vault(&self) -> Result<(), Failure> {
         let mut held = self.held();
         let chosen = held.database.clone().ok_or_else(Failure::no_vault)?;
-        let vault = unsaved::taken_from(&chosen).ok_or(VaultError::NotACopy)?;
+        let vault = belongs_to(&chosen).ok_or(VaultError::NotACopy)?;
 
-        if held.open.is_some() {
+        if held.open.get().is_some() {
             held.returning = true;
+            held.looking_after = None;
         } else {
             drop(held);
             self.choose_sibling(vault);
@@ -321,12 +487,12 @@ impl Session {
         Ok(())
     }
 
-    /// The vault the chosen copy was taken from, and how its file stands, as
-    /// the window is about to be told. What it is told is what "Make this my
-    /// vault" is held to.
+    /// The vault the chosen copy or backup was taken from, and how its file
+    /// stands, as the window is about to be told. What it is told is what
+    /// "Make this my vault" and "Use this copy as my vault" are held to.
     pub fn telling(&self) -> Option<(PathBuf, OnDisk)> {
         let mut held = self.held();
-        let vault = held.database.as_deref().and_then(unsaved::taken_from)?;
+        let vault = held.database.as_deref().and_then(belongs_to)?;
         let seen = Seen::of(&vault);
         held.shown = Some(seen);
         Some((vault, seen.on_disk))
@@ -347,7 +513,7 @@ impl Session {
             // Anything already open is dropped before the new one is opened, so
             // that reopening the same file does not find Coffer's own lock
             // beside it and refuse.
-            held.open = None;
+            held.open.put(None);
             (
                 held.database.clone().ok_or_else(Failure::no_vault)?,
                 held.key_file.clone(),
@@ -368,9 +534,29 @@ impl Session {
         // Key derivation is a second of work, and it happens with nothing held.
         // A window that asks the session anything meanwhile is answered rather
         // than left waiting on a lock this thread is holding.
-        let vault = Vault::open(&database, key, policy)?;
+        let vault = Vault::open(&database, key, policy)
+            .inspect_err(|error| self.refused(error, generation))?;
 
         self.land(vault, generation, key_file)
+    }
+
+    /// Remembers whether an unlock was refused because the chosen file itself
+    /// will not open - the refusals the unlock screen answers with the list of
+    /// backups - so that a backup opened from that list can say so. A wrong
+    /// password is not one: the file opens, with another. Nothing is
+    /// remembered of an unlock the session has moved on from.
+    fn refused(&self, error: &VaultError, generation: u64) {
+        let mut held = self.held();
+        if held.generation == generation {
+            held.unopened = matches!(
+                error,
+                VaultError::DamagedHeader
+                    | VaultError::DamagedPayload
+                    | VaultError::DamagedContent
+                    | VaultError::NotADatabase
+                    | VaultError::DatabaseGone
+            );
+        }
     }
 
     /// Where both ways in end: the vault that has just opened becomes the one
@@ -404,7 +590,7 @@ impl Session {
             let opened = vault.path().to_path_buf();
             held.database = Some(opened.clone());
             held.edits = vault.edits();
-            held.open = Some(Open::of(vault));
+            held.open.put(Some(Open::of(vault)));
             // Every position the window was sent was about the vault that was
             // open before, if any was.
             held.revision += 1;
@@ -413,7 +599,12 @@ impl Session {
             held.locked_by = None;
             held.lost = false;
             held.typed = Written::Nothing;
+            held.rekeyed = false;
+            held.adopted = None;
+            held.backup_gone = false;
             held.returning = false;
+            held.unopened = false;
+            held.looking_after = None;
             opened
         };
 
@@ -476,38 +667,56 @@ impl Session {
         // reader was typing goes in first, so that it is written out with the
         // rest, or kept beside the vault with the rest when the file will not
         // take it.
-        let ended = held.open.as_mut().map(|open| {
+        let ended = held.open.get_mut().map(|open| {
             let typed = open.finish_typing();
-            (typed, open.vault.rescue())
+            let rescue = open.vault.rescue();
+            (typed, rescue, open.rekeyed, open.adopted())
         });
-        held.open = None;
+        held.open.put(None);
         held.generation += 1;
         let returning = std::mem::take(&mut held.returning);
+        let looking_after = held.looking_after.take();
 
-        let Some((typed, rescue)) = ended else {
+        let Some((typed, rescue, rekeyed, adopted)) = ended else {
             return false;
         };
         held.locked_by = Some(reason);
         held.lost = rescue == Rescue::Lost;
+        held.rekeyed = rekeyed;
+        held.adopted = adopted;
+        held.backup_gone = false;
         held.typed = if rescue == Rescue::Saved {
             typed
         } else {
             Written::Nothing
         };
 
-        // Leaving a copy for its vault, and the copy kept everything. Both
-        // flags were about the copy, and the vault's screen must not say its
-        // own file took what the copy took.
+        // Leaving a copy or a backup for its vault, or a vault for one of its
+        // backups, and the lock kept everything where it belongs. Every flag
+        // above was about the file the lock closed, and the next screen must
+        // not say its own file took what that file took. A lock that kept its
+        // work elsewhere or lost it stays on the file it closed, whose screen
+        // is the one that says so.
         let kept_all = matches!(rescue, Rescue::Nothing | Rescue::Saved);
-        if let Some(vault) = held
-            .database
-            .as_deref()
-            .and_then(unsaved::taken_from)
-            .filter(|_| returning && kept_all)
-        {
-            held.database = Some(vault);
-            held.typed = Written::Nothing;
-            held.shown = None;
+        if !kept_all {
+            return true;
+        }
+        if returning {
+            if let Some(vault) = held.database.as_deref().and_then(belongs_to) {
+                held.point_beside(vault);
+            }
+        } else if let Some(shown) = looking_after {
+            // Found again after the lock's own save, which moved every backup
+            // a slot on - and pushed the oldest out, which leaves the session
+            // on the vault rather than on whatever took its slot, and its
+            // screen saying so.
+            match shown.now() {
+                Some(backup) => {
+                    held.point_beside(backup);
+                    held.looking = Some(Looking::Asked);
+                }
+                None => held.backup_gone = true,
+            }
         }
         true
     }
@@ -527,6 +736,25 @@ impl Session {
     /// beside the value it was typed for, which is still the field's.
     pub fn typed_beside(&self) -> bool {
         self.held().typed == Written::Beside
+    }
+
+    /// Whether the vault the last lock in this run closed had been given a new
+    /// master password while it was open.
+    pub fn rekeyed(&self) -> bool {
+        self.held().rekeyed
+    }
+
+    /// What became of the vault's file, when the vault the last lock in this
+    /// run closed had just been made from one of its backups: see
+    /// [`Held::adopted`].
+    pub fn adopted(&self) -> Option<Adopted> {
+        self.held().adopted.clone()
+    }
+
+    /// Whether the backup the reader asked to look at was pushed out of the
+    /// chain by the lock on the way to it: see [`Held::backup_gone`].
+    pub fn backup_gone(&self) -> bool {
+        self.held().backup_gone
     }
 
     /// Why the window is asking for a password again, when there is something
@@ -575,7 +803,7 @@ impl Session {
     pub fn create(&self, password: Zeroizing<Vec<u8>>) -> Result<(), Failure> {
         let (target, work, generation) = {
             let mut held = self.held();
-            held.open = None;
+            held.open.put(None);
             let target = held.making.clone().ok_or_else(Failure::nowhere_chosen)?;
             let work = held.measured.ok_or_else(|| {
                 Failure::refused("the vault's key derivation has not been measured yet")
@@ -649,7 +877,7 @@ impl Session {
     /// vault past a lock that was supposed to wipe it.
     pub fn with<T>(&self, read: impl FnOnce(&Vault) -> T) -> Result<T, Failure> {
         let held = self.held();
-        let open = held.open.as_ref().ok_or_else(Failure::no_vault)?;
+        let open = held.open.get().ok_or_else(Failure::no_vault)?;
         Ok(read(&open.vault))
     }
 
@@ -659,7 +887,7 @@ impl Session {
     pub fn listing<T>(&self, read: impl FnOnce(&Vault) -> T) -> Result<(u64, T), Failure> {
         let mut held = self.held();
         let revision = held.revision();
-        let open = held.open.as_ref().ok_or_else(Failure::no_vault)?;
+        let open = held.open.get().ok_or_else(Failure::no_vault)?;
         Ok((revision, read(&open.vault)))
     }
 
@@ -697,6 +925,45 @@ impl Session {
         let changed = change(&mut open.vault);
         open.offered.settle(&open.vault);
         Ok(changed)
+    }
+
+    /// Gives the open vault a new master password, and answers with how many
+    /// snapshots beside it still open with the old one: see
+    /// [`Vault::change_master_password`].
+    ///
+    /// The current password is checked against the key the vault holds, which
+    /// spends no key derivation, so a wrong one would answer a guess in a
+    /// millisecond where the unlock screen takes a second - and the answer
+    /// would be the master password itself, which opens every snapshot and
+    /// every copy ever made of the vault. So a wrong one is made to cost what
+    /// a wrong one costs there, [`kdf::TARGET`], waited out with the session
+    /// let go so that no save and no lock waits behind it. One change at a
+    /// time, the wait included: guesses sent side by side still cost a wait
+    /// each, and a guess sent while a wrong one waits is not answered until
+    /// that wait is over.
+    ///
+    /// A change that lands is remembered with the vault, for the lock that
+    /// ends it to say: see [`Session::rekeyed`].
+    pub fn change_master_password(
+        &self,
+        current: &[u8],
+        new: Zeroizing<Vec<u8>>,
+    ) -> Result<usize, Failure> {
+        let _turn = self
+            .guessing
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let changed = {
+            let mut held = self.held();
+            let open = held.changing()?;
+            let changed = open.vault.change_master_password(current, new);
+            open.rekeyed |= changed.is_ok();
+            changed
+        };
+        if matches!(changed, Err(VaultError::NotTheCurrentPassword)) {
+            std::thread::sleep(kdf::TARGET);
+        }
+        Ok(changed?)
     }
 
     /// Borrows the open vault to change it, the way [`Session::with_mut`]
@@ -742,7 +1009,7 @@ impl Session {
         sequence: u64,
     ) -> Result<(), Failure> {
         let mut held = self.held();
-        let open = held.open.as_mut().ok_or_else(Failure::no_vault)?;
+        let open = held.open.get_mut().ok_or_else(Failure::no_vault)?;
         open.drafts.hear(entry, field, typed, sequence);
         Ok(())
     }
@@ -775,76 +1042,35 @@ impl Session {
     /// Lets go of the file waiting on `entry`, when there is one: see
     /// [`Waiting::withdraw`].
     pub fn withdraw(&self, entry: EntryId) {
-        if let Some(open) = self.held().open.as_mut() {
+        if let Some(open) = self.held().open.get_mut() {
             open.offered.withdraw(entry);
         }
     }
+}
+
+/// A path with its links followed, so that everything downstream of a choice -
+/// the snapshots beside it, the name in the window, what gets remembered - is
+/// about the file rather than about a link to it. A path that is not there yet
+/// is kept as it was given; opening it is what will say so.
+fn resolved(path: PathBuf) -> PathBuf {
+    path.canonicalize().unwrap_or(path)
+}
+
+/// The vault a file Coffer keeps beside one belongs to - the copy a lock left,
+/// or a backup - read off its name, or nothing for any other file.
+fn belongs_to(chosen: &Path) -> Option<PathBuf> {
+    unsaved::taken_from(chosen).or_else(|| snapshot::taken_from(chosen))
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use vault_core::model::{Deletion, fields};
+    use vault_core::kind::Kind;
+    use vault_core::model::{Deletion, GroupId, Move, fields};
 
     use super::*;
-
-    /// The suite opens the databases `vault-core` generates with
-    /// `keepassxc-cli`, because the only interesting session is one holding a
-    /// database somebody else wrote.
-    const RICH: &str = "rich-kdbx41.kdbx";
-    const SECRET: &[u8] = b"coffer-test";
-
-    fn fixture(name: &str) -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../vault-core/tests/fixtures")
-            .join(name)
-    }
-
-    /// A copy, because opening a database writes a lock file beside it.
-    fn scratch(name: &str) -> (tempfile::TempDir, PathBuf) {
-        let directory = tempfile::tempdir().expect("a scratch directory");
-        let target = directory.path().join(name);
-        std::fs::copy(fixture(name), &target).expect("the fixture copies");
-        (directory, target)
-    }
-
-    fn password(text: &[u8]) -> Zeroizing<Vec<u8>> {
-        Zeroizing::new(text.to_vec())
-    }
-
-    fn unlocked(name: &str) -> (tempfile::TempDir, Session) {
-        let (directory, database) = scratch(name);
-        let session = Session::new(Some(database), None);
-        session
-            .unlock(password(SECRET), LockPolicy::Respect)
-            .expect("the database opens");
-        (directory, session)
-    }
-
-    fn entry_titled(session: &Session, title: &str) -> Entry {
-        fn walk(group: &Project, into: &mut Vec<EntryId>, title: &str) {
-            for entry in &group.entries {
-                if entry.title.open() == Some(title) {
-                    into.push(entry.id);
-                }
-            }
-            for section in &group.sections {
-                walk(section, into, title);
-            }
-        }
-
-        let mut found = Vec::new();
-        walk(
-            &session.tree().expect("the tree comes back"),
-            &mut found,
-            title,
-        );
-        assert_eq!(found.len(), 1, "expected one entry titled {title:?}");
-        session
-            .entry(*found.first().expect("it is there"))
-            .expect("the entry comes back")
-    }
+    use crate::fixtures::{RICH, SECRET, entry_titled, fixture, password, scratch, unlocked};
 
     #[test]
     fn a_locked_session_hands_out_nothing() {
@@ -1351,7 +1577,7 @@ mod tests {
         let root = session.tree().expect("the tree comes back");
 
         type Change = fn(&mut Vault, EntryId) -> Result<(), VaultError>;
-        let refused: [(&str, Change); 4] = [
+        let refused: [(&str, Change); 8] = [
             ("a field that is not there", |vault, id| {
                 vault.remove_field(id, "no such field", false)
             }),
@@ -1359,11 +1585,37 @@ mod tests {
                 vault.undo_removal(id, fields::NOTES)
             }),
             ("an erasure of an entry outside the bin", |vault, id| {
-                vault.delete_entry(id, Deletion::Forever)
+                vault.delete_entries(&[(id, Deletion::Forever)])
             }),
             ("tags that cannot be written", |vault, id| {
                 vault.set_tags(id, vec![" padded ".to_owned()])
             }),
+            ("a move into a folder that is not there", |vault, id| {
+                let nowhere = GroupId::from_uuid(uuid::Uuid::nil());
+                vault.move_entries(&[id], nowhere).map(drop)
+            }),
+            ("a folder moved into itself", |vault, _| {
+                let work = folder_named(vault, "Work");
+                vault.move_group(work, work)
+            }),
+            ("a move taken back that never happened", |vault, id| {
+                let top = vault.tree().id;
+                let into = vault.entry(id).map_or(top, |entry| entry.group);
+                vault.move_entries_back(
+                    &[Move {
+                        entry: id,
+                        from: top,
+                    }],
+                    into,
+                )
+            }),
+            (
+                "a folder's move taken back that never happened",
+                |vault, _| {
+                    let (top, work) = (vault.tree().id, folder_named(vault, "Work"));
+                    vault.move_group_back(work, folder_named(vault, "Personal"), top)
+                },
+            ),
         ];
         for (what, change) in refused {
             let done = session
@@ -1386,6 +1638,12 @@ mod tests {
             })
             .expect("the vault is open")
             .expect("typing what is there already writes nothing");
+        let home = session.entry(basic).expect("the entry comes back").group;
+        let moved = session
+            .with_mut(|vault| vault.move_entries(&[basic], home))
+            .expect("the vault is open")
+            .expect("a move to where it is already moves nothing");
+        assert!(moved.is_empty());
 
         let (again, _) = session
             .listing(|vault| vault.versions(basic))
@@ -1398,6 +1656,235 @@ mod tests {
             .at_mut(listed, |vault| vault.delete_version(basic, newest))
             .expect("the list is current")
             .expect("the version is dropped");
+    }
+
+    /// The folder with this name among the vault's own.
+    fn folder_named(vault: &Vault, name: &str) -> GroupId {
+        vault
+            .tree()
+            .sections
+            .iter()
+            .find(|section| section.name == name)
+            .map(|section| section.id)
+            .expect("the fixture has the folder")
+    }
+
+    /// A move is a change like any other to a position read before it: the
+    /// revision moves, and a version named from a list read before the move is
+    /// refused rather than acted on. Taking the move back moves it again.
+    #[test]
+    fn a_move_moves_the_revision() {
+        let (_scratch, session) = unlocked(RICH);
+        let versioned = entry_titled(&session, "versioned").id;
+        let work = session
+            .with(|vault| folder_named(vault, "Work"))
+            .expect("the vault is open");
+        let (listed, versions) = session
+            .listing(|vault| vault.versions(versioned))
+            .expect("the vault is open");
+        let oldest = versions.first().expect("the entry has history").index;
+
+        let moved = session
+            .with_mut(|vault| vault.move_entries(&[versioned], work))
+            .expect("the vault is open")
+            .expect("it moves");
+        let (now, _) = session
+            .listing(|vault| vault.versions(versioned))
+            .expect("the vault is open");
+        assert_eq!(now, listed + 1, "a move is one change");
+        assert_eq!(
+            refusal(session.at_mut(listed, |vault| vault.restore_version(versioned, oldest))),
+            "versionsChanged"
+        );
+
+        session
+            .with_mut(|vault| vault.move_entries_back(&moved, work))
+            .expect("the vault is open")
+            .expect("the move is taken back");
+        let (back, _) = session
+            .listing(|vault| vault.versions(versioned))
+            .expect("the vault is open");
+        assert_eq!(back, now + 1);
+
+        let (top, personal) = session
+            .with(|vault| (vault.tree().id, folder_named(vault, "Personal")))
+            .expect("the vault is open");
+        type Folder = fn(&mut Vault, GroupId, GroupId, GroupId) -> Result<(), VaultError>;
+        let there_and_back: [Folder; 2] = [
+            |vault, folder, into, _| vault.move_group(folder, into),
+            |vault, folder, into, from| vault.move_group_back(folder, from, into),
+        ];
+        for change in there_and_back {
+            let (before, _) = session
+                .listing(|vault| vault.versions(versioned))
+                .expect("the vault is open");
+            session
+                .with_mut(|vault| change(vault, work, personal, top))
+                .expect("the vault is open")
+                .expect("the folder moves");
+            let (after, _) = session
+                .listing(|vault| vault.versions(versioned))
+                .expect("the vault is open");
+            assert_eq!(after, before + 1, "a folder's move is one change");
+        }
+    }
+
+    /// A move takes nothing the reader was typing into an entry, and no file
+    /// waiting on one: an entry keeps its id wherever it goes. What was being
+    /// typed is written by the lock into the entry where it now stands, and a
+    /// file asked about before the move goes on when the question is answered
+    /// after it.
+    #[test]
+    fn a_move_keeps_what_is_being_typed_and_the_file_waiting() {
+        let (_directory, database, session) = holding(RICH);
+        let basic = entry_titled(&session, "basic").id;
+        let key = entry_titled(&session, "ssh key").id;
+        let (personal, work) = session
+            .with(|vault| (folder_named(vault, "Personal"), folder_named(vault, "Work")))
+            .expect("the vault is open");
+
+        session
+            .draft(
+                basic,
+                fields::URL,
+                words("https://half.example/pa", false),
+                1,
+            )
+            .expect("the draft is heard");
+        let asked = session
+            .offer(key, KEY.to_owned(), Zeroizing::new(b"a new key".to_vec()))
+            .expect("the file is offered");
+        assert!(matches!(asked, Attached::Taken(_)));
+
+        for (id, into) in [(basic, work), (key, personal)] {
+            session
+                .with_mut(|vault| vault.move_entries(&[id], into))
+                .expect("the vault is open")
+                .expect("it moves");
+        }
+        session
+            .answer(key, Vault::keep_both)
+            .expect("the file is still waiting on the entry");
+        assert!(
+            files_of(&session, key).contains(&(format!("{KEY} 2"), b"a new key".to_vec())),
+            "the file waiting went with the move"
+        );
+
+        assert!(session.lock(Reason::Sleeping));
+        let file = reopened(&database);
+        assert_eq!(
+            value_of(&file, basic, fields::URL).as_deref(),
+            Some("https://half.example/pa"),
+            "what was typed went with the move"
+        );
+        assert_eq!(file.entry(basic).map(|entry| entry.group), Some(work));
+        assert_eq!(file.entry(key).map(|entry| entry.group), Some(personal));
+    }
+
+    /// A copy is a new entry, and what the reader was typing into the one it
+    /// was copied from stays with that one: the lock writes it there and not
+    /// into the copy, which keeps what the entry held when it was copied.
+    #[test]
+    fn typing_in_an_entry_that_was_copied_stays_with_that_entry() {
+        let (_directory, database, session) = holding(RICH);
+        let basic = entry_titled(&session, "basic").id;
+
+        session
+            .draft(
+                basic,
+                fields::URL,
+                words("https://half.example/pa", false),
+                1,
+            )
+            .expect("the draft is heard");
+        let copy = session
+            .with_mut(|vault| vault.duplicate_entry(basic))
+            .expect("the vault is open")
+            .expect("the copy is made");
+
+        assert!(session.lock(Reason::Sleeping));
+        let file = reopened(&database);
+        assert_eq!(
+            value_of(&file, basic, fields::URL).as_deref(),
+            Some("https://half.example/pa"),
+            "what was typed did not reach the entry it was typed into"
+        );
+        assert_eq!(
+            value_of(&file, copy, fields::URL).as_deref(),
+            Some("https://example.com/login?a=1&b=2"),
+            "the copy took what was typed into the original"
+        );
+    }
+
+    /// A file waiting on the reader's answer about one entry is that entry's:
+    /// its copy has none waiting, an answer naming the copy is refused, and the
+    /// question about the original can still be answered.
+    #[test]
+    fn a_file_waiting_on_an_entry_is_not_carried_to_its_copy() {
+        let (_scratch, session) = unlocked(RICH);
+        let key = entry_titled(&session, "ssh key").id;
+
+        let asked = session
+            .offer(key, KEY.to_owned(), Zeroizing::new(b"a new key".to_vec()))
+            .expect("the file is offered");
+        assert!(matches!(asked, Attached::Taken(_)));
+        let copy = session
+            .with_mut(|vault| vault.duplicate_entry(key))
+            .expect("the vault is open")
+            .expect("the copy is made");
+        let copied = files_of(&session, copy);
+        assert_eq!(copied, files_of(&session, key));
+
+        let refused = session
+            .answer(copy, Vault::keep_both)
+            .expect_err("the copy answered for the original's file");
+        assert_eq!(code_of(&refused), "refused");
+        assert_eq!(files_of(&session, copy), copied);
+
+        session
+            .answer(key, Vault::keep_both)
+            .expect("the file is still waiting on the entry it was chosen for");
+        assert!(
+            files_of(&session, key).contains(&(format!("{KEY} 2"), b"a new key".to_vec())),
+            "the answer did not go on"
+        );
+    }
+
+    /// Making a copy is a change like any other to a position read before it,
+    /// and a copy refused - out of the bin - is not.
+    #[test]
+    fn a_copy_moves_the_revision() {
+        let (_scratch, session) = unlocked(RICH);
+        let versioned = entry_titled(&session, "versioned").id;
+        let deleted = entry_titled(&session, "deleted entry").id;
+        let (listed, versions) = session
+            .listing(|vault| vault.versions(versioned))
+            .expect("the vault is open");
+        let oldest = versions.first().expect("the entry has history").index;
+
+        assert!(
+            session
+                .with_mut(|vault| vault.duplicate_entry(deleted))
+                .expect("the vault is open")
+                .is_err()
+        );
+        let (unmoved, _) = session
+            .listing(|vault| vault.versions(versioned))
+            .expect("the vault is open");
+        assert_eq!(unmoved, listed, "a refused copy moved the revision");
+
+        session
+            .with_mut(|vault| vault.duplicate_entry(versioned))
+            .expect("the vault is open")
+            .expect("the copy is made");
+        let (now, _) = session
+            .listing(|vault| vault.versions(versioned))
+            .expect("the vault is open");
+        assert_eq!(now, listed + 1, "a copy is one change");
+        assert_eq!(
+            refusal(session.at_mut(listed, |vault| vault.restore_version(versioned, oldest))),
+            "versionsChanged"
+        );
     }
 
     /// The case the revision is for. A save brings every entry's history
@@ -1572,6 +2059,44 @@ mod tests {
         );
     }
 
+    /// What a kind hides crosses as nothing from the moment the entry is made,
+    /// the way any protected value does: a card's number, CVV and PIN typed
+    /// into a new entry wait in Rust for a reveal. Its other fields cross as
+    /// the empty text they hold, and `protected` says which is which.
+    #[test]
+    fn a_new_cards_secrets_cross_as_nothing_until_revealed() {
+        let (_scratch, session) = unlocked(RICH);
+        let card = session
+            .with_mut(|vault| vault.create_entry(vault.tree().id, Kind::BankCard))
+            .expect("the session is open")
+            .expect("the card is made");
+        let drawn = serde_json::to_value(crate::dto::Entry::of(
+            &session.entry(card).expect("the entry comes back"),
+        ))
+        .expect("it serialises");
+        let sent = |name: &str| {
+            drawn["fields"]
+                .as_array()
+                .and_then(|all| all.iter().find(|field| field["name"] == name))
+                .map(|field| (field["value"].clone(), field["protected"].clone()))
+        };
+
+        for hidden in ["Number", "CVV", "PIN"] {
+            assert_eq!(
+                sent(hidden),
+                Some((serde_json::Value::Null, serde_json::json!(true))),
+                "{hidden} crossed to the window"
+            );
+        }
+        for open in ["Cardholder", "Expires", "Bank phone"] {
+            assert_eq!(
+                sent(open),
+                Some((serde_json::json!(""), serde_json::json!(false))),
+                "{open}"
+            );
+        }
+    }
+
     /// The bin as the window is sent it, from a file KeePassXC wrote: the entry
     /// in it says which folder it goes back to by that folder's id, says that
     /// deleting it again is for good, and once put back crosses as an entry like
@@ -1603,7 +2128,7 @@ mod tests {
         assert_eq!(drawn["binned"]["from"], work);
 
         session
-            .with_mut(|vault| vault.put_back_entry(deleted.id))
+            .with_mut(|vault| vault.put_back_entries(&[deleted.id]))
             .expect("the session is open")
             .expect("it is put back");
         let back = serde_json::to_value(crate::dto::Entry::of(
@@ -1615,7 +2140,7 @@ mod tests {
         assert_eq!(back["deletion"], "bin");
 
         assert!(matches!(
-            session.with_mut(|vault| vault.put_back_entry(deleted.id)),
+            session.with_mut(|vault| vault.put_back_entries(&[deleted.id])),
             Ok(Err(VaultError::NotInRecycleBin))
         ));
     }
@@ -1659,6 +2184,95 @@ mod tests {
 
         assert!(landed.is_err(), "a vault opened after the screen locked");
         assert!(!session.is_unlocked());
+    }
+
+    /// The menu bar asks whether a vault is open every time what the window
+    /// offers changes. A save holds the session for a key derivation, and an
+    /// answer that waited behind it left Lock Vault and Move to Recycle Bin
+    /// grey - their keys dead - for as long as the save took.
+    #[test]
+    fn whether_a_vault_is_open_is_answered_while_a_save_holds_the_session() {
+        use std::sync::{Arc, mpsc};
+        use std::time::Duration;
+
+        /// Asks from another thread while this one holds the session the way a
+        /// save does, and gives up after five seconds.
+        fn asked_behind_a_save(session: &Arc<Session>) -> Result<bool, mpsc::RecvTimeoutError> {
+            let saving = session.held();
+            let (answer, answered) = mpsc::channel();
+            let asking = {
+                let session = Arc::clone(session);
+                std::thread::spawn(move || answer.send(session.is_unlocked()))
+            };
+            let open = answered.recv_timeout(Duration::from_secs(5));
+            drop(saving);
+            let _ = asking.join();
+            open
+        }
+
+        let (_directory, _database, session) = holding(RICH);
+        let session = Arc::new(session);
+        assert_eq!(
+            asked_behind_a_save(&session),
+            Ok(true),
+            "the answer waited for the save"
+        );
+
+        assert!(session.lock(Reason::ByHand));
+        assert_eq!(
+            asked_behind_a_save(&session),
+            Ok(false),
+            "a locked vault was said to be open"
+        );
+    }
+
+    /// A close from Rust waits out the page's grace only while nothing holds
+    /// the session: a page whose drafts are queued behind a save is still
+    /// answering. So whether it is held is asked without joining the queue -
+    /// and a session a panic left poisoned is held by nobody, or the close
+    /// would wait for it for good.
+    #[test]
+    fn whether_the_session_is_held_is_answered_without_waiting_for_it() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (_directory, _database, session) = holding(RICH);
+        let session = Arc::new(session);
+        assert!(
+            !session.busy(),
+            "a session nobody holds was said to be held"
+        );
+
+        let saving = session.held();
+        let (answer, answered) = mpsc::channel();
+        let asking = {
+            let session = Arc::clone(&session);
+            std::thread::spawn(move || answer.send(session.busy()))
+        };
+        let held = answered.recv_timeout(Duration::from_secs(5));
+        drop(saving);
+        let _ = asking.join();
+        assert_eq!(
+            held,
+            Ok(true),
+            "the question waited for the save, or missed it"
+        );
+        assert!(
+            !session.busy(),
+            "a session let go of was still said to be held"
+        );
+
+        let poisoning = Arc::clone(&session);
+        let panicked = std::thread::spawn(move || {
+            let _held = poisoning.held();
+            panic!("a panic while the session is held");
+        })
+        .join();
+        assert!(panicked.is_err());
+        assert!(
+            !session.busy(),
+            "a session a panic let go of was said to be held for good"
+        );
     }
 
     /// The place the creation screen offers by default is a folder that does not
@@ -1939,12 +2553,32 @@ mod tests {
     /// not been written yet.
     #[test]
     fn every_way_a_vault_comes_to_be_open_is_written_down() {
-        use crate::source::{functions, shipped};
+        use crate::source::{every_file, functions, shipped};
 
-        let source = shipped(include_str!("session.rs"));
+        // The session is this file and every file in the module beside it, and
+        // a way in written in one nobody named is the one this exists to see.
+        let (session, elsewhere): (Vec<_>, Vec<_>) =
+            every_file().into_iter().partition(|(path, _)| {
+                path.ends_with("src/session.rs")
+                    || path
+                        .parent()
+                        .is_some_and(|parent| parent.ends_with("src/session"))
+            });
+        assert!(
+            session
+                .iter()
+                .any(|(path, _)| path.ends_with("session/backups.rs")),
+            "the session's own module was not read"
+        );
+        let source: String = session
+            .iter()
+            .map(|(_, file)| shipped(file))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let source = source.as_str();
         let putting: Vec<String> = functions(source)
             .into_iter()
-            .filter(|body| body.contains("held.open = Some("))
+            .filter(|body| body.contains("held.open.put(Some("))
             .collect();
         assert_eq!(putting.len(), 1, "a vault is put into the session twice");
         assert!(
@@ -1989,13 +2623,11 @@ mod tests {
         }
 
         // And nowhere else writes one down: a pick is not an opening.
-        for (file, other) in [
-            ("commands.rs", shipped(include_str!("commands.rs"))),
-            ("lib.rs", shipped(include_str!("lib.rs"))),
-        ] {
+        for (file, other) in &elsewhere {
             assert!(
-                !other.contains("recent::remember("),
-                "{file} writes a vault down that has not opened"
+                !shipped(other).contains("recent::remember("),
+                "{} writes a vault down that has not opened",
+                file.display()
             );
         }
     }
@@ -2172,8 +2804,8 @@ mod tests {
             ),
             ("the entry deleted", nothing, |session, id| {
                 session
-                    .overtaking(Over::Entry(id), 1, |vault| {
-                        vault.delete_entry(id, Deletion::Bin)
+                    .overtaking(Over::Entries(&[id]), 1, |vault| {
+                        vault.delete_entries(&[(id, Deletion::Bin)])
                     })
                     .expect("the session is open")
                     .expect("the entry goes");
@@ -2189,7 +2821,7 @@ mod tests {
                 "the bin it is in emptied",
                 |session, id| {
                     session
-                        .with_mut(|vault| vault.delete_entry(id, Deletion::Bin))
+                        .with_mut(|vault| vault.delete_entries(&[(id, Deletion::Bin)]))
                         .expect("the session is open")
                         .expect("the entry goes to the bin");
                 },
@@ -2208,7 +2840,7 @@ mod tests {
             let id = session
                 .with_mut(|vault| -> Result<EntryId, VaultError> {
                     let folder = vault.create_group(root, "Keys")?;
-                    vault.create_entry(folder)
+                    vault.create_entry(folder, Kind::Login)
                 })
                 .expect("the session is open")
                 .expect("an entry is made in a folder of its own");
@@ -2257,8 +2889,8 @@ mod tests {
             .expect("the session is open")
             .expect("a folder is made");
         session
-            .overtaking(Over::Entry(other), 1, |vault| {
-                vault.delete_entry(other, Deletion::Bin)
+            .overtaking(Over::Entries(&[other]), 1, |vault| {
+                vault.delete_entries(&[(other, Deletion::Bin)])
             })
             .expect("the session is open")
             .expect("another entry goes");
@@ -2552,7 +3184,7 @@ mod tests {
         // drawn with one, and one Coffer did not make may well lack it.
         let made = session
             .with_mut(|vault| {
-                let made = vault.create_entry(vault.tree().id)?;
+                let made = vault.create_entry(vault.tree().id, Kind::Login)?;
                 vault.remove_field(made, fields::NOTES, false)?;
                 vault.save()?;
                 Ok::<_, VaultError>(made)
@@ -2591,7 +3223,7 @@ mod tests {
                 )?;
                 vault.remove_field(basic.id, "PIN", false)?;
                 // Out of the bin, and so out of the file.
-                vault.delete_entry(binned.id, Deletion::Forever)
+                vault.delete_entries(&[(binned.id, Deletion::Forever)])
             })
             .expect("the vault is open")
             .expect("the changes are made");
@@ -2659,8 +3291,8 @@ mod tests {
             )
             .expect("the draft is heard");
         session
-            .overtaking(Over::Entry(basic.id), 2, |vault| {
-                vault.delete_entry(basic.id, Deletion::Bin)
+            .overtaking(Over::Entries(&[basic.id]), 2, |vault| {
+                vault.delete_entries(&[(basic.id, Deletion::Bin)])
             })
             .expect("the vault is open")
             .expect("the entry goes to the bin");
@@ -2673,7 +3305,7 @@ mod tests {
             )
             .expect("the draft is heard");
         session
-            .with_mut(|vault| vault.put_back_entry(basic.id))
+            .with_mut(|vault| vault.put_back_entries(&[basic.id]))
             .expect("the vault is open")
             .expect("the entry comes back");
         session.with_mut(Vault::save).expect("open").expect("saved");
@@ -2710,6 +3342,291 @@ mod tests {
             value_of(&file, basic.id, fields::URL).as_deref(),
             Some("https://example.com/login?a=1&b=2")
         );
+    }
+
+    /// A deletion of several entries lets go of what was typed into each of
+    /// them, and of nothing else: the lock still writes what was typed into an
+    /// entry the batch did not name.
+    #[test]
+    fn a_batch_deletion_lets_go_of_what_was_typed_into_every_entry_it_names() {
+        let (_directory, database, session) = holding(RICH);
+        let (basic, key, versioned) = (
+            entry_titled(&session, "basic").id,
+            entry_titled(&session, "ssh key").id,
+            entry_titled(&session, "versioned").id,
+        );
+        for (sequence, id) in [basic, key, versioned].into_iter().enumerate() {
+            session
+                .draft(
+                    id,
+                    fields::NOTES,
+                    words("typed and never left", false),
+                    sequence as u64 + 1,
+                )
+                .expect("the draft is heard");
+        }
+
+        session
+            .overtaking(Over::Entries(&[basic, key]), 4, |vault| {
+                vault.delete_entries(&[(basic, Deletion::Bin), (key, Deletion::Bin)])
+            })
+            .expect("the vault is open")
+            .expect("both go to the bin");
+
+        assert!(session.lock(Reason::Idle));
+        let file = reopened(&database);
+        for id in [basic, key] {
+            assert_ne!(
+                value_of(&file, id, fields::NOTES).as_deref(),
+                Some("typed and never left"),
+                "typing in a deleted entry was written"
+            );
+            assert!(file.entry(id).is_some_and(|entry| entry.binned.is_some()));
+        }
+        assert_eq!(
+            value_of(&file, versioned, fields::NOTES).as_deref(),
+            Some("typed and never left"),
+            "typing in an entry the batch did not name was let go"
+        );
+    }
+
+    /// A batch refused - one of its entries would no longer go where the
+    /// window said - deletes nothing, and still lets go of the typing said
+    /// before it: the reader chose to leave those panes behind, as
+    /// [`Session::overtaking`] says.
+    #[test]
+    fn a_refused_batch_deletion_still_lets_go_of_typing_said_before_it() {
+        let (_directory, database, session) = holding(RICH);
+        let basic = entry_titled(&session, "basic");
+        let key = entry_titled(&session, "ssh key");
+        for (sequence, id) in [basic.id, key.id].into_iter().enumerate() {
+            session
+                .draft(
+                    id,
+                    fields::NOTES,
+                    words("typed and never left", false),
+                    sequence as u64 + 1,
+                )
+                .expect("the draft is heard");
+        }
+
+        let refused = session
+            .overtaking(Over::Entries(&[basic.id, key.id]), 3, |vault| {
+                vault.delete_entries(&[(basic.id, Deletion::Bin), (key.id, Deletion::Forever)])
+            })
+            .expect("the vault is open");
+        assert!(matches!(refused, Err(VaultError::DeletionChanged)));
+
+        assert!(session.lock(Reason::Idle));
+        assert!(!session.typed());
+        let file = reopened(&database);
+        for entry in [&basic, &key] {
+            let kept = file.entry(entry.id).expect("nothing was deleted");
+            assert_eq!(kept.group, entry.group, "a refused batch moved an entry");
+            assert_ne!(
+                value_of(&file, entry.id, fields::NOTES).as_deref(),
+                Some("typed and never left")
+            );
+        }
+    }
+
+    /// The file waiting on an entry goes when a batch takes that entry away,
+    /// under the batch's own lock, whichever entry of the batch it was.
+    #[test]
+    fn the_file_waiting_goes_with_any_entry_a_batch_takes_away() {
+        let (_scratch, session) = unlocked(RICH);
+        let basic = entry_titled(&session, "basic").id;
+        let key = entry_titled(&session, "ssh key").id;
+        let before = files_of(&session, key);
+
+        let asked = session
+            .offer(key, KEY.to_owned(), Zeroizing::new(b"a new key".to_vec()))
+            .expect("the file is offered");
+        assert!(matches!(asked, Attached::Taken(_)));
+        session
+            .overtaking(Over::Entries(&[basic, key]), 1, |vault| {
+                vault.delete_entries(&[(basic, Deletion::Bin), (key, Deletion::Bin)])
+            })
+            .expect("the vault is open")
+            .expect("both go to the bin");
+
+        for answer in [Vault::keep_both, Vault::replace_attachment] {
+            let refused = session
+                .answer(key, answer)
+                .expect_err("nothing is waiting any more");
+            assert_eq!(code_of(&refused), "refused");
+        }
+        assert_eq!(files_of(&session, key), before);
+    }
+
+    /// However many entries a batch changes, the window has one list of
+    /// versions to read again, and a batch refused has changed nothing it
+    /// would need to.
+    #[test]
+    fn a_batch_moves_the_revision_once_and_a_refused_one_not_at_all() {
+        let (_scratch, session) = unlocked(RICH);
+        let ids: Vec<EntryId> = ["basic", "ssh key", "versioned"]
+            .into_iter()
+            .map(|title| entry_titled(&session, title).id)
+            .collect();
+        let revision = || {
+            session
+                .listing(|vault| vault.versions(ids[0]))
+                .expect("the vault is open")
+                .0
+        };
+
+        let start = revision();
+        type Batch = fn(&mut Vault, &[EntryId]) -> Result<(), VaultError>;
+        type Refusal = fn(&VaultError) -> bool;
+        let refused: [(&str, Batch, Refusal); 4] = [
+            (
+                "a deletion naming an entry that is not there",
+                |vault, ids| {
+                    let mut shown: Vec<_> = ids.iter().map(|&id| (id, Deletion::Bin)).collect();
+                    shown.push((EntryId::from_uuid(uuid::Uuid::nil()), Deletion::Bin));
+                    vault.delete_entries(&shown)
+                },
+                |error| matches!(error, VaultError::NoSuchEntry),
+            ),
+            (
+                "a put back of entries outside the bin",
+                |vault, ids| vault.put_back_entries(ids),
+                |error| matches!(error, VaultError::NotInRecycleBin),
+            ),
+            (
+                "a tag the format would split",
+                |vault, ids| vault.tag_entries(ids, "a;b").map(drop),
+                |error| matches!(error, VaultError::UnwritableTag),
+            ),
+            (
+                "a tag taken off an entry that is not there",
+                |vault, ids| {
+                    let mut named = ids.to_vec();
+                    named.push(EntryId::from_uuid(uuid::Uuid::nil()));
+                    vault.untag_entries(&named, "work")
+                },
+                |error| matches!(error, VaultError::NoSuchEntry),
+            ),
+        ];
+        for (what, batch, refusal) in refused {
+            let done = session
+                .with_mut(|vault| batch(vault, &ids))
+                .expect("the vault is open");
+            assert!(
+                done.as_ref().is_err_and(refusal),
+                "{what} was not refused for its own reason: {done:?}"
+            );
+            assert_eq!(revision(), start, "{what} moved the revision");
+        }
+
+        let tagged = session
+            .with_mut(|vault| vault.tag_entries(&ids, "batched"))
+            .expect("the vault is open")
+            .expect("the tag goes on");
+        assert_eq!(tagged, ids);
+        assert_eq!(revision(), start + 1, "three versions are one change");
+        session
+            .with_mut(|vault| vault.tag_entries(&ids, "batched"))
+            .expect("the vault is open")
+            .expect("a tag every entry has already writes nothing");
+        assert_eq!(revision(), start + 1, "a batch with nothing to do moved it");
+
+        let shown: Vec<_> = ids.iter().map(|&id| (id, Deletion::Bin)).collect();
+        session
+            .with_mut(|vault| vault.delete_entries(&shown))
+            .expect("the vault is open")
+            .expect("all three go to the bin");
+        assert_eq!(revision(), start + 2);
+        session
+            .with_mut(|vault| vault.put_back_entries(&ids))
+            .expect("the vault is open")
+            .expect("all three come back");
+        assert_eq!(revision(), start + 3);
+    }
+
+    /// What a batch hands the window - the tree, and the entries a tag went
+    /// on - carries no password the vault holds: not one any entry has now,
+    /// and not one a version of it keeps, however many entries it changed.
+    #[test]
+    fn nothing_a_batch_answers_carries_a_password() {
+        fn walk(group: &Project, into: &mut Vec<EntryId>) {
+            into.extend(group.entries.iter().map(|entry| entry.id));
+            for section in &group.sections {
+                walk(section, into);
+            }
+        }
+
+        let (_scratch, session) = unlocked(RICH);
+        let mut ids = Vec::new();
+        walk(&session.tree().expect("the tree comes back"), &mut ids);
+        let mut secrets: Vec<String> = ids
+            .iter()
+            .filter_map(|&id| password_of(&session, id))
+            .collect();
+        session
+            .with(|vault| {
+                for &id in &ids {
+                    for version in vault.versions(id) {
+                        let kept = vault.reveal_version(id, version.index, fields::PASSWORD);
+                        if let Some(text) = kept.as_ref().and_then(|secret| secret.expose_str()) {
+                            secrets.push(text.to_owned());
+                        }
+                    }
+                }
+            })
+            .expect("the vault is open");
+        secrets.retain(|secret| !secret.is_empty());
+        assert!(
+            secrets.len() > ids.len() / 2,
+            "the fixture holds few passwords"
+        );
+        let carried = |payload: &str, what: &str| {
+            for secret in &secrets {
+                assert!(
+                    !payload.contains(secret.as_str()),
+                    "{what} carries a password"
+                );
+            }
+        };
+
+        let changed = session
+            .with_mut(|vault| vault.tag_entries(&ids, "batched"))
+            .expect("the vault is open")
+            .expect("the tag goes on");
+        assert_eq!(changed.len(), ids.len());
+        let tagged =
+            crate::dto::Tagged::of(&session.tree().expect("the tree comes back"), &changed);
+        carried(
+            &serde_json::to_string(&tagged).expect("it serialises"),
+            "a tag's answer",
+        );
+
+        let live: Vec<_> = ids
+            .iter()
+            .map(|&id| (id, session.entry(id).expect("the entry is there").deletion))
+            .filter(|(_, deletion)| *deletion == Deletion::Bin)
+            .collect();
+        assert!(!live.is_empty());
+        let binned: Vec<_> = live.iter().map(|&(id, _)| id).collect();
+        for (what, batch) in [
+            (
+                "a deletion's tree",
+                Box::new(|vault: &mut Vault| vault.delete_entries(&live))
+                    as Box<dyn FnOnce(&mut Vault) -> Result<(), VaultError>>,
+            ),
+            (
+                "a put back's tree",
+                Box::new(|vault: &mut Vault| vault.put_back_entries(&binned)),
+            ),
+        ] {
+            session
+                .with_mut(batch)
+                .expect("the vault is open")
+                .expect("the batch goes through");
+            let tree = crate::dto::Group::of(&session.tree().expect("the tree comes back"));
+            carried(&serde_json::to_string(&tree).expect("it serialises"), what);
+        }
     }
 
     /// A value the database protects goes back protected: a draft is written
@@ -2873,7 +3790,7 @@ mod tests {
         let made: Vec<EntryId> = (0..50)
             .map(|_| {
                 session
-                    .with_mut(|vault| vault.create_entry(root))
+                    .with_mut(|vault| vault.create_entry(root, Kind::Login))
                     .expect("the vault is open")
                     .expect("an entry is made")
             })
@@ -2953,10 +3870,9 @@ mod tests {
         session
             .unlock(password(SECRET), LockPolicy::Respect)
             .expect("the snapshot opens");
-        assert!(
-            session
-                .with(Vault::is_read_only)
-                .expect("the vault is open")
+        assert_eq!(
+            session.with(Vault::read_only).expect("the vault is open"),
+            Some(vault_core::ReadOnly::Snapshot)
         );
 
         let basic = entry_titled(&session, "basic");
@@ -3500,5 +4416,1036 @@ mod tests {
             .expect("told again, the copy becomes the vault");
         let first = vault_core::storage::snapshot::slot(&database, 1).expect("a slot has a name");
         assert_eq!(std::fs::read(first).expect("the snapshot reads"), written);
+    }
+
+    /// A session open on a copy of `name`, saved `saves` times with the notes
+    /// of its "basic" entry saying which save it was, so that every backup
+    /// beside it holds something the others do not. The path is the vault's
+    /// as the session reports it, links followed.
+    fn with_backups(name: &str, saves: usize) -> (tempfile::TempDir, PathBuf, Session, EntryId) {
+        let (directory, database, session) = holding(name);
+        let id = entry_titled(&session, "basic").id;
+        for save in 1..=saves {
+            session
+                .with_mut(|vault| {
+                    vault.set_field(
+                        id,
+                        fields::NOTES,
+                        vault_core::NewValue::Open(format!("save {save}")),
+                    )?;
+                    vault.save()
+                })
+                .expect("the session is open")
+                .expect("the vault saves");
+        }
+        let database = database.canonicalize().expect("the vault is there");
+        (directory, database, session, id)
+    }
+
+    fn slot(database: &Path, index: u32) -> PathBuf {
+        snapshot::slot(database, index).expect("a slot has a name")
+    }
+
+    fn read(path: &Path) -> Vec<u8> {
+        std::fs::read(path).expect("the file reads")
+    }
+
+    /// Damages the body of a database and leaves its header alone, which is
+    /// what a power cut part way through somebody else's write leaves.
+    fn damage(path: &Path) {
+        let mut bytes = read(path);
+        let length = bytes.len();
+        for byte in bytes.iter_mut().skip(length - 64) {
+            *byte ^= 0xff;
+        }
+        std::fs::write(path, bytes).expect("the file is damaged");
+    }
+
+    /// Another client opening the vault the session is pointed at, changing
+    /// it, and saving, over the session's own lock if it holds one.
+    fn somebody_else_writes(database: &Path, id: EntryId) {
+        let mut theirs = Vault::open(
+            database,
+            MasterKey::from_password(password(SECRET)),
+            LockPolicy::TakeOver,
+        )
+        .expect("the other client opens the vault");
+        theirs
+            .set_field(
+                id,
+                fields::URL,
+                vault_core::NewValue::Open("https://theirs.example".to_owned()),
+            )
+            .expect("their change is applied");
+        theirs.save().expect("their save goes through");
+    }
+
+    /// The list was read, the vault saved twice, and then slot 2 was pressed.
+    /// What opens is the file the list showed at slot 2, two slots on by now,
+    /// and not whatever the saves moved into the slot.
+    #[test]
+    fn a_backup_is_opened_by_the_file_that_was_shown_not_by_its_slot() {
+        let (_directory, database, session, _) = with_backups(RICH, 3);
+        let listed = session.snapshots().expect("the backups are listed");
+        let shown = read(
+            &listed
+                .iter()
+                .find(|each| each.index == 2)
+                .expect("slot 2 is listed")
+                .path,
+        );
+
+        for _ in 0..2 {
+            session
+                .with_mut(Vault::save)
+                .expect("the session is open")
+                .expect("the vault saves");
+        }
+        assert!(session.lock(Reason::ByHand));
+        assert!(
+            !session.look(2).expect("the backup is still there"),
+            "a lock was asked for with nothing open"
+        );
+
+        let chosen = session.database().expect("a backup is chosen");
+        assert_eq!(snapshot::slot_of(&chosen), Some(4));
+        assert_eq!(read(&chosen), shown);
+        assert_ne!(read(&slot(&database, 2)), shown);
+    }
+
+    /// A slot no list showed, and a backup the list showed that has gone since,
+    /// are `gone`, and nothing the session is pointed at moves.
+    #[test]
+    fn a_backup_that_was_never_listed_or_has_gone_is_not_chosen() {
+        let (_directory, database, session, _) = with_backups(RICH, 3);
+        assert!(session.lock(Reason::ByHand));
+
+        assert_eq!(
+            code_of(&session.look(3).expect_err("nothing was listed")),
+            "gone"
+        );
+        assert_eq!(session.database(), Some(database.clone()));
+
+        session.snapshots().expect("the backups are listed");
+        std::fs::remove_file(slot(&database, 3)).expect("the backup goes");
+        assert_eq!(code_of(&session.look(3).expect_err("it went")), "gone");
+        assert_eq!(
+            code_of(&session.look(7).expect_err("it was never listed")),
+            "gone"
+        );
+        assert_eq!(session.database(), Some(database));
+    }
+
+    /// "Open to look" with a vault open. The vault is locked the ordinary way
+    /// first - what the reader was typing written into it and saved - and only
+    /// then is the session pointed at the backup that was shown, which that
+    /// save has moved a slot on. The backup's screen does not say its file
+    /// took the typing: the vault did.
+    #[test]
+    fn looking_at_a_backup_from_an_open_vault_locks_it_first_and_keeps_what_was_typed() {
+        let (_directory, database, session, id) = with_backups(RICH, 3);
+        session.snapshots().expect("the backups are listed");
+        let shown = read(&slot(&database, 1));
+        session
+            .draft(id, fields::URL, words("https://typed.example", false), 1)
+            .expect("the draft is heard");
+
+        assert!(
+            session.look(1).expect("the backup is there"),
+            "an open vault was not locked first"
+        );
+        assert!(session.is_unlocked(), "the vault went before its lock");
+        assert_eq!(session.database(), Some(database.clone()));
+        assert!(session.lock(Reason::ByHand));
+
+        let chosen = session.database().expect("a backup is chosen");
+        assert_eq!(snapshot::slot_of(&chosen), Some(2));
+        assert_eq!(read(&chosen), shown);
+        assert!(
+            !session.typed(),
+            "the backup's screen says its file took the typing"
+        );
+        assert_eq!(session.looking(), Some(Looking::Asked));
+        assert_eq!(
+            value_of(&reopened(&database), id, fields::URL).as_deref(),
+            Some("https://typed.example")
+        );
+    }
+
+    /// The lock on the way to a backup could not save - another client wrote
+    /// the vault - and kept the work in a copy beside it. The session stays on
+    /// the vault, whose unlock screen is the one that offers that copy.
+    #[test]
+    fn a_lock_that_had_to_keep_its_work_elsewhere_stays_on_the_vault() {
+        let (_directory, database, session, id) = with_backups(RICH, 3);
+        session.snapshots().expect("the backups are listed");
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    id,
+                    fields::USERNAME,
+                    vault_core::NewValue::Open("mine".to_owned()),
+                )
+            })
+            .expect("the session is open")
+            .expect("the field is set");
+        somebody_else_writes(&database, id);
+
+        assert!(session.look(1).expect("the backup is there"));
+        assert!(session.lock(Reason::ByHand));
+
+        assert_eq!(session.database(), Some(database.clone()));
+        assert_eq!(session.looking(), None);
+        assert!(!session.backup_gone(), "the backup is still there");
+        assert!(
+            unsaved::found(&database)
+                .expect("the folder reads")
+                .is_some(),
+            "the lock kept nothing beside the vault"
+        );
+    }
+
+    /// The oldest of ten backups was pressed with a change in the vault, and
+    /// the lock's own save pushed it out of the chain. The session stays on the
+    /// vault, which holds the change - never on the backup that moved into the
+    /// oldest slot.
+    #[test]
+    fn a_backup_the_locks_own_save_pushed_out_leaves_the_session_on_the_vault() {
+        let (_directory, database, session, id) = with_backups(RICH, 10);
+        let listed = session.snapshots().expect("the backups are listed");
+        assert_eq!(listed.len(), 10);
+        let oldest = read(&slot(&database, 10));
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    id,
+                    fields::URL,
+                    vault_core::NewValue::Open("https://after.example".to_owned()),
+                )
+            })
+            .expect("the session is open")
+            .expect("the field is set");
+
+        assert!(session.look(10).expect("the backup is there"));
+        assert!(session.lock(Reason::ByHand));
+
+        assert_eq!(session.database(), Some(database.clone()));
+        assert_eq!(session.looking(), None);
+        assert!(
+            session.backup_gone(),
+            "the vault's screen is not told why it is not the backup's"
+        );
+        assert!(
+            snapshot::taken(&database)
+                .expect("the chain reads")
+                .iter()
+                .all(|taken| read(&taken.path) != oldest),
+            "the oldest backup is still in the chain, so this proves nothing"
+        );
+        assert_eq!(
+            value_of(&reopened(&database), id, fields::URL).as_deref(),
+            Some("https://after.example")
+        );
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the vault opens");
+        assert!(
+            !session.backup_gone(),
+            "an unlock kept the news of the lock"
+        );
+    }
+
+    /// Why a backup is open is what happened before it: the vault's file would
+    /// not open or was not there, or the reader asked. A backup that would not
+    /// open either passes the first reason on, and a wrong password is no
+    /// reason at all: the file opens, with another.
+    #[test]
+    fn why_a_backup_is_open_is_what_happened_before_it() {
+        let (_directory, database, session, _) = with_backups(RICH, 4);
+        assert!(session.lock(Reason::ByHand));
+
+        let wrong = session.unlock(password(b"not it"), LockPolicy::Respect);
+        assert_eq!(
+            code_of(&wrong.expect_err("a wrong password")),
+            "wrongCredentials"
+        );
+        session.snapshots().expect("the backups are listed");
+        session.look(1).expect("the backup is there");
+        assert_eq!(session.looking(), Some(Looking::Asked), "a wrong password");
+
+        session.choose(database.clone());
+        damage(&database);
+        damage(&slot(&database, 1));
+        let refused = session.unlock(password(SECRET), LockPolicy::Respect);
+        assert_eq!(
+            code_of(&refused.expect_err("the vault is damaged")),
+            "damaged"
+        );
+        session.snapshots().expect("the backups are listed");
+        session.look(1).expect("the backup is there");
+        assert_eq!(session.looking(), Some(Looking::Unopened));
+
+        let refused = session.unlock(password(SECRET), LockPolicy::Respect);
+        assert_eq!(
+            code_of(&refused.expect_err("the backup is damaged")),
+            "damaged"
+        );
+        session.snapshots().expect("the backups are listed");
+        session.look(2).expect("the backup is there");
+        assert_eq!(
+            session.looking(),
+            Some(Looking::Unopened),
+            "a damaged backup lost why the reader was looking"
+        );
+
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the second backup opens");
+        session.snapshots().expect("the backups are listed");
+        assert!(session.look(3).expect("the backup is there"));
+        assert!(session.lock(Reason::ByHand));
+        assert_eq!(
+            session.looking(),
+            Some(Looking::Asked),
+            "from an open backup"
+        );
+
+        // Asked for from an open backup, and damaged: the next one opened from
+        // the list it fails to is still one the reader asked for.
+        let asked = session.database().expect("a backup is chosen");
+        damage(&asked);
+        let refused = session.unlock(password(SECRET), LockPolicy::Respect);
+        assert_eq!(
+            code_of(&refused.expect_err("the backup is damaged")),
+            "damaged"
+        );
+        session.snapshots().expect("the backups are listed");
+        session.look(4).expect("the backup is there");
+        assert_eq!(
+            session.looking(),
+            Some(Looking::Asked),
+            "a damaged backup the reader asked for was said to be in place of a vault file that would not open"
+        );
+
+        std::fs::remove_file(&database).expect("the vault goes");
+        session.choose(database.clone());
+        let refused = session.unlock(password(SECRET), LockPolicy::Respect);
+        assert_eq!(code_of(&refused.expect_err("the vault is gone")), "gone");
+        session.snapshots().expect("the backups are listed");
+        session.look(3).expect("the backup is there");
+        assert_eq!(session.looking(), Some(Looking::Unopened));
+    }
+
+    /// "Use this copy as my vault" from a backup of a vault that wants a key
+    /// file, whose own file is damaged. The key file chosen for the vault
+    /// opened the backup and opens the vault; the session is left open on the
+    /// vault, which can be written; and the vault - which never opened, so was
+    /// never written down - is what the next launch offers from then on, and
+    /// not before: not for its refused unlock, not for the backup's, not for a
+    /// press that was refused.
+    #[test]
+    fn a_backup_made_the_vault_leaves_the_session_open_on_the_vault_and_written_down() {
+        let (_directory, database) = scratch("keyfile-kdbx41.kdbx");
+        let database = database.canonicalize().expect("the vault is there");
+        let saving = Session::new(Some(database.clone()), None);
+        saving.use_key_file(Some(fixture("keyfile.key")));
+        saving
+            .unlock(password(b"coffer-keyfile"), LockPolicy::Respect)
+            .expect("the vault opens");
+        for _ in 0..2 {
+            saving
+                .with_mut(Vault::save)
+                .expect("the session is open")
+                .expect("the vault saves");
+        }
+        assert!(saving.lock(Reason::ByHand));
+        damage(&database);
+
+        let config = tempfile::tempdir().expect("a scratch directory");
+        let other = database.with_file_name("other.kdbx");
+        recent::remember(config.path(), &other).expect("another vault is written down");
+        let session = Session::new(Some(database.clone()), Some(config.path().to_path_buf()));
+        session.use_key_file(Some(fixture("keyfile.key")));
+        let refused = session.unlock(password(b"coffer-keyfile"), LockPolicy::Respect);
+        assert_eq!(
+            code_of(&refused.expect_err("the vault is damaged")),
+            "damaged"
+        );
+        assert_eq!(recent::remembered(config.path()), Some(other.clone()));
+
+        session.snapshots().expect("the backups are listed");
+        session.look(2).expect("the backup is there");
+        assert_eq!(session.key_file(), Some(fixture("keyfile.key")));
+        session
+            .unlock(password(b"coffer-keyfile"), LockPolicy::Respect)
+            .expect("the vault's key file opens the backup");
+        assert_eq!(
+            recent::remembered(config.path()),
+            Some(other.clone()),
+            "a backup was written down"
+        );
+        assert_eq!(
+            code_of(&session.adopt().expect_err("nothing was said")),
+            "externalChange"
+        );
+        assert_eq!(recent::remembered(config.path()), Some(other));
+
+        session.telling().expect("the backup has a vault");
+        let (vault, adopted) = session.adopt().expect("the backup becomes the vault");
+
+        assert_eq!(vault, database);
+        assert!(matches!(adopted, vault_core::Adopted::SetAside(_)));
+        assert!(session.is_unlocked());
+        assert_eq!(session.database(), Some(database.clone()));
+        assert_eq!(session.key_file(), Some(fixture("keyfile.key")));
+        assert_eq!(session.looking(), None);
+        assert_eq!(
+            session.with(Vault::read_only).expect("the vault is open"),
+            None
+        );
+        assert_eq!(recent::remembered(config.path()), Some(database.clone()));
+
+        assert!(session.lock(Reason::ByHand));
+        session
+            .unlock(password(b"coffer-keyfile"), LockPolicy::Respect)
+            .expect("the vault opens with the same two halves");
+        assert_eq!(session.database(), Some(database));
+    }
+
+    /// "Use this copy as my vault" goes over the file the strip described and
+    /// over no other. Nothing said, and another client's save after the strip
+    /// said how the vault stood, are refused with nothing written and the
+    /// backup still open; told again, the same press goes through.
+    #[test]
+    fn a_backup_is_made_the_vault_only_over_the_file_the_window_was_told_about() {
+        let (_directory, database, session, id) = with_backups(RICH, 3);
+        assert!(session.lock(Reason::ByHand));
+        session.snapshots().expect("the backups are listed");
+        session.look(1).expect("the backup is there");
+        let backup = session.database().expect("the backup is chosen");
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the backup opens");
+
+        assert_eq!(
+            code_of(&session.adopt().expect_err("nothing was said")),
+            "externalChange"
+        );
+
+        session.telling().expect("the backup has a vault");
+        somebody_else_writes(&database, id);
+        let written = read(&database);
+        assert_eq!(
+            code_of(&session.adopt().expect_err("the vault changed")),
+            "externalChange"
+        );
+        assert_eq!(session.database(), Some(backup));
+        assert_eq!(read(&database), written);
+
+        session.telling().expect("the backup has a vault");
+        let (_, adopted) = session
+            .adopt()
+            .expect("told again, the backup becomes the vault");
+        assert_eq!(adopted, vault_core::Adopted::Kept(slot(&database, 1)));
+        assert_eq!(read(&slot(&database, 1)), written);
+    }
+
+    /// "Back to my vault" from an open backup. Nothing is written anywhere -
+    /// a backup holds nothing a lock has to keep - and the next unlock is of the
+    /// vault. It takes the place of another backup asked for before the lock:
+    /// the last press wins. From a backup that is only chosen it is a choice
+    /// and nothing more.
+    #[test]
+    fn going_back_from_a_backup_asks_for_the_vault() {
+        let (_directory, database, session, _) = with_backups(RICH, 3);
+        assert!(session.lock(Reason::ByHand));
+        let vault = read(&database);
+        let chain: Vec<Vec<u8>> = (1..=3).map(|index| read(&slot(&database, index))).collect();
+
+        session.snapshots().expect("the backups are listed");
+        session.look(1).expect("the backup is there");
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the backup opens");
+        session.snapshots().expect("the backups are listed");
+        assert!(session.look(2).expect("the other backup is there"));
+
+        session.back_to_vault().expect("the backup has a vault");
+        assert!(session.lock(Reason::ByHand));
+
+        assert_eq!(session.database(), Some(database.clone()));
+        assert_eq!(session.looking(), None);
+        assert_eq!(read(&database), vault);
+        let after: Vec<Vec<u8>> = (1..=3).map(|index| read(&slot(&database, index))).collect();
+        assert_eq!(after, chain, "a backup's lock wrote something");
+
+        session.snapshots().expect("the backups are listed");
+        session.look(2).expect("the backup is there");
+        session.back_to_vault().expect("the backup has a vault");
+        assert!(!session.is_unlocked());
+        assert_eq!(session.database(), Some(database.clone()));
+
+        // And the other way round: a backup asked for after "Back to my vault"
+        // is where the lock goes.
+        session.snapshots().expect("the backups are listed");
+        session.look(1).expect("the backup is there");
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the backup opens");
+        session.back_to_vault().expect("the backup has a vault");
+        session.snapshots().expect("the backups are listed");
+        assert!(session.look(3).expect("the other backup is there"));
+        assert!(session.lock(Reason::ByHand));
+        let chosen = session.database().expect("a backup is chosen");
+        assert_eq!(
+            read(&chosen),
+            chain[2],
+            "the way back won over a later press"
+        );
+        assert_eq!(session.looking(), Some(Looking::Asked));
+    }
+
+    /// "Open to look" with a vault open, on a backup that has gone since the
+    /// list was read. It is `gone` before anything is locked: the vault stays
+    /// open, and a lock afterwards for any other reason stays on the vault and
+    /// has nothing to say about a backup.
+    #[test]
+    fn a_backup_that_went_does_not_lock_the_open_vault_for_nothing() {
+        let (_directory, database, session, _) = with_backups(RICH, 3);
+        session.snapshots().expect("the backups are listed");
+        std::fs::remove_file(slot(&database, 2)).expect("the backup goes");
+
+        assert_eq!(code_of(&session.look(2).expect_err("it went")), "gone");
+        assert!(session.is_unlocked(), "the vault was closed for nothing");
+
+        assert!(session.lock(Reason::ByHand));
+        assert_eq!(session.database(), Some(database));
+        assert_eq!(session.looking(), None);
+        assert!(!session.backup_gone());
+    }
+
+    /// A backup open, made the vault - and a lock that takes the window before
+    /// it says what became of the vault's file. The unlock screen says it
+    /// instead, until the vault opens again. A backup asked for from the
+    /// settings while the press ran was about the backup, and the lock it
+    /// asked for stays on the vault the press made.
+    #[test]
+    fn a_backup_made_the_vault_is_said_after_a_lock_that_took_the_window() {
+        let (_directory, database, session, _) = with_backups(RICH, 3);
+        assert!(session.lock(Reason::ByHand));
+        session.snapshots().expect("the backups are listed");
+        session.look(2).expect("the backup is there");
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the backup opens");
+
+        session.snapshots().expect("the backups are listed");
+        assert!(session.look(3).expect("the other backup is there"));
+        session.telling().expect("the backup has a vault");
+        let (_, adopted) = session.adopt().expect("the backup becomes the vault");
+        assert!(session.lock(Reason::Idle));
+
+        assert_eq!(session.database(), Some(database.clone()));
+        assert_eq!(session.looking(), None);
+        assert_eq!(session.adopted(), Some(adopted));
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the vault opens");
+        assert_eq!(
+            session.adopted(),
+            None,
+            "an unlock kept the news of the lock"
+        );
+    }
+
+    /// Anything done in the vault after it was made from a backup is a reader
+    /// at the window that said so - and a save since moves the name the file
+    /// was kept under - so the lock after it has nothing to add.
+    #[test]
+    fn a_backup_made_the_vault_and_worked_in_since_is_not_said_again() {
+        let (_directory, database, session, id) = with_backups(RICH, 3);
+        assert!(session.lock(Reason::ByHand));
+        session.snapshots().expect("the backups are listed");
+        session.look(1).expect("the backup is there");
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the backup opens");
+        session.telling().expect("the backup has a vault");
+        let (_, adopted) = session.adopt().expect("the backup becomes the vault");
+        assert_eq!(adopted, vault_core::Adopted::Kept(slot(&database, 1)));
+
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    id,
+                    fields::URL,
+                    vault_core::NewValue::Open("https://since.example".to_owned()),
+                )
+            })
+            .expect("the session is open")
+            .expect("the field is set");
+        assert!(session.lock(Reason::ByHand));
+
+        assert_eq!(session.database(), Some(database));
+        assert_eq!(session.adopted(), None);
+    }
+
+    /// Changes the open vault's master password, the way the command does.
+    fn changed(session: &Session, current: &[u8], new: &[u8]) -> Result<usize, Failure> {
+        session.change_master_password(current, password(new))
+    }
+
+    const CHANGED: &[u8] = b"a password nobody saw typed";
+
+    /// The window the next unlock builds asks for the password the change
+    /// gave, and the one the reader had stops opening anything.
+    #[test]
+    fn a_changed_password_is_the_one_the_next_unlock_needs() {
+        let (_scratch, session) = unlocked(RICH);
+        changed(&session, SECRET, CHANGED).expect("the password is changed");
+
+        assert!(session.lock(Reason::ByHand));
+        assert!(!session.lost(), "the lock after a change lost something");
+        assert!(!session.typed());
+        assert!(session.rekeyed(), "the unlock screen is not told");
+        let refused = session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect_err("the old password opened the vault");
+        assert_eq!(code_of(&refused), "wrongCredentials");
+        assert!(session.rekeyed(), "a wrong password took the news away");
+        session
+            .unlock(password(CHANGED), LockPolicy::Respect)
+            .expect("the new password opens it");
+        assert!(
+            !session.rekeyed(),
+            "the news outlived the unlock it was for"
+        );
+    }
+
+    /// The unlock screen says a password was changed only after a lock that
+    /// closed a vault whose password changed while it was open: never after a
+    /// change that was refused, never about a vault opened since, never about
+    /// one the session was pointed away from, and a second lock with nothing
+    /// open leaves what the first one said.
+    #[test]
+    fn a_lock_tells_of_a_new_password_only_after_a_change_that_landed() {
+        let (_scratch, session) = unlocked(RICH);
+        changed(&session, SECRET, b"").expect_err("an empty password was taken");
+        changed(&session, SECRET, SECRET).expect_err("the same password was taken");
+        assert!(session.lock(Reason::ByHand));
+        assert!(
+            !session.rekeyed(),
+            "a refused change was said to have landed"
+        );
+
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the vault opens");
+        changed(&session, SECRET, CHANGED).expect("the password is changed");
+        assert!(
+            !session.rekeyed(),
+            "said while the window that says it is open"
+        );
+        assert!(session.lock(Reason::Sleeping));
+        assert!(session.rekeyed());
+        assert!(!session.lock(Reason::Idle));
+        assert!(
+            session.rekeyed(),
+            "a lock with nothing open took the news away"
+        );
+
+        let database = session.database().expect("a vault is chosen");
+        session.choose(database.with_file_name("another.kdbx"));
+        assert!(
+            !session.rekeyed(),
+            "the news followed the reader to another file"
+        );
+    }
+
+    /// The current password is checked without a key derivation, so a wrong
+    /// one is made to cost what a wrong one costs at the unlock screen. The
+    /// wait holds nothing else up: the session answers while the guess is
+    /// still waiting for its own answer.
+    #[test]
+    fn a_wrong_current_password_costs_what_an_unlock_does_and_holds_nothing_up() {
+        let (_scratch, session) = unlocked(RICH);
+        let session = Arc::new(session);
+        let started = std::time::Instant::now();
+        let guess = {
+            let session = Arc::clone(&session);
+            std::thread::spawn(move || changed(&session, b"a guess", CHANGED))
+        };
+
+        std::thread::sleep(kdf::TARGET / 4);
+        let asked = std::time::Instant::now();
+        session.tree().expect("the session answers");
+        assert!(
+            asked.elapsed() < kdf::TARGET / 2,
+            "the session was held for the wait a wrong guess costs"
+        );
+        assert!(!guess.is_finished(), "the guess was answered early");
+
+        let refused = guess
+            .join()
+            .expect("the guess answers")
+            .expect_err("a guess changed the password");
+        assert_eq!(code_of(&refused), "wrongCredentials");
+        assert!(started.elapsed() >= kdf::TARGET);
+    }
+
+    /// Guesses sent side by side wait their turn, each wait included, so that
+    /// sending many at once is no faster than sending them one after another.
+    #[test]
+    fn guesses_sent_side_by_side_cost_a_wait_each() {
+        let (_scratch, session) = unlocked(RICH);
+        let session = Arc::new(session);
+        let started = std::time::Instant::now();
+
+        let guesses: Vec<_> = ["one guess", "another guess", "a third guess"]
+            .into_iter()
+            .map(|guess| {
+                let session = Arc::clone(&session);
+                std::thread::spawn(move || changed(&session, guess.as_bytes(), CHANGED))
+            })
+            .collect();
+        for guess in guesses {
+            let refused = guess
+                .join()
+                .expect("the guess answers")
+                .expect_err("a guess changed the password");
+            assert_eq!(code_of(&refused), "wrongCredentials");
+        }
+        assert!(started.elapsed() >= kdf::TARGET * 3);
+    }
+
+    /// A vault with the copy a lock left beside it keeps its password until
+    /// the copy is out of the way, and "Make this my vault" then has no older
+    /// password to bring back. Made the vault from inside the copy, the copy's
+    /// password is the vault's, the change goes through, and the vault opens
+    /// with the new password alone.
+    #[test]
+    fn a_vault_with_a_lock_s_copy_beside_it_keeps_its_password_until_the_copy_is_its_vault() {
+        let (_directory, database, copy) = with_a_copy(RICH);
+        let session = Session::new(Some(database.clone()), None);
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the vault opens");
+
+        let refused = changed(&session, SECRET, CHANGED)
+            .expect_err("the vault was given a new password beside a lock's copy");
+        assert_eq!(code_of(&refused), "refused");
+        assert!(session.lock(Reason::ByHand));
+        assert!(!session.rekeyed());
+
+        session.choose_sibling(copy.clone());
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the copy opens with the vault's password");
+        assert!(session.telling().is_some(), "the copy is not one");
+        session.promote().expect("the copy becomes the vault");
+        changed(&session, SECRET, CHANGED).expect("the password is changed");
+        assert!(session.lock(Reason::ByHand));
+        assert!(!copy.exists(), "the copy is still beside the vault");
+
+        let refused = session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect_err("the old password opened the vault");
+        assert_eq!(code_of(&refused), "wrongCredentials");
+        session
+            .unlock(password(CHANGED), LockPolicy::Respect)
+            .expect("the new password opens it");
+    }
+
+    /// The key file the reader chose is part of the key the change writes,
+    /// and the session keeps it for the unlock after the lock as it always
+    /// does.
+    #[test]
+    fn a_key_file_chosen_for_a_vault_is_still_needed_after_its_password_changes() {
+        let (_directory, database) = scratch("keyfile-kdbx41.kdbx");
+        let session = Session::new(Some(database), None);
+        session.use_key_file(Some(fixture("keyfile.key")));
+        session
+            .unlock(password(b"coffer-keyfile"), LockPolicy::Respect)
+            .expect("both halves open it");
+
+        let refused = changed(&session, b"keyfile.key", CHANGED)
+            .expect_err("something other than the password was taken for it");
+        assert_eq!(code_of(&refused), "wrongCredentials");
+        changed(&session, b"coffer-keyfile", CHANGED).expect("the password is changed");
+        session.lock(Reason::ByHand);
+        session
+            .unlock(password(CHANGED), LockPolicy::Respect)
+            .expect("the new password and the key file open it");
+        session.lock(Reason::ByHand);
+
+        session.use_key_file(None);
+        let refused = session
+            .unlock(password(CHANGED), LockPolicy::Respect)
+            .expect_err("the new password alone opened it");
+        assert_eq!(code_of(&refused), "wrongCredentials");
+    }
+
+    /// A change refused before anything was written changed nothing, so a
+    /// list of versions the window holds is still the one to act from. One
+    /// that wrote the file pruned every history the way a save does.
+    #[test]
+    fn a_password_change_refused_before_anything_is_written_leaves_the_revision_where_it_was() {
+        let (_scratch, session) = unlocked(RICH);
+        let (listed, ()) = session.listing(|_| ()).expect("the vault is open");
+
+        for (what, current, new, code) in [
+            (
+                "a wrong current password",
+                &b"coffer-tes"[..],
+                CHANGED,
+                "wrongCredentials",
+            ),
+            ("an empty new one", SECRET, b"", "refused"),
+            ("the one it has", SECRET, SECRET, "refused"),
+        ] {
+            let refused = changed(&session, current, new).expect_err(what);
+            assert_eq!(code_of(&refused), code, "{what}");
+        }
+        let (again, ()) = session.listing(|_| ()).expect("the vault is open");
+        assert_eq!(
+            again, listed,
+            "a change that was refused moved the revision"
+        );
+
+        changed(&session, SECRET, CHANGED).expect("the password is changed");
+        let (after, ()) = session.listing(|_| ()).expect("the vault is open");
+        assert_ne!(
+            after, listed,
+            "a change that wrote the file left the revision"
+        );
+    }
+
+    /// A change is a save: what the vault held that the file had not got goes
+    /// into the file under the new key, and the lock that follows has nothing
+    /// left to write and nothing to put beside the vault.
+    ///
+    /// The file and its snapshots are read between the change and the lock and
+    /// again after it. A lock writes whatever is still owed, so notes found
+    /// after the unlock prove nothing unless the lock is shown to have written
+    /// nothing at all.
+    #[test]
+    fn a_change_writes_what_the_file_had_not_got_and_leaves_a_lock_nothing_to_write() {
+        let (_scratch, session) = unlocked(RICH);
+        let database = session
+            .database()
+            .expect("the vault is still the one chosen");
+        let basic = entry_titled(&session, "basic").id;
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    basic,
+                    fields::NOTES,
+                    vault_core::NewValue::Open("never saved on its own".to_owned()),
+                )
+            })
+            .expect("the vault is open")
+            .expect("the notes are written");
+        changed(&session, SECRET, CHANGED).expect("the password is changed");
+
+        let chain = || {
+            vault_core::storage::snapshot::taken(&database)
+                .expect("the chain reads")
+                .len()
+        };
+        let written = std::fs::read(&database).expect("the vault reads");
+        let taken = chain();
+
+        assert!(session.lock(Reason::ByHand));
+        assert!(!session.lost());
+        assert!(!session.typed());
+        assert_eq!(
+            std::fs::read(&database).expect("the vault reads"),
+            written,
+            "the lock after a change wrote the vault"
+        );
+        assert_eq!(chain(), taken, "the lock after a change took a snapshot");
+        assert!(
+            !unsaved::beside(&database).expect("a sibling path").exists(),
+            "a lock after a change wrote a copy beside the vault"
+        );
+
+        session
+            .unlock(password(CHANGED), LockPolicy::Respect)
+            .expect("the new password opens it");
+        let notes = session
+            .reveal(basic, fields::NOTES)
+            .ok()
+            .and_then(|value| value.expose_str().map(str::to_owned));
+        assert_eq!(notes.as_deref(), Some("never saved on its own"));
+    }
+
+    /// A copy asked for one vault is not written from another. The panel is
+    /// up for as long as the reader takes, and a lock and another unlock can
+    /// land behind it.
+    #[test]
+    fn a_copy_asked_for_one_vault_is_not_written_from_another() {
+        let (directory, _, session) = holding(RICH);
+        let asked = session.database().expect("a vault is chosen");
+        let target = directory.path().join("copy.kdbx");
+
+        assert!(session.lock(Reason::Idle));
+        let other = directory.path().join("another.kdbx");
+        std::fs::copy(fixture(RICH), &other).expect("the fixture copies");
+        session.choose(other);
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the other vault opens");
+
+        assert_eq!(refusal(session.copy_to(&asked, &target)), "refused");
+        assert!(!target.exists(), "a copy of the wrong vault was written");
+
+        let open = session.database().expect("a vault is chosen");
+        session
+            .copy_to(&open, &target)
+            .expect("the vault asked about is written");
+        assert_eq!(
+            reopened(&target).count(),
+            session.with(Vault::count).expect("the vault is open")
+        );
+    }
+
+    /// The clock that locks runs behind the panel. A copy pressed into a
+    /// vault that locked meanwhile writes nothing and says there is no vault.
+    #[test]
+    fn a_copy_of_a_locked_vault_is_refused_and_writes_nothing() {
+        let (directory, _, session) = holding(RICH);
+        let database = session.database().expect("a vault is chosen");
+        assert!(session.lock(Reason::Idle));
+
+        let target = directory.path().join("copy.kdbx");
+        assert_eq!(refusal(session.copy_to(&database, &target)), "noVault");
+        assert!(!target.exists());
+    }
+
+    /// A copy settles every entry's history the way a save does, which moves
+    /// the positions of versions; a list read before it is refused afterwards,
+    /// and the window reads it again.
+    #[test]
+    fn a_copy_moves_the_revision_so_a_listed_version_is_read_again() {
+        let (directory, _, session) = holding(RICH);
+        let database = session.database().expect("a vault is chosen");
+        let basic = entry_titled(&session, "basic").id;
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    basic,
+                    fields::NOTES,
+                    vault_core::NewValue::Open("a version behind it".to_owned()),
+                )
+            })
+            .expect("the vault is open")
+            .expect("the note is written");
+        let (listed, versions) = session
+            .listing(|vault| vault.versions(basic))
+            .expect("the vault is open");
+        let index = versions.first().expect("the entry has versions").index;
+
+        session
+            .copy_to(&database, &directory.path().join("copy.kdbx"))
+            .expect("the copy is written");
+
+        assert_eq!(
+            refusal(session.at(listed, |vault| vault.version(basic, index))),
+            "versionsChanged"
+        );
+    }
+
+    /// A copy refused at the write - a name that held a file by then - was
+    /// encrypted first, and encrypting settled every history the way a save
+    /// does. The revision moved all the same, and a list read before it is
+    /// read again rather than acted on.
+    #[test]
+    fn a_copy_refused_at_a_taken_name_still_moves_the_revision() {
+        let (directory, _, session) = holding(RICH);
+        let database = session.database().expect("a vault is chosen");
+        let basic = entry_titled(&session, "basic").id;
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    basic,
+                    fields::NOTES,
+                    vault_core::NewValue::Open("a version behind it".to_owned()),
+                )
+            })
+            .expect("the vault is open")
+            .expect("the note is written");
+        let (listed, versions) = session
+            .listing(|vault| vault.versions(basic))
+            .expect("the vault is open");
+        let index = versions.first().expect("the entry has versions").index;
+
+        let taken = directory.path().join("copy.kdbx");
+        std::fs::write(&taken, b"somebody's file").expect("the name is taken");
+        assert_eq!(refusal(session.copy_to(&database, &taken)), "taken");
+        assert_eq!(
+            std::fs::read(&taken).expect("the file is there"),
+            b"somebody's file"
+        );
+
+        assert_eq!(
+            refusal(session.at(listed, |vault| vault.version(basic, index))),
+            "versionsChanged"
+        );
+    }
+
+    /// Every copy goes through [`Session::copy_to`], which refuses a vault
+    /// that was swapped while the panel was up and writes with the session let
+    /// go. Read from the source: a command that encrypted a copy for itself
+    /// would work, and skip both without a word.
+    #[test]
+    fn every_copy_goes_through_copy_to() {
+        use crate::source::{every_file, shipped};
+
+        let encrypting: Vec<String> = every_file()
+            .into_iter()
+            .filter(|(_, file)| shipped(file).contains(".encrypt_copy("))
+            .map(|(path, _)| path.display().to_string())
+            .collect();
+        assert_eq!(
+            encrypting.len(),
+            1,
+            "a copy is encrypted in more than one place: {encrypting:?}"
+        );
+        assert!(
+            encrypting
+                .iter()
+                .all(|path| path.ends_with("session/elsewhere.rs")),
+            "a copy is encrypted somewhere other than the session's door: {encrypting:?}"
+        );
+    }
+
+    /// What is being typed is not in the copy: the reader has not left the
+    /// field. It stays a draft, and the next lock writes it into the vault,
+    /// where it was typed.
+    #[test]
+    fn a_copy_leaves_what_is_being_typed_for_the_lock() {
+        let (directory, _, session) = holding(RICH);
+        let database = session.database().expect("a vault is chosen");
+        let basic = entry_titled(&session, "basic").id;
+        session
+            .draft(basic, fields::URL, words("https://typed.example", false), 1)
+            .expect("the draft is heard");
+
+        let target = directory.path().join("copy.kdbx");
+        session
+            .copy_to(&database, &target)
+            .expect("the copy is written");
+        assert_ne!(
+            value_of(&reopened(&target), basic, fields::URL).as_deref(),
+            Some("https://typed.example"),
+            "the copy took a value nobody had left"
+        );
+
+        assert!(session.lock(Reason::ByHand));
+        assert!(session.typed());
+        assert_eq!(
+            value_of(&reopened(&database), basic, fields::URL).as_deref(),
+            Some("https://typed.example")
+        );
     }
 }

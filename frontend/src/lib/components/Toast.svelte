@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { OWN } from '$lib/shortcuts';
 	import type { Notice } from '$lib/notices.svelte';
 	import Icon from './Icon.svelte';
 
@@ -47,6 +48,10 @@
 			<Icon name="copy" class="h-4 w-4 shrink-0 text-accent" />
 		{:else if kind === 'removed'}
 			<Icon name="trash" class="h-4 w-4 shrink-0 text-txt3" />
+		{:else if kind === 'moved'}
+			<Icon name="folder" class="h-4 w-4 shrink-0 text-txt3" />
+		{:else if kind === 'changed'}
+			<Icon name="check" class="h-4 w-4 shrink-0 text-txt3" />
 		{:else}
 			<Icon name="warn" class="h-4 w-4 shrink-0 text-warn" />
 		{/if}
@@ -66,7 +71,7 @@
 			>
 				Undo
 				<kbd class="rounded-xs border border-hairline px-1.5 py-0.5 font-mono text-label text-txt4">
-					⌘Z
+					{OWN.undo}
 				</kbd>
 			</button>
 		{/if}

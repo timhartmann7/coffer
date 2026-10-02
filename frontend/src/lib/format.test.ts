@@ -1,6 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { entry, field } from './fixtures';
-import { ago, at, called, copied, day, fully, quoted, size, when } from './format';
+import { entry, field, row } from './fixtures';
+import {
+	ago,
+	at,
+	called,
+	copied,
+	counted,
+	day,
+	fully,
+	isolated,
+	minute,
+	quoted,
+	recently,
+	size,
+	when
+} from './format';
 
 /** The suite runs with TZ pinned to UTC, so the local clock the screen writes
  * in is the same one the database keeps. */
@@ -50,6 +64,19 @@ describe('a moment two files are compared by', () => {
 		expect(at(null, now)).toBe('');
 		expect(at('not a date', now)).toBe('');
 	});
+
+	/** Ten backups are often ten saves within the hour, so a row in their list
+	 * always has the minute, and is told from its neighbours by nothing else. */
+	it('gives a row in a list of files the minute, after the day', () => {
+		expect(minute('2026-08-29T14:05:00Z', now)).toBe('today, 14:05');
+		expect(minute('2026-08-29T14:04:00Z', now)).toBe('today, 14:04');
+		expect(minute('2026-08-27T18:40:00Z', now)).toBe('27 Aug, 18:40');
+		expect(minute('2025-08-27T18:40:00Z', now)).toBe('27 Aug 2025, 18:40');
+		expect(minute('3000-01-01T00:00:00Z', now)).toBe('1 Jan 3000, 0:00');
+		expect(minute(null, now)).toBe('');
+		expect(minute('', now)).toBe('');
+		expect(minute('not a date', now)).toBe('');
+	});
 });
 
 describe('an attachment size', () => {
@@ -98,6 +125,24 @@ describe('a day as a sentence says it', () => {
 	});
 });
 
+describe('how recently, while that is the way to say it', () => {
+	/** The week behind in words, and nothing for anything else: a date older
+	 * than that, one after today, and one that is not a date are each said
+	 * their own way by the sentence that asked. */
+	it('says how recently, and nothing past a week or after today', () => {
+		expect(recently('2026-08-29T01:00:00Z', now)).toBe('today');
+		expect(recently('2026-08-28T23:59:00Z', now)).toBe('yesterday');
+		expect(recently('2026-08-27T12:00:00Z', now)).toBe('2 days ago');
+		expect(recently('2026-08-23T12:00:00Z', now)).toBe('6 days ago');
+		expect(recently('2026-08-22T23:59:00Z', now)).toBeNull();
+		expect(recently('2026-08-30T00:00:00Z', now)).toBeNull();
+		expect(recently('3000-12-31T23:59:59Z', now)).toBeNull();
+		expect(recently('1600-01-01T00:00:00Z', now)).toBeNull();
+		expect(recently(null, now)).toBeNull();
+		expect(recently('not a date', now)).toBeNull();
+	});
+});
+
 describe('what a sentence calls an entry', () => {
 	const titled = (value: string | null) =>
 		entry({ fields: [field({ name: 'Title', kind: 'title', value, empty: value === '' })] });
@@ -108,6 +153,24 @@ describe('what a sentence calls an entry', () => {
 		// Protected: the value is not here, and a notice is no reason to fetch it.
 		expect(called(titled(null))).toBe('this entry');
 		expect(called(entry({ fields: [] }))).toBe('this entry');
+	});
+
+	/** A row says the same as the entry it opens: the notice of a move made
+	 * from the list must not name an entry differently from one made from the
+	 * pane. */
+	it('calls one row what it calls the entry', () => {
+		expect(counted([row({ title: 'Bank' })])).toBe(called(titled('Bank')));
+		expect(counted([row({ title: '' })])).toBe('this entry');
+		expect(counted([row({ title: null })])).toBe('this entry');
+		expect(counted([row({ title: 'evil\u202Eslip' })])).toBe('“\u2068evil\u202Eslip\u2069”');
+	});
+
+	/** Any other number is how many: a list of twelve titles is not a notice,
+	 * and none of them is set apart from the rest. */
+	it('counts any other number of rows, titles or none', () => {
+		expect(counted([row({ title: 'Bank' }), row({ title: null })])).toBe('2 entries');
+		expect(counted(Array.from({ length: 50_000 }, () => row()))).toBe('50000 entries');
+		expect(counted([])).toBe('0 entries');
 	});
 });
 
@@ -177,6 +240,21 @@ describe('a name in running text', () => {
 		expect(quoted('Bank')).toBe('“⁨Bank⁩”');
 		expect(quoted('בנק ⁧x⁩')).toBe('“⁨בנק ⁧x⁩⁩”');
 		expect(quoted('')).toBe('“⁨⁩”');
+	});
+
+	/** A line of a menu is as wide as its longest line, and a folder's name can
+	 * be a megabyte. It is cut, by characters rather than by halves of one, and
+	 * what it opened before the cut is closed after it all the same. */
+	it('cuts a name where it stands among words of its own, and still closes it', () => {
+		expect(isolated('x'.repeat(200), 60)).toBe(`\u2068${'x'.repeat(60)}…\u2069`);
+		expect(isolated('x'.repeat(60), 60), 'exactly as long').toBe(`\u2068${'x'.repeat(60)}\u2069`);
+		expect(isolated('🔐'.repeat(70), 60)).toBe(`\u2068${'🔐'.repeat(60)}…\u2069`);
+		expect(isolated('x'.repeat(1 << 20), 60)).toHaveLength(63);
+		for (const name of [`\u2067${'y'.repeat(100)}`, `${'z'.repeat(59)}\u202E${'w'.repeat(9)}`]) {
+			expect(outside(`Move to ${isolated(name, 60)} now`), name.slice(0, 3)).toBe('Move to  now');
+		}
+		expect(isolated('a\nb', 60)).toBe('\u2068a b\u2069');
+		expect(quoted('Bank')).toBe(`“${isolated('Bank')}”`);
 	});
 });
 

@@ -7,11 +7,17 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use keepass::db::{
+    AutoType, AutoTypeAssociation, Color, CustomDataItem, CustomDataValue, DataTransferObfuscation,
+    Icon, Value,
+};
 use keepass::{Database, DatabaseKey};
 use zeroize::Zeroizing;
 
-use vault_core::model::EntryId;
-use vault_core::{Attached, LockPolicy, MasterKey, Vault};
+use vault_core::kind::Kind;
+use vault_core::model::{EntryId, GroupId, Project, fields};
+use vault_core::storage::{Seen, snapshot};
+use vault_core::{Attached, LockPolicy, MasterKey, NewValue, Vault};
 
 /// Set this to run the suite on a machine with no KeePassXC. Everything that
 /// needs an external implementation is skipped, and the round-trip criterion
@@ -45,6 +51,15 @@ pub fn scratch(name: &str) -> (tempfile::TempDir, PathBuf) {
 
 pub fn open(path: &Path, secret: &str) -> Vault {
     Vault::open(path, password(secret), LockPolicy::Respect).expect("the database opens")
+}
+
+/// The vault saved, let go of, and opened again from the file: what the next
+/// launch would find.
+pub fn reopened(mut vault: Vault, secret: &str) -> Vault {
+    vault.save().expect("the database saves");
+    let path = vault.path().to_owned();
+    drop(vault);
+    open(&path, secret)
 }
 
 /// Puts a file on an entry under a name the entry does not use yet.
@@ -87,6 +102,26 @@ pub fn files(vault: &Vault) -> Vec<(String, String, Vec<u8>)> {
     found
 }
 
+/// Everything a reader could look at in the vault: the tree, every entry in
+/// full, every value of every field and every file.
+pub fn everything(vault: &Vault) -> (vault_core::model::Project, Vec<String>) {
+    let mut seen = Vec::new();
+    for summary in all_entries(vault) {
+        let entry = vault.entry(summary.id).expect("the entry is there");
+        for field in &entry.fields {
+            let value = vault
+                .reveal(entry.id, &field.name)
+                .expect("the field has a value");
+            seen.push(format!("{} {} {:?}", entry.id, field.name, value.expose()));
+        }
+        seen.push(format!("{entry:?}"));
+    }
+    for (title, name, data) in files(vault) {
+        seen.push(format!("{title} {name} {data:?}"));
+    }
+    (vault.tree(), seen)
+}
+
 /// Every entry in the database, flattened, with previous versions excluded the
 /// way the tree excludes them.
 pub fn all_entries(vault: &Vault) -> Vec<vault_core::model::EntrySummary> {
@@ -118,6 +153,115 @@ pub fn entry_titled(vault: &Vault, title: &str) -> vault_core::model::Entry {
     vault
         .entry(found.remove(0).id)
         .expect("the entry the tree named is in the database")
+}
+
+/// The folder with this id, wherever it sits in the tree.
+pub fn folder(tree: &Project, id: GroupId) -> Option<&Project> {
+    if tree.id == id {
+        return Some(tree);
+    }
+    tree.sections.iter().find_map(|section| folder(section, id))
+}
+
+/// The folder holding a folder, wherever the two sit in the tree.
+pub fn holder(tree: &Project, id: GroupId) -> Option<GroupId> {
+    if tree.sections.iter().any(|section| section.id == id) {
+        return Some(tree.id);
+    }
+    tree.sections.iter().find_map(|section| holder(section, id))
+}
+
+/// The file as the library reads it, with nothing of Coffer's in between,
+/// which is what another client finds there.
+pub fn library(path: &Path, secret: &str) -> Database {
+    let mut file = std::fs::File::open(path).expect("the file opens");
+    Database::open(&mut file, DatabaseKey::new().with_password(secret))
+        .expect("the library reads it")
+}
+
+/// An entry with a title, made where it is asked for.
+pub fn made(vault: &mut Vault, group: GroupId, title: &str) -> EntryId {
+    let id = vault
+        .create_entry(group, Kind::Login)
+        .expect("the entry is made");
+    vault
+        .set_field(id, fields::TITLE, NewValue::Open(title.to_owned()))
+        .expect("the title is written");
+    id
+}
+
+/// Everything an entry holds but its files, its place and its dates, as the
+/// library reads it: what a restore brings back and a copy carries. Built from
+/// the library's own types, so a value compares with its protection.
+#[derive(Debug, PartialEq)]
+pub struct Holding {
+    pub fields: std::collections::HashMap<String, Value<String>>,
+    pub tags: Vec<String>,
+    pub custom_data: std::collections::HashMap<String, CustomDataItem>,
+    pub autotype: Option<AutoType>,
+    pub foreground_color: Option<Color>,
+    pub background_color: Option<Color>,
+    pub override_url: Option<String>,
+    pub quality_check: bool,
+    pub expires: Option<bool>,
+    pub expiry: Option<chrono::NaiveDateTime>,
+    pub icon: Option<Icon>,
+}
+
+pub fn holding(entry: &keepass::db::Entry) -> Holding {
+    Holding {
+        fields: entry.fields.clone(),
+        tags: entry.tags.clone(),
+        custom_data: entry.custom_data.clone(),
+        autotype: entry.autotype.clone(),
+        foreground_color: entry.foreground_color.clone(),
+        background_color: entry.background_color.clone(),
+        override_url: entry.override_url.clone(),
+        quality_check: entry.quality_check,
+        expires: entry.times.expires,
+        expiry: entry.times.expiry,
+        icon: entry.icon().cloned(),
+    }
+}
+
+/// Gives an entry one of everything it can hold beside its fields and files,
+/// each set away from the library's default, so that one left behind on the
+/// way somewhere is missed: custom data, an auto-type association, both
+/// colours, an override URL, the quality check off, an expiry, a tag and a
+/// custom icon.
+pub fn furnish(entry: &mut keepass::db::EntryMut<'_>, word: &str) {
+    entry.tags = vec![word.to_owned()];
+    entry.custom_data.insert(
+        "Coffer.Test".to_owned(),
+        CustomDataItem {
+            value: Some(CustomDataValue::String(word.to_owned())),
+            last_modification_time: None,
+        },
+    );
+    entry.autotype = Some(AutoType {
+        enabled: true,
+        default_sequence: Some("{USERNAME}{TAB}{PASSWORD}".to_owned()),
+        data_transfer_obfuscation: DataTransferObfuscation::UseClipboard,
+        associations: vec![AutoTypeAssociation {
+            window: format!("{word} - Browser"),
+            sequence: "{PASSWORD}".to_owned(),
+        }],
+    });
+    entry.foreground_color = Some("#FF0000".parse().expect("a colour"));
+    entry.background_color = Some("#00FF00".parse().expect("a colour"));
+    entry.override_url = Some(format!("cmd://open {word}"));
+    entry.quality_check = false;
+    entry.times.expires = Some(true);
+    entry.times.expiry =
+        chrono::NaiveDate::from_ymd_opt(2030, 1, 2).and_then(|day| day.and_hms_opt(3, 4, 5));
+    entry.set_icon_custom_new(word.as_bytes().to_vec());
+}
+
+/// An empty vault of [`built`]'s, in a scratch directory of its own.
+pub fn cheap(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let path = built(scratch.path(), name, |_| {});
+    (scratch, path)
 }
 
 /// The one folder with this name, wherever it sits.
@@ -181,6 +325,90 @@ pub fn built_with(
 
 /// The password every database `built` produces uses.
 pub const BUILT_PASSWORD: &str = "built";
+
+/// One entry, titled "subject", in a database [`built`] makes: saved and
+/// closed, so that the vault under test comes back the way a vault from disk
+/// comes back.
+pub fn vault_with_an_entry(directory: &Path, name: &str) -> PathBuf {
+    built(directory, name, |db| {
+        db.root_mut()
+            .add_entry()
+            .edit(|entry| entry.set_unprotected(keepass::db::fields::TITLE, "subject"));
+    })
+}
+
+/// What the one entry's notes say in a vault [`vault_with_an_entry`] made.
+pub fn notes(vault: &Vault) -> Option<String> {
+    let id = vault.tree().entries[0].id;
+    vault.entry(id).and_then(|entry| {
+        entry
+            .field(keepass::db::fields::NOTES)
+            .and_then(|field| field.value.open().map(str::to_owned))
+    })
+}
+
+/// [`notes`], of the file at `path`.
+pub fn notes_of(path: &Path) -> Option<String> {
+    notes(&open(path, BUILT_PASSWORD))
+}
+
+/// Somebody else's client writing the vault while Coffer may hold it open,
+/// which is what `SPEC.md` section 11 asks the reader to do for the first
+/// month: it takes the lock over when it finds one.
+///
+/// A real second write rather than bytes appended to the file: what the vault
+/// has to find is another version of its database, not a broken one, and the
+/// tests that open the file afterwards need it to still be a database.
+pub fn somebody_else_writes(database: &Path) {
+    let mut theirs = Vault::open(database, password(BUILT_PASSWORD), LockPolicy::TakeOver)
+        .expect("the other client opens it");
+    let id = theirs.tree().entries[0].id;
+    theirs
+        .set_field(
+            id,
+            keepass::db::fields::URL,
+            NewValue::Open("https://theirs.example".into()),
+        )
+        .expect("their change is applied");
+    theirs.save().expect("their save goes through");
+}
+
+/// Every snapshot beside a database, by slot and by content.
+pub fn snapshots(database: &Path) -> Vec<(u32, Vec<u8>)> {
+    (1..=snapshot::SNAPSHOT_COUNT)
+        .filter_map(|index| {
+            let path = snapshot::slot(database, index).ok()?;
+            Some((index, std::fs::read(path).ok()?))
+        })
+        .collect()
+}
+
+/// How the vault's file stands, as the strip over a copy or a backup tells
+/// the reader.
+pub fn told(database: &Path) -> Option<Seen> {
+    Some(Seen::of(database))
+}
+
+/// Overwrites the eight-byte value of a one-letter key in the header's key
+/// derivation dictionary. The dictionary is in the clear, outside everything the
+/// header signature covers, which is exactly why it needs checking before it is
+/// used.
+pub fn forge_kdf_value(bytes: &mut [u8], key: u8, value: u64) -> bool {
+    let pattern = [0x05, 0x01, 0x00, 0x00, 0x00, key, 0x08, 0x00, 0x00, 0x00];
+    let Some(at) = bytes
+        .windows(pattern.len())
+        .position(|window| window == pattern)
+    else {
+        return false;
+    };
+
+    let start = at + pattern.len();
+    let Some(slot) = bytes.get_mut(start..start + 8) else {
+        return false;
+    };
+    slot.copy_from_slice(&value.to_le_bytes());
+    true
+}
 
 /// Puts an extended attribute on a file, leaving its length, its inode and
 /// every byte of its contents alone. That is what the callers need: something a
@@ -420,6 +648,37 @@ pub fn export(tool: &Path, database: &Path, secret: &str, key_file: Option<&Path
     )
     .unwrap_or_else(|error| panic!("keepassxc-cli could not export {database}: {error}"));
     String::from_utf8(bytes).expect("the export is UTF-8")
+}
+
+/// The `<Entry>` an export holds for the entry with this title, from its start
+/// to the first `</Entry>` after it. That is the entry's own end when it has no
+/// versions, and the end of its first version when it has: either way the
+/// fields before any `<History>` are the entry as it stands, and a `<History>`
+/// in it is a version KeePassXC read.
+pub fn exported_entry<'a>(xml: &'a str, title: &str) -> Option<&'a str> {
+    let at = xml.find(&format!("<Value>{title}</Value>"))?;
+    let start = xml.get(..at)?.rfind("<Entry>")?;
+    let rest = xml.get(start..)?;
+    rest.get(..rest.find("</Entry>")?)
+}
+
+/// The value an export gives a field, and whether it marks it to be kept
+/// protected: the first field of that name in `xml`, which in an entry is the
+/// entry's own before any of its versions'. Read off the text rather than
+/// parsed: the export is the other implementation's own words, and this asks
+/// it two things. An empty value is written as an element with nothing in it.
+pub fn exported_field(xml: &str, name: &str) -> Option<(String, bool)> {
+    let key = format!("<Key>{name}</Key>");
+    let after = xml.get(xml.find(&key)? + key.len()..)?;
+    let opens = after.find("<Value")?;
+    let tag = after.get(opens..opens + after.get(opens..)?.find('>')? + 1)?;
+    let hidden = tag.contains("ProtectInMemory=\"True\"");
+    if tag.ends_with("/>") {
+        return Some((String::new(), hidden));
+    }
+    let rest = after.get(opens + tag.len()..)?;
+    let value = rest.get(..rest.find("</Value>")?)?;
+    Some((value.to_owned(), hidden))
 }
 
 /// Every entry path in the database, in the order keepassxc-cli lists them.

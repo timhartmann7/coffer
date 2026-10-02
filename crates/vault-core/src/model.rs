@@ -24,6 +24,10 @@ pub struct Project {
     /// True for the group the database nominates as its recycle bin. Deleted
     /// entries live there, and the tree shows it apart from the rest.
     pub is_recycle_bin: bool,
+    /// True for the group the database keeps its entry templates in, while
+    /// anything can be made from what it holds (see `templates.rs`). Nowhere,
+    /// for a database that names none.
+    pub is_templates: bool,
     /// When the group is in the recycle bin, what is known about how it got
     /// there. Nothing for the bin itself and for everything outside it.
     pub binned: Option<Binned>,
@@ -64,6 +68,9 @@ pub struct EntrySummary {
     /// When the entry is in the recycle bin, what is known about how it got
     /// there. A row in the bin says when and where from.
     pub binned: Option<Binned>,
+    /// What deleting the entry would do, so that a list can say before a press
+    /// which of several chosen entries go to the bin and which go for good.
+    pub deletion: Deletion,
 }
 
 /// An entry, as much of it as can be looked at without a reveal.
@@ -117,6 +124,20 @@ pub struct Binned {
     pub from: Option<GroupId>,
 }
 
+/// One entry a move between folders took somewhere else, and the folder it
+/// took it out of.
+///
+/// What taking the move back goes by: the entry goes back to `from`, and only
+/// while the file still says `from` is where it was last moved from. Ids and
+/// nothing of the reader's, so it prints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Move {
+    pub entry: EntryId,
+    /// The folder the entry was in before the move: a folder, or the top of
+    /// the vault.
+    pub from: GroupId,
+}
+
 /// The KeePass field names Coffer treats as standard. Every other field an
 /// entry carries is a custom field.
 pub mod fields {
@@ -165,6 +186,7 @@ impl Entry {
             attachments: self.attachments.len(),
             versions: self.versions,
             binned: self.binned,
+            deletion: self.deletion,
         }
     }
 

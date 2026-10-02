@@ -71,8 +71,10 @@
 	 * Cmd+C copies this value through Rust and a stray key lands on a button
 	 * rather than in the page. Never out of a field the reader is writing in: a
 	 * new value half typed beside the old one is theirs to finish.
+	 *
+	 * The eye's, and Show and Hide in the menu of the field's row.
 	 */
-	async function toggle() {
+	export async function toggle() {
 		if (revealed.showing) {
 			revealed.hide();
 			return;
@@ -86,6 +88,12 @@
 		}
 	}
 
+	/** Whether the value is on the screen, which the menu of the field's row
+	 * offers to hide rather than to show. */
+	export function shown(): boolean {
+		return revealed.showing;
+	}
+
 	/** Cmd+C with the focus on this row copies this row's value, whole. */
 	function keys(event: KeyboardEvent) {
 		if (!copying(event)) return;
@@ -94,7 +102,7 @@
 	}
 </script>
 
-<Shown {revealed} bind:node {bare} {lines} {onCopy} {onFailure} />
+<Shown {entry} {field} {revealed} bind:node {bare} {lines} {onCopy} {onFailure} />
 <!-- Neither press moves the focus, so a new value being written beside this
      row keeps it, and the old one can be looked at and copied from while it is
      being replaced. -->

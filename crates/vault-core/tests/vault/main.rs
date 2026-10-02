@@ -6,15 +6,22 @@
 #![deny(dead_code, unused_imports, unused_variables, unused_mut)]
 
 mod adversarial;
+mod backup;
+mod batch;
 mod bin;
 mod clash;
+mod copies;
 mod create;
 mod edit;
+mod elsewhere;
 mod fields;
 mod generate;
 mod history;
+mod making;
+mod moves;
 mod normalise;
 mod open;
+mod password;
 mod portable;
 mod property;
 mod rescue;

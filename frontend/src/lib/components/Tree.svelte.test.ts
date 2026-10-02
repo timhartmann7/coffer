@@ -28,7 +28,8 @@ function draw(root: Group, open: string[] = [], selected: string | null = null) 
 			selected,
 			expanded: new SvelteSet(open),
 			onSelect: vi.fn(),
-			onToggle: vi.fn()
+			onToggle: vi.fn(),
+			onMenu: vi.fn()
 		}
 	});
 }
@@ -110,5 +111,108 @@ it('marks the group being shown with the bar, and only that one', () => {
 	expect(bars).toHaveLength(1);
 	expect(bars[0].parentElement?.textContent).toContain('Servers');
 
+	return unmount(component);
+});
+
+/** Only the folder a drop would go into lights, in the accent, and the folder
+ * being dragged keeps the plane it was lifted on. */
+it('marks the folder a drag would land in with the accent, and only that one', () => {
+	const servers = group({ name: 'Servers' });
+	const work = group({ name: 'Work', sections: [servers] });
+	const home = group({ name: 'Home' });
+	const root = group({ sections: [work, home] });
+
+	const component = mount(Tree, {
+		target: host,
+		props: {
+			root,
+			selected: null,
+			expanded: new SvelteSet<string>(),
+			drop: home.id,
+			lifted: work.id,
+			onSelect: vi.fn(),
+			onToggle: vi.fn(),
+			onPress: vi.fn(),
+			onMenu: vi.fn()
+		}
+	});
+	flushSync();
+
+	const line = (id: string) => host.querySelector<HTMLElement>(`[data-drop="${id}"]`);
+	expect(line(home.id)?.className).toContain('outline-accent');
+	expect(line(home.id)?.querySelector('svg')?.getAttribute('class')).toContain('text-accent');
+	expect(line(work.id)?.className).not.toContain('outline-accent');
+	expect(line(work.id)?.className).toContain('bg-raised');
+
+	// Where a drop goes, and which folded folder a rest opens, by id only.
+	expect(line(home.id)?.dataset.into).toBe(home.id);
+	expect(line(work.id)?.dataset.opens).toBe(work.id);
+	expect(line(home.id)?.dataset.opens, 'a folder with nothing to open').toBeUndefined();
+
+	return unmount(component);
+});
+
+/** The press a drag starts from is on the folder's own button, not on the
+ * chevron that folds it. */
+it('hands a press on a folder to the screen, and none on its chevron', () => {
+	const servers = group({ name: 'Servers' });
+	const work = group({ name: 'Work', sections: [servers] });
+	const onPress = vi.fn();
+
+	const component = mount(Tree, {
+		target: host,
+		props: {
+			root: group({ sections: [work] }),
+			selected: null,
+			expanded: new SvelteSet<string>(),
+			onSelect: vi.fn(),
+			onToggle: vi.fn(),
+			onPress,
+			onMenu: vi.fn()
+		}
+	});
+	flushSync();
+
+	host
+		.querySelector('[aria-label="Expand Work"]')
+		?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+	expect(onPress).not.toHaveBeenCalled();
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('Work'))
+		?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+	expect(onPress).toHaveBeenCalledWith(expect.any(PointerEvent), work);
+
+	return unmount(component);
+});
+
+/** A right-click anywhere on a folder's line - its name, its count, the
+ * chevron that folds it - asks for that folder's menu, and only one menu. */
+it('asks for a folder’s menu from anywhere on its line', () => {
+	const servers = group({ name: 'Servers' });
+	const work = group({ name: 'Work', sections: [servers] });
+	const onMenu = vi.fn();
+
+	const component = mount(Tree, {
+		target: host,
+		props: {
+			root: group({ sections: [work] }),
+			selected: null,
+			expanded: new SvelteSet<string>([work.id]),
+			onSelect: vi.fn(),
+			onToggle: vi.fn(),
+			onMenu
+		}
+	});
+	flushSync();
+
+	const chevron = host.querySelector('[aria-label="Collapse Work"]');
+	const name = [...host.querySelectorAll('button')].find((each) =>
+		each.textContent?.includes('Servers')
+	);
+	for (const target of [chevron, name]) {
+		target?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+	}
+
+	expect(onMenu.mock.calls.map(([, folder]) => folder.id)).toEqual([work.id, servers.id]);
 	return unmount(component);
 });

@@ -1,41 +1,74 @@
 <script lang="ts">
-	import type { Snippet } from 'svelte';
+	import { tick, untrack, type Snippet } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import {
 		asFailure,
 		copy as copyToClipboard,
 		copyVersion,
-		createEntry,
 		createGroup,
 		entry as loadEntry,
+		openUrl,
 		renameGroup,
+		showInFinder,
 		tree as loadTree,
 		undoRemoval,
 		versions as loadVersions
 	} from '$lib/ipc';
 	import { deleted as deletedLine, eraseQuestion } from '$lib/bin';
+	import { forget, marked as inMenu, offer } from '$lib/context.svelte';
+	import { overdue, refused, saved } from '$lib/copies';
+	import { Dragging, LANDING } from '$lib/dragging.svelte';
 	import { flush } from '$lib/drafts';
 	import { named as howLong } from '$lib/duration';
+	import { ready, writing } from '$lib/focus.svelte';
 	import { copied, quoted } from '$lib/format';
 	import { held } from '$lib/holding';
 	import { copying, typing } from '$lib/keys';
 	import { cancels, composing } from '$lib/lines';
+	import { Making } from '$lib/making';
+	import { answer, leave } from '$lib/menu.svelte';
 	import { Moves } from '$lib/moves';
 	import { COPIED, Notices } from '$lib/notices.svelte';
+	import { overtaken } from '$lib/overtaken';
+	import { placesFor, targets, type Moving } from '$lib/places';
 	import { conceal } from '$lib/reveal.svelte';
-	import { Saving } from '$lib/saving.svelte';
-	import type { Database, Entry, EntryRow, Group, History, Position, Span } from '$lib/model';
+	import { keepCopy, Saving, type Rekey } from '$lib/saving.svelte';
+	import { Selection, type Press } from '$lib/selection.svelte';
+	import { tag } from '$lib/tagging';
+	import {
+		untouchable,
+		type Chosen,
+		type Database,
+		type Deleting,
+		type Elsewhere,
+		type Entry,
+		type EntryRow,
+		type Field,
+		type Group,
+		type History,
+		type Kinds,
+		type Offer,
+		type Position,
+		type ReadOnlyBecause,
+		type SavedCopy,
+		type Span
+	} from '$lib/model';
 	import { index, search } from '$lib/search';
+	import { KEYS } from '$lib/shortcuts';
 	import {
 		entriesOf,
 		find,
 		inBin,
 		liveEntries,
+		loose,
 		pathTo,
+		projects,
 		recycleBin,
 		rowOf,
+		rowsOf,
 		searchedEntries,
-		shownEntries
+		shownEntries,
+		templatesOf
 	} from '$lib/tree';
 	import BinFolders from './BinFolders.svelte';
 	import Confirm from './Confirm.svelte';
@@ -44,27 +77,56 @@
 	import EntryList from './EntryList.svelte';
 	import EntryListCompact from './EntryListCompact.svelte';
 	import EntryView from './EntryView.svelte';
+	import FolderPicker from './FolderPicker.svelte';
 	import Icon from './Icon.svelte';
 	import InBin from './InBin.svelte';
+	import NewEntry from './NewEntry.svelte';
 	import Opening from './Opening.svelte';
+	import ReadOnly from './ReadOnly.svelte';
+	import SelectionBar from './SelectionBar.svelte';
+	import type { Handed } from './Settings.svelte';
 	import Toast from './Toast.svelte';
 	import Tree from './Tree.svelte';
 
 	let {
 		database,
 		root,
+		kinds,
 		readOnly,
+		readOnlyBecause = null,
+		copyable = false,
+		elsewhere = null,
+		news = null,
 		settings,
 		onSettings,
-		onTree
+		onTree,
+		onElsewhere
 	}: {
 		database: Database;
 		root: Group;
+		/** What a new entry can start as, a login first, and the names offered
+		 * for a field of the reader's own: Rust's (`ipc.kinds`). */
+		kinds: Kinds;
 		/** A snapshot, or a format Coffer reads and does not write. Nothing on
 		 * the screen offers a change it would only be refused. */
 		readOnly: boolean;
+		/** Why, for the status bar to say when it is asked. */
+		readOnlyBecause?: ReadOnlyBecause | null;
+		/** Whether what is open can be written to a file somewhere else, which
+		 * the status bar's note offers where it can. */
+		copyable?: boolean;
+		/** What Rust knows of copies of this vault kept on another disk, or
+		 * null for anything Coffer does not keep copies of. The window's,
+		 * because the settings read it too. */
+		elsewhere?: Elsewhere | null;
+		/** Something that happened to the vault on the way to this screen, for
+		 * its notice to say: what became of the file a backup replaced. A new
+		 * object each time, so that the same words twice are said twice. */
+		news?: { message: string } | null;
 		/**
-		 * The settings screen, when it is the one being read.
+		 * The settings screen, when it is the one being read, handed what this
+		 * screen does for them: the way to change the master password when this
+		 * vault can be written.
 		 *
 		 * Drawn here rather than in place of this whole screen so that the way in
 		 * to it stays where it was pressed. It sits in the status bar, and a
@@ -72,11 +134,16 @@
 		 * button to the other corner of the window the moment it opened - which
 		 * is a button walking away from the finger that is still on it.
 		 */
-		settings?: Snippet;
+		settings?: Snippet<[Handed]>;
 		/** Opens the settings screen, and closes it again. */
 		onSettings: () => void;
 		onTree: (tree: Group) => void;
+		/** A copy was saved, and this is what Rust knows of copies now. */
+		onElsewhere: (now: Elsewhere) => void;
 	} = $props();
+
+	/** No rows at all, drawn chosen. */
+	const NOTHING: ReadonlySet<string> = new Set();
 
 	/** The group being shown, or `null` for everything the vault holds. */
 	let group = $state<string | null>(null);
@@ -109,11 +176,18 @@
 		entry: Entry | null;
 		/** Its previous versions, once Rust has listed them. */
 		history: History | null;
+		/** Set when the entry was just made in this window and opened for it:
+		 * its name takes the focus, and the fields its kind writes in lines are
+		 * drawn in lines. */
+		arrived: { lined: readonly string[] } | null;
 	};
 
 	let pane = $state.raw<Pane | null>(null);
 	/** Which entry the pane is on, read or not. */
 	const showing = $derived(pane?.id ?? null);
+	/** The element the pane is drawn in, which Cmd+A leaves to the system: a
+	 * key pressed there is about the entry, not the list. */
+	let paneArea = $state<HTMLElement>();
 	/** The entry in the pane, once Rust has read it. Nothing is offered on an
 	 * entry before that: nothing of it but its row is known. */
 	const opened = $derived(pane?.entry ?? null);
@@ -123,13 +197,24 @@
 	let renaming = $state(false);
 	let emptying = $state(false);
 	let deleting = $state(false);
+	/** Whether the entry in the pane is being asked whether it goes for good:
+	 * put by Delete Forever… in a row's menu, as the pane's own button puts
+	 * it. */
+	let erasing = $state(false);
+	/** The same for the folder in the bin being shown, on its bin card. */
+	let erasingFolder = $state(false);
+	/** The bar over the chosen rows, which asks before deleting for good. */
+	let bar = $state<ReturnType<typeof SelectionBar>>();
 
 	const notices = new Notices(failed);
+	/** The rows chosen to act on together. */
+	const selection = new Selection();
 	const file = new Saving({
 		reread,
 		reloaded: (tree) => {
 			onTree(tree);
 			pane = null;
+			selection.only(null);
 		},
 		failed,
 		notices
@@ -138,7 +223,8 @@
 		root: () => root,
 		showing: () => showing,
 		unsaved: () => file.unsaved,
-		close: () => (pane = null),
+		held,
+		close: shut,
 		select,
 		open,
 		redraw,
@@ -149,6 +235,13 @@
 		failed,
 		notices
 	});
+	/** A row or a folder on its way across the window under the pointer. */
+	const dragging = new Dragging({
+		targets: (moving) => targets(root, moving),
+		drop,
+		open: (id) => expanded.add(id)
+	});
+	$effect(() => () => dragging.cancel());
 
 	// Timestamps are written against the moment the vault was opened rather than
 	// against a clock that ticks, so that a list of a thousand rows is not
@@ -156,22 +249,103 @@
 	const now = new Date();
 
 	const shown = $derived(group === null ? root : (find(root, group) ?? root));
+	/** Whether "Not in a folder" is shown: the entries the top of the vault holds
+	 * itself. */
+	const top = $derived(group === root.id);
+	/** Whether a folder is shown, which can be renamed and deleted. "Not in a
+	 * folder" is no folder. */
+	const folder = $derived(group !== null && !top);
 	// Walked once. The tree is the whole vault, and three walks of fifty
 	// thousand entries to draw one screen is three too many.
 	const live = $derived(liveEntries(root));
+	const outside = $derived(loose(root));
 	const rows = $derived(
-		group === null ? live : query === '' ? shownEntries(shown) : searchedEntries(shown)
+		group === null
+			? live
+			: top
+				? outside
+				: query === ''
+					? shownEntries(shown)
+					: searchedEntries(shown)
 	);
 	const indexed = $derived(index(rows));
 	const found = $derived(search(indexed, query));
 	const bin = $derived(recycleBin(root));
 	const path = $derived(pane ? (pathTo(root, (pane.entry ?? pane.row).group) ?? []).slice(1) : []);
 	/** Where a new folder or entry goes: the folder being shown, or the top of
-	 * the vault when the list is showing everything. */
+	 * the vault when the list is showing everything or what sits there. */
 	const inside = $derived(group === null ? root.id : shown.id);
 	/** Whether the list is showing the recycle bin or a folder inside it, where
 	 * nothing is made or changed and everything is read one folder at a time. */
 	const binned = $derived(group !== null && inBin(shown));
+	/** Whether the folder shown has the card that says it is in the bin, and
+	 * asks before it goes for good. */
+	const carded = $derived(binned && Boolean(shown.binned));
+
+	// The card's question is about the folder on the card. Put back, the folder
+	// has no card, and a folder that comes back into the bin on its own - a
+	// reload, another window - is not found asked.
+	$effect(() => {
+		if (!carded) erasingFolder = false;
+	});
+	/** Whether things can be made here. The + Entry button and the folder
+	 * header's buttons are drawn on this, and so are the menu bar's New Entry
+	 * and New Folder. */
+	const changeable = $derived(!readOnly && !binned);
+	/** Whether the vault has folders of its own, which is when where an entry
+	 * goes is a question, and "Not in a folder" a place worth a row. */
+	const foldered = $derived(projects(root).length > 0);
+	/** Whether "+ Entry" asks where the new entry goes: in "All entries", which
+	 * is no one place, of a vault with folders. */
+	const asking = $derived(group === null && foldered);
+	/** What a new entry is to be: one of the kinds, or a copy of one of the
+	 * vault's templates. */
+	type Wanted = { offer: Offer } | { template: string };
+	/** What "+ Entry" is making while its list of folders asks where, and
+	 * `null` while that list is closed. */
+	let choosing = $state<Wanted | null>(null);
+	let newEntryButton = $state<HTMLButtonElement>();
+	/** The vault's templates, which "+ Entry" lists after the kinds. */
+	const templates = $derived(templatesOf(root));
+	/**
+	 * The folder the last entry made in this window went into: what "+ Entry"
+	 * in "All entries" offers first, so that filing ten logins into one folder
+	 * is ten presses of Return. Kept by the window and nowhere else, so a lock
+	 * forgets it with everything else of the vault. A folder that has gone, or
+	 * gone to the bin, since is no longer in the list, and the list opens on the
+	 * top of the vault, its first line.
+	 */
+	let filed = $state<string | null>(null);
+	/** The rows being dragged, which keep the plane they were lifted on. */
+	const lifted = $derived(
+		new Set(
+			dragging.moving && 'entries' in dragging.moving
+				? dragging.moving.entries.map((row) => row.id)
+				: []
+		)
+	);
+	/** The rows chosen, in the order the list draws them. */
+	const chosen = $derived(selection.of(found));
+	/**
+	 * Whether rows are chosen to act on together, which is when they are drawn
+	 * chosen and the bar stands over the list. Not for the entry a plain press
+	 * opened, which is chosen on its own and looks as it always did: a choice
+	 * is more than one row, or one that is not the entry being read. Never in a
+	 * vault Coffer will not write, where nothing a bar offers can be done.
+	 */
+	const selecting = $derived(
+		!readOnly && (chosen.length > 1 || (chosen.length === 1 && chosen[0].id !== showing))
+	);
+	/** The rows drawn chosen: none, unless rows are chosen to act on. */
+	const marked = $derived(selecting ? selection.ids : NOTHING);
+
+	// What is chosen is what is drawn. A search that hides a row, a change that
+	// takes one out of the list, lets go of it for good.
+	$effect.pre(() => {
+		const drawn = found;
+		untrack(() => selection.keep(drawn));
+	});
+
 	/** The folders drawn above the entries in the bin. A search is for entries,
 	 * and a folder row among its answers would be one it did not look inside. */
 	const folders = $derived(binned && query === '' ? shown.sections : []);
@@ -194,7 +368,15 @@
 	 * would have moved the entry out from under the question.
 	 */
 	function dismiss() {
-		if (!held()) pane = null;
+		if (!held()) shut();
+	}
+
+	/** Takes the pane away, and the choice with it when the choice was only
+	 * the entry the pane showed: once that is put away, it is not a row the
+	 * reader chose to act on. */
+	function shut() {
+		if (!selecting) selection.only(null);
+		pane = null;
 	}
 
 	/** Shows a folder the reader chose, unless the pane has to stay. */
@@ -205,11 +387,15 @@
 	function select(id: string | null) {
 		group = id;
 		pane = null;
+		selection.only(null);
 		query = '';
+		choosing = null;
 		naming = false;
 		renaming = false;
 		emptying = false;
 		deleting = false;
+		erasing = false;
+		erasingFolder = false;
 	}
 
 	/**
@@ -221,10 +407,10 @@
 	 * entry already in the pane reads it again where it stands, with nothing
 	 * taken off the screen in the meantime.
 	 */
-	async function open(row: EntryRow) {
+	async function open(row: EntryRow, arrived: Pane['arrived'] = null) {
 		if (showing !== row.id) {
 			if (held()) return;
-			pane = { id: row.id, row, entry: null, history: null };
+			pane = { id: row.id, row, entry: null, history: null, arrived };
 		}
 		await read(row.id);
 		await list(row.id);
@@ -243,7 +429,7 @@
 			land(await loadEntry(id));
 		} catch (thrown) {
 			if (showing !== id) return;
-			pane = null;
+			shut();
 			failed(thrown);
 		}
 	}
@@ -366,36 +552,386 @@
 		await file.persist();
 	}
 
-	/**
-	 * Makes an entry and opens it.
-	 *
-	 * Opened only when the pane is where it was when the button was pressed: an
-	 * entry the reader chose while Rust was making this one is the later choice,
-	 * and the new entry waits in the list rather than taking the pane from it.
-	 */
-	async function addEntry() {
-		if (held()) return;
-		const at = showing;
-		try {
-			const made = await createEntry(inside);
-			onTree(made.tree);
+	/** Making entries, and opening each one made with its name ready to type.
+	 * What is made is chosen on its own: the reader asked for it. */
+	const making = new Making({
+		showing: () => showing,
+		held,
+		drawn: (tree) => {
+			onTree(tree);
 			file.changedAt = new Date();
-			const row = rowOf(made.tree, made.entry);
-			if (row && showing === at) await open(row);
-			await file.persist();
-		} catch (thrown) {
-			failed(thrown);
+		},
+		open: async (row, lined) => {
+			selection.only(row.id);
+			await open(row, { lined });
+		},
+		persist: () => file.persist(),
+		failed
+	});
+
+	/**
+	 * "+ Entry" and each kind in its list, the empty vault's kinds, the empty
+	 * folder's "Add an entry", and New Entry in the menu bar: a login unless a
+	 * kind was chosen.
+	 *
+	 * In "All entries" of a vault with folders it asks where first, with the
+	 * list on the folder the last entry went into, so Return makes it there.
+	 * Anywhere else it is made where the list is: the folder shown, or the top
+	 * of the vault for "Not in a folder".
+	 */
+	function newEntry(offer: Offer = kinds.offered[0]) {
+		start({ offer });
+	}
+
+	/** A template chosen from "+ Entry"'s list, which asks where the way a
+	 * kind does. */
+	function fromTemplate(template: EntryRow) {
+		start({ template: template.id });
+	}
+
+	function start(wanted: Wanted) {
+		if (held()) return;
+		if (asking) choosing = wanted;
+		else void makeIn(inside, wanted);
+	}
+
+	/**
+	 * Makes an entry in a folder and opens it (see `making.ts`).
+	 *
+	 * Asks `held` again: the list closes when the focus leaves it, and a reader
+	 * who went back into a Change field in between has typing to answer for
+	 * first. The folder is the one "+ Entry" offers first next time, once the
+	 * entry is made there.
+	 */
+	async function makeIn(into: string, wanted: Wanted) {
+		choosing = null;
+		if (held()) return;
+		const made =
+			'offer' in wanted
+				? await making.kind(wanted.offer, into)
+				: await making.template(wanted.template, into);
+		if (made) filed = into;
+	}
+
+	/**
+	 * Makes a copy of an entry beside it, and opens the copy with its name
+	 * ready to type: the header's Duplicate, Duplicate in the menu bar - both
+	 * about the entry in the pane - and Duplicate in a row's menu. Not of an
+	 * entry in the bin or in a vault Coffer will not write, and not while the
+	 * pane has to stay: the copy would take it. The copy is an entry made like
+	 * any other, and its folder is the one "+ Entry" offers first next time.
+	 */
+	async function duplicate(entry: Pick<EntryRow, 'id' | 'group' | 'binned'> | null = opened) {
+		if (!entry || untouchable(entry, readOnly) || held()) return;
+		if (await making.copy(entry.id)) filed = entry.group;
+	}
+
+	/** Whether the list and the pane are the reader's to act on: nothing is over
+	 * them. The settings make them inert, and the conflict dialog asks its
+	 * question first. */
+	const free = $derived(settings === undefined && file.conflict === null);
+
+	// Duplicate in the menu bar, on the condition the pane's Duplicate is drawn
+	// on: an entry read, in a vault Coffer writes, out of the bin. And not while
+	// rows are chosen: the bar's other verbs then act on the choice, and a copy
+	// of the pane's entry - which may not be one of them - would make one entry
+	// nobody chose and let go of the rows that were. The pane's own pill names
+	// its entry, and stays.
+	$effect(() =>
+		answer({
+			duplicate: {
+				run: () => void duplicate(),
+				when: () => free && !selecting && opened !== null && !untouchable(opened, readOnly)
+			}
+		})
+	);
+
+	/** Opens the settings, or closes them again: the status bar's button, and
+	 * Settings… in the menu bar. Not over a pane that has to stay, and not away
+	 * from something in the settings that is still on its way - a new master
+	 * password, whose answer is the one place that says which password now
+	 * opens the vault. */
+	function toggleSettings() {
+		if (!held()) onSettings();
+	}
+
+	/** A new master password goes through the same writing of the file a save
+	 * does, so a file somebody else wrote raises the conflict over the
+	 * settings, and a change that went through clears "Not saved". */
+	const rekey: Rekey = (current, next) => file.rekey(current, next);
+
+	/** Puts the reader in the search field, with what is in it selected, the
+	 * way the key the field advertises does on every Mac. */
+	function seek() {
+		field?.focus();
+		field?.select();
+	}
+
+	/** The open entry's login or password, when it has one to copy. */
+	function filled(kind: 'username' | 'password'): Field | undefined {
+		return opened?.fields.find((each) => each.kind === kind && !each.empty);
+	}
+
+	/**
+	 * Copies the open entry's login or password in Rust. Copy Login, Copy
+	 * Password and Cmd+C with nothing selected all come here.
+	 *
+	 * After every value on its way to Rust has arrived. A choice from the menu
+	 * bar leaves the field it was made in, which sends what was typed there,
+	 * and Tauri answers the copy beside that write, not after it: the session
+	 * goes to whichever asks for it first once a save lets go, and a copy that
+	 * got there first put the login on the pasteboard as it was before the
+	 * edit, under a notice saying it had copied the one on the screen.
+	 */
+	async function copyOpen(kind: 'username' | 'password') {
+		const chosen = filled(kind);
+		if (!opened || !chosen) return;
+		await copyAfter(opened.id, chosen.name);
+	}
+
+	/** Copies a field whole once every value on its way to Rust has arrived:
+	 * a copy chosen from a menu, the menu bar's or a row's. */
+	async function copyAfter(entry: string, field: string) {
+		await flush();
+		await copy(entry, field);
+	}
+
+	/**
+	 * Moves the entry in the pane to the bin, or out of the file: a batch of
+	 * one, with the deletion the pane showed for it. The row comes from the
+	 * tree, which names it as the list does.
+	 */
+	function removeEntry() {
+		if (!opened || held()) return;
+		const row = rowOf(root, opened.id);
+		if (row) void moves.removeEntries([{ ...row, deletion: opened.deletion }]);
+	}
+
+	/** A plain press on a row: opens it, and makes it the whole choice. */
+	function openRow(row: EntryRow) {
+		if (showing !== row.id && held()) return;
+		selection.only(row.id);
+		void open(row);
+	}
+
+	/** A press with Cmd or Shift on a row, which chooses and opens nothing. */
+	function chooseRow(row: EntryRow, press: Press) {
+		if (press === 'toggle') selection.toggle(row.id);
+		else selection.reach(row.id, found);
+	}
+
+	/**
+	 * What a press on a row is about, for a drag: every row chosen when it is
+	 * one of them, and otherwise that row alone, the choice left as it is.
+	 */
+	function aimedAt(row: EntryRow): EntryRow[] {
+		return selecting && selection.has(row.id) ? chosen : [row];
+	}
+
+	/**
+	 * Deletes rows: the choice, from its bar and from the menu bar. The entry
+	 * in the pane among them takes the pane with it, so the pane is asked first
+	 * whether it may go; deleting the others leaves it where it is.
+	 */
+	function removeRows(rows: EntryRow[]) {
+		if (showing !== null && rows.some((row) => row.id === showing) && held()) return;
+		void moves.removeEntries(rows);
+	}
+
+	/** Moves rows into a folder, or to the top of the vault: the choice's
+	 * Move to…, on the terms every other way of moving an entry has. */
+	function moveRows(rows: EntryRow[], into: string) {
+		void moves.moveEntries(
+			rows.map((row) => row.id),
+			into
+		);
+	}
+
+	/**
+	 * A right-click on a row of either list: Coffer's menu about every row
+	 * chosen when it is one of them, and otherwise about that row alone, the
+	 * choice left as it is - what a drag from the row would carry.
+	 */
+	function rowMenu(event: MouseEvent, row: EntryRow) {
+		const rows = aimedAt(row);
+		const places = placesFor(root, { entries: rows });
+		offer(
+			event,
+			rows.length > 1
+				? { kind: 'entries', entries: rows.map((each) => each.id), places }
+				: { kind: 'entry', entry: row.id, places },
+			fromMenu,
+			failed
+		);
+	}
+
+	/** A right-click on a folder of the tree, or one in the bin. */
+	function folderMenu(event: MouseEvent, folder: Group) {
+		offer(
+			event,
+			{ kind: 'folder', group: folder.id, places: placesFor(root, { folder }) },
+			fromMenu,
+			failed
+		);
+	}
+
+	/**
+	 * Runs an item of a row's, a folder's or the bin's menu with the function
+	 * its button runs, on the ids the item carries. Not while the settings or a
+	 * conflict are over the window, and nothing for ids the vault on the screen
+	 * no longer has. The field being written in is left first, as the press on
+	 * the row or the folder would have left it; whatever would take the pane
+	 * away asks `held` first, as its button does.
+	 */
+	function fromMenu(item: Chosen) {
+		if (!free) return;
+		leave();
+		switch (item.item) {
+			case 'copyField':
+				void copyAfter(item.entry, item.field);
+				return;
+			case 'openAddress':
+				openUrl(item.entry).catch(failed);
+				return;
+			case 'duplicate':
+				void duplicate(rowOf(root, item.entry));
+				return;
+			case 'moveEntries':
+				void moves.moveEntries(item.entries, item.into);
+				return;
+			case 'moveFolder':
+				void moves.moveFolder(item.group, item.into);
+				return;
+			case 'deleteEntries':
+				removeFromMenu(item.entries);
+				return;
+			case 'putBackEntries':
+				putBackFromMenu(item.entries);
+				return;
+			case 'putBackFolder':
+				void moves.putBackFolder(item.group);
+				return;
+			case 'emptyBin':
+				if (bin && !held()) {
+					select(bin.id);
+					emptying = true;
+				}
+				return;
+			case 'newEntryIn':
+			case 'newFolderIn':
+			case 'renameFolder':
+			case 'deleteFolder':
+				inFolder(item);
+				return;
 		}
 	}
 
-	/** Moves the entry in the pane to the bin, or out of the file. */
-	function removeEntry() {
-		if (opened && !held()) void moves.removeEntry(opened);
+	/**
+	 * What a folder's menu does in the folder: shows it, then makes in it,
+	 * renames it or puts the question that deletes it - the folders pane's,
+	 * or the bin card's for a folder in the bin.
+	 */
+	function inFolder(item: Extract<Chosen, { group: string }>) {
+		const folder = find(root, item.group);
+		if (!folder || held()) return;
+		select(folder.id);
+		if (item.item === 'newEntryIn') void makeIn(folder.id, { offer: kinds.offered[0] });
+		else if (item.item === 'newFolderIn') addFolder();
+		else if (item.item === 'renameFolder') renaming = true;
+		else if (inBin(folder)) erasingFolder = true;
+		else deleting = true;
 	}
+
+	/**
+	 * A deletion chosen from a row's menu, sending what the menu said each
+	 * deletion does as the one the reader was shown. Every one to the bin goes
+	 * the way the pane's and the bar's do, and is offered back. One that goes
+	 * for good is opened with its question put; several of which any goes for
+	 * good are asked about in the bar, while they are still the rows chosen.
+	 * Nothing when one of them has gone.
+	 */
+	function removeFromMenu(entries: Deleting[]) {
+		const shown = new Map(entries.map(({ entry, deletion }) => [entry, deletion]));
+		const rows = rowsOf(root, [...shown.keys()]).map((row) => ({
+			...row,
+			deletion: shown.get(row.id) ?? row.deletion
+		}));
+		if (rows.length !== shown.size) return;
+		if (rows.every((row) => row.deletion === 'bin')) removeRows(rows);
+		else if (rows.length === 1) void erase(rows[0].id);
+		else if (
+			selecting &&
+			chosen.length === rows.length &&
+			rows.every((row) => selection.has(row.id))
+		)
+			bar?.remove();
+	}
+
+	/**
+	 * Opens an entry with the question that deletes it for good already put,
+	 * with the focus on the way out: Delete Forever… in its row's menu, which
+	 * asks where the pane's own button asks.
+	 */
+	async function erase(id: string) {
+		const row = rowOf(root, id);
+		if (!row || (showing !== id && held())) return;
+		selection.only(id);
+		await open(row);
+		if (opened?.id === id && opened.deletion === 'forever' && !readOnly) erasing = true;
+	}
+
+	/** Takes entries out of the bin from a row's menu: the bin card's Put back
+	 * for the entry in the pane, and the bar's for any other. */
+	function putBackFromMenu(ids: string[]) {
+		const rows = rowsOf(root, ids);
+		if (rows.length !== new Set(ids).size) return;
+		if (rows.length === 1 && rows[0].id === showing) void moves.putBackEntry(rows[0].id);
+		else void moves.putBackEntries(rows);
+	}
+
+	/** The window, as putting a tag on several entries needs it. */
+	const tagged = {
+		showing: () => showing,
+		unsaved: () => file.unsaved,
+		conceal,
+		unread,
+		read,
+		redraw,
+		reshaped,
+		failed,
+		notices
+	};
 
 	/** Takes the entry in the pane out of the bin. */
 	function putBack() {
 		if (opened) void moves.putBackEntry(opened.id);
+	}
+
+	/** Moves the entry in the pane to another folder: the line above its title.
+	 * A move takes no pane away, so nothing has to stay for it. */
+	function moveEntry(into: string) {
+		if (opened) void moves.moveEntries([opened.id], into);
+	}
+
+	/** A drag let go over a place that takes it. */
+	function drop(moving: Moving, into: string) {
+		if ('folder' in moving) void moves.moveFolder(moving.folder.id, into);
+		else
+			void moves.moveEntries(
+				moving.entries.map((row) => row.id),
+				into
+			);
+	}
+
+	/** A press on a row of the list, which may become a drag of every row
+	 * chosen with it. */
+	function pressRow(event: PointerEvent, row: EntryRow) {
+		dragging.press(event, { entries: aimedAt(row) });
+	}
+
+	/** A press on a folder of the tree, which may become a drag. */
+	function pressFolder(event: PointerEvent, pressed: Group) {
+		dragging.press(event, { folder: pressed });
 	}
 
 	/** Opens the field that asks for a name, and closes it again. The press is
@@ -423,7 +959,7 @@
 
 	async function rename(name: string) {
 		renaming = false;
-		if (group === null || name.trim() === '') return;
+		if (!folder || group === null || name.trim() === '') return;
 		try {
 			await reshaped(await renameGroup(group, name.trim()));
 		} catch (thrown) {
@@ -436,7 +972,8 @@
 	function removeFolder() {
 		if (held()) return;
 		deleting = false;
-		if (group !== null) void moves.removeFolder(group, quoted(shown.name), shown.deletion);
+		if (folder && group !== null)
+			void moves.removeFolder(group, quoted(shown.name), shown.deletion);
 	}
 
 	/** Deletes the folder being shown in the bin for good. */
@@ -516,6 +1053,122 @@
 	}
 
 	$effect(() => () => notices.clear());
+	// An item chosen after the screen went has nothing left to act on.
+	$effect(() => () => forget());
+
+	// Said in the notice rather than where the press was: the strip that was
+	// pressed goes once its backup is the vault.
+	$effect(() => {
+		if (news) {
+			const { message } = news;
+			untrack(() => notices.tell({ message, kind: 'copied' }));
+		}
+	});
+
+	/** Writes what is open to a file of its own somewhere else, from the
+	 * status bar's note, and says where. A panel closed says nothing. */
+	async function keepACopy() {
+		try {
+			const kept = await keepCopy();
+			if (kept) notices.tell({ message: kept, kind: 'copied' });
+		} catch (thrown) {
+			failed(thrown);
+		}
+	}
+
+	/** The status bar's offer to save a copy, and the Settings button beside
+	 * it, which is where the focus goes once the offer has gone. */
+	let copyOffer = $state<HTMLButtonElement>();
+	let settingsButton = $state<HTMLButtonElement>();
+
+	/** Saves a copy on another disk, hands on what Rust then knows, and says in
+	 * a notice where the copy went: what the settings' button, the status
+	 * bar's offer and File ▸ Save a Copy… all run. The notice draws over the
+	 * settings, whose row would otherwise read the same after a second copy
+	 * on one day. A panel closed says nothing, and a refusal is thrown back
+	 * to be said where the copy was asked for. */
+	async function copyElsewhere(): Promise<SavedCopy | null> {
+		const made = await file.copyElsewhere();
+		if (made) {
+			onElsewhere(made.elsewhere);
+			notices.tell({ message: saved(made), kind: 'copied' });
+		}
+		return made;
+	}
+
+	/** The same, from the status bar or the menu bar, which say why there is
+	 * no copy in a warning. The offer pressed from the keyboard is taken off
+	 * the bar while the copy is on its way, and the focus with it; once it
+	 * has an answer the focus goes back to the offer, or to Settings beside
+	 * it when a copy on another disk took the offer away - unless the reader
+	 * has put it somewhere since. */
+	async function copyAndSay() {
+		const pressed = copyOffer !== undefined && document.activeElement === copyOffer;
+		try {
+			await copyElsewhere();
+		} catch (thrown) {
+			notices.warn(refused(thrown));
+		}
+		if (!pressed) return;
+		await tick();
+		const now = document.activeElement;
+		if (now === null || now === document.body) (copyOffer ?? settingsButton)?.focus();
+	}
+
+	/** Shows the vault's file in the Finder, and says why when it cannot. */
+	function showVault() {
+		showInFinder().catch(failed);
+	}
+
+	// File ▸ Save a Copy… and Show in Finder. Neither takes the pane away, so
+	// neither waits for one that has to stay. A copy is this screen's to make
+	// while the list and the pane are the reader's: over them, the settings
+	// have a button of their own, and the conflict dialog asks its question
+	// first.
+	$effect(() =>
+		answer({
+			saveCopy: {
+				run: () => void copyAndSay(),
+				when: () => free && elsewhere !== null && !file.copying
+			},
+			showInFinder: { run: showVault }
+		})
+	);
+
+	// What the menu bar's items do on this screen: each runs what its button
+	// runs, on the condition its button is drawn on.
+	$effect(() =>
+		answer({
+			newEntry: { run: newEntry, when: () => free && changeable },
+			// Opens the name and never closes it: the plus in the folders pane
+			// is the way to change one's mind.
+			newFolder: { run: addFolder, when: () => free && changeable && !naming },
+			find: { run: seek, when: () => free },
+			// On the condition the row's copy button is drawn on: a login Rust
+			// holds. One typed into an empty field is offered once it is left.
+			copyLogin: {
+				run: () => void copyOpen('username'),
+				when: () => free && !!filled('username')
+			},
+			copyPassword: {
+				run: () => void copyOpen('password'),
+				when: () => free && !!filled('password')
+			},
+			// Only a deletion that goes to the bin, which is what the item says,
+			// of the rows chosen or else of the open entry. One that goes for
+			// good asks first, from the pane or the bar.
+			moveToBin: {
+				run: () => (selecting ? removeRows(chosen) : removeEntry()),
+				when: () =>
+					free &&
+					!writing() &&
+					(selecting
+						? chosen.every((row) => row.deletion === 'bin')
+						: opened !== null && opened.deletion === 'bin' && !untouchable(opened, readOnly))
+			},
+			settings: { run: toggleSettings, when: () => settings === undefined }
+		})
+	);
 
 	/**
 	 * A field of the reader's own came off an entry.
@@ -543,8 +1196,7 @@
 			try {
 				restored = await undoRemoval(entry, name);
 			} catch (thrown) {
-				if (asFailure(thrown).code !== 'superseded') throw thrown;
-				notices.warn('The entry has changed since, so that can no longer be undone.');
+				await overtaken(thrown, { redraw, notices }, ['superseded']);
 				return;
 			}
 			await changed(restored);
@@ -558,22 +1210,22 @@
 		// unless a control inside them has already answered it. A chip whose list
 		// was open took its own Escape and the whole screen closed behind it.
 		if (settings) {
-			if (cancels(event) && !event.defaultPrevented) onSettings();
+			if (cancels(event) && !event.defaultPrevented) toggleSettings();
 			return;
 		}
+
+		// A key a control has already answered is not the window's as well:
+		// Cmd+C on a protected value's own row copies that value, not the
+		// password, and an Escape a list or a note took put that away and
+		// nothing else.
+		if (event.defaultPrevented) return;
 
 		if (!event.metaKey) {
 			if (cancels(event)) {
 				if (query !== '') query = '';
+				else if (selecting) selection.only(showing);
 				else dismiss();
 			}
-			return;
-		}
-
-		if (event.key === 'f') {
-			event.preventDefault();
-			field?.focus();
-			field?.select();
 			return;
 		}
 
@@ -587,22 +1239,29 @@
 			return;
 		}
 
-		if (!opened) return;
-		const wanted = event.key === 'b' ? 'username' : event.key === 'c' ? 'password' : null;
-		if (!wanted) return;
+		// Cmd+A and Cmd+C are the page's. Every other key with Cmd is the menu
+		// bar's: the page sees a key before AppKit looks in the menu, and one
+		// answered here as well would happen twice.
+		//
+		// Cmd+A chooses every row the list draws. In a field, in the entry pane
+		// and with nothing to choose it is the system's Select All, which the
+		// key goes on to.
+		if (event.key.toLowerCase() === 'a' && !event.shiftKey && !event.altKey && !event.ctrlKey) {
+			const target = event.target instanceof Node ? event.target : null;
+			if (readOnly || !free || typing(target) || paneArea?.contains(target)) return;
+			if (found.length === 0) return;
+			event.preventDefault();
+			selection.all(found);
+			return;
+		}
 
-		// A key a row of the pane has already answered: Cmd+C on a protected
-		// value's own row copies that value, not the password.
-		if (event.defaultPrevented) return;
-		// Text the reader is writing is theirs to copy. A selection is copied by
-		// the node holding it, and a revealed value's node hands that to Rust
-		// itself, with the part that was selected.
-		if (wanted === 'password' ? !copying(event) : typing(event.target)) return;
-
-		const chosen = opened.fields.find((entry) => entry.kind === wanted);
-		if (!chosen || chosen.empty) return;
+		// Cmd+C with nothing selected copies the open entry's password, as the
+		// mockup has it. Text the reader is writing is theirs to copy. A
+		// selection is copied by the node holding it, and a revealed value's
+		// node hands that to Rust itself, with the part that was selected.
+		if (!copying(event) || !filled('password')) return;
 		event.preventDefault();
-		copy(opened.id, chosen.name);
+		void copyOpen('password');
 	}
 </script>
 
@@ -610,11 +1269,33 @@
      they were typing is told to Rust then rather than a moment later. -->
 <svelte:window onkeydown={shortcut} onblur={() => void flush()} />
 
-{#snippet deletedFolders()}
-	<BinFolders {folders} {root} {now} compact={pane !== null} onOpen={choose} />
+{#snippet selectionBar()}
+	<!-- Drawn afresh for every change to the choice: what it had open was about
+	     the rows chosen before. -->
+	{#key selection.changes}
+		<SelectionBar
+			bind:this={bar}
+			rows={chosen}
+			{root}
+			{binned}
+			onMove={(into) => moveRows(chosen, into)}
+			onTag={(name) => void tag(tagged, chosen, name)}
+			onDelete={() => removeRows(chosen)}
+			onPutBack={() => void moves.putBackEntries(chosen)}
+			onClear={() => selection.only(showing)}
+		/>
+	{/key}
 {/snippet}
 
-<div class="relative flex flex-1 animate-fade flex-col overflow-hidden">
+{#snippet deletedFolders()}
+	<BinFolders {folders} {root} {now} compact={pane !== null} onOpen={choose} onMenu={folderMenu} />
+{/snippet}
+
+<div
+	class="relative flex flex-1 animate-fade flex-col overflow-hidden {dragging.moving
+		? 'cursor-grabbing'
+		: ''}"
+>
 	<!--
 		Inert while the settings are over it, and not merely covered.
 
@@ -650,8 +1331,8 @@
 		<aside class="flex flex-col overflow-hidden border-r border-hairline bg-surface2">
 			<div class="flex shrink-0 items-center gap-1 px-4 py-3">
 				<span class="flex-1 font-mono text-label tracking-label text-txt3 uppercase">Folders</span>
-				{#if !readOnly && !binned}
-					{#if group !== null}
+				{#if changeable}
+					{#if folder}
 						<button
 							type="button"
 							onmousedown={(event) => event.preventDefault()}
@@ -674,7 +1355,7 @@
 					>
 						<Icon name="plus" class="h-4 w-4" />
 					</button>
-					{#if group !== null}
+					{#if folder}
 						<!-- Last, in a box of its own and a step further off, like every
 						     other trash: it used to sit four pixels between Rename and New
 						     folder at the size of each. The box is drawn into the row's
@@ -712,8 +1393,9 @@
 				/>
 			{/if}
 
-			{#if renaming && group !== null}
+			{#if renaming && folder}
 				<input
+					{@attach ready}
 					type="text"
 					autocomplete="off"
 					spellcheck="false"
@@ -731,7 +1413,7 @@
 				/>
 			{/if}
 
-			{#if deleting && group !== null}
+			{#if deleting && folder}
 				<!-- Named by what it does, which Rust has already said: a folder
 				     the bin is inside, or one in a vault that keeps no bin, goes
 				     for good. -->
@@ -756,13 +1438,19 @@
 				onclick={(event) => event.target === event.currentTarget && dismiss()}
 				class="flex-1 overflow-y-auto px-2 pb-2 text-body"
 			>
+				<!-- Both rows are the top of the vault to a drag, and each lights on its
+				     own key. -->
 				<button
 					type="button"
+					data-drop="all"
+					data-into={root.id}
 					onclick={() => choose(null)}
-					class="relative flex w-full items-center gap-2 rounded-sm px-2 py-[7px] transition-colors {group ===
-					null
-						? 'bg-raised text-txt'
-						: 'text-txt2 hover:bg-raised/60'}"
+					class="relative flex w-full items-center gap-2 rounded-sm px-2 py-[7px] transition-colors {dragging.over ===
+					'all'
+						? LANDING
+						: group === null
+							? 'bg-raised text-txt'
+							: 'text-txt2 hover:bg-raised/60'}"
 				>
 					{#if group === null}
 						<span
@@ -772,7 +1460,9 @@
 					{/if}
 					<Icon
 						name="folder"
-						class="h-4 w-4 shrink-0 {group === null ? 'text-accent' : 'text-txt4'}"
+						class="h-4 w-4 shrink-0 {group === null || dragging.over === 'all'
+							? 'text-accent'
+							: 'text-txt4'}"
 					/>
 					<span class="flex-1 text-left">All entries</span>
 					<span class="font-mono text-meta {group === null ? 'text-txt3' : 'text-txt4'}">
@@ -780,12 +1470,51 @@
 					</span>
 				</button>
 
+				<!-- What sits at the top of the vault, outside every folder, which
+				     "All entries" mixes in with everything else. Drawn while there is
+				     something there, and while it is chosen. -->
+				{#if foldered && (outside.length > 0 || top)}
+					<button
+						type="button"
+						data-drop="loose"
+						data-into={root.id}
+						onclick={() => choose(root.id)}
+						class="relative flex w-full items-center gap-2 rounded-sm px-2 py-[7px] transition-colors {dragging.over ===
+						'loose'
+							? LANDING
+							: top
+								? 'bg-raised text-txt'
+								: 'text-txt2 hover:bg-raised/60'}"
+					>
+						{#if top}
+							<span
+								class="absolute top-1 left-0 h-[calc(100%-8px)] w-[2px] rounded-full bg-accent"
+								aria-hidden="true"
+							></span>
+						{/if}
+						<Icon
+							name="disk"
+							class="h-4 w-4 shrink-0 {top || dragging.over === 'loose'
+								? 'text-accent'
+								: 'text-txt4'}"
+						/>
+						<span class="flex-1 text-left">Not in a folder</span>
+						<span class="font-mono text-meta {top ? 'text-txt3' : 'text-txt4'}">
+							{outside.length}
+						</span>
+					</button>
+				{/if}
+
 				<Tree
 					{root}
 					selected={group}
 					{expanded}
+					drop={dragging.over}
+					lifted={dragging.moving && 'folder' in dragging.moving ? dragging.moving.folder.id : null}
 					onSelect={choose}
 					onToggle={(id) => (expanded.has(id) ? expanded.delete(id) : expanded.add(id))}
+					onPress={readOnly ? undefined : pressFolder}
+					onMenu={folderMenu}
 				/>
 			</div>
 
@@ -794,7 +1523,9 @@
 				<div class="shrink-0 border-t border-hairline px-2 py-2">
 					<button
 						type="button"
+						data-menu={inMenu('bin') || undefined}
 						onclick={() => choose(deleted.id)}
+						oncontextmenu={(event) => offer(event, { kind: 'bin' }, fromMenu, failed)}
 						class="relative flex w-full items-center gap-2 rounded-sm px-2 py-[7px] text-body transition-colors {binned
 							? 'bg-raised text-txt'
 							: 'text-txt3 hover:bg-raised/60 hover:text-txt2'}"
@@ -843,6 +1574,7 @@
 						bind:this={field}
 						bind:value={query}
 						type="text"
+						role="searchbox"
 						autocomplete="off"
 						spellcheck="false"
 						placeholder="Title, login, address, tag"
@@ -852,21 +1584,45 @@
 					<kbd
 						class="shrink-0 rounded-xs border border-hairline px-1.5 py-0.5 font-mono text-label text-txt4"
 					>
-						⌘F
+						{KEYS.find}
 					</kbd>
 				</span>
-				{#if !readOnly && !binned}
-					<button
-						type="button"
-						onclick={addEntry}
-						class="flex h-9 shrink-0 items-center gap-2 rounded-full border border-hairline px-4 text-small text-txt2 transition-colors hover:border-txt4 hover:text-txt active:bg-raised"
+				{#if changeable}
+					<!-- The list of folders hangs from the button, in one box with it,
+					     so the focus moving between them is not the focus leaving. -->
+					<NewEntry
+						offered={kinds.offered}
+						{templates}
+						{asking}
+						choosing={choosing !== null}
+						bind:main={newEntryButton}
+						onMake={newEntry}
+						onTemplate={fromTemplate}
+						onDismiss={() => (choosing = null)}
 					>
-						<Icon name="plus" class="h-4 w-4" /> Entry
-					</button>
+						{#snippet question()}
+							{#if choosing}
+								{@const wanted = choosing}
+								<FolderPicker
+									{root}
+									heading="Put it in"
+									label="Find the folder for the new entry"
+									current={null}
+									chosen={filed ?? root.id}
+									class="top-full right-0 w-[292px]"
+									onPick={(into) => void makeIn(into, wanted)}
+									onClose={(escaped) => {
+										choosing = null;
+										if (escaped) newEntryButton?.focus();
+									}}
+								/>
+							{/if}
+						{/snippet}
+					</NewEntry>
 				{/if}
 			</div>
 
-			{#if binned && shown.binned}
+			{#if carded && shown.binned}
 				{#key shown.id}
 					<InBin
 						class="mx-5 mt-3 shrink-0"
@@ -875,6 +1631,7 @@
 						{now}
 						name={shown.name}
 						{readOnly}
+						bind:asking={erasingFolder}
 						ways={{
 							question: eraseQuestion(quoted(shown.name), true),
 							onPutBack: () => void moves.putBackFolder(shown.id),
@@ -908,16 +1665,35 @@
 				>
 					{#snippet action()}
 						{#if !readOnly}
-							<button
-								type="button"
-								onclick={addEntry}
-								class="h-9 rounded-full border border-hairline px-5 text-small text-txt transition-colors hover:border-txt3"
+							<!-- Every kind at once, the password's pills, where the
+							     first entry of a vault is made: a card or the Wi-Fi
+							     is often what somebody keeps first. -->
+							<div
+								role="group"
+								aria-label="Add an entry"
+								class="flex max-w-[46ch] flex-wrap justify-center gap-2"
 							>
-								Add an entry
-							</button>
+								{#each kinds.offered as offer (offer.kind)}
+									<button
+										type="button"
+										onclick={() => newEntry(offer)}
+										class="flex h-7 items-center rounded-full border border-hairline px-3 text-fine text-txt2 transition hover:border-txt3 hover:text-txt active:bg-raised"
+									>
+										{offer.name}
+									</button>
+								{/each}
+							</div>
 						{/if}
 					{/snippet}
 				</Empty>
+			{:else if found.length === 0 && top}
+				<!-- Nothing to add from here: an entry made at the top of the vault
+				     is the one thing this list exists to show. -->
+				<Empty
+					icon="disk"
+					title="Every entry is in a folder"
+					detail="Entries at the top of the vault, outside every folder, show up here."
+				/>
 			{:else if found.length === 0 && folders.length === 0 && binned}
 				{#if shown.isRecycleBin}
 					<Empty
@@ -933,16 +1709,20 @@
 					/>
 				{/if}
 			{:else if found.length === 0 && !binned}
+				<!-- The mockup's sentence, where both of its ways are there to take.
+				     A vault Coffer will not write back offers neither. -->
 				<Empty
 					icon="folder"
 					title="There is nothing in {quoted(shown.name)} yet"
-					detail="Entries live in folders. This one has none of its own."
+					detail={readOnly
+						? 'Entries live in folders. This one has none of its own.'
+						: 'Entries can be made here or dragged in from other folders.'}
 				>
 					{#snippet action()}
 						{#if !readOnly}
 							<button
 								type="button"
-								onclick={addEntry}
+								onclick={() => newEntry()}
 								class="h-9 rounded-full border border-hairline px-5 text-small text-txt transition-colors hover:border-txt3"
 							>
 								Add an entry
@@ -956,8 +1736,14 @@
 					open={pane.id}
 					note={whence}
 					before={folders.length > 0 ? deletedFolders : undefined}
-					onOpen={open}
+					{lifted}
+					chosen={marked}
+					bar={selecting ? selectionBar : undefined}
+					onOpen={openRow}
+					onChoose={readOnly ? undefined : chooseRow}
 					onDismiss={dismiss}
+					onPress={readOnly || binned ? undefined : pressRow}
+					onMenu={rowMenu}
 				/>
 			{:else}
 				<EntryList
@@ -965,8 +1751,14 @@
 					{now}
 					note={whence}
 					before={folders.length > 0 ? deletedFolders : undefined}
-					onOpen={open}
+					{lifted}
+					chosen={marked}
+					bar={selecting ? selectionBar : undefined}
+					onOpen={openRow}
+					onChoose={readOnly ? undefined : chooseRow}
 					onCopy={copyFrom}
+					onPress={readOnly || binned ? undefined : pressRow}
+					onMenu={rowMenu}
 				/>
 			{/if}
 		</div>
@@ -984,7 +1776,7 @@
 					values and its versions go with it rather than waiting for the next
 					entry to be read.
 				-->
-				<div class="h-full w-[384px] animate-fade">
+				<div bind:this={paneArea} class="h-full w-[384px] animate-fade">
 					{#if pane.entry}
 						<EntryView
 							entry={pane.entry}
@@ -993,12 +1785,18 @@
 							history={pane.history}
 							{now}
 							{readOnly}
+							made={pane.arrived !== null}
+							lined={pane.arrived?.lined}
+							bind:erasing
+							suggested={kinds.suggested}
 							onCopy={copy}
 							onChanged={changed}
 							onVersions={versionsChanged}
 							onClose={dismiss}
+							onDuplicate={() => void duplicate()}
 							onDelete={removeEntry}
 							onPutBack={putBack}
+							onMove={moveEntry}
 							onFieldRemoved={fieldRemoved}
 							onFailure={failed}
 						/>
@@ -1014,7 +1812,11 @@
 		<!-- Over the panes and not over the status bar, which is where the button
 		     that opened this is and where it stays. -->
 		<div class="absolute inset-0 z-20 flex animate-fade flex-col overflow-hidden bg-surface">
-			{@render settings()}
+			{@render settings({
+				rekey: readOnly ? undefined : rekey,
+				onCopy: elsewhere ? copyElsewhere : undefined,
+				copying: file.copying
+			})}
 		</div>
 	{/if}
 
@@ -1048,6 +1850,14 @@
 			{/key}
 		{/if}
 	</div>
+
+	<!-- How many rows are chosen, read out as it changes. Cmd+A and a
+	     Cmd-click choose with nothing under the focus that says so, and the
+	     bar that does comes and goes with the choice, so it cannot be the
+	     region: this one stays, and is empty while nothing is chosen. -->
+	<p data-chosen role="status" aria-live="polite" aria-atomic="true" class="sr-only">
+		{selecting ? `${chosen.length} selected` : ''}
+	</p>
 </div>
 
 <div
@@ -1062,21 +1872,39 @@
 	<!-- One group, because two `ml-auto` siblings in a flex row do not both push
 	     right. -->
 	<span class="ml-auto flex shrink-0 items-center gap-4">
-		{#if file.saving}
+		{#if file.copying}
+			<span class="text-txt3">Saving a copy…</span>
+		{:else if file.saving}
 			<span class="text-txt3">Saving…</span>
 		{:else if file.unsaved}
 			<!-- A state design.html does not draw, built from its own tokens: the
 			     mockup has no vault whose writes are failing, and a reader with
 			     one has to be told for as long as it is true. -->
 			<span class="text-warn">Not saved</span>
-		{:else if readOnly}
-			<span class="text-txt3">Read only</span>
+		{:else if readOnlyBecause}
+			<ReadOnly because={readOnlyBecause} {copyable} onCopy={keepACopy} />
+		{:else if elsewhere?.overdue}
+			<!-- A state design.html does not draw (docs/design.md, "A copy on
+			     another disk"): the mockup's countdown corner, in its txt3, and
+			     last in line, so that a save and a refusal are said first. -->
+			<span class="flex items-center gap-2 text-txt3">
+				{overdue(elsewhere.overdue)} ·
+				<button
+					bind:this={copyOffer}
+					type="button"
+					onclick={() => void copyAndSay()}
+					class="tracking-label uppercase transition-colors hover:text-txt2 active:text-txt4"
+				>
+					Save a copy
+				</button>
+			</span>
 		{/if}
 		<!-- The settings go over the pane, which is the pane gone from where the
 		     reader can answer a question in it. -->
 		<button
+			bind:this={settingsButton}
 			type="button"
-			onclick={() => (settings || !held()) && onSettings()}
+			onclick={toggleSettings}
 			aria-label={settings ? 'Back to the vault' : 'Settings'}
 			aria-expanded={settings !== undefined}
 			class="flex items-center gap-2 tracking-label uppercase transition-colors active:text-txt4 {settings

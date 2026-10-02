@@ -65,6 +65,9 @@
 	--tracking-label: 0.14em;
 	--tracking-wordmark: 0.14em;
 	--tracking-mask: 0.25em;
+	/* Not a spacing: the absence of one, which every sentence in the mockup
+	   has, for prose drawn inside a row that spaces its letters. */
+	--tracking-normal: 0em;
 
 	--radius-xs: 4px;
 	--radius-sm: 6px;
@@ -312,6 +315,15 @@
 	[data-value]::selection {
 		background: var(--color-selection);
 		color: var(--color-txt);
+	}
+
+	/* What a menu under the pointer is about, while that menu is open: the
+	   accent hairline a field takes with the focus, drawn inside the edge so
+	   that nothing moves. A row among thirty, or every row of a choice, says
+	   which ones the menu is for. */
+	[data-menu] {
+		outline: 1px solid var(--color-accent);
+		outline-offset: -1px;
 	}
 
 	/* The focus ring is the one place the accent appears without being asked

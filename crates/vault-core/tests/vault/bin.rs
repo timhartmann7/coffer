@@ -6,19 +6,15 @@ use std::path::{Path, PathBuf};
 use keepass::DatabaseKey;
 use keepass::db::fields;
 use vault_core::model::{Deletion, EntryId, GroupId, Project};
-use vault_core::{NewValue, Rescue, Vault, VaultError};
+use vault_core::{Rescue, Vault, VaultError};
 
-use crate::support::{self, BUILT_PASSWORD, RICH, SECRET, built, entry_titled, only_group, open};
+use crate::support::{
+    self, BUILT_PASSWORD, RICH, SECRET, built, cheap, entry_titled, folder, holder, library, made,
+    only_group, open,
+};
 
-/// The folder with this id, wherever it sits in the tree.
-fn folder(tree: &Project, id: GroupId) -> Option<&Project> {
-    if tree.id == id {
-        return Some(tree);
-    }
-    tree.sections.iter().find_map(|section| folder(section, id))
-}
-
-fn bin_of(tree: &Project) -> &Project {
+/// The recycle bin, wherever the tree holds it.
+pub fn bin_of(tree: &Project) -> &Project {
     fn walk(group: &Project) -> Option<&Project> {
         if group.is_recycle_bin {
             return Some(group);
@@ -28,40 +24,16 @@ fn bin_of(tree: &Project) -> &Project {
     walk(tree).expect("the vault has a recycle bin")
 }
 
-/// An entry with a title, made where it is asked for.
-fn made(vault: &mut Vault, group: GroupId, title: &str) -> EntryId {
-    let id = vault.create_entry(group).expect("the entry is made");
-    vault
-        .set_field(id, fields::TITLE, NewValue::Open(title.to_owned()))
-        .expect("the title is written");
-    id
-}
-
 /// Puts an entry back, and says which folder it is in afterwards.
 fn put_back(vault: &mut Vault, id: EntryId) -> GroupId {
-    vault.put_back_entry(id).expect("it is put back");
+    vault.put_back_entries(&[id]).expect("it is put back");
     vault.entry(id).expect("it is still in the file").group
 }
 
 /// Puts a folder back, and says which folder holds it afterwards.
 fn put_back_folder(vault: &mut Vault, id: GroupId) -> GroupId {
-    fn holder(group: &Project, id: GroupId) -> Option<GroupId> {
-        if group.sections.iter().any(|section| section.id == id) {
-            return Some(group.id);
-        }
-        group
-            .sections
-            .iter()
-            .find_map(|section| holder(section, id))
-    }
     vault.put_back_group(id).expect("it is put back");
     holder(&vault.tree(), id).expect("it is still in the file")
-}
-
-fn cheap(name: &str) -> (tempfile::TempDir, PathBuf) {
-    let scratch = tempfile::tempdir().expect("a scratch directory");
-    let path = built(scratch.path(), name, |_| {});
-    (scratch, path)
 }
 
 /// The whole round a reader makes: an entry goes to the bin, the file is
@@ -83,7 +55,7 @@ fn an_entry_put_back_goes_home_to_the_folder_it_was_deleted_from() {
     );
 
     vault
-        .delete_entry(bank, Deletion::Bin)
+        .delete_entries(&[(bank, Deletion::Bin)])
         .expect("it goes to the bin");
     let binned = vault.entry(bank).expect("it is still in the file");
     let known = binned.binned.expect("the entry says it is in the bin");
@@ -133,7 +105,7 @@ fn keepassxc_reads_the_folder_a_deleted_entry_came_from() {
         let mut vault = open(&database, SECRET);
         let basic = entry_titled(&vault, "basic").id;
         vault
-            .delete_entry(basic, Deletion::Bin)
+            .delete_entries(&[(basic, Deletion::Bin)])
             .expect("it goes to the bin");
         vault.save().expect("the database saves");
     }
@@ -191,7 +163,7 @@ fn a_move_to_the_bin_and_back_is_neither_an_edit_nor_a_deletion() {
     let work = only_group(&vault, "Work");
 
     vault
-        .delete_entry(versioned.id, Deletion::Bin)
+        .delete_entries(&[(versioned.id, Deletion::Bin)])
         .expect("it goes to the bin");
     vault
         .delete_group(work, Deletion::Bin)
@@ -199,7 +171,9 @@ fn a_move_to_the_bin_and_back_is_neither_an_edit_nor_a_deletion() {
     assert_eq!(vault.versions(versioned.id).len(), versions);
     vault.save().expect("the database saves");
 
-    vault.put_back_entry(versioned.id).expect("it comes back");
+    vault
+        .put_back_entries(&[versioned.id])
+        .expect("it comes back");
     vault.put_back_group(work).expect("it comes back");
     vault.save().expect("the database saves");
     drop(vault);
@@ -209,9 +183,7 @@ fn a_move_to_the_bin_and_back_is_neither_an_edit_nor_a_deletion() {
     assert_eq!(back.versions, versions, "a move wrote a version");
     assert_eq!(back.times.modified, versioned.times.modified);
 
-    let mut file = std::fs::File::open(&database).expect("the file opens");
-    let written = keepass::Database::open(&mut file, DatabaseKey::new().with_password(SECRET))
-        .expect("the library reads it");
+    let written = library(&database, SECRET);
     for moved in [versioned.id.uuid(), work.uuid()] {
         assert!(
             !written.deleted_objects.contains_key(&moved),
@@ -464,7 +436,7 @@ fn an_entry_whose_folder_is_in_the_bin_or_gone_goes_back_to_the_top() {
         .expect("the folder is made");
     let bank = made(&mut vault, personal, "Bank");
     vault
-        .delete_entry(bank, Deletion::Bin)
+        .delete_entries(&[(bank, Deletion::Bin)])
         .expect("it goes to the bin");
     vault
         .delete_group(personal, Deletion::Bin)
@@ -482,7 +454,7 @@ fn an_entry_whose_folder_is_in_the_bin_or_gone_goes_back_to_the_top() {
     let old = vault.create_group(root, "Old").expect("the folder is made");
     let mail = made(&mut vault, old, "Mail");
     vault
-        .delete_entry(mail, Deletion::Bin)
+        .delete_entries(&[(mail, Deletion::Bin)])
         .expect("it goes to the bin");
     vault
         .delete_group(old, Deletion::Bin)
@@ -515,7 +487,7 @@ fn an_entry_deleted_from_the_top_of_the_vault_goes_back_there() {
     let note = made(&mut vault, root, "Note");
 
     vault
-        .delete_entry(note, Deletion::Bin)
+        .delete_entries(&[(note, Deletion::Bin)])
         .expect("it goes to the bin");
     assert_eq!(
         vault
@@ -572,16 +544,16 @@ fn nothing_outside_the_bin_can_be_put_back() {
         let bank = made(&mut vault, root, "Bank");
         let gone = made(&mut vault, root, "Gone");
         vault
-            .delete_entry(gone, Deletion::Bin)
+            .delete_entries(&[(gone, Deletion::Bin)])
             .expect("the bin is made");
         let bin = bin_of(&vault.tree()).id;
 
         let erased = made(&mut vault, root, "Erased");
         vault
-            .delete_entry(erased, Deletion::Bin)
+            .delete_entries(&[(erased, Deletion::Bin)])
             .expect("it goes to the bin");
         vault
-            .delete_entry(erased, Deletion::Forever)
+            .delete_entries(&[(erased, Deletion::Forever)])
             .expect("and out of the file");
         let emptied = vault
             .create_group(root, "Emptied")
@@ -607,11 +579,11 @@ fn nothing_outside_the_bin_can_be_put_back() {
         Err(VaultError::NotInRecycleBin)
     ));
     assert!(matches!(
-        vault.put_back_entry(bank),
+        vault.put_back_entries(&[bank]),
         Err(VaultError::NotInRecycleBin)
     ));
     assert!(matches!(
-        vault.put_back_entry(erased),
+        vault.put_back_entries(&[erased]),
         Err(VaultError::NoSuchEntry)
     ));
     assert!(matches!(
@@ -629,7 +601,7 @@ fn nothing_outside_the_bin_can_be_put_back() {
     let gone = entry_titled(&vault, "Gone").id;
     assert_eq!(put_back(&mut vault, gone), root);
     assert!(matches!(
-        vault.put_back_entry(gone),
+        vault.put_back_entries(&[gone]),
         Err(VaultError::NotInRecycleBin)
     ));
     assert_eq!(vault.entry(gone).map(|entry| entry.group), Some(root));
@@ -652,7 +624,7 @@ fn a_read_only_database_says_what_is_in_the_bin_and_puts_nothing_back() {
     let work = only_group(&vault, "Work");
 
     assert!(matches!(
-        vault.put_back_entry(deleted.id),
+        vault.put_back_entries(&[deleted.id]),
         Err(VaultError::ReadOnlySnapshot)
     ));
     assert!(matches!(
@@ -669,7 +641,7 @@ fn a_read_only_database_says_what_is_in_the_bin_and_puts_nothing_back() {
 
 /// A vault shaped to catch every way the answer could be wrong: the bin inside
 /// a folder, a folder inside the bin, and an entry in each place.
-fn awkward(directory: &Path, name: &str, keeps: bool) -> PathBuf {
+pub fn awkward(directory: &Path, name: &str, keeps: bool) -> PathBuf {
     built(directory, name, |database| {
         let root = database.root().id();
         let archive = {
@@ -738,7 +710,9 @@ fn what_a_deletion_says_it_will_do_is_what_it_does() {
             let said = entry.deletion;
             assert_eq!(said == Deletion::Bin, kept, "{title} said {said:?}");
 
-            vault.delete_entry(entry.id, said).expect("it is deleted");
+            vault
+                .delete_entries(&[(entry.id, said)])
+                .expect("it is deleted");
             let after = vault.entry(entry.id);
             match said {
                 Deletion::Bin => assert!(
@@ -803,8 +777,7 @@ fn what_a_deletion_will_do_follows_a_file_another_client_changed() {
 
     {
         let key = || DatabaseKey::new().with_password(BUILT_PASSWORD);
-        let mut file = std::fs::File::open(&path).expect("the file opens");
-        let mut other = keepass::Database::open(&mut file, key()).expect("the library reads it");
+        let mut other = library(&path, BUILT_PASSWORD);
         other.meta.recyclebin_enabled = Some(false);
         let mut file = std::fs::File::create(&path).expect("the file is rewritten");
         other
@@ -819,7 +792,7 @@ fn what_a_deletion_will_do_follows_a_file_another_client_changed() {
     );
     assert_eq!(vault.tree().deletion, Deletion::Forever);
     vault
-        .delete_entry(bank, Deletion::Forever)
+        .delete_entries(&[(bank, Deletion::Forever)])
         .expect("it is deleted");
     assert!(vault.entry(bank).is_none());
 }
@@ -849,7 +822,7 @@ fn an_entry_whose_folder_went_to_the_bin_first_is_not_erased_on_the_way() {
         .delete_group(banking, Deletion::Bin)
         .expect("the folder goes to the bin");
     assert!(matches!(
-        vault.delete_entry(chase, Deletion::Bin),
+        vault.delete_entries(&[(chase, Deletion::Bin)]),
         Err(VaultError::DeletionChanged)
     ));
 
@@ -864,7 +837,7 @@ fn an_entry_whose_folder_went_to_the_bin_first_is_not_erased_on_the_way() {
 
     // Asked for again as what it now is, it goes.
     vault
-        .delete_entry(chase, Deletion::Forever)
+        .delete_entries(&[(chase, Deletion::Forever)])
         .expect("the reader agreed to this one");
     assert!(vault.entry(chase).is_none());
 }
@@ -882,7 +855,7 @@ fn an_entry_that_went_to_the_bin_before_its_folder_stays_there_on_its_own() {
     let chase = made(&mut vault, banking, "Chase");
 
     vault
-        .delete_entry(chase, Deletion::Bin)
+        .delete_entries(&[(chase, Deletion::Bin)])
         .expect("the entry goes to the bin");
     vault
         .delete_group(banking, Deletion::Bin)
@@ -957,18 +930,18 @@ fn an_erasure_of_something_that_left_the_bin_is_refused() {
     let root = vault.tree().id;
     let note = made(&mut vault, root, "Note");
     vault
-        .delete_entry(note, Deletion::Bin)
+        .delete_entries(&[(note, Deletion::Bin)])
         .expect("it goes to the bin");
     let old = vault.create_group(root, "Old").expect("the folder is made");
     vault
         .delete_group(old, Deletion::Bin)
         .expect("it goes to the bin");
 
-    vault.put_back_entry(note).expect("it is put back");
+    vault.put_back_entries(&[note]).expect("it is put back");
     vault.put_back_group(old).expect("it is put back");
 
     assert!(matches!(
-        vault.delete_entry(note, Deletion::Forever),
+        vault.delete_entries(&[(note, Deletion::Forever)]),
         Err(VaultError::DeletionChanged)
     ));
     assert!(matches!(

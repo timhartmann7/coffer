@@ -20,6 +20,7 @@ pub mod error;
 pub mod generate;
 pub mod kdf;
 pub mod key;
+pub mod kind;
 pub mod model;
 pub mod scrub;
 pub mod secret;
@@ -30,8 +31,10 @@ mod attachment;
 mod bin;
 mod blank;
 mod clash;
+mod content;
 mod history;
 mod preflight;
+mod templates;
 mod text;
 mod vault;
 mod wipe;
@@ -41,6 +44,6 @@ pub use crate::error::VaultError;
 pub use crate::key::MasterKey;
 pub use crate::secret::SecretValue;
 pub use crate::vault::{
-    Attached, LockPolicy, MAX_ATTACHMENT_BYTES, NewValue, Recipe, Rescue, Rival, Typing, Vault,
-    Written,
+    Adopted, Attached, EncryptedCopy, LockPolicy, MAX_ATTACHMENT_BYTES, NewValue, ReadOnly, Recipe,
+    Rescue, Rival, Typing, Vault, Written,
 };

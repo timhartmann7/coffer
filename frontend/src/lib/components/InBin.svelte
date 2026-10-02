@@ -25,6 +25,7 @@
 		name,
 		readOnly,
 		class: classes = '',
+		asking = $bindable(false),
 		ways
 	}: {
 		binned: Binned;
@@ -39,9 +40,10 @@
 		 * goes. Absent while the entry is still being read: there is nothing yet
 		 * to put back or delete. */
 		ways?: { question: string; onPutBack: () => void; onDelete: () => void };
+		/** Whether deleting it forever is being asked about, which the window
+		 * puts from a menu under the pointer as Delete forever… puts it here. */
+		asking?: boolean;
 	} = $props();
-
-	let asking = $state(false);
 </script>
 
 <div data-binned class="rounded-sm border border-hairline bg-surface2 p-3 {classes}">

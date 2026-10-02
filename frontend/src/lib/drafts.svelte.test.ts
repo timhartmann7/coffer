@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { drop, flush, release, replacing, settle, typed, unfinished, type Place } from './drafts';
+import type { Stubbed } from './stubbed';
 
-const ipc = vi.hoisted(() => ({ draft: vi.fn() }));
-vi.mock('./ipc', () => ipc);
+const ipc = vi.hoisted(() => ({}) as Stubbed);
+vi.mock(import('./ipc'), async (real) =>
+	Object.assign(ipc, (await import('./stubbed')).stubbed(await real()))
+);
 
 /** Every entry in this file is its own, because what is typed is kept for the
  * life of the window and the window here is the whole file. */
@@ -243,7 +246,7 @@ it('lets go of an entry, or of everything, with a number newer than all of it', 
 	vi.advanceTimersByTime(250);
 	typed(deleted, () => 'still typing');
 
-	const sequence = release(deleted.entry);
+	const sequence = release([deleted.entry]);
 	expect(sequence).toBeGreaterThan(Math.max(...told().map(([, number]) => number)));
 	expect(unfinished(deleted)).toBe(false);
 	expect(unfinished(other)).toBe(true);
@@ -257,6 +260,30 @@ it('lets go of an entry, or of everything, with a number newer than all of it', 
 	expect(ipc.draft, 'typing was sent after the file was read again').toHaveBeenCalledTimes(2);
 });
 
+/**
+ * Several entries deleted at once: what was typed into each of them goes, and
+ * typing into any entry the batch did not name stays, under one number newer
+ * than all of it.
+ */
+it('lets go of every entry a batch names and of no other', () => {
+	const first = place();
+	const second = place();
+	const spared = place();
+	typed(first, () => 'in the first');
+	typed(second, () => 'in the second');
+	typed(spared, () => 'in an entry nobody chose');
+	vi.advanceTimersByTime(250);
+
+	const sequence = release([first.entry, second.entry, first.entry]);
+	expect(sequence).toBeGreaterThan(Math.max(...told().map(([, number]) => number)));
+	expect(unfinished(first)).toBe(false);
+	expect(unfinished(second)).toBe(false);
+	expect(unfinished(spared)).toBe(true);
+
+	release([]);
+	expect(unfinished(spared), 'a batch of nothing let go of typing').toBe(true);
+});
+
 /** However the words interleave, the numbers only go up. */
 it('numbers every word in the order it was said', async () => {
 	const one = place();
@@ -268,7 +295,7 @@ it('numbers every word in the order it was said', async () => {
 	typed(two, () => 'b');
 	vi.advanceTimersByTime(250);
 	drop(two);
-	numbers.push(release(one.entry));
+	numbers.push(release([one.entry]));
 
 	const all = [...told().map(([, number]) => number), ...numbers].sort((a, b) => a - b);
 	expect(new Set(all).size, 'two words shared a number').toBe(all.length);

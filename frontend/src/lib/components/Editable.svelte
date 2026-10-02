@@ -89,11 +89,14 @@
 
 	/** Takes the focus when asked to and when nobody has put it anywhere since:
 	 * a reader who went on to the login while the new field was on its way is
-	 * typing there, and a field that took the focus would write half a login. */
+	 * typing there, and a field that took the focus would write half a login.
+	 * What is in it is selected, so the first key replaces it: a copy's name,
+	 * "Gmail copy", is there to be typed over. */
 	function taking(element: HTMLInputElement | HTMLTextAreaElement) {
 		if (!untrack(() => focused)) return;
 		if (document.activeElement && document.activeElement !== document.body) return;
 		element.focus();
+		element.select();
 	}
 	/** Whether the reader has written in the field since it last showed what the
 	 * vault holds. Nothing is drawn from it. */
