@@ -33,3 +33,13 @@ export function writing(): boolean {
 	void moved;
 	return typing(document.activeElement);
 }
+
+/**
+ * Puts the reader in a field as it is drawn, with what is in it selected, so
+ * that the first key replaces it: a name being changed is typed over, not
+ * added to. An attachment.
+ */
+export function ready(element: HTMLInputElement): void {
+	element.focus();
+	element.select();
+}

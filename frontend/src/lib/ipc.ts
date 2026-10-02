@@ -25,6 +25,7 @@ import type {
 	Made,
 	Move,
 	Moved,
+	Point,
 	Position,
 	Purpose,
 	Recipe,
@@ -33,6 +34,7 @@ import type {
 	Snapshot,
 	Span,
 	Status,
+	Subject,
 	Tagged,
 	Target
 } from './model';
@@ -190,6 +192,18 @@ export function menuState(enabled: Command[]): Promise<void> {
  * back. */
 export function closeWindow(): Promise<void> {
 	return invoke('close_window');
+}
+
+/**
+ * Draws Coffer's menu under the pointer for what the reader right-clicked, in
+ * place of WebKit's, and answers once it has closed. What is chosen from it
+ * arrives on its own, through the way in `listen` handed over, with `serial`
+ * and the ids it is about - before this answers, or after. Nothing of any
+ * value is sent: ids and names, and for a revealed value the positions of the
+ * part selected.
+ */
+export function contextMenu(serial: number, subject: Subject, at: Point): Promise<void> {
+	return invoke('context_menu', { serial, subject, at });
 }
 
 /** What the reader chose, and the values they may choose instead. Both come

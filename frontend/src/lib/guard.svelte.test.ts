@@ -114,10 +114,15 @@ it('leaves a node that holds no value to the system', () => {
 });
 
 /** What the guard does to the system's own handling of the node, and that it
- * lets go of the document again. */
+ * lets go of the document again. The menu is Coffer's, about the part
+ * selected, and nothing under it hears the right-click: the row around the
+ * value would draw a menu of its own. */
 it('takes the copy, the cut, the menu and the drag, and lets go when detached', () => {
 	const copy = vi.fn();
-	const detach = sealed(copy, vi.fn())(node);
+	const menu = vi.fn();
+	const detach = sealed(copy, vi.fn(), menu)(node);
+	const heard = vi.fn();
+	host.addEventListener('contextmenu', heard);
 	select([text(), 10], [text(), 19]);
 
 	for (const kind of ['copy', 'cut']) {
@@ -133,6 +138,9 @@ it('takes the copy, the cut, the menu and the drag, and lets go when detached', 
 		node.dispatchEvent(event);
 		expect(event.defaultPrevented, kind).toBe(true);
 	}
+	expect(menu).toHaveBeenCalledTimes(1);
+	expect(menu.mock.calls[0][1]).toEqual({ from: 10, to: 19 });
+	expect(heard, 'the row under the value drew a menu as well').not.toHaveBeenCalled();
 
 	detach?.();
 	const after = new ClipboardEvent('copy', { bubbles: true, cancelable: true });
@@ -163,16 +171,189 @@ it('takes a copy that lands on the chrome around a selected value', () => {
 
 /** Right-click on the label inside a selection that reaches into the value:
  * WebKit's menu there is about the whole selection, Look Up and Share
- * included. And a drag started on the label carries the whole selection. */
-it('draws no menu and starts no drag on chrome inside a selection that reaches a value', () => {
-	const detach = sealed(vi.fn(), vi.fn())(node);
-	select([host.firstChild as Text, 0], [text(), 4]);
+ * included, so it is Coffer's about the value's part instead. And a drag
+ * started on the label carries the whole selection. */
+it("draws Coffer's menu, not WebKit's, on chrome inside a selection that reaches a value", () => {
+	const label = document.createElement('b');
+	label.textContent = 'Codes ';
+	host.prepend(label);
+	const menu = vi.fn();
+	const detach = sealed(vi.fn(), vi.fn(), menu)(node);
+	select([label.firstChild as Text, 0], [text(), 4]);
 
-	for (const kind of ['contextmenu', 'dragstart']) {
-		const event = new MouseEvent(kind, { bubbles: true, cancelable: true });
-		host.dispatchEvent(event);
-		expect(event.defaultPrevented, kind).toBe(true);
-	}
+	const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+	const heard = vi.fn();
+	host.addEventListener('contextmenu', heard);
+	label.dispatchEvent(event);
+	expect(event.defaultPrevented).toBe(true);
+	expect(heard).not.toHaveBeenCalled();
+	expect(menu.mock.calls).toEqual([[event, { from: 0, to: 4 }]]);
+
+	const drag = new MouseEvent('dragstart', { bubbles: true, cancelable: true });
+	host.dispatchEvent(drag);
+	expect(drag.defaultPrevented).toBe(true);
+	detach?.();
+});
+
+/** A press of the secondary button, and then a right-click: what WebKit does
+ * to the selection in between, and the menu it ends in. */
+function rightClick(
+	on: Node,
+	between: () => void = () => {},
+	init: MouseEventInit = { button: 2 }
+) {
+	on.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, ...init }));
+	between();
+	const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+	on.dispatchEvent(event);
+	return event;
+}
+
+/** Where a selection is, in the value's own positions, or nothing. */
+function where(): [number, number] | null {
+	const selection = document.getSelection();
+	if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
+	const range = selection.getRangeAt(0);
+	return [range.startOffset, range.endOffset];
+}
+
+/** WebKit selects the word under a right-click before the page hears of the
+ * menu. The reader chose nothing, so the menu is about the value whole, and
+ * the word WebKit chose is let go. */
+it('copies the whole value when the right-click made the only selection', () => {
+	const menu = vi.fn();
+	const detach = sealed(vi.fn(), vi.fn(), menu)(node);
+
+	const event = rightClick(node, () => select([text(), 10], [text(), 14]));
+
+	expect(event.defaultPrevented).toBe(true);
+	expect(menu.mock.calls).toEqual([[event, null]]);
+	expect(where(), 'the word WebKit chose is still selected').toBeNull();
+	detach?.();
+});
+
+it('is about the reader’s selection when the right-click lands on it', () => {
+	const menu = vi.fn();
+	const detach = sealed(vi.fn(), vi.fn(), menu)(node);
+	select([text(), 4], [text(), 9]);
+
+	const event = rightClick(node);
+
+	expect(menu.mock.calls).toEqual([[event, { from: 4, to: 9 }]]);
+	expect(where()).toEqual([4, 9]);
+	detach?.();
+});
+
+/** The pointer was beside the reader's selection, and WebKit moved it to the
+ * word under the pointer. The menu is about the value whole, and the reader's
+ * selection is where they left it. */
+it('is about the whole value, and keeps the reader’s selection, when the right-click lands beside it', () => {
+	const menu = vi.fn();
+	const detach = sealed(vi.fn(), vi.fn(), menu)(node);
+	select([text(), 0], [text(), 4]);
+
+	const event = rightClick(node, () => select([text(), 20], [text(), 24]));
+
+	expect(menu.mock.calls).toEqual([[event, null]]);
+	expect(where()).toEqual([0, 4]);
+	detach?.();
+});
+
+/** Control and a click is a right-click on a Mac. A plain press in between is
+ * not, and leaves the menu to the selection as it stands. */
+it('treats a Ctrl+click as a right-click, and a plain press as none', () => {
+	const menu = vi.fn();
+	const detach = sealed(vi.fn(), vi.fn(), menu)(node);
+
+	rightClick(node, () => select([text(), 10], [text(), 14]), { button: 0, ctrlKey: true });
+	expect(menu.mock.calls.at(-1)?.[1]).toBeNull();
+	expect(where()).toBeNull();
+
+	rightClick(node, () => select([text(), 10], [text(), 14]), { button: 0 });
+	expect(menu.mock.calls.at(-1)?.[1]).toEqual({ from: 10, to: 14 });
+	detach?.();
+});
+
+/** A value selected, and a right-click on something else altogether: the
+ * guard leaves the event to whatever is there, which draws its own menu, and
+ * the selection is not touched. WebKit's menu is drawn by nobody: it would be
+ * about the selection, and the selection is on the value. */
+it('leaves a right-click elsewhere to what was clicked while a value is selected', () => {
+	const other = document.createElement('button');
+	other.textContent = 'a row';
+	document.body.appendChild(other);
+	const menu = vi.fn();
+	const detach = sealed(vi.fn(), vi.fn(), menu)(node);
+	const heard = vi.fn();
+	document.body.addEventListener('contextmenu', heard);
+	select([text(), 4], [text(), 9]);
+
+	const event = rightClick(other);
+
+	expect(event.defaultPrevented, 'WebKit’s menu over the selected value').toBe(true);
+	expect(heard).toHaveBeenCalledTimes(1);
+	expect(menu).not.toHaveBeenCalled();
+	expect(where()).toEqual([4, 9]);
+	document.body.removeEventListener('contextmenu', heard);
+	other.remove();
+	detach?.();
+});
+
+/** The search field, or any field being typed in, keeps WebKit's menu for its
+ * Cut, Copy and Paste. Not while part of a value is still selected and the
+ * right-click left the selection where it was: WebKit's menu would be about
+ * the value then, Look Up and Share included. Whether a button went down
+ * first or VoiceOver opened the menu makes no difference. */
+it('draws no menu in a field being typed in while a value is still selected', () => {
+	const search = document.createElement('input');
+	search.type = 'search';
+	document.body.appendChild(search);
+	const menu = vi.fn();
+	const detach = sealed(vi.fn(), vi.fn(), menu)(node);
+	select([text(), 4], [text(), 9]);
+
+	const clicked = rightClick(search);
+	expect(clicked.defaultPrevented, 'WebKit’s menu over the selected value').toBe(true);
+	const spoken = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+	search.dispatchEvent(spoken);
+	expect(spoken.defaultPrevented, 'a menu VoiceOver opened').toBe(true);
+	expect(menu).not.toHaveBeenCalled();
+	expect(where(), 'the reader’s selection').toEqual([4, 9]);
+
+	// The selection went into the field with the press: WebKit's menu is
+	// about what is typed there, and stays.
+	const moved = rightClick(search, () => document.getSelection()?.removeAllRanges());
+	expect(moved.defaultPrevented).toBe(false);
+	const plain = rightClick(search);
+	expect(plain.defaultPrevented, 'nothing selected').toBe(false);
+	expect(menu).not.toHaveBeenCalled();
+
+	search.remove();
+	detach?.();
+});
+
+/** A right-click on the row around a selection that runs from its label into
+ * the value is not on the selection: the pointer is on the pane around it. The
+ * row draws its own menu, the value's is not drawn, and WebKit's is not
+ * either, the selection being on the value. */
+it('leaves a right-click on the row around a selected value to the row', () => {
+	const label = document.createElement('b');
+	label.textContent = 'Codes ';
+	host.prepend(label);
+	const menu = vi.fn();
+	const detach = sealed(vi.fn(), vi.fn(), menu)(node);
+	const heard = vi.fn();
+	host.addEventListener('contextmenu', heard);
+	select([label.firstChild as Text, 0], [text(), 4]);
+
+	const event = rightClick(host);
+
+	expect(heard, 'the row did not hear it').toHaveBeenCalledTimes(1);
+	expect(menu).not.toHaveBeenCalled();
+	expect(event.defaultPrevented).toBe(true);
+	const selection = document.getSelection()?.getRangeAt(0);
+	expect([selection?.startContainer, selection?.endOffset]).toEqual([label.firstChild, 4]);
+	host.removeEventListener('contextmenu', heard);
 	detach?.();
 });
 
@@ -218,18 +399,29 @@ it('copies nothing from a selection that reaches two values, and says so', () =>
 	second.textContent = 'hunter2';
 	host.append(second, ' end');
 
+	const between = document.createElement('i');
+	between.textContent = ' and ';
+	second.before(between);
+
 	const first = vi.fn();
 	const other = vi.fn();
 	const refused = vi.fn();
-	const detachFirst = sealed(first, refused)(node);
-	const detachOther = sealed(other, refused)(second);
+	const menu = vi.fn();
+	const detachFirst = sealed(first, refused, menu)(node);
+	const detachOther = sealed(other, refused, menu)(second);
 	select([text(), 20], [second.firstChild as Text, 3]);
 
-	for (const kind of ['copy', 'cut', 'contextmenu', 'dragstart']) {
+	for (const kind of ['copy', 'cut', 'dragstart']) {
 		const event = new MouseEvent(kind, { bubbles: true, cancelable: true });
 		host.dispatchEvent(event);
 		expect(event.defaultPrevented, kind).toBe(true);
 	}
+	// A right-click on the chrome between the two, inside the selection: no
+	// menu of WebKit's, and none of Coffer's, which copies one value.
+	const pointed = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+	between.dispatchEvent(pointed);
+	expect(pointed.defaultPrevented).toBe(true);
+	expect(menu).not.toHaveBeenCalled();
 	expect(first).not.toHaveBeenCalled();
 	expect(other).not.toHaveBeenCalled();
 	// Said once for each copy and cut, and never for a menu or a drag, which

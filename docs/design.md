@@ -747,6 +747,86 @@ then acts on the choice, and a copy of the pane's entry - which need not be one
 of the rows - would be one entry nobody chose, made over a choice it let go of.
 The pane's own pill names its entry, and stays.
 
+## Menus under the pointer
+
+The mockup draws no menu under the pointer. A native one is AppKit's and wears
+the system's look, so nothing in it is a token; what is Coffer's is which menus
+there are, what each line says, and what the window does around them.
+
+**A right-click is Coffer's, and WebKit's menu is left only to a field being
+typed in.** A row in either list, a folder in the tree or in the bin, the bin's
+own row, a field of the reader's own, the password's row, a file and a revealed
+value each draw Coffer's menu where the pointer is. The name of the password's
+row and of a field of the reader's own belong to that row, and draw its menu.
+Anywhere else - "All entries", "Not in a folder", blank space, the name over a
+login, an address, notes or tags - draws none. In a field the reader types
+into - the search, a value being written, a name, a new password - WebKit's own
+menu stays, because its Cut, Copy, Paste and spelling are about their typing. A
+revealed value is not typing: its menu is Copy, through Rust, and Hide, and
+Look Up, Translate, Search and Share never appear on it. Nor do they anywhere
+else while part of a value is still selected: WebKit's menu is about the
+selection, wherever the pointer is, so a right-click in the search field then
+draws no menu at all.
+
+**What the menu is about is marked while it is open.** The row, the folder, the
+bin's row or the file carries the accent hairline a field takes with the focus,
+drawn inside its edge so that nothing moves (`[data-menu]` in `app.css`: one
+pixel of `accent`, offset inward), so that the reader can tell which of thirty
+rows the menu is for. It goes when the menu closes. A right-click on a chosen
+row marks every chosen row, and the menu is about all of them; one on a row
+outside the choice is about that row alone, and the choice stays. A field and
+a revealed value are not marked: the pointer is on them, and a value's
+selection is drawn already.
+
+**Every item does what its button does, and asks where its button asks.**
+Delete Forever… on a row opens the entry with its question already put, the
+focus on "Keep it", in the bin card or at the foot of the pane; on several
+chosen rows it puts the bar's question. The bin card's question goes with the
+card: an entry or a folder that leaves the bin while it is up - Put Back from
+another menu, a reload - is asked about nowhere, and is not found asked if it
+comes back. Move to Recycle Bin… on a folder shows
+the folder and puts the folders pane's question; Remove… on a file puts the
+file row's; Empty Recycle Bin… shows the bin and puts the question under it.
+New Entry Here and New Folder Inside show the folder and make there, the way
+"+ Entry" and the folders pane's plus do. Rename shows the folder and puts the
+focus in its name with the name selected - and the folders pane's own Rename
+now does the same, where it used to open the field and leave the focus behind.
+An item that would take the pane away while it holds a new password does
+nothing, and that field's question rises, as with its button. An item that
+does not apply is drawn greyed out rather than left out: Copy Password on an
+entry with none, Open Address for an address Coffer would not open, and every
+change in a vault Coffer does not write back.
+
+**Two parts of what a hidden field could offer are left out.** The item is
+Copy, not "Copy (clears in 1 min)": the notice every copy puts up says how long
+the clipboard holds it ("Password copied. The clipboard clears in 1 minute."),
+from the number Rust keeps in the settings and the words `duration.ts` writes
+it in, and a title saying the same would be a second place for that number
+and a second way of writing it, which goes stale when the reader changes the
+setting. And a field menu - Show, Copy, Change, Make a New One, Remove - is
+drawn for the password's row and for the reader's own fields only. A login, an
+address, notes or a title that a database written elsewhere protects keeps its
+eye and its copy beside it, and its value, once shown, draws the value's menu;
+a right-click on its mask draws nothing. Its Change is a line of its own whose
+state the entry pane keeps, which a menu inside the row would have to reach
+across. Both could be built - Rust holds the clipboard's timer, and could put
+it in the title - and neither is, for those reasons.
+
+**The words are the menu bar's where the item is the menu bar's.** Copy Login,
+Copy Password, Duplicate and Move to Recycle Bin are called what the bar calls
+them; an item that asks first ends in an ellipsis, as the bar's do. No key is
+written beside an item: the bar's keys act on the entry in the pane or on the
+choice, a menu's items on what was right-clicked, and the same key beside both
+would say they were one.
+
+**Move to lists the vault's folders as the folder list does.** "Top of the
+vault" first, then the folders in the tree's order; a folder with folders inside
+it is a submenu headed by itself. Where the thing is already is drawn greyed
+out, a folder's own line among them, and nothing under a folder being moved is
+listed. The recycle bin and everything in it are left out: deleting is the way
+in. A name is written whole up to sixty characters, then an ellipsis, and set
+apart from the menu's own words the way a name is set apart in a sentence.
+
 ## Motion
 
 The mockup is a still picture and names no duration. The window has three, and

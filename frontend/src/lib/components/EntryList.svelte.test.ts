@@ -25,6 +25,7 @@ function draw(
 		chosen?: ReadonlySet<string>;
 		bar?: Snippet;
 		note?: (row: EntryRow) => string;
+		onMenu?: (event: MouseEvent, row: EntryRow) => void;
 	}
 ) {
 	return mount(EntryList, {
@@ -34,7 +35,8 @@ function draw(
 			now: new Date('2026-08-29T14:30:00Z'),
 			...handlers,
 			onOpen: handlers.onOpen ?? vi.fn(),
-			onCopy: handlers.onCopy ?? vi.fn()
+			onCopy: handlers.onCopy ?? vi.fn(),
+			onMenu: handlers.onMenu ?? vi.fn()
 		}
 	});
 }

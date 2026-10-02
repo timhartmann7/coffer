@@ -49,7 +49,7 @@ use crate::home::Standing;
 use crate::menu::{self, Command};
 use crate::route::Route;
 use crate::session::Session;
-use crate::{clipboard, closing, generator, home, lock, opener, settings, window};
+use crate::{clipboard, closing, context, generator, home, lock, opener, settings, window};
 
 /// The session is behind an `Arc` so that a command can take it onto a blocking
 /// thread, which is where key derivation belongs.
@@ -570,6 +570,32 @@ pub fn close_window(window: WebviewWindow) {
     // The lock takes the window down when a vault was open; with none open it
     // still has to go.
     let _ = window.destroy();
+}
+
+/// Draws Coffer's menu under the pointer for what the reader right-clicked,
+/// in place of WebKit's, and answers once it has closed.
+///
+/// What is offered is read from the vault, which is let go of before anything
+/// is asked of the thread the window is drawn on: that thread tracks the menu
+/// until it closes and runs nothing else meanwhile, and it must never wait for
+/// a save. The item chosen is not the answer. It arrives through the window's
+/// channel as `Action::Context` with `serial`, before or after this answers,
+/// and the window runs the button's own function on the ids it carries.
+#[tauri::command]
+pub async fn context_menu(
+    serial: u64,
+    subject: dto::Subject,
+    at: dto::Point,
+    window: WebviewWindow,
+    app: AppHandle,
+    session: Held<'_>,
+) -> Result<(), Failure> {
+    let label = window.label().to_owned();
+    // Before the vault is waited for: a second right-click while this one
+    // waits behind a save is the menu the reader is looking for.
+    context::ask(&app, &label, serial);
+    let items = session.with(|vault| context::offered(vault, &subject))??;
+    context::pop(&app, label, serial, subject, items, at).await
 }
 
 #[tauri::command(async)]
@@ -1747,8 +1773,9 @@ mod tests {
     }
 
     /// The menu bar and the close button reach Rust on the thread AppKit draws
-    /// on, outside any command: a menu event, the run callback's arms, and the
-    /// change to the bar `menu_state` posts there. The close button's lock is
+    /// on, outside any command: a menu event, the run callback's arms, the
+    /// change to the bar `menu_state` posts there, and a menu under the
+    /// pointer, which is built and tracked there. The close button's lock is
     /// held off that thread by `closing.rs`, whose tests say so. Every other
     /// way in is read here, with the functions each one calls in this crate,
     /// because the check above sees commands only, and a session read or a lock
@@ -1775,6 +1802,7 @@ mod tests {
         let commands = shipped(include_str!("commands.rs"));
         let route = include_str!("route.rs");
         let window = include_str!("window.rs");
+        let context = include_str!("context/shown.rs");
         let run = shipped(include_str!("lib.rs"));
         let mut drawn: Vec<(&str, String)> = vec![
             (
@@ -1805,6 +1833,10 @@ mod tests {
             ("handing the page a choice", route, "pub fn deliver("),
             ("reaching the page", route, "fn reach("),
             ("forgetting the page", route, "pub fn forget("),
+            ("drawing a menu under the pointer", context, "fn show("),
+            ("building that menu", context, "fn built("),
+            ("building its items", context, "fn kinds("),
+            ("a choice from that menu", context, "pub fn picked<"),
             ("greying the bar", include_str!("menu.rs"), "pub fn enable<"),
             ("bringing the window back", window, "pub fn bring_back<"),
             ("building it again", window, "pub fn again<"),
@@ -1830,6 +1862,7 @@ mod tests {
             for waiting in [
                 "Held<",
                 "Session",
+                "session",
                 "is_unlocked",
                 "busy(",
                 "Timer",

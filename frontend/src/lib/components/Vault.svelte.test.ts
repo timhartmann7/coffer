@@ -1,5 +1,6 @@
 import { createRawSnippet, flushSync, mount as draw, tick, unmount as release } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { chosen as picked, plain } from '$lib/context.svelte';
 import { drawing, entry, field, generated, group, kinds, row, version } from '$lib/fixtures';
 import { focused } from '$lib/focus.svelte';
 import { applying, run } from '$lib/menu.svelte';
@@ -69,6 +70,7 @@ beforeEach(() => {
 	ipc.save.mockResolvedValue(undefined);
 	ipc.tree.mockResolvedValue(root);
 	ipc.draft.mockResolvedValue(undefined);
+	ipc.contextMenu.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -1130,7 +1132,12 @@ async function opened(): Promise<HTMLElement[]> {
 	flushSync();
 	expect(host.querySelector('h1 input'), 'the entry never opened').not.toBeNull();
 
-	const empty = [...host.querySelectorAll<HTMLElement>('[role="presentation"]')];
+	// A folder's line, and a field or a file in the pane, are presentation
+	// too, for the menu each draws under the pointer: the empty parts are the
+	// ones outside the pane with nothing of the kind around them.
+	const empty = [...host.querySelectorAll<HTMLElement>('[role="presentation"]')].filter(
+		(each) => !each.closest('section') && !each.parentElement?.closest('[role="presentation"]')
+	);
 	expect(empty, 'the folders and the list offer nowhere to press').toHaveLength(2);
 	return empty;
 }
@@ -7580,6 +7587,614 @@ it('offers the folder a copy went into first, as for any entry made', async () =
 		flushSync();
 		const active = picker().getAttribute('aria-activedescendant');
 		expect(active && document.getElementById(active)?.textContent).toContain('Work');
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A right-click on `target`, and the menu the window asked Rust for: its
+ * number, and what it was about. */
+function menuOn(target: Element | null | undefined) {
+	if (!target) throw new Error('nothing to right-click');
+	const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+	target.dispatchEvent(event);
+	flushSync();
+	const call = ipc.contextMenu.mock.calls.at(-1);
+	if (!call) throw new Error('no menu was asked for');
+	return { event, serial: call[0] as number, subject: call[1] };
+}
+
+/** A folder's line in the tree, by its name. */
+function treeLine(name: string): HTMLElement | null {
+	return (
+		[...host.querySelectorAll<HTMLElement>('aside [data-drop]')].find((each) =>
+			each.textContent?.includes(name)
+		) ?? null
+	);
+}
+
+/** A row's menu copies and opens through the functions its buttons run: the
+ * copy through Rust, with the notice every copy gets, and the address by the
+ * entry's id. */
+it('copies and opens from a row’s menu through what its buttons run', async () => {
+	const { tree, work, router } = chest();
+	ipc.openUrl.mockResolvedValue(undefined);
+	const { component } = following(tree);
+	try {
+		const menu = menuOn(listRow('Router'));
+		expect(menu.event.defaultPrevented).toBe(true);
+		expect(menu.subject).toMatchObject({ kind: 'entry', entry: router.id });
+		expect(menu.subject.places).toContainEqual({
+			id: work.id,
+			name: '\u2068Work\u2069',
+			open: true,
+			depth: 0
+		});
+		expect(menu.subject.places[0], 'where it is now').toMatchObject({ id: tree.id, open: false });
+
+		picked(menu.serial, { item: 'copyField', entry: router.id, field: 'Password' });
+		await settled();
+		expect(ipc.copy).toHaveBeenCalledWith(router.id, 'Password', null);
+		expect(toast()?.textContent).toContain('Password copied. The clipboard clears in 1 minute.');
+
+		const again = menuOn(listRow('Router'));
+		picked(again.serial, { item: 'openAddress', entry: router.id });
+		await settled();
+		expect(ipc.openUrl).toHaveBeenCalledWith(router.id);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Move to Recycle Bin from a row's menu is the pane's button: one call, the
+ * deletion the menu showed, a notice, and Cmd+Z puts it back. */
+it('moves a row to the bin from its menu and offers it back like the pane’s button', async () => {
+	const { tree, logins } = chest();
+	const [gmail] = logins;
+	const binned = binnedOf(tree, [gmail]);
+	ipc.deleteEntries.mockResolvedValue(binned);
+	ipc.putBackEntries.mockResolvedValue(tree);
+	const { component } = following(tree);
+	try {
+		const menu = menuOn(listRow('Gmail'));
+		picked(menu.serial, { item: 'deleteEntries', entries: [{ entry: gmail.id, deletion: 'bin' }] });
+		await settled();
+
+		expect(deleting()).toEqual([{ entry: gmail.id, deletion: 'bin' }]);
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+		expect(toast()?.textContent).toContain('Moved “\u2068Gmail\u2069” to the Recycle Bin');
+
+		press('z');
+		await settled();
+		expect(ipc.putBackEntries).toHaveBeenCalledWith([gmail.id]);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Delete Forever… from a row in the bin asks where the pane's own button
+ * asks: the entry opens with its question put and the focus on the way out,
+ * and nothing goes until the reader says so. */
+it('opens an entry with its question put from Delete Forever… in its row’s menu', async () => {
+	const vault = binnedVault();
+	ipc.entry.mockResolvedValue(
+		titled(vault.mail.id, 'Old mail', { binned: vault.mail.binned, deletion: 'forever' })
+	);
+	ipc.deleteEntries.mockResolvedValue(vault.tree);
+	const { component } = following(vault.tree);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		const menu = menuOn(listRow('Old mail'));
+		picked(menu.serial, {
+			item: 'deleteEntries',
+			entries: [{ entry: vault.mail.id, deletion: 'forever' }]
+		});
+		await settled();
+
+		expect(ipc.entry).toHaveBeenCalledWith(vault.mail.id);
+		expect(host.querySelector('[data-confirm]')?.textContent).toContain(
+			'Delete “\u2068Old mail\u2069” forever? This can’t be undone.'
+		);
+		expect(document.activeElement).toBe(exactly('Keep it'));
+		expect(ipc.deleteEntries).not.toHaveBeenCalled();
+
+		pressed('Delete forever', host.querySelector('[data-confirm]') ?? host);
+		await settled();
+		expect(deleting()).toEqual([{ entry: vault.mail.id, deletion: 'forever' }]);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A new password typed into the pane holds it there, from a menu as from a
+ * button: nothing chosen that would take the pane away does anything, and
+ * the field asks its question with the focus on Save. */
+it('takes nothing away from a menu while a new password is being typed', async () => {
+	const { gmail, drive, tree } = withPasswords();
+	const work = group({ name: 'Work' });
+	const vault = { ...tree, sections: [work, ...tree.sections] };
+	const bin = tree.sections[0];
+	ipc.createEntry.mockReset();
+	ipc.deleteEntries.mockReset();
+	ipc.createGroup.mockReset();
+	ipc.deleteGroup.mockReset();
+	ipc.emptyRecycleBin.mockReset();
+	const { component } = following(vault);
+	try {
+		pressed('Gmail');
+		await settled();
+		const typed = typeNewPassword('n3w-from-the-website');
+		await settled();
+
+		const items: Parameters<typeof picked>[1][] = [
+			{ item: 'deleteEntries', entries: [{ entry: gmail.id, deletion: 'bin' }] },
+			{ item: 'deleteEntries', entries: [{ entry: drive.id, deletion: 'forever' }] },
+			{ item: 'duplicate', entry: drive.id },
+			{ item: 'newEntryIn', group: work.id },
+			{ item: 'newFolderIn', group: work.id },
+			{ item: 'renameFolder', group: work.id },
+			{ item: 'deleteFolder', group: work.id, deletion: 'bin' },
+			{ item: 'emptyBin' }
+		];
+		for (const item of items) {
+			const menu = menuOn(listRow('Google Drive'));
+			picked(menu.serial, item);
+			await settled();
+			expect(titleField()?.value, `${item.item} took the pane`).toBe('Gmail');
+			expect(typed.value, `${item.item} threw the new password away`).toBe('n3w-from-the-website');
+			expect(reads(), `${item.item} did not ask`).toContain('Save the new password?');
+			expect(document.activeElement, `${item.item}: the question has not got the focus`).toBe(
+				exactly('Save')
+			);
+		}
+		expect(ipc.entry).not.toHaveBeenCalledWith(drive.id);
+		expect(ipc.deleteEntries).not.toHaveBeenCalled();
+		expect(ipc.createEntry).not.toHaveBeenCalled();
+		expect(ipc.duplicateEntry).not.toHaveBeenCalled();
+		expect(ipc.createGroup).not.toHaveBeenCalled();
+		expect(ipc.deleteGroup).not.toHaveBeenCalled();
+		expect(ipc.emptyRecycleBin).not.toHaveBeenCalled();
+		expect(host.querySelector('input[aria-label="A new name for this folder"]')).toBeNull();
+		expect(bin.isRecycleBin).toBe(true);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A folder's menu shows the folder it was opened on and does there what the
+ * folders pane does: makes an entry in it, opens the name of a new folder
+ * inside it, puts the focus in its own name with the name selected, and asks
+ * before it goes. */
+it('makes, renames and deletes in the folder its menu was opened on', async () => {
+	const { tree, work, logins } = chest();
+	ipc.createEntry.mockResolvedValue({ tree, entry: logins[0].id });
+	ipc.entry.mockImplementation((id: string) => Promise.resolve(titled(id, 'Gmail')));
+	const { component } = following(tree);
+	try {
+		const asked = menuOn(treeLine('Work'));
+		expect(asked.subject).toMatchObject({ kind: 'folder', group: work.id });
+		expect(asked.subject.places).toContainEqual(
+			expect.objectContaining({ id: work.id, open: false })
+		);
+		picked(asked.serial, { item: 'newEntryIn', group: work.id });
+		await settled();
+		expect(ipc.createEntry).toHaveBeenCalledWith(work.id, 'login');
+
+		let menu = menuOn(treeLine('Work'));
+		picked(menu.serial, { item: 'newFolderIn', group: work.id });
+		await settled();
+		expect(document.activeElement?.getAttribute('aria-label')).toBe('The name of the new folder');
+
+		menu = menuOn(treeLine('Work'));
+		picked(menu.serial, { item: 'renameFolder', group: work.id });
+		await settled();
+		const name = document.activeElement as HTMLInputElement;
+		expect(name.getAttribute('aria-label')).toBe('A new name for this folder');
+		expect([name.selectionStart, name.selectionEnd]).toEqual([0, 'Work'.length]);
+		name.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+		await settled();
+
+		menu = menuOn(treeLine('Work'));
+		picked(menu.serial, { item: 'deleteFolder', group: work.id, deletion: 'bin' });
+		await settled();
+		expect(reads()).toContain('Move “\u2068Work\u2069” and everything in it to the Recycle Bin?');
+		expect(document.activeElement).toBe(exactly('Keep it'));
+		expect(ipc.deleteGroup).not.toHaveBeenCalled();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** The folders pane's own Rename now leaves the reader typing the name too. */
+it('puts the focus in a folder’s name, selected, when Rename is pressed', () => {
+	const { tree } = chest();
+	const { component } = following(tree);
+	pressed('Work');
+	flushSync();
+	host.querySelector<HTMLButtonElement>('[aria-label="Rename this folder"]')?.click();
+	flushSync();
+	const name = document.activeElement as HTMLInputElement;
+	expect(name.getAttribute('aria-label')).toBe('A new name for this folder');
+	expect([name.selectionStart, name.selectionEnd]).toEqual([0, 'Work'.length]);
+	return unmount(component);
+});
+
+/** The bin's menu empties it the way the line under it does: after its
+ * question, and not a moment before. */
+it('empties the bin from its menu only after asking', async () => {
+	const vault = binnedVault();
+	ipc.emptyRecycleBin.mockResolvedValue({ ...vault.tree, sections: [vault.personal, vault.work] });
+	const { component } = following(vault.tree);
+	try {
+		const binRow = [...host.querySelectorAll('aside button')].find((each) =>
+			each.textContent?.includes('Recycle Bin')
+		);
+		const menu = menuOn(binRow);
+		expect(menu.subject).toEqual({ kind: 'bin' });
+		picked(menu.serial, { item: 'emptyBin' });
+		await settled();
+
+		expect(reads()).toContain('Delete everything in the bin forever?');
+		expect(ipc.emptyRecycleBin).not.toHaveBeenCalled();
+		exactly('Empty it').click();
+		await settled();
+		expect(ipc.emptyRecycleBin).toHaveBeenCalledTimes(1);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Which of thirty rows a menu is for is marked while the menu is open, on
+ * every chosen row for a choice, and on nothing once it has closed. */
+it('marks what a menu is about until the menu closes', async () => {
+	const { tree, logins } = chest();
+	let close = () => {};
+	ipc.contextMenu.mockImplementation(
+		() =>
+			new Promise<void>((resolve) => {
+				close = resolve;
+			})
+	);
+	const { component } = following(tree);
+	try {
+		const menu = () => [...host.querySelectorAll('[data-menu]')].map((each) => each.textContent);
+		menuOn(listRow('Router'));
+		expect(menu()).toHaveLength(1);
+		expect(menu()[0]).toContain('Router');
+		close();
+		await settled();
+		expect(menu()).toEqual([]);
+
+		pressed('Work');
+		flushSync();
+		choose('Gmail');
+		choose('Drive');
+		menuOn(listRow('Gmail'));
+		expect(ipc.contextMenu.mock.calls.at(-1)?.[1]).toMatchObject({
+			kind: 'entries',
+			entries: [logins[0].id, logins[1].id]
+		});
+		expect(menu()).toHaveLength(2);
+		close();
+		await settled();
+
+		// A right-click on a row outside the choice is about that row alone,
+		// and the choice stays.
+		menuOn(listRow('Slack'));
+		expect(ipc.contextMenu.mock.calls.at(-1)?.[1]).toMatchObject({
+			kind: 'entry',
+			entry: logins[2].id
+		});
+		expect(count()).toBe('2 selected');
+		close();
+		await settled();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A deletion for good of several chosen rows is asked about in their bar,
+ * the way the bar's own Delete forever… asks, and only while they are still
+ * the rows chosen. */
+it('asks in the bar before deleting chosen rows for good from a menu', async () => {
+	const { tree, logins } = chest();
+	const binned = binnedOf(tree, logins.slice(0, 2));
+	const { component } = following(binned);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		choose('Gmail');
+		choose('Drive');
+		const forever = logins
+			.slice(0, 2)
+			.map((each) => ({ entry: each.id, deletion: 'forever' as const }));
+		const menu = menuOn(listRow('Gmail'));
+		picked(menu.serial, { item: 'deleteEntries', entries: forever });
+		await settled();
+
+		expect(reads()).toContain('Delete 2 entries forever? This can’t be undone.');
+		expect(ipc.deleteEntries).not.toHaveBeenCalled();
+		exactly('Keep them').click();
+		flushSync();
+
+		choose('Drive');
+		const stale = menuOn(listRow('Gmail'));
+		picked(stale.serial, { item: 'deleteEntries', entries: forever });
+		await settled();
+		expect(reads()).not.toContain('Delete 2 entries forever?');
+		expect(ipc.deleteEntries).not.toHaveBeenCalled();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** The vault screen went - a lock, or the settings drawn over it - while a
+ * menu it asked for was still open. An item that arrives afterwards runs
+ * nothing, and the next screen marks nothing for a menu it never asked for. */
+it('runs nothing chosen after the vault screen went, and marks nothing on the next', async () => {
+	const { tree, router } = chest();
+	let close = () => {};
+	ipc.contextMenu.mockImplementation(
+		() =>
+			new Promise<void>((resolve) => {
+				close = resolve;
+			})
+	);
+	const first = following(tree);
+	const menu = menuOn(listRow('Router'));
+	expect(host.querySelector('[data-menu]')).not.toBeNull();
+	await unmount(first.component);
+
+	const { component } = following(tree);
+	try {
+		expect(host.querySelector('[data-menu]'), 'the row is marked for the screen before').toBeNull();
+		picked(menu.serial, { item: 'copyField', entry: router.id, field: 'Password' });
+		await settled();
+		expect(ipc.copy).not.toHaveBeenCalled();
+		close();
+		await settled();
+		expect(host.querySelector('[data-menu]')).toBeNull();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** "All entries" and "Not in a folder" are not folders, and a right-click on
+ * blank space has nothing to be about: no menu of Coffer's, and none of
+ * WebKit's, which the window's own listener takes away. */
+it('asks for no menu where there is nothing to be about', async () => {
+	const { tree } = chest();
+	const { component } = following(tree);
+	window.addEventListener('contextmenu', plain);
+	try {
+		const lines = ['All entries', 'Not in a folder'].map((label) =>
+			[...host.querySelectorAll('aside button')].find((each) => each.textContent?.includes(label))
+		);
+		for (const target of [...lines, host.querySelector('aside')]) {
+			if (!target) throw new Error('a line the test right-clicks is not drawn');
+			const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+			target.dispatchEvent(event);
+			expect(event.defaultPrevented, `WebKit’s menu on ${target.textContent}`).toBe(true);
+		}
+		expect(ipc.contextMenu).not.toHaveBeenCalled();
+	} finally {
+		window.removeEventListener('contextmenu', plain);
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Move to in a row's menu is the folder line's move: one call, a notice
+ * that says where, and the undo takes it back by id. */
+it('moves a row into a folder from its menu and offers it back', async () => {
+	const { tree, work, router } = chest();
+	const moved = [{ entry: router.id, from: tree.id }];
+	ipc.moveEntries.mockResolvedValue({ tree: movedOf(tree, [router], work.id), moved });
+	ipc.moveEntriesBack.mockResolvedValue(tree);
+	const { component } = following(tree);
+	try {
+		const menu = menuOn(listRow('Router'));
+		picked(menu.serial, { item: 'moveEntries', entries: [router.id], into: work.id });
+		await settled();
+
+		expect(ipc.moveEntries).toHaveBeenCalledWith([router.id], work.id);
+		expect(toast()?.textContent).toContain('Moved “\u2068Router\u2069” to “\u2068Work\u2069”');
+		undo()?.click();
+		await settled();
+		expect(ipc.moveEntriesBack).toHaveBeenCalledWith(moved, work.id);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Move to in a folder's menu is a drag of the folder: the folder moved, not
+ * the one it is moved into. */
+it('moves a folder from its menu into the folder chosen', async () => {
+	const { tree, work, banking, bin } = chest();
+	const [inWork] = tree.sections;
+	ipc.moveGroup.mockResolvedValue({ ...tree, sections: [{ ...inWork, sections: [banking] }, bin] });
+	const { component } = following(tree);
+	try {
+		const menu = menuOn(treeLine('Banking'));
+		expect(menu.subject).toMatchObject({ kind: 'folder', group: banking.id });
+		picked(menu.serial, { item: 'moveFolder', group: banking.id, into: work.id });
+		await settled();
+
+		expect(ipc.moveGroup).toHaveBeenCalledWith(banking.id, work.id);
+		expect(toast()?.textContent).toContain('Moved “\u2068Banking\u2069” to “\u2068Work\u2069”');
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Put Back on the entry in the pane is its bin card's, which offers nothing
+ * back: the pane it stays in says where it went. On any other row it is the
+ * bar's, and offered back. */
+it('puts back the entry in the pane as its card does, and another row with an undo', async () => {
+	const { tree, work, logins } = chest();
+	const [gmail, drive] = logins;
+	ipc.entry.mockImplementation((id: string) =>
+		Promise.resolve(inBinOf(readOf(id === gmail.id ? gmail : drive), work.id))
+	);
+	ipc.putBackEntries.mockResolvedValue(binnedOf(tree, [drive]));
+	const { component } = following(binnedOf(tree, [gmail, drive]));
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		pressed('Gmail');
+		await settled();
+
+		ipc.entry.mockImplementation(() => Promise.resolve(readOf(gmail)));
+		let menu = menuOn(listRow('Gmail'));
+		picked(menu.serial, { item: 'putBackEntries', entries: [gmail.id] });
+		await settled();
+		expect(ipc.putBackEntries).toHaveBeenLastCalledWith([gmail.id]);
+		expect(toast(), 'the entry in the pane was offered back').toBeNull();
+		expect(entryCard()).toBeNull();
+
+		ipc.putBackEntries.mockResolvedValue(tree);
+		menu = menuOn(listRow('Drive'));
+		picked(menu.serial, { item: 'putBackEntries', entries: [drive.id] });
+		await settled();
+		expect(ipc.putBackEntries).toHaveBeenLastCalledWith([drive.id]);
+		expect(toast()?.textContent).toContain('Put back “\u2068Drive\u2069”');
+		expect(undo()).not.toBeNull();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Put Back in the menu of a folder in the bin is the folder card's. */
+it('puts a folder back from its menu', async () => {
+	const vault = binnedVault();
+	ipc.putBackGroup.mockResolvedValue(putBack(vault));
+	const { component } = following(vault.tree);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		const menu = menuOn(host.querySelector('[data-folder]'));
+		expect(menu.subject).toMatchObject({ kind: 'folder', group: vault.banking.id });
+		picked(menu.serial, { item: 'putBackFolder', group: vault.banking.id });
+		await settled();
+
+		expect(ipc.putBackGroup).toHaveBeenCalledWith(vault.banking.id);
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Duplicate in a row's menu copies that row, whichever entry the pane is
+ * showing. */
+it('duplicates the row its menu was opened on, not the entry in the pane', async () => {
+	const { gmail, drive, tree, copy, grown } = copying();
+	ipc.duplicateEntry.mockResolvedValue({ tree: grown, entry: copy.id });
+	const { component } = following(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		const menu = menuOn(listRow('Google Drive'));
+		picked(menu.serial, { item: 'duplicate', entry: drive.id });
+		await settled();
+
+		expect(ipc.duplicateEntry).toHaveBeenCalledTimes(1);
+		expect(ipc.duplicateEntry).toHaveBeenCalledWith(drive.id);
+		expect(ipc.duplicateEntry).not.toHaveBeenCalledWith(gmail.id);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Delete Forever… in the menu of a folder in the bin shows the folder and
+ * puts its card's question, the focus on the way out. The question is the
+ * card's: a folder taken out of the bin and brought back by a reload, with
+ * nobody asking, is not found asked. */
+it('asks the bin card’s question for a folder in the bin from its menu, while it is there', async () => {
+	const vault = binnedVault();
+	const { component, props } = following(vault.tree);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		const menu = menuOn(host.querySelector('[data-folder]'));
+		picked(menu.serial, { item: 'deleteFolder', group: vault.banking.id, deletion: 'forever' });
+		await settled();
+
+		expect(folderCard()?.textContent).toContain(
+			'Delete “\u2068Banking\u2069” and everything in it forever?'
+		);
+		expect(document.activeElement).toBe(exactly('Keep it'));
+		expect(ipc.deleteGroup).not.toHaveBeenCalled();
+
+		props.root = putBack(vault);
+		flushSync();
+		expect(folderCard()).toBeNull();
+		props.root = vault.tree;
+		flushSync();
+		expect(folderCard()).not.toBeNull();
+		expect(folderCard()?.querySelector('[data-confirm]'), 'asked with nobody asking').toBeNull();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Delete Forever… put the bin card's question, and Put Back from the row's
+ * menu took the entry out of the bin under it. The question goes with the
+ * card: at the foot of the pane it would sit over a button that moves the
+ * entry to the bin. */
+it('asks nothing at the foot of an entry put back while its bin card was asking', async () => {
+	const vault = binnedVault();
+	ipc.entry.mockResolvedValue(
+		titled(vault.mail.id, 'Old mail', { binned: vault.mail.binned, deletion: 'forever' })
+	);
+	ipc.putBackEntries.mockResolvedValue(
+		group({
+			...vault.tree,
+			sections: [
+				vault.personal,
+				{ ...vault.work, entries: [{ ...vault.mail, binned: null, group: vault.work.id }] },
+				{ ...vault.bin, entries: [] }
+			]
+		})
+	);
+	const { component } = following(vault.tree);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		let menu = menuOn(listRow('Old mail'));
+		picked(menu.serial, {
+			item: 'deleteEntries',
+			entries: [{ entry: vault.mail.id, deletion: 'forever' }]
+		});
+		await settled();
+		expect(entryCard()?.querySelector('[data-confirm]')).not.toBeNull();
+
+		ipc.entry.mockResolvedValue(titled(vault.mail.id, 'Old mail', { group: vault.work.id }));
+		menu = menuOn(listRow('Old mail'));
+		picked(menu.serial, { item: 'putBackEntries', entries: [vault.mail.id] });
+		await settled();
+
+		expect(ipc.putBackEntries).toHaveBeenCalledWith([vault.mail.id]);
+		expect(entryCard()).toBeNull();
+		expect(host.querySelector('[data-confirm]'), 'a question nobody asked').toBeNull();
+		expect(exactly('Move to Recycle Bin')).not.toBeNull();
+		expect(ipc.deleteEntries).not.toHaveBeenCalled();
 	} finally {
 		await unmount(component);
 		vi.useRealTimers();

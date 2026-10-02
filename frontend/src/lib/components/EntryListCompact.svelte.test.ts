@@ -24,6 +24,7 @@ function draw(
 		onChoose?: (row: EntryRow, press: Press) => void;
 		chosen?: ReadonlySet<string>;
 		bar?: Snippet;
+		onMenu?: (event: MouseEvent, row: EntryRow) => void;
 	} = {}
 ) {
 	return mount(EntryListCompact, {
@@ -33,7 +34,8 @@ function draw(
 			open: null,
 			onDismiss: vi.fn(),
 			...over,
-			onOpen: over.onOpen ?? vi.fn()
+			onOpen: over.onOpen ?? vi.fn(),
+			onMenu: over.onMenu ?? vi.fn()
 		}
 	});
 }

@@ -4,8 +4,8 @@
  * sentence - so the rule and the names live once.
  */
 
-import { quoted } from './format';
-import type { EntryRow, Group } from './model';
+import { isolated, quoted } from './format';
+import type { EntryRow, Group, Place } from './model';
 import { find, inBin, pathTo, projects } from './tree';
 
 /**
@@ -88,12 +88,45 @@ export function targets(root: Group, moving: Moving): Set<string> {
 
 	const parent = pathTo(root, moving.folder.id)?.at(-2);
 	if (parent) places.delete(parent.id);
-	const under = [moving.folder];
-	for (let here = under.pop(); here !== undefined; here = under.pop()) {
-		places.delete(here.id);
-		for (const section of here.sections) under.push(section);
-	}
+	for (const id of within(moving.folder)) places.delete(id);
 	return places;
+}
+
+/** A folder and every folder under it, walked with a stack. */
+function within(folder: Group): Set<string> {
+	const found = new Set<string>();
+	const pending = [folder];
+	for (let here = pending.pop(); here !== undefined; here = pending.pop()) {
+		found.add(here.id);
+		for (const section of here.sections) pending.push(section);
+	}
+	return found;
+}
+
+/** The longest a folder's name is written in a menu, in characters: a name
+ * can be a megabyte, and a line of a menu is as wide as its longest line. */
+const LONGEST = 60;
+
+/**
+ * Where a menu under the pointer offers to move `moving`, in the order the
+ * folder list draws them: every destination, each saying whether a move there
+ * is one `targets` takes, and for a folder not what is under it - the folder
+ * itself is there, to say where it is, and greyed out. Flat, with how deep
+ * each sits, and with the names set apart and cut as the menu writes them, so
+ * Rust draws the menu and decides nothing about the places.
+ */
+export function placesFor(root: Group, moving: Moving): Place[] {
+	const open = targets(root, moving);
+	const under = 'folder' in moving ? within(moving.folder) : new Set<string>();
+	if ('folder' in moving) under.delete(moving.folder.id);
+	return destinations(root)
+		.filter((place) => !under.has(place.id))
+		.map((place) => ({
+			id: place.id,
+			name: place.id === root.id ? place.name : isolated(place.name, LONGEST),
+			open: open.has(place.id),
+			depth: place.parents.length
+		}));
 }
 
 /** What a move says, the bin's included: "Moved “Chase” to “Banking”". `what`

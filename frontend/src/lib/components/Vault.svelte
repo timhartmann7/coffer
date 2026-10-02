@@ -7,33 +7,37 @@
 		copyVersion,
 		createGroup,
 		entry as loadEntry,
+		openUrl,
 		renameGroup,
 		tree as loadTree,
 		undoRemoval,
 		versions as loadVersions
 	} from '$lib/ipc';
 	import { deleted as deletedLine, eraseQuestion } from '$lib/bin';
+	import { forget, marked as inMenu, offer } from '$lib/context.svelte';
 	import { Dragging, LANDING } from '$lib/dragging.svelte';
 	import { flush } from '$lib/drafts';
 	import { named as howLong } from '$lib/duration';
-	import { writing } from '$lib/focus.svelte';
+	import { ready, writing } from '$lib/focus.svelte';
 	import { copied, quoted } from '$lib/format';
 	import { held } from '$lib/holding';
 	import { copying, typing } from '$lib/keys';
 	import { cancels, composing } from '$lib/lines';
 	import { Making } from '$lib/making';
-	import { answer } from '$lib/menu.svelte';
+	import { answer, leave } from '$lib/menu.svelte';
 	import { Moves } from '$lib/moves';
 	import { COPIED, Notices } from '$lib/notices.svelte';
 	import { overtaken } from '$lib/overtaken';
-	import { targets, type Moving } from '$lib/places';
+	import { placesFor, targets, type Moving } from '$lib/places';
 	import { conceal } from '$lib/reveal.svelte';
 	import { Saving } from '$lib/saving.svelte';
 	import { Selection, type Press } from '$lib/selection.svelte';
 	import { tag } from '$lib/tagging';
 	import {
 		untouchable,
+		type Chosen,
 		type Database,
+		type Deleting,
 		type Entry,
 		type EntryRow,
 		type Field,
@@ -56,6 +60,7 @@
 		projects,
 		recycleBin,
 		rowOf,
+		rowsOf,
 		searchedEntries,
 		shownEntries,
 		templatesOf
@@ -163,6 +168,14 @@
 	let renaming = $state(false);
 	let emptying = $state(false);
 	let deleting = $state(false);
+	/** Whether the entry in the pane is being asked whether it goes for good:
+	 * put by Delete Forever… in a row's menu, as the pane's own button puts
+	 * it. */
+	let erasing = $state(false);
+	/** The same for the folder in the bin being shown, on its bin card. */
+	let erasingFolder = $state(false);
+	/** The bar over the chosen rows, which asks before deleting for good. */
+	let bar = $state<ReturnType<typeof SelectionBar>>();
 
 	const notices = new Notices(failed);
 	/** The rows chosen to act on together. */
@@ -236,6 +249,16 @@
 	/** Whether the list is showing the recycle bin or a folder inside it, where
 	 * nothing is made or changed and everything is read one folder at a time. */
 	const binned = $derived(group !== null && inBin(shown));
+	/** Whether the folder shown has the card that says it is in the bin, and
+	 * asks before it goes for good. */
+	const carded = $derived(binned && Boolean(shown.binned));
+
+	// The card's question is about the folder on the card. Put back, the folder
+	// has no card, and a folder that comes back into the bin on its own - a
+	// reload, another window - is not found asked.
+	$effect(() => {
+		if (!carded) erasingFolder = false;
+	});
 	/** Whether things can be made here. The + Entry button and the folder
 	 * header's buttons are drawn on this, and so are the menu bar's New Entry
 	 * and New Folder. */
@@ -342,6 +365,8 @@
 		renaming = false;
 		emptying = false;
 		deleting = false;
+		erasing = false;
+		erasingFolder = false;
 	}
 
 	/**
@@ -560,17 +585,16 @@
 	}
 
 	/**
-	 * Makes a copy of the entry in the pane beside it, and opens the copy with
-	 * its name ready to type: the header's Duplicate, and Duplicate in the menu
-	 * bar. Not of an entry in the bin or in a vault Coffer will not write, and
-	 * not while the pane has to stay: the copy would take it. The copy is an
-	 * entry made like any other, and its folder is the one "+ Entry" offers
-	 * first next time.
+	 * Makes a copy of an entry beside it, and opens the copy with its name
+	 * ready to type: the header's Duplicate, Duplicate in the menu bar - both
+	 * about the entry in the pane - and Duplicate in a row's menu. Not of an
+	 * entry in the bin or in a vault Coffer will not write, and not while the
+	 * pane has to stay: the copy would take it. The copy is an entry made like
+	 * any other, and its folder is the one "+ Entry" offers first next time.
 	 */
-	async function duplicate() {
-		if (!opened || untouchable(opened, readOnly) || held()) return;
-		const into = opened.group;
-		if (await making.copy(opened.id)) filed = into;
+	async function duplicate(entry: Pick<EntryRow, 'id' | 'group' | 'binned'> | null = opened) {
+		if (!entry || untouchable(entry, readOnly) || held()) return;
+		if (await making.copy(entry.id)) filed = entry.group;
 	}
 
 	/** Whether the list and the pane are the reader's to act on: nothing is over
@@ -625,9 +649,14 @@
 	async function copyOpen(kind: 'username' | 'password') {
 		const chosen = filled(kind);
 		if (!opened || !chosen) return;
-		const id = opened.id;
+		await copyAfter(opened.id, chosen.name);
+	}
+
+	/** Copies a field whole once every value on its way to Rust has arrived:
+	 * a copy chosen from a menu, the menu bar's or a row's. */
+	async function copyAfter(entry: string, field: string) {
 		await flush();
-		await copy(id, chosen.name);
+		await copy(entry, field);
 	}
 
 	/**
@@ -679,6 +708,148 @@
 			rows.map((row) => row.id),
 			into
 		);
+	}
+
+	/**
+	 * A right-click on a row of either list: Coffer's menu about every row
+	 * chosen when it is one of them, and otherwise about that row alone, the
+	 * choice left as it is - what a drag from the row would carry.
+	 */
+	function rowMenu(event: MouseEvent, row: EntryRow) {
+		const rows = aimedAt(row);
+		const places = placesFor(root, { entries: rows });
+		offer(
+			event,
+			rows.length > 1
+				? { kind: 'entries', entries: rows.map((each) => each.id), places }
+				: { kind: 'entry', entry: row.id, places },
+			fromMenu,
+			failed
+		);
+	}
+
+	/** A right-click on a folder of the tree, or one in the bin. */
+	function folderMenu(event: MouseEvent, folder: Group) {
+		offer(
+			event,
+			{ kind: 'folder', group: folder.id, places: placesFor(root, { folder }) },
+			fromMenu,
+			failed
+		);
+	}
+
+	/**
+	 * Runs an item of a row's, a folder's or the bin's menu with the function
+	 * its button runs, on the ids the item carries. Not while the settings or a
+	 * conflict are over the window, and nothing for ids the vault on the screen
+	 * no longer has. The field being written in is left first, as the press on
+	 * the row or the folder would have left it; whatever would take the pane
+	 * away asks `held` first, as its button does.
+	 */
+	function fromMenu(item: Chosen) {
+		if (!free) return;
+		leave();
+		switch (item.item) {
+			case 'copyField':
+				void copyAfter(item.entry, item.field);
+				return;
+			case 'openAddress':
+				openUrl(item.entry).catch(failed);
+				return;
+			case 'duplicate':
+				void duplicate(rowOf(root, item.entry));
+				return;
+			case 'moveEntries':
+				void moves.moveEntries(item.entries, item.into);
+				return;
+			case 'moveFolder':
+				void moves.moveFolder(item.group, item.into);
+				return;
+			case 'deleteEntries':
+				removeFromMenu(item.entries);
+				return;
+			case 'putBackEntries':
+				putBackFromMenu(item.entries);
+				return;
+			case 'putBackFolder':
+				void moves.putBackFolder(item.group);
+				return;
+			case 'emptyBin':
+				if (bin && !held()) {
+					select(bin.id);
+					emptying = true;
+				}
+				return;
+			case 'newEntryIn':
+			case 'newFolderIn':
+			case 'renameFolder':
+			case 'deleteFolder':
+				inFolder(item);
+				return;
+		}
+	}
+
+	/**
+	 * What a folder's menu does in the folder: shows it, then makes in it,
+	 * renames it or puts the question that deletes it - the folders pane's,
+	 * or the bin card's for a folder in the bin.
+	 */
+	function inFolder(item: Extract<Chosen, { group: string }>) {
+		const folder = find(root, item.group);
+		if (!folder || held()) return;
+		select(folder.id);
+		if (item.item === 'newEntryIn') void makeIn(folder.id, { offer: kinds.offered[0] });
+		else if (item.item === 'newFolderIn') addFolder();
+		else if (item.item === 'renameFolder') renaming = true;
+		else if (inBin(folder)) erasingFolder = true;
+		else deleting = true;
+	}
+
+	/**
+	 * A deletion chosen from a row's menu, sending what the menu said each
+	 * deletion does as the one the reader was shown. Every one to the bin goes
+	 * the way the pane's and the bar's do, and is offered back. One that goes
+	 * for good is opened with its question put; several of which any goes for
+	 * good are asked about in the bar, while they are still the rows chosen.
+	 * Nothing when one of them has gone.
+	 */
+	function removeFromMenu(entries: Deleting[]) {
+		const shown = new Map(entries.map(({ entry, deletion }) => [entry, deletion]));
+		const rows = rowsOf(root, [...shown.keys()]).map((row) => ({
+			...row,
+			deletion: shown.get(row.id) ?? row.deletion
+		}));
+		if (rows.length !== shown.size) return;
+		if (rows.every((row) => row.deletion === 'bin')) removeRows(rows);
+		else if (rows.length === 1) void erase(rows[0].id);
+		else if (
+			selecting &&
+			chosen.length === rows.length &&
+			rows.every((row) => selection.has(row.id))
+		)
+			bar?.remove();
+	}
+
+	/**
+	 * Opens an entry with the question that deletes it for good already put,
+	 * with the focus on the way out: Delete Forever… in its row's menu, which
+	 * asks where the pane's own button asks.
+	 */
+	async function erase(id: string) {
+		const row = rowOf(root, id);
+		if (!row || (showing !== id && held())) return;
+		selection.only(id);
+		await open(row);
+		if (opened?.id === id && opened.deletion === 'forever' && !readOnly) erasing = true;
+	}
+
+	/** Takes entries out of the bin from a row's menu: the bin card's Put back
+	 * for the entry in the pane, and the bar's for any other. */
+	function putBackFromMenu(ids: string[]) {
+		const rows = rowsOf(root, ids);
+		if (rows.length !== new Set(ids).size) return;
+		if (rows.length === 1 && rows[0].id === showing) void moves.putBackEntry(rows[0].id);
+		else void moves.putBackEntries(rows);
 	}
 
 	/** The window, as putting a tag on several entries needs it. */
@@ -845,6 +1016,8 @@
 	}
 
 	$effect(() => () => notices.clear());
+	// An item chosen after the screen went has nothing left to act on.
+	$effect(() => () => forget());
 
 	// What the menu bar's items do on this screen: each runs what its button
 	// runs, on the condition its button is drawn on.
@@ -983,6 +1156,7 @@
 	     the rows chosen before. -->
 	{#key selection.changes}
 		<SelectionBar
+			bind:this={bar}
 			rows={chosen}
 			{root}
 			{binned}
@@ -996,7 +1170,7 @@
 {/snippet}
 
 {#snippet deletedFolders()}
-	<BinFolders {folders} {root} {now} compact={pane !== null} onOpen={choose} />
+	<BinFolders {folders} {root} {now} compact={pane !== null} onOpen={choose} onMenu={folderMenu} />
 {/snippet}
 
 <div
@@ -1103,6 +1277,7 @@
 
 			{#if renaming && folder}
 				<input
+					{@attach ready}
 					type="text"
 					autocomplete="off"
 					spellcheck="false"
@@ -1221,6 +1396,7 @@
 					onSelect={choose}
 					onToggle={(id) => (expanded.has(id) ? expanded.delete(id) : expanded.add(id))}
 					onPress={readOnly ? undefined : pressFolder}
+					onMenu={folderMenu}
 				/>
 			</div>
 
@@ -1229,7 +1405,9 @@
 				<div class="shrink-0 border-t border-hairline px-2 py-2">
 					<button
 						type="button"
+						data-menu={inMenu('bin') || undefined}
 						onclick={() => choose(deleted.id)}
+						oncontextmenu={(event) => offer(event, { kind: 'bin' }, fromMenu, failed)}
 						class="relative flex w-full items-center gap-2 rounded-sm px-2 py-[7px] text-body transition-colors {binned
 							? 'bg-raised text-txt'
 							: 'text-txt3 hover:bg-raised/60 hover:text-txt2'}"
@@ -1326,7 +1504,7 @@
 				{/if}
 			</div>
 
-			{#if binned && shown.binned}
+			{#if carded && shown.binned}
 				{#key shown.id}
 					<InBin
 						class="mx-5 mt-3 shrink-0"
@@ -1335,6 +1513,7 @@
 						{now}
 						name={shown.name}
 						{readOnly}
+						bind:asking={erasingFolder}
 						ways={{
 							question: eraseQuestion(quoted(shown.name), true),
 							onPutBack: () => void moves.putBackFolder(shown.id),
@@ -1446,6 +1625,7 @@
 					onChoose={readOnly ? undefined : chooseRow}
 					onDismiss={dismiss}
 					onPress={readOnly || binned ? undefined : pressRow}
+					onMenu={rowMenu}
 				/>
 			{:else}
 				<EntryList
@@ -1460,6 +1640,7 @@
 					onChoose={readOnly ? undefined : chooseRow}
 					onCopy={copyFrom}
 					onPress={readOnly || binned ? undefined : pressRow}
+					onMenu={rowMenu}
 				/>
 			{/if}
 		</div>
@@ -1488,6 +1669,7 @@
 							{readOnly}
 							made={pane.arrived !== null}
 							lined={pane.arrived?.lined}
+							bind:erasing
 							suggested={kinds.suggested}
 							onCopy={copy}
 							onChanged={changed}

@@ -81,7 +81,10 @@ impl Serialize for Revealed {
 /// another, counted the way the text node showing it counts: in UTF-16 code
 /// units. Two numbers and nothing of the value; whether they name a part of it
 /// at all is [`vault_core::SecretValue::part`]'s to say.
-#[derive(Deserialize, Clone, Copy)]
+///
+/// It goes back to the window too, in a Copy chosen from the menu over a
+/// revealed value, which the window then sends here again.
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct Span {
     pub from: usize,
     pub to: usize,
@@ -677,7 +680,11 @@ impl Move {
 /// One entry a deletion names, with what the window showed deleting it would
 /// do. The answer the reader agreed to travels with each entry, because it is
 /// for each entry that Rust can find it changed.
-#[derive(Deserialize)]
+///
+/// It goes the other way in a deletion chosen from a menu under the pointer,
+/// carrying what that menu said each deletion does, which the window sends
+/// back as the one the reader was shown.
+#[derive(Serialize, Deserialize)]
 pub struct Deleting {
     pub entry: String,
     pub deletion: Deletion,
@@ -793,7 +800,7 @@ pub enum Deletion {
 }
 
 impl Deletion {
-    fn of(deletion: model::Deletion) -> Deletion {
+    pub fn of(deletion: model::Deletion) -> Deletion {
         match deletion {
             model::Deletion::Bin => Deletion::Bin,
             model::Deletion::Forever => Deletion::Forever,
@@ -889,8 +896,9 @@ pub enum FieldKind {
 impl FieldKind {
     /// Which names are standard is decided in `vault-core`, which is the only
     /// place that knows what KeePass calls a field, and the one a lock asks
-    /// before it writes a draft into a field the entry does not hold yet.
-    fn of(name: &str) -> FieldKind {
+    /// before it writes a draft into a field the entry does not hold yet, and
+    /// the one a menu under the pointer asks of a field the entry lacks.
+    pub fn of(name: &str) -> FieldKind {
         match Standard::of(name) {
             Some(Standard::Title) => FieldKind::Title,
             Some(Standard::Username) => FieldKind::Username,
@@ -1064,6 +1072,168 @@ pub enum Action {
     /// and then asks for `close_window` itself, the way the Lock button asks
     /// for a lock.
     Closing,
+    /// An item of the menu the window asked for under the pointer
+    /// (`context_menu`), with the number the window gave that menu. A choice
+    /// for a selection carries every id in it, which can be over the 8 KiB:
+    /// it is fetched then, the one choice that pays for a second request.
+    Context { serial: u64, chosen: Chosen },
+}
+
+/// What a right-click was on, as the window names it: ids, names, whether a
+/// value is on the screen, and for a revealed value the part of it selected.
+/// Nothing of any value, and nothing Rust takes on trust: every id is read
+/// again in the vault, and a place is only where an item says a move goes.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Subject {
+    /// A row of the list, and where the window would let it be moved.
+    Entry { entry: String, places: Vec<Place> },
+    /// The rows chosen in the list, when the right-click was on one of them.
+    Entries {
+        entries: Vec<String>,
+        places: Vec<Place>,
+    },
+    /// A folder in the tree or in the recycle bin.
+    Folder { group: String, places: Vec<Place> },
+    /// The recycle bin's own row.
+    Bin,
+    /// A field's row, and whether its value is on the screen.
+    Field {
+        entry: String,
+        field: String,
+        shown: bool,
+    },
+    /// A file on an entry, by the name the entry gives it.
+    File { entry: String, name: String },
+    /// A revealed value, and the part of it the reader selected, or nothing
+    /// for all of it.
+    Value {
+        entry: String,
+        field: String,
+        range: Option<Span>,
+    },
+}
+
+/// A place a menu's Move to offers, as the window's folder list has it: in
+/// the tree's order, `depth` folders down from the top, its name already set
+/// apart and cut the way a sentence sets one apart, and whether a move there
+/// would be taken and change something.
+///
+/// The window's own rule (`placesFor` in `places.ts`), sent rather than worked
+/// out again here: a menu that offered another list of places than the
+/// window's folder list would be a second answer to one question. Flat,
+/// because a hundred folders nested inside each other would be more nesting
+/// than serde_json reads. A place the window was wrong about is refused by the
+/// move itself.
+#[derive(Deserialize)]
+pub struct Place {
+    pub id: String,
+    pub name: String,
+    pub open: bool,
+    pub depth: usize,
+}
+
+/// Where the pointer was when the reader right-clicked, in the window's points
+/// from its top-left corner.
+#[derive(Deserialize, Clone, Copy)]
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
+}
+
+impl Point {
+    /// Where AppKit is asked to draw the menu. A coordinate that is not a
+    /// place in the window - less than nothing, or not a number at all - is
+    /// its edge.
+    pub fn logical(self) -> tauri::LogicalPosition<f64> {
+        let inside = |at: f64| if at.is_finite() && at > 0.0 { at } else { 0.0 };
+        tauri::LogicalPosition::new(inside(self.x), inside(self.y))
+    }
+}
+
+/// An item chosen from a menu under the pointer, with the ids it is about. The
+/// window runs the function the item's button runs, on those ids, and nothing
+/// when they are not what it shows any more.
+#[derive(Serialize)]
+#[serde(tag = "item", rename_all = "camelCase")]
+pub enum Chosen {
+    /// A field's value, whole, through Rust.
+    CopyField {
+        entry: String,
+        field: String,
+    },
+    /// A revealed value, or the part of it selected, through Rust.
+    CopyValue {
+        entry: String,
+        field: String,
+        range: Option<Span>,
+    },
+    ShowField {
+        entry: String,
+        field: String,
+    },
+    HideField {
+        entry: String,
+        field: String,
+    },
+    ChangeField {
+        entry: String,
+        field: String,
+    },
+    MakeOne {
+        entry: String,
+        field: String,
+    },
+    RemoveField {
+        entry: String,
+        field: String,
+    },
+    OpenAddress {
+        entry: String,
+    },
+    Duplicate {
+        entry: String,
+    },
+    MoveEntries {
+        entries: Vec<String>,
+        into: String,
+    },
+    /// Each entry with what the menu said deleting it does.
+    DeleteEntries {
+        entries: Vec<Deleting>,
+    },
+    PutBackEntries {
+        entries: Vec<String>,
+    },
+    NewEntryIn {
+        group: String,
+    },
+    NewFolderIn {
+        group: String,
+    },
+    RenameFolder {
+        group: String,
+    },
+    MoveFolder {
+        group: String,
+        into: String,
+    },
+    DeleteFolder {
+        group: String,
+        deletion: Deletion,
+    },
+    PutBackFolder {
+        group: String,
+    },
+    EmptyBin,
+    SaveFile {
+        entry: String,
+        name: String,
+    },
+    RemoveFile {
+        entry: String,
+        name: String,
+    },
 }
 
 /// The value when the database does not protect it, and nothing at all when it
@@ -1178,6 +1348,68 @@ mod tests {
                 sent.starts_with(r#"{"action":"command","command":""#),
                 "{sent}"
             );
+        }
+    }
+
+    /// An item chosen from a menu under the pointer reaches the page under
+    /// the menu's number, read by its own tag, with the ids it is about and
+    /// the part of a value selected: positions, never the value.
+    #[test]
+    fn a_choice_from_a_menu_under_the_pointer_is_read_by_its_tag() {
+        assert_eq!(
+            json(&Action::Context {
+                serial: 3,
+                chosen: Chosen::CopyValue {
+                    entry: "an entry".to_owned(),
+                    field: "PIN".to_owned(),
+                    range: Some(Span { from: 1, to: 4 }),
+                },
+            }),
+            r#"{"action":"context","serial":3,"chosen":{"item":"copyValue","entry":"an entry","field":"PIN","range":{"from":1,"to":4}}}"#
+        );
+        assert_eq!(
+            json(&Action::Context {
+                serial: 1,
+                chosen: Chosen::EmptyBin
+            }),
+            r#"{"action":"context","serial":1,"chosen":{"item":"emptyBin"}}"#
+        );
+        assert_eq!(
+            json(&Chosen::DeleteEntries {
+                entries: vec![Deleting {
+                    entry: "an entry".to_owned(),
+                    deletion: Deletion::Forever,
+                }],
+            }),
+            r#"{"item":"deleteEntries","entries":[{"entry":"an entry","deletion":"forever"}]}"#
+        );
+        assert_eq!(
+            json(&Chosen::MoveFolder {
+                group: "a".to_owned(),
+                into: "b".to_owned(),
+            }),
+            r#"{"item":"moveFolder","group":"a","into":"b"}"#
+        );
+    }
+
+    /// The pointer is where the window says, and a number that is no place in
+    /// the window - less than nothing, too large to be a number, not one at
+    /// all - is the window's edge rather than a menu drawn off the screen.
+    #[test]
+    fn a_point_off_the_window_is_its_edge() {
+        let at = |x: f64, y: f64| {
+            let logical = Point { x, y }.logical();
+            (logical.x, logical.y)
+        };
+        assert_eq!(at(12.5, 300.0), (12.5, 300.0));
+        assert_eq!(at(-4.0, -0.0), (0.0, 0.0));
+        assert_eq!(at(f64::NAN, f64::INFINITY), (0.0, 0.0));
+        assert_eq!(at(f64::NEG_INFINITY, 1e9), (0.0, 1e9));
+
+        let read: Point = serde_json::from_str(r#"{"x":10,"y":20.25}"#).expect("a point reads");
+        assert_eq!((read.x, read.y), (10.0, 20.25));
+        for refused in [r#"{"x":1}"#, r#"{"x":"1","y":2}"#, r#"{"x":1e999,"y":2}"#] {
+            assert!(serde_json::from_str::<Point>(refused).is_err(), "{refused}");
         }
     }
 

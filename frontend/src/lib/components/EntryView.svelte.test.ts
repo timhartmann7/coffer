@@ -1,5 +1,6 @@
 import { flushSync, mount, unmount, type ComponentProps } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { chosen as picked, forget } from '$lib/context.svelte';
 import { attachment, drawing, entry, field, generated, group, kinds } from '$lib/fixtures';
 import { typing } from '$lib/keys';
 import type { Attached, Clash, Entry, Generated, Purpose, Recipe } from '$lib/model';
@@ -25,9 +26,11 @@ beforeEach(() => {
 	ipc.withdrawAttachment.mockResolvedValue(undefined);
 	ipc.draft.mockResolvedValue(undefined);
 	ipc.generator.mockResolvedValue(drawing());
+	ipc.contextMenu.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
+	forget();
 	host.remove();
 	localStorage.clear();
 	// A selection one test made is still standing in the next one otherwise,
@@ -147,6 +150,18 @@ function choose(node: HTMLElement, from: number, to: number) {
 	const selection = document.getSelection();
 	selection?.removeAllRanges();
 	selection?.addRange(range);
+}
+
+/** A right-click on `target`, and the menu the window asked Rust for: what it
+ * is about, and the number an item chosen from it comes back with. */
+function menuOn(target: Element): { event: MouseEvent; serial: number; subject: unknown } {
+	const before = ipc.contextMenu.mock.calls.length;
+	const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+	target.dispatchEvent(event);
+	const call = ipc.contextMenu.mock.calls.at(-1);
+	if (ipc.contextMenu.mock.calls.length === before || !call)
+		return { event, serial: -1, subject: null };
+	return { event, serial: call[0] as number, subject: call[1] };
 }
 
 /** What the system's Copy or Cut menu item fires at the node holding the
@@ -2004,11 +2019,17 @@ it('hands a copy or a cut of a revealed value to Rust, the part selected and no 
 /**
  * The menu WebKit draws under the pointer offers Look Up, Translate, Search
  * and Share, each of which hands the value to another application, and a
- * selection dragged out of the window goes wherever it is dropped. Neither
- * starts on a revealed value, wherever in the pane that value is.
+ * selection dragged out of the window goes wherever it is dropped. On a
+ * revealed value, wherever in the pane it is, the menu is Coffer's - Copy,
+ * through Rust, and Hide - and the drag does not start. What Rust is asked
+ * for names the field, and holds nothing of the value.
  */
-it('draws no menu and starts no drag on a revealed value', async () => {
-	const { component } = pane({
+it('asks for Coffer’s menu and never WebKit’s on a revealed value, and sends none of it', async () => {
+	const {
+		component,
+		entry: shown,
+		onCopy
+	} = pane({
 		fields: [
 			field({ name: 'UserName', kind: 'username', value: null, empty: false }),
 			field({ name: 'Password', kind: 'password', value: null, empty: false }),
@@ -2025,13 +2046,261 @@ it('draws no menu and starts no drag on a revealed value', async () => {
 			eye.click();
 	await vi.waitFor(() => expect(nodes.every((node) => node.textContent === SECRET)).toBe(true));
 
-	for (const node of nodes) {
-		for (const kind of ['contextmenu', 'dragstart']) {
-			const event = new MouseEvent(kind, { bubbles: true, cancelable: true });
-			node.dispatchEvent(event);
-			expect(event.defaultPrevented, `${kind} was left to the system`).toBe(true);
-		}
+	const names = ['UserName', 'Password', 'Notes', 'PIN'];
+	for (const [at, node] of nodes.entries()) {
+		const { event, subject } = menuOn(node);
+		expect(event.defaultPrevented, `${names[at]}: WebKit's menu`).toBe(true);
+		expect(subject).toEqual({ kind: 'value', entry: shown.id, field: names[at], range: null });
+		const drag = new MouseEvent('dragstart', { bubbles: true, cancelable: true });
+		node.dispatchEvent(drag);
+		expect(drag.defaultPrevented, `${names[at]}: a drag`).toBe(true);
 	}
+	expect(ipc.contextMenu).toHaveBeenCalledTimes(4);
+	expect(JSON.stringify(ipc.contextMenu.mock.calls)).not.toContain(SECRET);
+
+	// Copy from the menu over the password: that field, through Rust.
+	const copying = menuOn(nodes[1]);
+	picked(copying.serial, { item: 'copyValue', entry: shown.id, field: 'Password', range: null });
+	expect(onCopy).toHaveBeenLastCalledWith(shown.id, 'Password', null);
+
+	// Hide from the menu over the PIN takes that value off the screen, and no
+	// other.
+	const hiding = menuOn(nodes[3]);
+	picked(hiding.serial, { item: 'hideField', entry: shown.id, field: 'PIN' });
+	flushSync();
+	expect(nodes[3].textContent).toBe('');
+	expect(nodes.slice(0, 3).map((node) => node.textContent)).toEqual([SECRET, SECRET, SECRET]);
+
+	return unmount(component);
+});
+
+/** Every item of a hidden field's menu is one of the row's own buttons: the
+ * eye, the copy, Change, Make one and the trash, which takes the field off the
+ * way its trash does. */
+it('answers a hidden field’s menu with the row’s own buttons', async () => {
+	ipc.removeField.mockResolvedValue(entry());
+	const {
+		component,
+		entry: shown,
+		onCopy
+	} = pane({
+		fields: [field({ name: 'PIN', kind: 'custom', protected: true, value: null, empty: false })]
+	});
+	const name = icon('Rename PIN');
+
+	let menu = menuOn(name);
+	expect(menu.event.defaultPrevented).toBe(true);
+	expect(menu.subject).toEqual({ kind: 'field', entry: shown.id, field: 'PIN', shown: false });
+	picked(menu.serial, { item: 'showField', entry: shown.id, field: 'PIN' });
+	await vi.waitFor(() => expect(ipc.reveal).toHaveBeenCalledWith(shown.id, 'PIN'));
+	flushSync();
+	expect(menuOn(name).subject, 'Hide is offered once it is shown').toMatchObject({ shown: true });
+
+	menu = menuOn(name);
+	picked(menu.serial, { item: 'copyField', entry: shown.id, field: 'PIN' });
+	expect(onCopy).toHaveBeenLastCalledWith(shown.id, 'PIN', null);
+
+	menu = menuOn(name);
+	picked(menu.serial, { item: 'changeField', entry: shown.id, field: 'PIN' });
+	flushSync();
+	expect(changer('New value of PIN')).not.toBeNull();
+
+	menu = menuOn(changer('New value of PIN'));
+	expect(menu.event.defaultPrevented, 'the Change field lost WebKit’s menu').toBe(false);
+	expect(menu.serial, 'the Change field is the reader’s typing').toBe(-1);
+
+	return unmount(component);
+});
+
+it('makes a value for a hidden field and takes it off from the row’s menu', async () => {
+	ipc.removeField.mockResolvedValue(entry());
+	const { component, entry: shown } = pane({
+		fields: [field({ name: 'PIN', kind: 'custom', protected: true, value: null, empty: false })]
+	});
+
+	let menu = menuOn(icon('Rename PIN'));
+	picked(menu.serial, { item: 'makeOne', entry: shown.id, field: 'PIN' });
+	flushSync();
+	expect(host.querySelector('[aria-label="Generator for PIN"]')).not.toBeNull();
+
+	menu = menuOn(icon('Keep PIN hidden'));
+	picked(menu.serial, { item: 'removeField', entry: shown.id, field: 'PIN' });
+	await vi.waitFor(() => expect(ipc.removeField).toHaveBeenCalledWith(shown.id, 'PIN', false));
+
+	return unmount(component);
+});
+
+/** The password's row is its name, its value and its buttons, and its menu
+ * offers what the buttons do. Its Change field is the reader's typing, and
+ * keeps WebKit's menu for it. */
+it('answers the password row’s menu with Show, Copy, Change and Make one', async () => {
+	const {
+		component,
+		entry: shown,
+		onCopy
+	} = pane({
+		fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })]
+	});
+	const label = [...host.querySelectorAll('span')].find(
+		(each) => each.textContent.trim() === 'Password'
+	);
+	if (!label) throw new Error('the password row has no name');
+
+	let menu = menuOn(label);
+	expect(menu.subject).toEqual({ kind: 'field', entry: shown.id, field: 'Password', shown: false });
+	picked(menu.serial, { item: 'showField', entry: shown.id, field: 'Password' });
+	await vi.waitFor(() => expect(value()).toBe(SECRET));
+
+	menu = menuOn(button('Hide'));
+	expect(menu.subject).toMatchObject({ shown: true });
+	picked(menu.serial, { item: 'hideField', entry: shown.id, field: 'Password' });
+	flushSync();
+	expect(value()).toBe('');
+
+	menu = menuOn(button('Copy'));
+	picked(menu.serial, { item: 'copyField', entry: shown.id, field: 'Password' });
+	expect(onCopy).toHaveBeenLastCalledWith(shown.id, 'Password', null);
+
+	menu = menuOn(label);
+	picked(menu.serial, { item: 'makeOne', entry: shown.id, field: 'Password' });
+	flushSync();
+	expect(host.querySelector('[aria-label="Password generator"]')).not.toBeNull();
+
+	menu = menuOn(label);
+	picked(menu.serial, { item: 'changeField', entry: shown.id, field: 'Password' });
+	flushSync();
+	const typing = changer('New password');
+	const typed = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+	const asked = ipc.contextMenu.mock.calls.length;
+	typing.dispatchEvent(typed);
+	expect(typed.defaultPrevented, 'the Change field lost WebKit’s menu').toBe(false);
+	expect(ipc.contextMenu).toHaveBeenCalledTimes(asked);
+
+	return unmount(component);
+});
+
+/** A file's menu is its two buttons: the save panel, and the question in its
+ * row before it goes. Nothing is removed from the menu alone. */
+it('saves a file from its menu through the panel, and asks before removing it', () => {
+	ipc.exportAttachment.mockResolvedValue(undefined);
+	const { component, entry: shown } = pane({
+		attachments: [attachment({ name: '../../escape.txt', fileName: 'escape.txt' })]
+	});
+	const card = icon('Remove ../../escape.txt').closest('[role="presentation"]');
+	if (!card) throw new Error('the file has no row');
+
+	let menu = menuOn(card);
+	flushSync();
+	expect(menu.subject).toEqual({ kind: 'file', entry: shown.id, name: '../../escape.txt' });
+	expect(card.hasAttribute('data-menu'), 'the row is marked while the menu is open').toBe(true);
+	picked(menu.serial, { item: 'saveFile', entry: shown.id, name: '../../escape.txt' });
+	expect(ipc.exportAttachment).toHaveBeenCalledWith(shown.id, '../../escape.txt');
+
+	menu = menuOn(card);
+	picked(menu.serial, { item: 'removeFile', entry: shown.id, name: '../../escape.txt' });
+	flushSync();
+	expect(host.querySelector('[data-confirm]')?.textContent).toContain('can’t be undone');
+	expect(ipc.removeAttachment).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/** The menu was about a field of one entry, and the pane is on another by the
+ * time the item comes - with a field of the same name. Nothing happens to
+ * either. The row of a field of the reader's own is drawn again for the next
+ * entry, so the row the menu was asked on has left the screen and that is
+ * what drops its item (`chosen` in `context.svelte.ts`); the password's row
+ * and a file's stay, and their answers compare the ids (`about`). */
+it('changes nothing from an item chosen for an entry the pane no longer shows', () => {
+	const first = entry({
+		fields: [field({ name: 'PIN', kind: 'custom', protected: true, value: null, empty: false })],
+		attachments: [attachment({ name: 'scan.pdf' })]
+	});
+	const handed = reactive(props({ entry: first }));
+	const component = mount(EntryView, { target: host, props: handed });
+	flushSync();
+	const own = menuOn(icon('Rename PIN'));
+	const label = [...host.querySelectorAll('span')].find(
+		(each) => each.textContent.trim() === 'Password'
+	);
+	if (!label) throw new Error('the password row has no name');
+
+	handed.entry = entry({
+		fields: [field({ name: 'PIN', kind: 'custom', protected: true, value: null, empty: false })],
+		attachments: [attachment({ name: 'scan.pdf' })]
+	});
+	flushSync();
+	picked(own.serial, { item: 'removeField', entry: first.id, field: 'PIN' });
+	const password = menuOn(label);
+	picked(password.serial, { item: 'changeField', entry: first.id, field: 'Password' });
+	const card = icon('Remove scan.pdf').closest('[role="presentation"]');
+	if (!card) throw new Error('the file has no row');
+	const file = menuOn(card);
+	picked(file.serial, { item: 'removeFile', entry: first.id, name: 'scan.pdf' });
+	flushSync();
+
+	expect(ipc.removeField).not.toHaveBeenCalled();
+	expect(host.querySelector('textarea[aria-label="New password"]')).toBeNull();
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+
+	return unmount(component);
+});
+
+/** The question that deletes an entry for good is put on its bin card while
+ * it is in the bin, and at the foot of the pane while it is not. An entry put
+ * back under the card's question is asked about nowhere: at the foot the
+ * question would stand over a button that moves the entry to the bin. */
+it('drops the bin card’s question when the entry leaves the bin under it', () => {
+	const binned = entry({
+		fields: titled('Bank'),
+		binned: { since: '2026-08-27T10:00:00Z', within: null, from: null },
+		deletion: 'forever'
+	});
+	const handed = reactive(props({ entry: binned }));
+	const component = mount(EntryView, { target: host, props: handed });
+	flushSync();
+	button('Delete forever…').click();
+	flushSync();
+	expect(host.querySelector('[data-binned] [data-confirm]')).not.toBeNull();
+
+	handed.entry = { ...binned, binned: null, deletion: 'bin' };
+	flushSync();
+	expect(host.querySelector('[data-binned]')).toBeNull();
+	expect(host.querySelector('[data-confirm]'), 'asked at the foot').toBeNull();
+	button('Move to Recycle Bin').click();
+	expect(handed.onDelete).toHaveBeenCalledTimes(1);
+
+	return unmount(component);
+});
+
+/** A vault Coffer will not write back still shows its menus - a value is
+ * still copied and shown - and nothing chosen from one changes anything. */
+it('changes nothing from a menu in a pane that cannot be written', () => {
+	const { component, entry: shown } = pane(
+		{
+			fields: [field({ name: 'Password', kind: 'password', value: null, empty: false })],
+			attachments: [attachment({ name: 'scan.pdf' })]
+		},
+		true
+	);
+	const card = [...host.querySelectorAll('[role="presentation"]')].find((each) =>
+		each.textContent?.includes('scan.pdf')
+	);
+	if (!card) throw new Error('the file has no row');
+	const label = [...host.querySelectorAll('span')].find(
+		(each) => each.textContent.trim() === 'Password'
+	);
+	if (!label) throw new Error('the password row has no name');
+
+	const file = menuOn(card);
+	expect(file.event.defaultPrevented).toBe(true);
+	picked(file.serial, { item: 'removeFile', entry: shown.id, name: 'scan.pdf' });
+	const password = menuOn(label);
+	picked(password.serial, { item: 'changeField', entry: shown.id, field: 'Password' });
+	flushSync();
+
+	expect(host.querySelector('[data-confirm]')).toBeNull();
+	expect(host.querySelector('textarea[aria-label="New password"]')).toBeNull();
 
 	return unmount(component);
 });

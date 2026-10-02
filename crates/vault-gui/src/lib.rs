@@ -27,13 +27,17 @@ mod buttons;
 mod clipboard;
 mod closing;
 mod commands;
+mod context;
 mod drafts;
 mod dto;
 mod error;
+#[cfg(test)]
+mod fixtures;
 mod generator;
 mod home;
 mod kept;
 mod lock;
+mod main_thread;
 mod menu;
 mod offered;
 mod opener;
@@ -73,6 +77,7 @@ pub fn run() {
             app.manage(Arc::new(Session::new(remembered, directory)));
             app.manage(Arc::clone(&preferences));
             app.manage(route::Route::default());
+            app.manage(context::Menus::default());
 
             let locking = app.handle().clone();
             app.manage(Arc::new(Timer::start(
@@ -121,6 +126,7 @@ pub fn run() {
             commands::listen,
             commands::menu_state,
             commands::close_window,
+            commands::context_menu,
             commands::tree,
             commands::entry,
             commands::reveal,

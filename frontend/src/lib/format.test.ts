@@ -1,6 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { entry, field, row } from './fixtures';
-import { ago, at, called, copied, counted, day, fully, quoted, size, when } from './format';
+import {
+	ago,
+	at,
+	called,
+	copied,
+	counted,
+	day,
+	fully,
+	isolated,
+	quoted,
+	size,
+	when
+} from './format';
 
 /** The suite runs with TZ pinned to UTC, so the local clock the screen writes
  * in is the same one the database keeps. */
@@ -195,6 +207,21 @@ describe('a name in running text', () => {
 		expect(quoted('Bank')).toBe('“⁨Bank⁩”');
 		expect(quoted('בנק ⁧x⁩')).toBe('“⁨בנק ⁧x⁩⁩”');
 		expect(quoted('')).toBe('“⁨⁩”');
+	});
+
+	/** A line of a menu is as wide as its longest line, and a folder's name can
+	 * be a megabyte. It is cut, by characters rather than by halves of one, and
+	 * what it opened before the cut is closed after it all the same. */
+	it('cuts a name where it stands among words of its own, and still closes it', () => {
+		expect(isolated('x'.repeat(200), 60)).toBe(`\u2068${'x'.repeat(60)}…\u2069`);
+		expect(isolated('x'.repeat(60), 60), 'exactly as long').toBe(`\u2068${'x'.repeat(60)}\u2069`);
+		expect(isolated('🔐'.repeat(70), 60)).toBe(`\u2068${'🔐'.repeat(60)}…\u2069`);
+		expect(isolated('x'.repeat(1 << 20), 60)).toHaveLength(63);
+		for (const name of [`\u2067${'y'.repeat(100)}`, `${'z'.repeat(59)}\u202E${'w'.repeat(9)}`]) {
+			expect(outside(`Move to ${isolated(name, 60)} now`), name.slice(0, 3)).toBe('Move to  now');
+		}
+		expect(isolated('a\nb', 60)).toBe('\u2068a b\u2069');
+		expect(quoted('Bank')).toBe(`“${isolated('Bank')}”`);
 	});
 });
 

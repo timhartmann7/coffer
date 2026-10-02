@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { deleted } from '$lib/bin';
+	import { marked } from '$lib/context.svelte';
 	import type { Group } from '$lib/model';
 	import { entriesOf } from '$lib/tree';
 	import Icon from './Icon.svelte';
@@ -20,13 +21,16 @@
 		root,
 		now,
 		compact,
-		onOpen
+		onOpen,
+		onMenu
 	}: {
 		folders: Group[];
 		root: Group;
 		now: Date;
 		compact: boolean;
 		onOpen: (id: string) => void;
+		/** A right-click on a folder, which draws Coffer's menu for it. */
+		onMenu: (event: MouseEvent, folder: Group) => void;
 	} = $props();
 </script>
 
@@ -35,7 +39,9 @@
 	<button
 		type="button"
 		data-folder
+		data-menu={marked('folder', folder.id) || undefined}
 		onclick={() => onOpen(folder.id)}
+		oncontextmenu={(event) => onMenu(event, folder)}
 		class={compact
 			? 'mb-1 block w-full rounded-sm border border-transparent px-3 py-2.5 text-left transition hover:border-hairline hover:bg-raised/50'
 			: 'flex w-full items-center gap-4 border-b border-line px-5 py-[11px] text-left transition-colors hover:bg-raised/50'}

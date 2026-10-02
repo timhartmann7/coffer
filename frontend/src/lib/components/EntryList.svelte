@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import { marked } from '$lib/context.svelte';
 	import { when } from '$lib/format';
 	import { KEYS, OWN } from '$lib/shortcuts';
 	import type { EntryRow } from '$lib/model';
@@ -20,7 +21,8 @@
 		onOpen,
 		onChoose,
 		onCopy,
-		onPress
+		onPress,
+		onMenu
 	}: {
 		rows: EntryRow[];
 		now: Date;
@@ -45,6 +47,8 @@
 		/** A press on a row, which a drag may start from. Left out where
 		 * nothing may be moved. */
 		onPress?: (event: PointerEvent, row: EntryRow) => void;
+		/** A right-click on a row, which draws Coffer's menu for it. */
+		onMenu: (event: MouseEvent, row: EntryRow) => void;
 	} = $props();
 
 	/**
@@ -81,6 +85,9 @@
 			name a screen reader never reads out.
 		-->
 		<div
+			role="presentation"
+			data-menu={marked('entry', row.id) || undefined}
+			oncontextmenu={(event) => onMenu(event, row)}
 			class="relative border-b border-line transition-colors {picked
 				? 'bg-selection'
 				: lifted?.has(row.id)

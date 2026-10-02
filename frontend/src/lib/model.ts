@@ -547,5 +547,72 @@ export const COMMANDS = [
 export type Command = (typeof COMMANDS)[number];
 
 /** What Rust tells the window the reader chose outside it: an item of the menu
- * bar, or the window's own close button. */
-export type Action = { action: 'command'; command: Command } | { action: 'closing' };
+ * bar, the window's own close button, or an item of a menu under the pointer
+ * with the number the window gave that menu. */
+export type Action =
+	| { action: 'command'; command: Command }
+	| { action: 'closing' }
+	| { action: 'context'; serial: number; chosen: Chosen };
+
+/**
+ * A place a menu's Move to offers, in the folder list's order: the top of the
+ * vault, then every folder outside the bin, each `depth` folders down from the
+ * top. The name is already set apart and cut to length the way a sentence sets
+ * one apart, and `open` says whether a move there would be taken and change
+ * something. Rust draws the menu from these and trusts none of them: the move
+ * itself is checked again.
+ */
+export interface Place {
+	id: string;
+	name: string;
+	open: boolean;
+	depth: number;
+}
+
+/**
+ * What a right-click was on, as the window tells Rust: ids, names, whether a
+ * value is on the screen, and for a revealed value the positions of the part
+ * selected. Nothing of any value.
+ */
+export type Subject =
+	| { kind: 'entry'; entry: string; places: Place[] }
+	| { kind: 'entries'; entries: string[]; places: Place[] }
+	| { kind: 'folder'; group: string; places: Place[] }
+	| { kind: 'bin' }
+	| { kind: 'field'; entry: string; field: string; shown: boolean }
+	| { kind: 'file'; entry: string; name: string }
+	| { kind: 'value'; entry: string; field: string; range: Span | null };
+
+/** Where the pointer was, in the window's own points from its top-left corner. */
+export interface Point {
+	x: number;
+	y: number;
+}
+
+/**
+ * An item chosen from one of Coffer's menus under the pointer, with the ids it
+ * is about. The window runs the function the item's button runs, on those
+ * ids, and nothing when they are not what it shows any more.
+ */
+export type Chosen =
+	| { item: 'copyField'; entry: string; field: string }
+	| { item: 'copyValue'; entry: string; field: string; range: Span | null }
+	| { item: 'showField'; entry: string; field: string }
+	| { item: 'hideField'; entry: string; field: string }
+	| { item: 'changeField'; entry: string; field: string }
+	| { item: 'makeOne'; entry: string; field: string }
+	| { item: 'removeField'; entry: string; field: string }
+	| { item: 'openAddress'; entry: string }
+	| { item: 'duplicate'; entry: string }
+	| { item: 'moveEntries'; entries: string[]; into: string }
+	| { item: 'deleteEntries'; entries: Deleting[] }
+	| { item: 'putBackEntries'; entries: string[] }
+	| { item: 'newEntryIn'; group: string }
+	| { item: 'newFolderIn'; group: string }
+	| { item: 'renameFolder'; group: string }
+	| { item: 'moveFolder'; group: string; into: string }
+	| { item: 'deleteFolder'; group: string; deletion: Deletion }
+	| { item: 'putBackFolder'; group: string }
+	| { item: 'emptyBin' }
+	| { item: 'saveFile'; entry: string; name: string }
+	| { item: 'removeFile'; entry: string; name: string };

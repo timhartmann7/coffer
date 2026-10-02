@@ -26,7 +26,7 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::autolock::Reason;
 use crate::session::Session;
-use crate::{clipboard, window};
+use crate::{clipboard, context, window};
 
 /// Wipes the vault and takes the window down with it.
 pub fn lock<R: Runtime>(app: &AppHandle<R>, reason: Reason) {
@@ -40,6 +40,12 @@ pub fn lock<R: Runtime>(app: &AppHandle<R>, reason: Reason) {
     if !session.lock(reason) {
         return;
     }
+
+    // What a menu under the pointer is about is names and ids out of the tree
+    // that just went. A menu still open keeps the window's destroy waiting
+    // until it is dismissed; nothing chosen in it reaches anything, and one
+    // asked for and not drawn yet is not drawn.
+    context::forget(app);
 
     // A vault that locked with the password still on the clipboard is a lock
     // that did not lock.

@@ -18,7 +18,7 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::dto::Action;
 use crate::menu::Command;
-use crate::window;
+use crate::{context, window};
 
 /// The page that is listening, if one is, and what was chosen while none was.
 #[derive(Default)]
@@ -121,15 +121,23 @@ impl Route {
     }
 }
 
-/// A Coffer item in the menu bar was chosen; registered with
-/// `Builder::on_menu_event`. On the main thread, where every menu event
-/// arrives (`app.rs` in tauri 2.11.5). AppKit's own items carry ids Coffer
-/// does not know and are left alone.
+/// A Coffer item in the menu bar, or in a menu under the pointer, was chosen;
+/// registered with `Builder::on_menu_event`. On the main thread, where every
+/// menu event arrives (`app.rs` in tauri 2.11.5). AppKit's own items carry ids
+/// Coffer does not know and are left alone.
 pub fn chosen<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
-    let Some(command) = Command::named(event.id().as_ref()) else {
+    let Some(route) = app.try_state::<Route>() else {
         return;
     };
-    let Some(route) = app.try_state::<Route>() else {
+    // A menu under the pointer is about the page that asked for it, which is
+    // in front: told, and with no page to tell, gone. Kept for the next page
+    // it would act on a window the reader never right-clicked, and waited for
+    // it would build one.
+    if let Some((serial, chosen)) = context::picked(app, event.id().as_ref()) {
+        route.tell(Action::Context { serial, chosen });
+        return;
+    }
+    let Some(command) = Command::named(event.id().as_ref()) else {
         return;
     };
     let told = route.deliver(Action::Command { command });
@@ -154,6 +162,7 @@ mod tests {
     use tauri::ipc::InvokeResponseBody;
 
     use super::*;
+    use crate::source::shipped;
 
     type Heard = Arc<Mutex<Vec<String>>>;
 
@@ -294,6 +303,38 @@ mod tests {
 
         assert!(route.tell(Action::Closing));
         assert_eq!(said(&heard), [CLOSING]);
+    }
+
+    /// An item of a menu under the pointer belongs to the page that asked for
+    /// that menu. With no page to tell it is dropped, and the next window -
+    /// built by the Dock, or by a lock - never runs it by itself.
+    #[test]
+    fn a_choice_from_a_menu_under_the_pointer_is_told_or_dropped() {
+        let route = Route::default();
+        let menu = || Action::Context {
+            serial: 1,
+            chosen: crate::dto::Chosen::EmptyBin,
+        };
+        assert!(!route.tell(menu()));
+
+        let (channel, heard) = page();
+        route.listen("main-1", channel);
+        assert!(said(&heard).is_empty(), "the next window ran it");
+
+        assert!(route.tell(menu()));
+        assert_eq!(
+            said(&heard),
+            [r#"{"action":"context","serial":1,"chosen":{"item":"emptyBin"}}"#]
+        );
+
+        let chosen = shipped(include_str!("route.rs"))
+            .split("pub fn chosen<")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("chosen is there")
+            .to_owned();
+        assert!(chosen.contains("route.tell(Action::Context {"));
+        assert!(!chosen.contains("deliver(Action::Context"));
     }
 
     /// A choice told to the page there is done with: when that window goes

@@ -29,6 +29,7 @@ travels the other way, as bytes.
 | Hide a field, or rename it | nothing new; the value moves inside Rust, and a hidden field comes back with no value |
 | Show a field | its value, in the entry that comes back: it is an open field from then on, and crosses as every open value does |
 | Make an entry of a kind, from a template, or as a copy | the tree and the new entry's id; every value and file is copied inside Rust |
+| Ask for a menu under the pointer | nothing; Rust draws it from the vault, and the item chosen comes back with the ids it is about |
 
 A field's `value` is `null` exactly when it does not cross: the database
 protects it, or it is the password. **A password never crosses, protected or
@@ -839,10 +840,22 @@ positions counted in UTF-16 code units the way the text node counts them, or
 Rust and refuses a range the value does not have, an empty one, or one with an
 end between the two halves of a character outside the basic plane. The
 positions come from the selection's own offsets and never from its text, which
-would be a copy of the secret in a JavaScript string. A right-click or a drag on anything inside such a
-selection draws no WebKit menu and starts no drag. The generator's value is the
-one revealed value with nothing in the vault to copy by name, and its copy is
-refused with a sentence that says to put it in the field first.
+would be a copy of the secret in a JavaScript string. A drag on anything inside
+such a selection starts nothing. A right-click on a revealed value, or on chrome
+inside a selection that runs into one, draws Coffer's menu about that value -
+Copy, through Rust, and Hide - and never WebKit's (see A menu under the
+pointer); one that reaches two values draws no menu at all. A right-click
+anywhere else draws what is there, but never WebKit's menu while the selection
+still covers part of a value, because that menu is about the selection and not
+about what the pointer is on: in the search field, or any field being typed in,
+which otherwise keeps WebKit's menu, it then draws none. WebKit selects the
+word under a right-click before the page hears of the menu, so the guard keeps
+the selection as it stood when the button went down: a word WebKit chose is not
+a part the reader chose, and Copy then copies the whole value; when the pointer
+was beside the reader's own selection, that selection is put back. The
+generator's value is the one revealed value with nothing in the vault to copy
+by name: its copy is refused with a sentence that says to put it in the field
+first, and it draws no menu.
 
 `Cmd+C` follows the same rule. With the focus on the row of a protected value -
 which is where Show puts it - it copies that row's value; with nothing selected
@@ -1012,6 +1025,75 @@ brings the window back: forward, and out of the Dock when it was minimised, or
 built again where it was left when the reader had closed it. The unlock screen
 it comes back to says nothing about why: the reader asked.
 
+## A menu under the pointer
+
+WebKit's own menu is a web page's: Look Up, Translate, Search and Share, each
+of which hands what is under the pointer to another application. So the window
+prevents it everywhere (`plain` in `context.svelte.ts`, on the window under
+every screen), except in a field the reader types into, where its Cut, Copy,
+Paste and spelling are about their typing - and there too while a revealed
+value is selected (see A value selected on the screen). Where the window knows
+what was right-clicked, it asks Rust for Coffer's own menu instead.
+
+| Command | Takes | Answers |
+|---|---|---|
+| `context_menu` | `serial`, `subject`, `at` | nothing, once the menu has closed |
+
+**The page names the thing; Rust decides the menu.** `subject` is one of seven
+kinds, by id and name and never by value: a row (`entry`), the rows chosen
+(`entries`, when the right-click was on one of them), a folder (`folder`), the
+bin's own row (`bin`), a field's row (`field`, with whether its value is on the
+screen), a file (`file`) and a revealed value (`value`, with the positions of
+the part selected). `at` is where the pointer was, in the window's points. Rust
+reads the vault (`context::offered`): whether there is a login or a password to
+copy, whether the address is one it would open, whether it writes this vault
+back, what deleting the thing does, whether the bin holds anything. An item
+that does not apply is drawn greyed out, so nothing is offered that the command
+behind its button would refuse. Something the vault does not have - gone a
+moment before, or an id that is not one - is refused `noSuchEntry`, and the
+window says so; a menu that could not be shown is `other`.
+
+**Move to is the window's list of places, sent flat.** `entry`, `entries` and
+`folder` carry `places`: the folder list's destinations in the tree's order
+(`placesFor` in `places.ts`), each with how deep it sits, its name already set
+apart and cut to sixty characters the way a sentence sets one apart
+(`isolated` in `format.ts`), and whether the move would be taken. Flat, because
+serde_json reads no deeper than 128 levels and a vault can be a hundred
+folders deep; Rust builds the submenus with a stack. Rust applies only what
+AppKit needs, to every title as it hands the menu to muda (`drawn` in
+`context/shown.rs`) - a control character or a line separator is a space, and
+muda's `&` and `[~~]` are escaped, or "R&D" would be offered as "RD" - and
+trusts no place: a move the window was wrong about is refused by the move
+itself.
+
+**The item chosen comes back by id, through the window's channel.** Every item
+is `context:<serial>:<n>`, and the `MenuEvent` AppKit sends carries that and
+nothing else. Rust keeps what the menu is about and answers the id with an
+`Action`, `{ action: 'context', serial, chosen }`, where `chosen` is the item
+and the ids it is about - `copyField`, `moveEntries`, `deleteEntries` with the
+deletion the menu showed for each entry, and so on. It is told only to the page
+listening, never kept for the next one (`route::chosen`), and only the newest
+menu of the window that asked is drawn and answered, once. The page runs the
+function the item's button runs, on those ids, and nothing when they are not
+what it shows any more or the thing right-clicked has left the screen. The
+command answers when the menu closes, and the item may reach the page before
+that answer or after it. A choice for fifty thousand rows is over the 8 KiB a
+channel evaluates straight into the page, and is fetched instead.
+
+**Nothing of AppKit's own is in these menus but a separator.** A predefined
+Copy would be the ordinary pasteboard write `guard.ts` exists to stop, and
+there is no Services item to hand a selection to anything. Copy is Coffer's, by
+entry and field, through `copy`.
+
+**The thread that draws the window tracks the menu.** AppKit shows a menu under
+the pointer modally, inside the call that shows it, on the main thread, and
+nothing else queued for that thread runs until it closes: tao handles what
+Tauri posts there only between callbacks (`app_state.rs` in tao 0.35.3), and
+the menu is shown from inside one. So the vault is read and let go of before
+anything is asked of that thread, the command waits for the menu off it
+(`main_thread::answer`), and nothing on that thread ever waits for a save. The
+item chosen is handled once the menu has gone, like every other menu event.
+
 ## The master password
 
 It reaches Rust as the whole body of the message, as bytes:
@@ -1076,7 +1158,9 @@ is `unlock`, not that a capability lists it. Adding a `permissions/` directory
 to this crate would flip that and every command would then need an entry.
 `listen` takes a `Channel`, which needs nothing here either: the channel's own
 command, which a page uses to fetch a message too large to evaluate, is let past
-the ACL by name (`src/webview/mod.rs` in tauri 2.11.5).
+the ACL by name (`src/webview/mod.rs` in tauri 2.11.5). `context_menu` is an
+application command too, and the menu is built in Rust, so it needs no
+permission: the window cannot build a menu of its own.
 
 The dialog plugin is registered for its Rust API only. Its three webview-facing
 commands - `open`, `save`, `message` - are left unpermitted, so the file picker
@@ -1130,7 +1214,8 @@ calls [`lock.rs`](../crates/vault-gui/src/lock.rs); a close calls it once more
 after the timer, for an unlock still in flight (see The menu bar). That order is
 the whole of what `lock.rs` is: the tree is wiped **first and synchronously**,
 because destroying a window is a message to the event loop and a Mac going to
-sleep will not wait for it; then the clipboard is taken back; then the stack the
+sleep will not wait for it; then what a menu under the pointer was about is
+forgotten (`context::forget`); then the clipboard is taken back; then the stack the
 key was derived on is written over; and only then is the destroy queued, with
 the window asked back unless Coffer is quitting or the reader closed it
 (`Reason::comes_back`).
@@ -1156,10 +1241,20 @@ capabilities the window does not have, and Tauri never clears a destroyed
 window's listeners: a rebuilt window reuses the label `main`, so every emit
 after the first relock would serialise every dead listener id ever registered.
 
-One channel does. The menu bar's choices and the close button reach the page
-through the `Channel` it hands over with `listen` (see The menu bar). It needs
-no capability, and nothing of it outlives the window: Rust lets go of it in the
-`Destroyed` arm, and the next page hands over its own.
+One channel does. The menu bar's choices, the items of a menu under the
+pointer and the close button reach the page through the `Channel` it hands over
+with `listen` (see The menu bar). It needs no capability, and nothing of it
+outlives the window: Rust lets go of it in the `Destroyed` arm, and the next
+page hands over its own.
+
+**A lock while a menu under the pointer is open** wipes the tree and forgets
+what the menu was about at once. The window goes when the menu closes, as it
+does after a file panel: its destroy is queued for the thread the menu holds.
+An item chosen from that menu reaches nothing - Rust no longer knows what it
+was about, and the window that comes back has a label of its own and asked for
+no menu. A menu asked for before the lock and not drawn yet - the vault read,
+its turn on that thread still to come - is not drawn at all: the lock forgets
+which window asked, so it is no longer the newest of any.
 
 ## What the window does not do yet
 
@@ -1184,10 +1279,13 @@ command - the dialog it opens, the thread it moves work onto. Testing one needs
 Tauri's mock runtime and belongs with the window work rather than with this
 slice.
 
-**A folder is moved with the pointer only.** An entry moves from the line above
-its title, which the keyboard reaches like any other button; a folder has no
-such line, and is dragged onto another in the folders pane. A reader without a
-pointer cannot move one yet.
+**A folder is moved with the pointer, or from its menu.** An entry moves from
+the line above its title, which the keyboard reaches like any other button; a
+folder has no such line. It is dragged onto another in the folders pane, or
+moved through Move to in the menu a right-click on it draws (see A menu under
+the pointer). VoiceOver's VO+Shift+M should open that menu on the folder's line
+with no pointer at all, which is on the release checks and not yet confirmed; a
+reader with only the keyboard and no VoiceOver cannot move a folder yet.
 
 **The three window buttons are not moved at all.** macOS puts the close,
 minimise and zoom buttons a fixed distance below the top of the window, and it

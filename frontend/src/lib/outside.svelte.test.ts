@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { forget, offer } from './context.svelte';
 import { typed } from './drafts';
 import { answer } from './menu.svelte';
 import { outside } from './outside';
@@ -18,6 +19,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	for (const gone of left.splice(0)) gone();
+	forget();
 });
 
 /** The close button is the window going, not a choice of something on it:
@@ -77,4 +79,29 @@ it('runs a choice from the menu bar on the newest screen that can, and counts th
 	expect(under).not.toHaveBeenCalled();
 	expect(stir).toHaveBeenCalledTimes(1);
 	expect(ipc.closeWindow).not.toHaveBeenCalled();
+});
+
+/** An item of a menu under the pointer is the reader being there too. It is
+ * run by what asked for that menu, and nothing that answers the menu bar runs
+ * instead. */
+it('runs an item of a menu under the pointer, and counts the reader in', () => {
+	ipc.contextMenu.mockResolvedValue(undefined);
+	const ran = vi.fn();
+	left.push(answer({ newFolder: { run: ran } }));
+	const answered = vi.fn();
+	const folder = document.createElement('div');
+	folder.addEventListener('contextmenu', (event) =>
+		offer(event, { kind: 'folder', group: 'group-1', places: [] }, answered, vi.fn())
+	);
+	document.body.appendChild(folder);
+	folder.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+	const serial = ipc.contextMenu.mock.calls[0][0] as number;
+	const stir = vi.fn();
+
+	outside({ action: 'context', serial, chosen: { item: 'newFolderIn', group: 'group-1' } }, stir);
+
+	expect(answered).toHaveBeenCalledWith({ item: 'newFolderIn', group: 'group-1' });
+	expect(ran).not.toHaveBeenCalled();
+	expect(stir).toHaveBeenCalledTimes(1);
+	folder.remove();
 });

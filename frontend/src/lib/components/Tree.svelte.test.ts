@@ -28,7 +28,8 @@ function draw(root: Group, open: string[] = [], selected: string | null = null) 
 			selected,
 			expanded: new SvelteSet(open),
 			onSelect: vi.fn(),
-			onToggle: vi.fn()
+			onToggle: vi.fn(),
+			onMenu: vi.fn()
 		}
 	});
 }
@@ -131,7 +132,8 @@ it('marks the folder a drag would land in with the accent, and only that one', (
 			lifted: work.id,
 			onSelect: vi.fn(),
 			onToggle: vi.fn(),
-			onPress: vi.fn()
+			onPress: vi.fn(),
+			onMenu: vi.fn()
 		}
 	});
 	flushSync();
@@ -165,7 +167,8 @@ it('hands a press on a folder to the screen, and none on its chevron', () => {
 			expanded: new SvelteSet<string>(),
 			onSelect: vi.fn(),
 			onToggle: vi.fn(),
-			onPress
+			onPress,
+			onMenu: vi.fn()
 		}
 	});
 	flushSync();
@@ -179,5 +182,37 @@ it('hands a press on a folder to the screen, and none on its chevron', () => {
 		?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
 	expect(onPress).toHaveBeenCalledWith(expect.any(PointerEvent), work);
 
+	return unmount(component);
+});
+
+/** A right-click anywhere on a folder's line - its name, its count, the
+ * chevron that folds it - asks for that folder's menu, and only one menu. */
+it('asks for a folder’s menu from anywhere on its line', () => {
+	const servers = group({ name: 'Servers' });
+	const work = group({ name: 'Work', sections: [servers] });
+	const onMenu = vi.fn();
+
+	const component = mount(Tree, {
+		target: host,
+		props: {
+			root: group({ sections: [work] }),
+			selected: null,
+			expanded: new SvelteSet<string>([work.id]),
+			onSelect: vi.fn(),
+			onToggle: vi.fn(),
+			onMenu
+		}
+	});
+	flushSync();
+
+	const chevron = host.querySelector('[aria-label="Collapse Work"]');
+	const name = [...host.querySelectorAll('button')].find((each) =>
+		each.textContent?.includes('Servers')
+	);
+	for (const target of [chevron, name]) {
+		target?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+	}
+
+	expect(onMenu.mock.calls.map(([, folder]) => folder.id)).toEqual([work.id, servers.id]);
 	return unmount(component);
 });

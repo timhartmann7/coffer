@@ -78,10 +78,21 @@ export function run(command: Command): void {
 			for (const away of covers) away();
 			flushSync();
 		}
-		const field = document.activeElement;
-		if (field instanceof HTMLElement && writes(field)) field.blur();
+		leave();
 	}
 	found.run();
+}
+
+/**
+ * Leaves the field being written in, the way a press on a button takes the
+ * focus out of it: leaving is when a field writes what was typed into it, and
+ * a choice made outside the page - in the menu bar, or in a menu under the
+ * pointer - takes no focus. A search field, whose leaving writes nothing,
+ * keeps it.
+ */
+export function leave(): void {
+	const field = document.activeElement;
+	if (field instanceof HTMLElement && writes(field)) field.blur();
 }
 
 /** Whether the focus is in a field that writes what was typed into it when it

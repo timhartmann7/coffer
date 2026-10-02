@@ -82,9 +82,11 @@ const ENDS_PARAGRAPH = new Set(['\n', '\r', '\u001C', '\u001D', '\u001E', '\u008
 
 /**
  * A name from the vault or the disk - an entry's title, a field's, a file's or
- * a folder's name - in quotes, the way running text puts it.
+ * a folder's name - set apart from the words around it, and cut after
+ * `longest` characters with an ellipsis where it stands among other words with
+ * no room for all of it: a line of a menu.
  *
- * Isolated from the sentence around it. The name is the reader's or another
+ * Isolated from what is around it. The name is the reader's or another
  * client's and may hold right-to-left text or an override, and left bare, a
  * U+202E in it turns the rest of the sentence around: the sizes and the warning
  * a question asks the reader to read before they choose. The closing mark ends
@@ -97,10 +99,16 @@ const ENDS_PARAGRAPH = new Set(['\n', '\r', '\u001C', '\u001D', '\u001E', '\u008
  * would run on through the sentence. None of this changes how the name itself
  * reads, and the vault keeps it as it is.
  */
-export function quoted(name: string): string {
+export function isolated(name: string, longest = Infinity): string {
 	let open = 0;
 	let kept = '';
+	let counted = 0;
 	for (const char of name) {
+		if (counted === longest) {
+			kept += '…';
+			break;
+		}
+		counted += 1;
 		if (ENDS_PARAGRAPH.has(char)) {
 			kept += ' ';
 			continue;
@@ -112,7 +120,12 @@ export function quoted(name: string): string {
 		}
 		kept += char;
 	}
-	return `“${FIRST_STRONG_ISOLATE}${kept}${POP_DIRECTIONAL_ISOLATE.repeat(open + 1)}”`;
+	return `${FIRST_STRONG_ISOLATE}${kept}${POP_DIRECTIONAL_ISOLATE.repeat(open + 1)}`;
+}
+
+/** A name in quotes, set apart, the way running text puts it (`isolated`). */
+export function quoted(name: string): string {
+	return `“${isolated(name)}”`;
 }
 
 /**

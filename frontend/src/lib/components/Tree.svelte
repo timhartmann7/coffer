@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { marked } from '$lib/context.svelte';
 	import { LANDING } from '$lib/dragging.svelte';
 	import type { Group } from '$lib/model';
 	import { visible } from '$lib/tree';
@@ -12,7 +13,8 @@
 		lifted = null,
 		onSelect,
 		onToggle,
-		onPress
+		onPress,
+		onMenu
 	}: {
 		root: Group;
 		/** The group being shown, or `null` for every entry in the vault. */
@@ -27,6 +29,9 @@
 		/** A press on a folder, which a drag may start from. Left out where
 		 * nothing may be moved. */
 		onPress?: (event: PointerEvent, group: Group) => void;
+		/** A right-click anywhere on a folder's line, its chevron included,
+		 * which draws Coffer's menu for the folder. */
+		onMenu: (event: MouseEvent, group: Group) => void;
 	} = $props();
 
 	const lines = $derived(visible(root, expanded));
@@ -43,8 +48,11 @@
 	{@const here = selected === group.id}
 	{@const landing = drop === group.id}
 	<div
+		role="presentation"
 		data-drop={group.id}
 		data-into={group.id}
+		data-menu={marked('folder', group.id) || undefined}
+		oncontextmenu={(event) => onMenu(event, group)}
 		data-opens={group.sections.length > 0 && !expanded.has(group.id) ? group.id : undefined}
 		class="relative flex items-center gap-1 rounded-sm px-2 py-[7px] transition-colors {landing
 			? LANDING

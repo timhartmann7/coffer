@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { moved } from './bin';
 import { group, row } from './fixtures';
 import type { Group } from './model';
-import { destinations, movedTo, placeOf, targets, TOP, TOP_LABEL } from './places';
+import { destinations, movedTo, placeOf, placesFor, targets, TOP, TOP_LABEL } from './places';
 
 /** A vault shaped to catch every way the list could be wrong: the bin inside a
  * folder, a folder inside the bin, and folders nested both ways. */
@@ -110,5 +110,60 @@ describe('a place in a sentence', () => {
 		expect(movedTo('“⁨Chase⁩”', '“⁨Banking⁩”')).toBe('Moved “⁨Chase⁩” to “⁨Banking⁩”');
 		expect(movedTo('3 entries', TOP)).toBe('Moved 3 entries to the top of the vault');
 		expect(moved('“⁨Bank⁩”')).toBe('Moved “⁨Bank⁩” to the Recycle Bin');
+	});
+});
+
+describe('where a menu under the pointer offers to move a thing', () => {
+	/** The folder list's places, flat, each with how deep it sits and whether a
+	 * move there is one the list would take: the menu draws exactly what the
+	 * list offers. */
+	it('offers the folder list’s places in its order, with how deep each sits', () => {
+		const { root, personal, cards, archive, work } = vault();
+		const rows = [row({ group: personal.id })];
+
+		expect(placesFor(root, { entries: rows })).toEqual([
+			{ id: root.id, name: TOP_LABEL, open: true, depth: 0 },
+			{ id: personal.id, name: '\u2068Personal\u2069', open: false, depth: 0 },
+			{ id: cards.id, name: '\u2068Cards\u2069', open: true, depth: 1 },
+			{ id: archive.id, name: '\u2068Archive\u2069', open: true, depth: 0 },
+			{ id: work.id, name: '\u2068Work\u2069', open: true, depth: 0 }
+		]);
+		for (const place of placesFor(root, { entries: rows }))
+			expect(targets(root, { entries: rows }).has(place.id)).toBe(place.open);
+	});
+
+	/** A folder is offered where it is, greyed out, and never anything under
+	 * it: moving it there is the one move no menu should show at all. Nothing
+	 * in the bin is a place. */
+	it('lists a folder itself, closed, and nothing under it', () => {
+		const { root, personal, cards, archive, work, bin, inBin } = vault();
+
+		const places = placesFor(root, { folder: personal });
+		expect(places.map((place) => place.id)).toEqual([root.id, personal.id, archive.id, work.id]);
+		expect(places.find((place) => place.id === personal.id)?.open).toBe(false);
+		expect(places.find((place) => place.id === root.id)?.open, 'where it is now').toBe(false);
+		for (const gone of [cards.id, bin.id, inBin.id])
+			expect(places.some((place) => place.id === gone)).toBe(false);
+	});
+
+	/** A name that would take a menu over is cut there and set apart; the top
+	 * of the vault is the window's own words. */
+	it('cuts and sets apart a name the way a sentence does, and the top’s is its own', () => {
+		const long = group({ name: `\u202E${'n'.repeat(500)}` });
+		const root = group({ name: 'Passwords', sections: [long] });
+
+		const [top, folder] = placesFor(root, { entries: [row({ group: root.id })] });
+		expect(top.name).toBe(TOP_LABEL);
+		expect(folder.name).toBe(`\u2068\u202E${'n'.repeat(59)}…\u2069`);
+	});
+
+	it('walks a hundred folders deep, each one deeper', () => {
+		const { root, deepest } = chain(100);
+		const places = placesFor(root, { entries: [row({ group: root.id })] });
+		expect(places.map((place) => place.depth)).toEqual([
+			0,
+			...Array.from({ length: 100 }, (_, at) => at)
+		]);
+		expect(places.at(-1)?.id).toBe(deepest.id);
 	});
 });

@@ -1,7 +1,8 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import { about, offer } from '$lib/context.svelte';
 	import { sealed } from '$lib/guard';
-	import type { Span } from '$lib/model';
+	import type { Chosen, Span } from '$lib/model';
 	import type { Revealed } from '$lib/reveal.svelte';
 	import Field from './Field.svelte';
 	import Mask from './Mask.svelte';
@@ -16,6 +17,10 @@
 	 * next click anywhere saved it. Nothing here takes a key: changing a value is
 	 * a press of its own (`Change.svelte`).
 	 *
+	 * Nor is WebKit's menu drawn on it. A right-click on the value, or on a
+	 * selection that runs into it, is Coffer's menu about the value: Copy,
+	 * through Rust, of the part selected or all of it, and Hide.
+	 *
 	 * Nothing here changes size when a value on one line is shown. The mask and
 	 * the value share one box, and the countdown is the box's own bottom edge
 	 * rather than a row that arrives under it. A value on one line stays on one
@@ -25,6 +30,8 @@
 	 * is not in the vault.
 	 */
 	let {
+		entry,
+		field,
 		revealed,
 		node = $bindable(),
 		bare = false,
@@ -34,6 +41,9 @@
 		onCopy,
 		onFailure
 	}: {
+		/** The entry and the field the value is, which its menu names. */
+		entry: string;
+		field: string;
 		/** The clock the value is on, and whether it is on the screen at all. */
 		revealed: Revealed;
 		/** The node the value is written into and wiped from. */
@@ -52,9 +62,22 @@
 		/** Where a copy of the value goes instead of the system's pasteboard:
 		 * Rust, with the part the reader selected or `null` for all of it. */
 		onCopy: (range: Span | null) => void;
-		/** Where a copy that reached more than this value says it copied nothing. */
+		/** Where a copy that reached more than this value says it copied
+		 * nothing, and where a menu that could not be drawn says why. */
 		onFailure: (thrown: unknown) => void;
 	} = $props();
+
+	function menu(event: MouseEvent, range: Span | null) {
+		offer(event, { kind: 'value', entry, field, range }, answer, onFailure);
+	}
+
+	/** Runs an item of the value's menu, while the value is still the one it
+	 * was about. */
+	function answer(item: Chosen) {
+		if (!about(item, entry, field)) return;
+		if (item.item === 'copyValue') onCopy(item.range);
+		else if (item.item === 'hideField') revealed.hide();
+	}
 
 	const flow = $derived(
 		bare
@@ -79,7 +102,7 @@
 		bind:this={node}
 		data-value
 		hidden={!revealed.showing}
-		{@attach sealed(onCopy, onFailure)}
+		{@attach sealed(onCopy, onFailure, menu)}
 		class="min-w-0 flex-1 font-mono text-txt {classes} {flow}"
 	></span>
 

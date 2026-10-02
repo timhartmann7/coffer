@@ -82,7 +82,9 @@ impl Command {
         Command::ALL.into_iter().find(|command| command.id() == id)
     }
 
-    fn title(self) -> &'static str {
+    /// What the item is called. An item of a menu under the pointer that does
+    /// what one of these does is called the same (see `context`).
+    pub fn title(self) -> &'static str {
         match self {
             Command::Settings => "Settings…",
             Command::Lock => "Lock Vault",

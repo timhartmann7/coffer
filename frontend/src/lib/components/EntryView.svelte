@@ -2,6 +2,7 @@
 	import { untrack } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { eraseQuestion } from '$lib/bin';
+	import { marked, offer } from '$lib/context.svelte';
 	import { settle, track, type Place } from '$lib/drafts';
 	import { called, fully, NO_LOGIN, quoted, size, UNTITLED } from '$lib/format';
 	import {
@@ -21,9 +22,11 @@
 		withdrawAttachment
 	} from '$lib/ipc';
 	import { cancels, composing } from '$lib/lines';
+	import { leave } from '$lib/menu.svelte';
 	import {
 		masked,
 		untouchable,
+		type Chosen,
 		type Clash,
 		type Entry,
 		type Field,
@@ -64,6 +67,7 @@
 		readOnly,
 		made = false,
 		lined = [],
+		erasing = $bindable(false),
 		suggested,
 		onCopy,
 		onChanged,
@@ -96,6 +100,14 @@
 		/** The fields its kind writes in lines, drawn as text areas before
 		 * anything is in them. */
 		lined?: readonly string[];
+		/**
+		 * Whether the reader has asked to delete the entry for good and not yet
+		 * answered the question that asks whether they mean it: the one at the
+		 * foot of the pane, or the bin card's for an entry in the bin. The
+		 * window puts it from a menu under the pointer, as the pane's own
+		 * button does.
+		 */
+		erasing?: boolean;
 		/** Names offered for a field of the reader's own. */
 		suggested: Suggestion[];
 		/** Copies a value in Rust: a field of the entry, or of one of its
@@ -128,9 +140,6 @@
 
 	/** Whether nothing here may be changed (see `untouchable`). */
 	const locked = $derived(untouchable(entry, readOnly));
-	/** Whether the reader has asked to delete the entry for good and not yet
-	 * answered the question that asks whether they mean it. */
-	let erasing = $state(false);
 	const forever = $derived(eraseQuestion(called(entry)));
 
 	const title = $derived(of('title'));
@@ -278,6 +287,21 @@
 		};
 	});
 
+	/** Whether the entry is in the bin, which decides where the question that
+	 * deletes it for good is put: on the bin card, or at the foot. */
+	const inBin = $derived(entry.binned !== null);
+
+	// One question, put in one of two places, and about the entry where it
+	// stood when it was asked. Put back out of the bin - or put into it - the
+	// entry is asked about nowhere: the question would stand at the foot, or on
+	// the card, under a button that does something else by then.
+	$effect(() => {
+		void inBin;
+		return () => {
+			erasing = false;
+		};
+	});
+
 	/** Runs a change and says whether it was taken. Tracked from the moment
 	 * it is sent, like a value being written (`track`): leaving a tag or a
 	 * field's name is what sends it, and a copy asked for by the same press
@@ -414,6 +438,26 @@
 	/** Writes a file out through the save panel Rust opens. */
 	function writeOut(name: string) {
 		exportAttachment(entry.id, name).catch(onFailure);
+	}
+
+	/** Coffer's menu for a file's row, offering what its two buttons do. */
+	function fileMenu(event: MouseEvent, name: string) {
+		offer(event, { kind: 'file', entry: entry.id, name }, filed, onFailure);
+	}
+
+	/**
+	 * Runs an item of a file's menu with the button that does the same, while
+	 * the pane is still on the entry and the entry still has the file. The
+	 * field being written in is left first, as a press on either button leaves
+	 * it. Removing asks first, in the file's row.
+	 */
+	function filed(item: Chosen) {
+		if (item.item !== 'saveFile' && item.item !== 'removeFile') return;
+		if (item.entry !== entry.id || !entry.attachments.some((file) => file.name === item.name))
+			return;
+		leave();
+		if (item.item === 'saveFile') writeOut(item.name);
+		else if (!locked) asking = item.name;
 	}
 
 	/** Takes a file off, or says why it cannot go yet. */
@@ -658,6 +702,7 @@
 					{root}
 					{now}
 					{readOnly}
+					bind:asking={erasing}
 					ways={{ question: forever, onPutBack, onDelete }}
 				/>
 			{/key}
@@ -1014,7 +1059,12 @@
 				stand a gap further apart, and the removal asks first.
 			-->
 			{#each entry.attachments as attachment (attachment.name)}
-				<div class="mt-3 rounded-sm border border-hairline bg-surface2 px-3 py-2.5">
+				<div
+					role="presentation"
+					data-menu={marked('file', entry.id, attachment.name) || undefined}
+					oncontextmenu={(event) => fileMenu(event, attachment.name)}
+					class="mt-3 rounded-sm border border-hairline bg-surface2 px-3 py-2.5"
+				>
 					<div class="flex items-center gap-3">
 						<Icon name="file" class="h-4 w-4 shrink-0 text-txt4" />
 						<span class="min-w-0 flex-1">

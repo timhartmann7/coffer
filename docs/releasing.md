@@ -82,9 +82,44 @@ list is in the spec.
 - A revealed value, selected: the Coffer menu has no Services, and Shift+Cmd+Y
   (New Sticky Note) and every other enabled Services shortcut put nothing in
   another application. A right-click on the label inside a selection that runs
-  into the value draws no menu, and Cmd+C there leaves only the value's part,
-  through Coffer's own copy. This file is where this check lives: the spec's
-  list does not carry it.
+  into the value draws Coffer's menu - Copy and Hide, nothing of WebKit's - and
+  its Copy, like Cmd+C there, leaves only the value's part, through Coffer's own
+  copy. This file is where this check lives: the spec's list does not carry it.
+- A right-click on a row of either list, a folder in the tree and in the bin,
+  the bin's row, a field of one's own, the password's row, a file and a
+  revealed value draws Coffer's menu where the pointer is, and the row, folder
+  or file is outlined until it closes. Control-click draws the same menu and
+  does not also open the row or choose it. VO+Shift+M on a focused row draws it
+  too. A right-click on "All entries", on blank space and on the unlock screen's
+  words draws nothing.
+- A revealed password with nothing selected, right-clicked in the middle of a
+  word: Copy puts the whole password on the pasteboard (paste it somewhere
+  private), and no word stays selected. With part of it selected and the
+  right-click on that part, Copy puts that part; with the right-click beside the
+  part, the whole password, and the part stays selected. A clipboard history
+  keeps none of them. This is the check that WebKit selects the word before the
+  page hears of the menu, which the guard is built on.
+- The search field, a value being written, a folder's name being typed and the
+  new password's field still get WebKit's menu, with Cut, Copy and Paste. With
+  part of a revealed password selected, a right-click in the search field never
+  draws Look Up, Translate, Search or Share over it: no menu at all while the
+  part stays selected, or the field's own menu if the press took the selection
+  into the field. Write down which of the two WebKit does; the guard is built
+  for both.
+- Folders named `R&D`, `a[~~]b`, one whose name holds a right-to-left override
+  (U+202E) before `xyz`, and one 200 characters long each read correctly in Move
+  to, the last cut with an ellipsis, and the items after them read left to
+  right. A vault 100 folders deep reaches the deepest through the submenus.
+- Choose rows with Cmd-click and right-click one of them: the menu moves and
+  deletes all of them, with one notice; right-click a row outside the choice:
+  the menu is that row's, and the choice stays.
+- A title typed into an entry and not yet left, then a right-click on another
+  row and Copy Password: the title is saved, and the notice says Password
+  copied. A new password typed into a Change field, then Delete Forever… or New
+  Entry Here from a menu: nothing happens but the field's question.
+- Five minutes idle with a menu open: the window goes when the menu is
+  dismissed, and choosing an item from it first does nothing to the vault that
+  comes back.
 - Every key of Coffer's items in the menu bar does its thing once: Cmd+N makes
   one entry, Cmd+D one copy, Cmd+F puts the focus in the search field, Cmd+B and Shift+Cmd+C copy
   once with one notice, Cmd+L locks, Cmd+, opens the settings, Shift+Cmd+N opens

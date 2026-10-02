@@ -74,7 +74,10 @@
 		to()?.focus();
 	}
 
-	function remove() {
+	/** Deletes the rows, or asks first when any of them would go for good:
+	 * the bar's own Delete, and a deletion chosen from the menu of a chosen
+	 * row. */
+	export function remove() {
 		if (forever.length > 0) step = 'asking';
 		else onDelete();
 	}

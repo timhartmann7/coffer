@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import { marked } from '$lib/context.svelte';
 	import type { EntryRow } from '$lib/model';
 	import { pressOn, type Press } from '$lib/selection.svelte';
 	import Icon from './Icon.svelte';
@@ -29,7 +30,8 @@
 		onOpen,
 		onChoose,
 		onDismiss,
-		onPress
+		onPress,
+		onMenu
 	}: {
 		rows: EntryRow[];
 		open: string | null;
@@ -59,6 +61,8 @@
 		/** A press on a row, which a drag may start from. Left out where
 		 * nothing may be moved. */
 		onPress?: (event: PointerEvent, row: EntryRow) => void;
+		/** A right-click on a row, which draws Coffer's menu for it. */
+		onMenu: (event: MouseEvent, row: EntryRow) => void;
 	} = $props();
 
 	/**
@@ -95,6 +99,8 @@
 			type="button"
 			onclick={(event) => pressOn(event, row, onOpen, onChoose)}
 			onpointerdown={(event) => onPress?.(event, row)}
+			oncontextmenu={(event) => onMenu(event, row)}
+			data-menu={marked('entry', row.id) || undefined}
 			class="relative mb-1 block w-full overflow-hidden rounded-sm border px-3 py-2.5 text-left transition {picked
 				? `bg-selection ${here ? 'border-hairline' : 'border-transparent'}`
 				: here || lifted?.has(row.id)
