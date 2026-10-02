@@ -62,8 +62,8 @@ pub enum Over<'a> {
     /// A value written into this field. The text typed there is in the vault
     /// now, or was refused and put back.
     Field(EntryId, &'a str),
-    /// The entry deleted. The pane it was typed in has gone with it.
-    Entry(EntryId),
+    /// Entries deleted. The pane they were typed in has gone with them.
+    Entries(&'a [EntryId]),
     /// The file read again, which throws away everything in the window.
     Everything,
 }
@@ -127,10 +127,12 @@ impl Drafts {
     pub fn over(&mut self, over: Over<'_>, sequence: u64) {
         match over {
             Over::Field(entry, field) => self.hear(entry, field, None, sequence),
-            Over::Entry(entry) => {
-                let fields = self.entries.entry(entry).or_default();
-                fields.since = fields.since.max(sequence);
-                fields.said.retain(|_, said| said.sequence > sequence);
+            Over::Entries(entries) => {
+                for &entry in entries {
+                    let fields = self.entries.entry(entry).or_default();
+                    fields.since = fields.since.max(sequence);
+                    fields.said.retain(|_, said| said.sequence > sequence);
+                }
             }
             Over::Everything => {
                 self.since = self.since.max(sequence);
@@ -259,7 +261,7 @@ mod tests {
         drafts.hear(id(1), NOTES, typed("in the deleted entry"), 1);
         drafts.hear(id(1), "Title", typed("typed since"), 9);
         drafts.hear(id(2), NOTES, typed("in another entry"), 2);
-        drafts.over(Over::Entry(id(1)), 5);
+        drafts.over(Over::Entries(&[id(1)]), 5);
         drafts.hear(id(1), "UserName", typed("on its way"), 4);
 
         assert_eq!(
@@ -267,6 +269,28 @@ mod tests {
             vec![
                 (id(2), NOTES.to_owned(), "in another entry".to_owned()),
                 (id(1), "Title".to_owned(), "typed since".to_owned()),
+            ]
+        );
+    }
+
+    /// A batch deletion lets go of what was typed into every entry it names,
+    /// and of nothing else: not another entry's typing, and not what was typed
+    /// into one of them after the batch was sent.
+    #[test]
+    fn entries_overtaken_let_go_of_every_one_named_and_no_other() {
+        let mut drafts = Drafts::default();
+        drafts.hear(id(1), NOTES, typed("in the first"), 1);
+        drafts.hear(id(2), NOTES, typed("in the second"), 2);
+        drafts.hear(id(3), NOTES, typed("in the third"), 3);
+        drafts.over(Over::Entries(&[id(1), id(2), id(1)]), 5);
+        drafts.hear(id(2), "Title", typed("typed since"), 6);
+        drafts.hear(id(1), "UserName", typed("on its way"), 4);
+
+        assert_eq!(
+            written(&mut drafts),
+            vec![
+                (id(3), NOTES.to_owned(), "in the third".to_owned()),
+                (id(2), "Title".to_owned(), "typed since".to_owned()),
             ]
         );
     }

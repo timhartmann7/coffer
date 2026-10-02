@@ -249,6 +249,15 @@ pub enum VaultError {
     #[error("that value contains a character a KDBX file cannot hold")]
     UnwritableText,
 
+    /// A tag the format would not give back as it was written. Every reader
+    /// splits an entry's tags at a semicolon, a comma and a tab, trims the
+    /// space around each and drops an empty one, so such a tag would come
+    /// back as two tags, as another tag, or as none.
+    #[error(
+        "a tag cannot be empty, hold a semicolon, a comma or a tab, or begin or end with a space"
+    )]
+    UnwritableTag,
+
     /// A vault is being made with no master password at all. The library would
     /// write one happily; a file anybody can open is not what the reader asked
     /// for. Opening a database that already has one is untouched.

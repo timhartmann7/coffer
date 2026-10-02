@@ -8,9 +8,9 @@ import { RISE, span } from './motion';
 export type Notice = {
 	message: string;
 	/** What the notice is about, which is the icon it carries: a copy, a
-	 * failure, something gone to the bin or out of the file, or something
-	 * moved between folders. */
-	kind: 'copied' | 'failed' | 'removed' | 'moved';
+	 * failure, something gone to the bin or out of the file, something moved
+	 * between folders, or entries changed together - a tag put on several. */
+	kind: 'copied' | 'failed' | 'removed' | 'moved' | 'changed';
 	/** Takes back what the notice is about, while that is still on offer. */
 	undo?: () => void;
 };
@@ -90,7 +90,8 @@ export class Notices {
 	 * then, and never opens anything over the reader's later choice, and one the
 	 * vault has moved on from is refused by Rust at the press and said to be.
 	 *
-	 * `kind` is what was done: something taken away, by default, or moved.
+	 * `kind` is what was done: something taken away, by default, moved, or
+	 * changed.
 	 */
 	offer(message: string, undo: () => Promise<void>, kind: Notice['kind'] = 'removed'): void {
 		this.tell({ message, kind, undo: () => void this.#takeBack(undo) }, UNDOABLE);

@@ -50,6 +50,8 @@
 			<Icon name="trash" class="h-4 w-4 shrink-0 text-txt3" />
 		{:else if kind === 'moved'}
 			<Icon name="folder" class="h-4 w-4 shrink-0 text-txt3" />
+		{:else if kind === 'changed'}
+			<Icon name="check" class="h-4 w-4 shrink-0 text-txt3" />
 		{:else}
 			<Icon name="warn" class="h-4 w-4 shrink-0 text-warn" />
 		{/if}

@@ -17,7 +17,7 @@ travels the other way, as bytes.
 
 | Action | What reaches the webview |
 |---|---|
-| Tree and list | id, title, username, URL, tags, dates, whether there is a password, how many attachments, and for anything in the recycle bin when it went in and the folder it came from |
+| Tree and list | id, title, username, URL, tags, dates, whether there is a password, how many attachments, what deleting it would do, and for anything in the recycle bin when it went in and the folder it came from |
 | Open an entry | the same, plus every field's name, kind, whether it is empty and whether it is in lines, plus attachment names and sizes, plus what deleting it would do |
 | Reveal a field | the value, one field, once |
 | Read a previous version | the same as an entry, and one value at a time on a reveal |
@@ -68,11 +68,11 @@ Everything slice 3 added:
 | Command | Takes | Answers |
 |---|---|---|
 | `create_entry` | `group` | the tree, and the entry it made |
-| `delete_entry` | `entry`, `deletion`, `sequence` | the tree |
+| `delete_entries` | `entries` (each an `entry` and the `deletion` the window showed), `sequence` | the tree |
 | `create_group` | `parent`, `name` | the tree |
 | `rename_group` | `group`, `name` | the tree |
 | `delete_group` | `group`, `deletion` | the tree |
-| `put_back_entry` | `entry` | the tree |
+| `put_back_entries` | `entries` | the tree |
 | `put_back_group` | `group` | the tree |
 | `move_entries` | `entries`, `into` | the tree, and each entry that changed folder with the folder it left |
 | `move_entries_back` | `moved`, `into` | the tree |
@@ -305,12 +305,12 @@ Tauri runs commands side by side, so a draft sent before its field was written
 can arrive after it. Rust drops a draft that is no newer than the last word it
 heard about the field - a draft, a draft taken back, or the value `set_field`
 wrote, which carries its own number and ends the draft under the same lock as the
-write - or than a `delete_entry` of its entry or a `reload`, which carry one too
-and let go of everything typed into what they take away. A restore is not on
-that list, because nothing on the screen goes with it: every value typed into a
-field of the entry was written when the field was left, before the Restore
-button could be pressed, and a new password still waiting in its own field with
-the question under it is still the reader's.
+write - or than a `delete_entries` naming its entry or a `reload`, which carry
+one too and let go of everything typed into what they take away. A restore is
+not on that list, because nothing on the screen goes with it: every value typed
+into a field of the entry was written when the field was left, before the
+Restore button could be pressed, and a new password still waiting in its own
+field with the question under it is still the reader's.
 
 A draft is written only into a field the entry still has, or one of the five
 standard ones every entry is drawn with, and only when it differs from what the
@@ -439,10 +439,11 @@ function the deletion asks, so the answer the window drew is the thing that
 happens. The window asks before a deletion that is `forever` and offers the
 other kind back from its notice.
 
-`delete_entry` and `delete_group` take back the `deletion` the window showed,
-and Rust refuses with `deletionChanged`, deleting nothing, when deleting the
-thing would now do the other. Two deletions can wait on the session behind one
-save, and the thread that takes it first is not the one that asked first: a
+`delete_entries` and `delete_group` take back the `deletion` the window showed -
+for each entry, in the first - and Rust refuses with `deletionChanged`, deleting
+nothing, when deleting the thing would now do the other. Two deletions can wait
+on the session behind one save, and the thread that takes it first is not the
+one that asked first: a
 folder that goes into the bin ahead of an entry in it, or ahead of a folder in
 it, makes the move the reader agreed to an erasure. Something put back out of
 the bin before its erasure arrives is refused the same way. The window says
@@ -456,7 +457,7 @@ rewrote may have stopped keeping a bin. A flag read at unlock would go on
 promising the bin to a deletion that erases.
 
 What the window says afterwards is read off the answer rather than off that
-promise: `delete_entry` and `delete_group` answer with the tree, and the window
+promise: `delete_entries` and `delete_group` answer with the tree, and the window
 offers Undo only for something still in it.
 
 **The bin says when and where from.** Anything inside the bin - an entry row,
@@ -476,7 +477,7 @@ folder it was not in when it was deleted. The window says "Deleted with
 cross as ids and the window names them from the tree, so a folder renamed since
 is called what it is called now.
 
-**`put_back_entry` and `put_back_group` take something out of the bin** and
+**`put_back_entries` and `put_back_group` take something out of the bin** and
 answer with the tree. It goes back into `from`, or to the top of the vault when
 `from` is `null`, and the window reads where it went off the tree. A folder goes
 with everything in it. Both refuse with `refused` for anything not in the bin -
@@ -525,6 +526,70 @@ neither undo while anything it is about - what moved, or a folder it comes out
 of or goes back to - is still on its way somewhere: the undo and that move
 would reach Rust in no fixed order.
 
+Acting on several entries chosen in the list:
+
+| Command | Takes | Answers |
+|---|---|---|
+| `tag_entries` | `entries`, `tag` | the tree, and the entries the tag went on |
+| `untag_entries` | `entries`, `tag` | the tree |
+
+`delete_entries`, `put_back_entries` and `move_entries` above are batches as
+well; the entry the pane deletes or puts back is a batch of one, so there is one
+deletion, one way out of the bin, and one rule for each.
+
+**A batch is one call, one save and one undo.** Whatever the window does to
+several chosen entries goes to Rust as one command naming all of them, is
+written by one save and is offered back from one notice. Twelve commands would
+be twelve saves - twelve key derivations, and twelve of the ten snapshots, so
+the vault of an hour ago gone - and twelve notices, each withdrawing the undo of
+the one before.
+
+**A batch is all of them or none.** Every entry a batch names is checked before
+any is changed, under the lock the change runs in: an entry that has gone, one
+whose deletion would now do something other than the window showed, one
+`put_back_entries` names that is not in the bin, a tag the format would split or
+trim. One refusal is the whole batch's, nothing changes, and `revision` does not
+move. An id that does not parse refuses the batch before the vault is asked.
+Erasing files out of the pool, the one step that can still say no once the
+checks are passed, is worked out for every entry together before anything is
+written, and runs first (see `docs/vault-core.md`).
+
+**A row says what deleting it would do.** `deletion` travels on every row of the
+tree as it does on an entry and a folder, so the window knows before the press
+which chosen entries go to the bin and which go for good, asks before the second
+kind, and sends each back with the answer it showed. `sequence` lets go of every
+draft of every entry named that was said before it, whether or not the deletion
+goes through, and every file waiting on one of them goes under the same lock.
+
+**A tag goes on where it is missing, and comes off only where it went on.**
+`tag_entries` writes a version on each entry that lacked the tag and on no
+other, and answers which those were; the undo sends exactly those to
+`untag_entries`, so an entry that already had the tag keeps it. A tag every one
+of them had already writes nothing, and the window says so and offers nothing.
+`untag_entries` takes off every copy of the tag and holds it to no spelling
+rule, since it is a tag the file holds; only an empty one is refused. A tag the
+format would split, trim or drop is refused with `refused` and a sentence about
+tags, which the window shows as it is, on the bar as on an entry's own chip.
+
+**Putting back is a batch too.** `put_back_entries` is the undo of entries moved
+to the bin, the bin's own Put back for several, and the pane's for the entry in
+it, which offers nothing back: the pane stays on the entry and says where it
+went. The bar's is offered back with `delete_entries`, each entry shown as going
+to the bin, and only when the tree it answered says every one of them would: a
+file whose bin was switched off after it filled still lists what is in it and
+puts it back, but deletes nothing into a bin, and an undo that could only be
+refused is no offer. An undo that would send the entry in the pane back to the
+bin asks the pane first, as everything that takes an entry from it does, and
+sends nothing while a new value typed into it waits there.
+
+**An undo that came too late says so, in one sentence.** Every undo names the
+refusals that mean the vault has moved on since: `superseded` for a removed
+field or a move, `refused` for an entry no longer in the bin to put back,
+`noSuchEntry` for one gone out of the file, `deletionChanged` for one that would
+no longer go to the bin. Any of those did nothing, and the window says that
+something has changed since, so that can no longer be undone, and reads the tree
+again (`overtaken.ts`). Any other refusal is shown as Rust wrote it.
+
 **`add_attachment` and `export_attachment` open their panel in Rust.** The
 bytes of a file never cross in either direction and neither does a path: the
 webview asks, the reader picks, and Rust reads or writes. The name a save panel
@@ -564,10 +629,11 @@ It goes with the vault on a lock or when another database is chosen, when the
 button is pressed again, when another file is picked for any entry, and when the
 window stops showing the question. It also goes in Rust, under the lock of the
 change itself, with a `reload` and with any change that leaves its entry
-deleted or in the recycle bin: `delete_entry`, `delete_group` on a folder
-holding it, `empty_recycle_bin`. An answer already on its way, or queued behind
-the change, is then refused rather than landing on a vault the reader was never
-asked about, and nothing hangs on the window's `withdraw_attachment` arriving.
+deleted or in the recycle bin: `delete_entries` naming it, `delete_group` on a
+folder holding it, `empty_recycle_bin`. An answer already on its way, or queued
+behind the change, is then refused rather than landing on a vault the reader was
+never asked about, and nothing hangs on the window's `withdraw_attachment`
+arriving.
 
 A name that differs only in letter case is not taken. The format and every
 KeePass client keep `Scan.pdf` and `scan.pdf` apart, so adding the second loses
@@ -615,8 +681,8 @@ choosing.
 
 `forGood` and `superseded` are about a removed field (see above), and
 `superseded` about a move taken back as well; neither did anything. `forGood`
-is answered with a question, and `superseded` with the sentence that the removal,
-or the move, can no longer be undone.
+is answered with a question, and `superseded` with the sentence every undo that
+came too late has (see above).
 
 `deletionChanged` is a deletion that would no longer do what the window showed
 (see above), and nothing was deleted.
@@ -833,24 +899,27 @@ page, or one whose send failed, is never kept.
 **A key the menu owns is not the page's.** WebKit hands the page a key before
 AppKit looks for it in the menu, and a key the page answered is gone, so a key
 both answered would happen twice. The page's `keydown` answers Escape, Cmd+Z
-(the notice's undo, see above) and Cmd+C with nothing selected (the open entry's
-password, as the mockup has it), and nothing else; every other Cmd key is the
-menu's, and works wherever the focus is. Cmd+B copies the open entry's login
-with the focus in a field too, where the page used to leave it to the field: it
-is a copy, through Rust, and the field is left first, as above. A login being
-changed in its own field is written, and the copy waits until every value on its
-way to Rust has arrived (`flush` in `drafts.ts`) before it is asked for: Tauri
-answers the two side by side, and once a save lets go the session goes to
-whichever asks first, so a copy sent beside the write could put the login as it
-was on the pasteboard. Copy Login is offered on the condition the row's copy
-button is drawn on - a login Rust holds - so one typed into an empty field is
-offered once that field is left. Copy Password is on Shift+Cmd+C because Cmd+C is
-Edit ▸ Copy, which is how every text field in the window copies: an item of
-Coffer's on it would take copying away from them all. Cmd+Backspace in a field
-deletes to the start of the line, so Move to Recycle Bin is greyed out while a
-field has the focus, and it is offered only for an entry whose deletion goes to
-the bin, which is what it says; one that goes for good asks first, from the
-pane.
+(the notice's undo, see above), Cmd+C with nothing selected (the open entry's
+password, as the mockup has it) and Cmd+A with the focus on neither a field nor
+the entry pane (every row the list draws, see `docs/design.md`), and nothing
+else; every other Cmd key is the menu's, and works wherever the focus is. Cmd+B
+copies the open entry's login with the focus in a field too, where the page used
+to leave it to the field: it is a copy, through Rust, and the field is left
+first, as above. A login being changed in its own field is written, and the copy
+waits until every value on its way to Rust has arrived (`flush` in `drafts.ts`)
+before it is asked for: Tauri answers the two side by side, and once a save lets
+go the session goes to whichever asks first, so a copy sent beside the write
+could put the login as it was on the pasteboard. Copy Login is offered on the
+condition the row's copy button is drawn on - a login Rust holds - so one typed
+into an empty field is offered once that field is left. Copy Password is on
+Shift+Cmd+C because Cmd+C is Edit ▸ Copy, which is how every text field in the
+window copies: an item of Coffer's on it would take copying away from them all.
+Cmd+Backspace in a field deletes to the start of the line, so Move to Recycle
+Bin is greyed out while a field has the focus, and it is offered only for an
+entry whose deletion goes to the bin, which is what it says; one that goes for
+good asks first, from the pane. While rows are chosen in the list it moves them
+rather than the open entry, offered only when every one of them goes to the
+bin; a choice holding one that would go for good asks first, from its bar.
 
 **Closing the window locks, and Coffer waits in the Dock.** Before this the
 close button quit Coffer: the last window going asks the loop to exit
@@ -1032,7 +1101,13 @@ thousand entries, which is what `SPEC.md` sets a time budget for, draws in one
 pass and filters on the text it folded when the folder was opened. Fifty
 thousand would draw fifty thousand rows and take its time about it. The filter
 itself is tested at that size; the drawing is not, and the fix when it matters is
-to draw only the rows on screen.
+to draw only the rows on screen. Cmd+A over fifty thousand rows redraws every
+one of them on the selection plane, and that is not measured either.
+
+**Rows are chosen with the pointer and Cmd+A.** The list has no arrow keys and
+no focus of its own that moves from row to row, so there is no Shift+arrow and
+no Space to choose with; that belongs with the keyboard work on the list rather
+than with choosing.
 
 **The command layer itself has no tests.** What is under it does:
 `Session` is covered, `vault-core` is covered, and `contract.test.ts` checks

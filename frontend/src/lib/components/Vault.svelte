@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { Snippet } from 'svelte';
+	import { untrack, type Snippet } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import {
 		asFailure,
@@ -25,9 +25,12 @@
 	import { answer } from '$lib/menu.svelte';
 	import { Moves } from '$lib/moves';
 	import { COPIED, Notices } from '$lib/notices.svelte';
+	import { overtaken } from '$lib/overtaken';
 	import { targets, type Moving } from '$lib/places';
 	import { conceal } from '$lib/reveal.svelte';
 	import { Saving } from '$lib/saving.svelte';
+	import { Selection, type Press } from '$lib/selection.svelte';
+	import { tag } from '$lib/tagging';
 	import {
 		untouchable,
 		type Database,
@@ -65,6 +68,7 @@
 	import Icon from './Icon.svelte';
 	import InBin from './InBin.svelte';
 	import Opening from './Opening.svelte';
+	import SelectionBar from './SelectionBar.svelte';
 	import Toast from './Toast.svelte';
 	import Tree from './Tree.svelte';
 
@@ -95,6 +99,9 @@
 		onSettings: () => void;
 		onTree: (tree: Group) => void;
 	} = $props();
+
+	/** No rows at all, drawn chosen. */
+	const NOTHING: ReadonlySet<string> = new Set();
 
 	/** The group being shown, or `null` for everything the vault holds. */
 	let group = $state<string | null>(null);
@@ -132,6 +139,9 @@
 	let pane = $state.raw<Pane | null>(null);
 	/** Which entry the pane is on, read or not. */
 	const showing = $derived(pane?.id ?? null);
+	/** The element the pane is drawn in, which Cmd+A leaves to the system: a
+	 * key pressed there is about the entry, not the list. */
+	let paneArea = $state<HTMLElement>();
 	/** The entry in the pane, once Rust has read it. Nothing is offered on an
 	 * entry before that: nothing of it but its row is known. */
 	const opened = $derived(pane?.entry ?? null);
@@ -143,11 +153,14 @@
 	let deleting = $state(false);
 
 	const notices = new Notices(failed);
+	/** The rows chosen to act on together. */
+	const selection = new Selection();
 	const file = new Saving({
 		reread,
 		reloaded: (tree) => {
 			onTree(tree);
 			pane = null;
+			selection.only(null);
 		},
 		failed,
 		notices
@@ -156,7 +169,8 @@
 		root: () => root,
 		showing: () => showing,
 		unsaved: () => file.unsaved,
-		close: () => (pane = null),
+		held,
+		close: shut,
 		select,
 		open,
 		redraw,
@@ -240,6 +254,28 @@
 				: []
 		)
 	);
+	/** The rows chosen, in the order the list draws them. */
+	const chosen = $derived(selection.of(found));
+	/**
+	 * Whether rows are chosen to act on together, which is when they are drawn
+	 * chosen and the bar stands over the list. Not for the entry a plain press
+	 * opened, which is chosen on its own and looks as it always did: a choice
+	 * is more than one row, or one that is not the entry being read. Never in a
+	 * vault Coffer will not write, where nothing a bar offers can be done.
+	 */
+	const selecting = $derived(
+		!readOnly && (chosen.length > 1 || (chosen.length === 1 && chosen[0].id !== showing))
+	);
+	/** The rows drawn chosen: none, unless rows are chosen to act on. */
+	const marked = $derived(selecting ? selection.ids : NOTHING);
+
+	// What is chosen is what is drawn. A search that hides a row, a change that
+	// takes one out of the list, lets go of it for good.
+	$effect.pre(() => {
+		const drawn = found;
+		untrack(() => selection.keep(drawn));
+	});
+
 	/** The folders drawn above the entries in the bin. A search is for entries,
 	 * and a folder row among its answers would be one it did not look inside. */
 	const folders = $derived(binned && query === '' ? shown.sections : []);
@@ -262,7 +298,15 @@
 	 * would have moved the entry out from under the question.
 	 */
 	function dismiss() {
-		if (!held()) pane = null;
+		if (!held()) shut();
+	}
+
+	/** Takes the pane away, and the choice with it when the choice was only
+	 * the entry the pane showed: once that is put away, it is not a row the
+	 * reader chose to act on. */
+	function shut() {
+		if (!selecting) selection.only(null);
+		pane = null;
 	}
 
 	/** Shows a folder the reader chose, unless the pane has to stay. */
@@ -273,6 +317,7 @@
 	function select(id: string | null) {
 		group = id;
 		pane = null;
+		selection.only(null);
 		query = '';
 		choosing = false;
 		naming = false;
@@ -312,7 +357,7 @@
 			land(await loadEntry(id));
 		} catch (thrown) {
 			if (showing !== id) return;
-			pane = null;
+			shut();
 			failed(thrown);
 		}
 	}
@@ -457,7 +502,10 @@
 	 * first. Opened only when the pane is where it was when the button was
 	 * pressed: an entry the reader chose while Rust was making this one is the
 	 * later choice, and the new entry waits in the list rather than taking the
-	 * pane from it.
+	 * pane from it. And only when the pane may go: typing into a Change field
+	 * started while Rust was making it keeps the pane, and the new entry is
+	 * neither opened nor chosen - chosen without the pane, it would be a choice
+	 * of one the reader never made, with a bar to delete it.
 	 */
 	async function makeIn(into: string) {
 		choosing = false;
@@ -469,7 +517,10 @@
 			onTree(made.tree);
 			file.changedAt = new Date();
 			const row = rowOf(made.tree, made.entry);
-			if (row && showing === at) await open(row);
+			if (row && showing === at && !held()) {
+				selection.only(row.id);
+				await open(row);
+			}
 			await file.persist();
 		} catch (thrown) {
 			failed(thrown);
@@ -518,10 +569,69 @@
 		await copy(id, chosen.name);
 	}
 
-	/** Moves the entry in the pane to the bin, or out of the file. */
+	/**
+	 * Moves the entry in the pane to the bin, or out of the file: a batch of
+	 * one, with the deletion the pane showed for it. The row comes from the
+	 * tree, which names it as the list does.
+	 */
 	function removeEntry() {
-		if (opened && !held()) void moves.removeEntry(opened);
+		if (!opened || held()) return;
+		const row = rowOf(root, opened.id);
+		if (row) void moves.removeEntries([{ ...row, deletion: opened.deletion }]);
 	}
+
+	/** A plain press on a row: opens it, and makes it the whole choice. */
+	function openRow(row: EntryRow) {
+		if (showing !== row.id && held()) return;
+		selection.only(row.id);
+		void open(row);
+	}
+
+	/** A press with Cmd or Shift on a row, which chooses and opens nothing. */
+	function chooseRow(row: EntryRow, press: Press) {
+		if (press === 'toggle') selection.toggle(row.id);
+		else selection.reach(row.id, found);
+	}
+
+	/**
+	 * What a press on a row is about, for a drag: every row chosen when it is
+	 * one of them, and otherwise that row alone, the choice left as it is.
+	 */
+	function aimedAt(row: EntryRow): EntryRow[] {
+		return selecting && selection.has(row.id) ? chosen : [row];
+	}
+
+	/**
+	 * Deletes rows: the choice, from its bar and from the menu bar. The entry
+	 * in the pane among them takes the pane with it, so the pane is asked first
+	 * whether it may go; deleting the others leaves it where it is.
+	 */
+	function removeRows(rows: EntryRow[]) {
+		if (showing !== null && rows.some((row) => row.id === showing) && held()) return;
+		void moves.removeEntries(rows);
+	}
+
+	/** Moves rows into a folder, or to the top of the vault: the choice's
+	 * Move to…, on the terms every other way of moving an entry has. */
+	function moveRows(rows: EntryRow[], into: string) {
+		void moves.moveEntries(
+			rows.map((row) => row.id),
+			into
+		);
+	}
+
+	/** The window, as putting a tag on several entries needs it. */
+	const tagged = {
+		showing: () => showing,
+		unsaved: () => file.unsaved,
+		conceal,
+		unread,
+		read,
+		redraw,
+		reshaped,
+		failed,
+		notices
+	};
 
 	/** Takes the entry in the pane out of the bin. */
 	function putBack() {
@@ -544,9 +654,10 @@
 			);
 	}
 
-	/** A press on a row of the list, which may become a drag. */
+	/** A press on a row of the list, which may become a drag of every row
+	 * chosen with it. */
 	function pressRow(event: PointerEvent, row: EntryRow) {
-		dragging.press(event, { entries: [row] });
+		dragging.press(event, { entries: aimedAt(row) });
 	}
 
 	/** A press on a folder of the tree, which may become a drag. */
@@ -693,16 +804,17 @@
 				run: () => void copyOpen('password'),
 				when: () => free && !!filled('password')
 			},
-			// Only a deletion that goes to the bin, which is what the item says.
-			// One that goes for good asks first, from the pane.
+			// Only a deletion that goes to the bin, which is what the item says,
+			// of the rows chosen or else of the open entry. One that goes for
+			// good asks first, from the pane or the bar.
 			moveToBin: {
-				run: removeEntry,
+				run: () => (selecting ? removeRows(chosen) : removeEntry()),
 				when: () =>
 					free &&
-					opened !== null &&
-					opened.deletion === 'bin' &&
-					!untouchable(opened, readOnly) &&
-					!writing()
+					!writing() &&
+					(selecting
+						? chosen.every((row) => row.deletion === 'bin')
+						: opened !== null && opened.deletion === 'bin' && !untouchable(opened, readOnly))
 			},
 			settings: { run: toggleSettings, when: () => settings === undefined }
 		})
@@ -734,8 +846,7 @@
 			try {
 				restored = await undoRemoval(entry, name);
 			} catch (thrown) {
-				if (asFailure(thrown).code !== 'superseded') throw thrown;
-				notices.warn('The entry has changed since, so that can no longer be undone.');
+				await overtaken(thrown, { redraw, notices }, ['superseded']);
 				return;
 			}
 			await changed(restored);
@@ -756,6 +867,7 @@
 		if (!event.metaKey) {
 			if (cancels(event)) {
 				if (query !== '') query = '';
+				else if (selecting) selection.only(showing);
 				else dismiss();
 			}
 			return;
@@ -779,6 +891,19 @@
 		// A key a row of the pane has already answered: Cmd+C on a protected
 		// value's own row copies that value, not the password.
 		if (event.defaultPrevented) return;
+
+		// Cmd+A chooses every row the list draws. In a field, in the entry pane
+		// and with nothing to choose it is the system's Select All, which the
+		// key goes on to.
+		if (event.key.toLowerCase() === 'a' && !event.shiftKey && !event.altKey && !event.ctrlKey) {
+			const target = event.target instanceof Node ? event.target : null;
+			if (readOnly || !free || typing(target) || paneArea?.contains(target)) return;
+			if (found.length === 0) return;
+			event.preventDefault();
+			selection.all(found);
+			return;
+		}
+
 		// Text the reader is writing is theirs to copy. A selection is copied by
 		// the node holding it, and a revealed value's node hands that to Rust
 		// itself, with the part that was selected.
@@ -791,6 +916,23 @@
 <!-- The window losing focus may be the reader reaching for the lid, so what
      they were typing is told to Rust then rather than a moment later. -->
 <svelte:window onkeydown={shortcut} onblur={() => void flush()} />
+
+{#snippet selectionBar()}
+	<!-- Drawn afresh for every change to the choice: what it had open was about
+	     the rows chosen before. -->
+	{#key selection.changes}
+		<SelectionBar
+			rows={chosen}
+			{root}
+			{binned}
+			onMove={(into) => moveRows(chosen, into)}
+			onTag={(name) => void tag(tagged, chosen, name)}
+			onDelete={() => removeRows(chosen)}
+			onPutBack={() => void moves.putBackEntries(chosen)}
+			onClear={() => selection.only(showing)}
+		/>
+	{/key}
+{/snippet}
 
 {#snippet deletedFolders()}
 	<BinFolders {folders} {root} {now} compact={pane !== null} onOpen={choose} />
@@ -1233,7 +1375,10 @@
 					note={whence}
 					before={folders.length > 0 ? deletedFolders : undefined}
 					{lifted}
-					onOpen={open}
+					chosen={marked}
+					bar={selecting ? selectionBar : undefined}
+					onOpen={openRow}
+					onChoose={readOnly ? undefined : chooseRow}
 					onDismiss={dismiss}
 					onPress={readOnly || binned ? undefined : pressRow}
 				/>
@@ -1244,7 +1389,10 @@
 					note={whence}
 					before={folders.length > 0 ? deletedFolders : undefined}
 					{lifted}
-					onOpen={open}
+					chosen={marked}
+					bar={selecting ? selectionBar : undefined}
+					onOpen={openRow}
+					onChoose={readOnly ? undefined : chooseRow}
 					onCopy={copyFrom}
 					onPress={readOnly || binned ? undefined : pressRow}
 				/>
@@ -1264,7 +1412,7 @@
 					values and its versions go with it rather than waiting for the next
 					entry to be read.
 				-->
-				<div class="h-full w-[384px] animate-fade">
+				<div bind:this={paneArea} class="h-full w-[384px] animate-fade">
 					{#if pane.entry}
 						<EntryView
 							entry={pane.entry}
@@ -1329,6 +1477,14 @@
 			{/key}
 		{/if}
 	</div>
+
+	<!-- How many rows are chosen, read out as it changes. Cmd+A and a
+	     Cmd-click choose with nothing under the focus that says so, and the
+	     bar that does comes and goes with the choice, so it cannot be the
+	     region: this one stays, and is empty while nothing is chosen. -->
+	<p data-chosen role="status" aria-live="polite" aria-atomic="true" class="sr-only">
+		{selecting ? `${chosen.length} selected` : ''}
+	</p>
 </div>
 
 <div

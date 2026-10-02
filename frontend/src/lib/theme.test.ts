@@ -142,12 +142,23 @@ describe('both palettes are readable', () => {
 		}
 	});
 
-	/** The two pairings that exist in no class list: the selection colour, and
-	 * the destructive button's own hover. */
+	/** Two pairings that exist in no class list: the selection colour, and the
+	 * destructive button's own hover. */
 	it('keeps a selected run of text and a danger message on its wash readable', () => {
 		for (const palette of [dark, forced]) {
 			expect(readable(palette, 'txt', 'selection')).toBeGreaterThanOrEqual(4.5);
 			expect(readable(palette, 'danger', 'dangerwash')).toBeGreaterThanOrEqual(4.5);
+		}
+	});
+
+	/** A row chosen in the list is drawn on the selection colour, with its name
+	 * in `txt` and every other line in `txt2`, because `txt3` and `txt4` fall
+	 * under the bar on it. */
+	it('keeps every line of a chosen row readable on the selection colour', () => {
+		for (const palette of [dark, forced]) {
+			for (const step of ['txt', 'txt2']) {
+				expect(readable(palette, step, 'selection')).toBeGreaterThanOrEqual(4.5);
+			}
 		}
 	});
 });

@@ -5,28 +5,26 @@
 
 import { erased, moved } from './bin';
 import { release } from './drafts';
-import { called, calledRow, quoted } from './format';
+import { counted, quoted } from './format';
 import {
 	asFailure,
-	deleteEntry,
+	deleteEntries,
 	deleteGroup,
 	emptyRecycleBin,
 	moveEntries,
 	moveEntriesBack,
 	moveGroup,
 	moveGroupBack,
-	putBackEntry,
+	putBackEntries,
 	putBackGroup,
 	tree as loadTree
 } from './ipc';
-import type { Deletion, Entry, EntryRow, Group, Moved } from './model';
+import type { Deletion, EntryRow, Group, Moved } from './model';
 import type { Notices } from './notices.svelte';
 import { Once } from './once';
+import { overtaken } from './overtaken';
 import { movedTo, placeOf } from './places';
-import { find, pathTo, rowOf } from './tree';
-
-/** What an undo says when Rust finds the file has moved on since the move. */
-const MOVED_SINCE = 'Something has moved since, so that can no longer be undone.';
+import { find, pathTo, rowOf, rowsOf } from './tree';
 
 /** The vault screen, as a move needs it. Read through functions, because
  * every one of them can have changed by the time Rust answers. */
@@ -37,6 +35,9 @@ export interface Screen {
 	showing(): string | null;
 	/** Whether the last save failed. */
 	unsaved(): boolean;
+	/** Whether the pane has to stay where it is, which puts the question of
+	 * the field that holds it (`holding.ts`). */
+	held(): boolean;
 	/** Puts the pane away. */
 	close(): void;
 	/** Shows a folder, or everything for `null`. */
@@ -116,7 +117,7 @@ export class Moves {
 	 * undo and that move would reach Rust, and answer, in no fixed order.
 	 *
 	 * Rust's refusal of a move the file says has been moved on from is said
-	 * in the window's own words.
+	 * the way every undo that came too late is (`overtaken.ts`).
 	 */
 	async #takeBack(
 		things: readonly string[],
@@ -128,8 +129,7 @@ export class Moves {
 		try {
 			return await this.#once.run(things, back);
 		} catch (thrown) {
-			if (asFailure(thrown).code !== 'superseded') throw thrown;
-			this.#screen.notices.warn(MOVED_SINCE);
+			await overtaken(thrown, this.#screen, ['superseded']);
 			return null;
 		}
 	}
@@ -161,48 +161,78 @@ export class Moves {
 	}
 
 	/**
-	 * Deletes an entry, and says what became of it.
+	 * Deletes entries, every one of them or none, and says what became of
+	 * them: the entry in the pane, which is a batch of one, or the rows chosen
+	 * in the list. Each goes with the deletion its row showed, and Rust
+	 * refuses the lot when any of them would now do something else.
 	 *
-	 * What became of it is read off the tree that comes back, not off what the
-	 * pane expected: an entry still in the file went to the bin and is offered
-	 * back, and one that is not went for good. A move whose save failed has a
-	 * notice of its own already, and an offer over it would push the one
-	 * sentence that matters off the screen.
+	 * An entry whose folder, or a folder above it, is on its way somewhere is
+	 * left out: it goes with the folder, and a deletion of its own reaching
+	 * Rust after the folder's would be refused for a choice the folder's move
+	 * has already made. A press is dropped while any of them is on its way.
+	 *
+	 * What became of them is read off the tree that comes back, not off what
+	 * the rows expected: still in the file, they went to the bin and are
+	 * offered back, and otherwise they went for good. Never some of each: Rust
+	 * deletes the batch as its rows showed or not at all, and the rows of one
+	 * list all go the same way, the bin's or out of the file. A deletion whose
+	 * save failed has a notice of its own already, and an offer over it would
+	 * push the one sentence that matters off the screen.
 	 *
 	 * Rust may answer a second later, behind a save, and a reader who opened
 	 * another entry in that second is reading it: the pane is put away only if
-	 * it is still on the entry that went. The move is offered back either way.
-	 * Its undo puts the entry back by its id, and opens it again only into a
-	 * pane that is still empty, never over whatever the reader chose instead.
+	 * it is still on one of the entries that went. The undo puts back all of
+	 * those that went to the bin in one call, by id. It opens one again only
+	 * when it was the only one, and only into a pane that is still empty,
+	 * never over whatever the reader chose instead.
 	 */
-	async removeEntry(entry: Entry): Promise<void> {
+	async removeEntries(rows: readonly EntryRow[]): Promise<void> {
 		const screen = this.#screen;
-		if (this.#inFlight(screen.root(), entry.group)) return;
-		const id = entry.id;
-		const name = called(entry);
+		const root = screen.root();
+		const going = rows.filter((row) => !this.#inFlight(root, row.group));
+		if (going.length === 0) return;
+		const ids = going.map((row) => row.id);
+
 		let tree: Group | null;
 		try {
-			tree = await this.#once.run([id], () => deleteEntry(id, entry.deletion, release(id)));
+			tree = await this.#once.run(ids, () =>
+				deleteEntries(
+					going.map(({ id, deletion }) => ({ entry: id, deletion })),
+					release(ids)
+				)
+			);
 		} catch (thrown) {
 			await this.#refused(thrown);
 			return;
 		}
 		if (tree === null) return;
-		if (screen.showing() === id) screen.close();
+		const showing = screen.showing();
+		if (showing !== null && ids.includes(showing)) screen.close();
 		await screen.reshaped(tree);
 		if (screen.unsaved()) return;
 
-		if (rowOf(tree, id) === null) {
-			this.#erased(name);
+		const binned = rowsOf(tree, ids);
+		if (binned.length === 0) {
+			this.#erased(counted(going));
 			return;
 		}
-		screen.notices.offer(moved(name), async () => {
-			const back = await putBackEntry(id);
-			await screen.reshaped(back);
-			const row = rowOf(back, id);
+		const back = binned.map((row) => row.id);
+		screen.notices.offer(moved(counted(binned)), async () => {
+			let tree: Group;
+			try {
+				tree = await putBackEntries(back);
+			} catch (thrown) {
+				// One of them put back some other way since, or gone out of
+				// the file.
+				await overtaken(thrown, screen, ['refused', 'noSuchEntry']);
+				return;
+			}
+			await screen.reshaped(tree);
+			if (back.length !== 1 || screen.showing() !== null) return;
 			// An entry the reader opened since, or during the save, is their
 			// later choice.
-			if (row && screen.showing() === null) await screen.open(row);
+			const row = rowOf(tree, back[0]);
+			if (row) await screen.open(row);
 		});
 	}
 
@@ -226,9 +256,7 @@ export class Moves {
 	async moveEntries(ids: readonly string[], into: string): Promise<void> {
 		const screen = this.#screen;
 		const root = screen.root();
-		const rows = ids
-			.map((id) => rowOf(root, id))
-			.filter((row): row is EntryRow => row !== null && row.group !== into);
+		const rows = rowsOf(root, ids).filter((row) => row.group !== into);
 		if (rows.length === 0) return;
 		if (this.#inFlight(root, into) || rows.some((row) => this.#inFlight(root, row.group))) return;
 		const moving = rows.map((row) => row.id);
@@ -252,13 +280,12 @@ export class Moves {
 		await screen.reshaped(tree);
 		if (screen.unsaved()) return;
 		// Said of what Rust moved, which is what the undo takes back.
-		const one = moved.length === 1 ? rowOf(tree, moved[0].entry) : null;
-		const what = one ? calledRow(one) : `${moved.length} entries`;
+		const back = moved.map((each) => each.entry);
+		const what = counted(rowsOf(tree, back));
 		const place = placeOf(tree, into);
 		// A tree that no longer holds the folder has nothing true to say.
 		if (place === null) return;
 
-		const back = moved.map((each) => each.entry);
 		const folders = [into, ...new Set(moved.map((each) => each.from))];
 		screen.notices.offer(
 			movedTo(what, place),
@@ -315,25 +342,94 @@ export class Moves {
 	}
 
 	/**
-	 * Takes an entry out of the bin. The pane stays on it and reads it again:
-	 * back out of the bin it is an entry like any other, and the line above its
-	 * title says where it went.
-	 *
-	 * Read again before the save rather than after it, so the pane does not go
-	 * on offering Put back, and a deletion for good, on an entry that has
-	 * already left the bin for the length of the save.
+	 * Takes entries out of the bin, every one of them or none, each to where
+	 * it came from, and answers with the tree and the rows that went, or
+	 * `null` when nothing did. The pane stays on whichever of them it shows,
+	 * and reads it again before the save rather than after it: back out of the
+	 * bin it is an entry like any other, the line above its title says where
+	 * it went, and the pane does not go on offering Put back, and a deletion
+	 * for good, on an entry that has already left the bin for the length of
+	 * the save.
 	 */
-	async putBackEntry(id: string): Promise<void> {
+	async #putBack(rows: readonly EntryRow[]): Promise<{ tree: Group; going: EntryRow[] } | null> {
 		const screen = this.#screen;
+		const root = screen.root();
+		const going = rows.filter((row) => !this.#inFlight(root, row.group));
+		if (going.length === 0) return null;
+		const ids = going.map((row) => row.id);
+
+		let tree: Group | null;
 		try {
-			const tree = await this.#once.run([id], () => putBackEntry(id));
-			if (tree === null) return;
-			screen.unread(id);
-			await screen.read(id);
-			await screen.reshaped(tree);
+			tree = await this.#once.run(ids, () => putBackEntries(ids));
 		} catch (thrown) {
 			screen.failed(thrown);
+			return null;
 		}
+		if (tree === null) return null;
+		await this.#reread(ids);
+		await screen.reshaped(tree);
+		return { tree, going };
+	}
+
+	/** Takes the entry in the pane out of the bin: its card's Put back, which
+	 * is a batch of one and offers nothing back, since the pane it stays in
+	 * says where it went. */
+	async putBackEntry(id: string): Promise<void> {
+		const row = rowOf(this.#screen.root(), id);
+		if (row) await this.#putBack([row]);
+	}
+
+	/**
+	 * Takes the rows chosen in the bin out of it, and offers to send them back.
+	 *
+	 * Offered back only once it is in the file, and only when every one of
+	 * them would go to the bin again: a file whose bin was switched off after
+	 * it filled still lists what is in it, and puts it back, but nothing
+	 * deleted there goes to a bin, and an undo that could only be refused is
+	 * no offer. The undo sends them to the bin, which is what it says it does,
+	 * and Rust refuses it whole when one of them would now go anywhere else,
+	 * or has gone. It takes no pane away: one of them open by then is read
+	 * again, in the bin - unless a new value typed into it since is waiting
+	 * there, which would go with the field the bin draws no more, and the field
+	 * puts its question instead.
+	 */
+	async putBackEntries(rows: readonly EntryRow[]): Promise<void> {
+		const screen = this.#screen;
+		const put = await this.#putBack(rows);
+		if (put === null || screen.unsaved()) return;
+		const ids = put.going.map((row) => row.id);
+		const said = `Put back ${counted(put.going)}`;
+		if (rowsOf(put.tree, ids).some((row) => row.deletion !== 'bin')) {
+			screen.notices.tell({ message: said, kind: 'moved' });
+			return;
+		}
+
+		screen.notices.offer(
+			said,
+			async () => {
+				const showing = screen.showing();
+				if (showing !== null && ids.includes(showing) && screen.held()) return;
+				let tree: Group | null;
+				try {
+					tree = await this.#once.run(ids, () =>
+						deleteEntries(
+							ids.map((entry) => ({ entry, deletion: 'bin' })),
+							release(ids)
+						)
+					);
+				} catch (thrown) {
+					// One of them gone into a folder that went to the bin
+					// since, which makes the move an erasure, or gone out of
+					// the file.
+					await overtaken(thrown, screen, ['deletionChanged', 'noSuchEntry']);
+					return;
+				}
+				if (tree === null) return;
+				await this.#reread(ids);
+				await screen.reshaped(tree);
+			},
+			'moved'
+		);
 	}
 
 	/** Deletes a folder, with `name` as a sentence calls it and `deletion` as

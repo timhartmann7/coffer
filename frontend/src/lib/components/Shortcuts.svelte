@@ -6,9 +6,10 @@
 	/**
 	 * Every key Coffer answers, in two lists: the menu bar's items, which is
 	 * where a Mac application's keys are looked up, and the keys the window
-	 * answers itself, with the system's Close Window, which locks the vault
-	 * here. Reached from Help in the menu bar: nothing on the screens links to
-	 * it, because the unlock screen is held to what the spec draws on it.
+	 * answers itself and the presses that choose rows in the list, with the
+	 * system's Close Window, which locks the vault here. Reached from Help in
+	 * the menu bar: nothing on the screens links to it, because the unlock
+	 * screen is held to what the spec draws on it.
 	 */
 	let { onClose }: { onClose: () => void } = $props();
 
@@ -23,13 +24,16 @@
 		find: 'Search the list',
 		copyLogin: 'Copy the open entry’s login',
 		copyPassword: 'Copy the open entry’s password',
-		moveToBin: 'Move the open entry to the Recycle Bin'
+		moveToBin: 'Move the selected entries, or the open one, to the Recycle Bin'
 	};
 
 	const WINDOW: Record<keyof typeof OWN, string> = {
 		copy: 'Copy the open entry’s password, when nothing is selected',
 		undo: 'Undo what the notice names, while it offers Undo',
-		away: 'Close the settings, clear the search, then put the open entry away',
+		choose: 'Add an entry in the list to the selection, or take it out',
+		reach: 'Select every entry from the last one pressed',
+		all: 'Select every entry in the list',
+		away: 'Close the settings, clear the search, deselect, then put the open entry away',
 		close: 'Close the window, which locks the vault'
 	};
 

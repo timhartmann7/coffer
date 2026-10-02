@@ -106,6 +106,9 @@ an hour after the refusal, so the command is the reliable one.
 - A move between folders is written the way other clients of the format write
   one - the folder it left and when - and is not a change to the entry: no
   version, and its modification date stays.
+- Whatever is done to several entries at once, moving, deleting, putting back
+  or tagging them, is one write, and happens to all of them or none. A tag
+  writes a version on each entry it went on and on no other.
 - The vault locks itself after five minutes idle, on sleep, on screen lock, and
   when you close its window. After a close, Coffer waits in the Dock until you
   click it; after the others, the window comes back asking for the password.

@@ -7,6 +7,8 @@
 //! apart would sooner or later be a window promising the bin to something that
 //! went out of the file.
 
+use std::collections::HashMap;
+
 use chrono::NaiveDateTime;
 use keepass::Database;
 use keepass::db::{GroupId, Times};
@@ -158,6 +160,35 @@ impl Bin {
             within,
             from,
         })
+    }
+}
+
+/// Where folders stand with respect to the recycle bin, each worked out once.
+///
+/// The answer for one folder is a walk from the top of the vault down to it,
+/// and a batch of fifty thousand entries comes out of a handful of folders.
+pub(crate) struct Standings<'a> {
+    bin: &'a Bin,
+    database: &'a Database,
+    known: HashMap<GroupId, Standing>,
+}
+
+impl<'a> Standings<'a> {
+    pub(crate) fn new(bin: &'a Bin, database: &'a Database) -> Standings<'a> {
+        Standings {
+            bin,
+            database,
+            known: HashMap::new(),
+        }
+    }
+
+    /// Where the folder stands.
+    pub(crate) fn of(&mut self, group: GroupId) -> Standing {
+        let (bin, database) = (self.bin, self.database);
+        *self
+            .known
+            .entry(group)
+            .or_insert_with(|| bin.standing(database, group))
     }
 }
 

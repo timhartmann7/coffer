@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import type { EntryRow } from '$lib/model';
+	import { pressOn, type Press } from '$lib/selection.svelte';
 	import Icon from './Icon.svelte';
 	import Mask from './Mask.svelte';
 
@@ -13,7 +14,9 @@
 	 * as one block of stripes rather than as a list of entries. So it takes the
 	 * folder list's language instead, which is the same window's answer to the
 	 * same question at the same width: a card that lifts under the pointer, and
-	 * an accent bar down the side of the one being read.
+	 * an accent bar down the side of the one being read. A row chosen to act on
+	 * with others is a card on the selection plane, and the one being read
+	 * keeps its bar and its hairline on top of that.
 	 */
 	let {
 		rows,
@@ -21,7 +24,10 @@
 		note,
 		before,
 		lifted,
+		chosen,
+		bar,
 		onOpen,
+		onChoose,
 		onDismiss,
 		onPress
 	}: {
@@ -35,9 +41,18 @@
 		before?: Snippet;
 		/** The rows being dragged, which keep the plane they are lifted on. */
 		lifted?: ReadonlySet<string>;
+		/** The rows chosen to act on together, drawn on the selection plane. */
+		chosen?: ReadonlySet<string>;
+		/** What stands above the cards while rows are chosen. This list has no
+		 * column names for it to take the place of, so it is a line of its own,
+		 * and it stays put while the cards scroll. */
+		bar?: Snippet;
 		/** Opens the entry, handed the row that was pressed: it is what the pane
 		 * is drawn from until Rust has read the entry. */
 		onOpen: (row: EntryRow) => void;
+		/** A press with Cmd or Shift, which chooses rather than opens. Left out
+		 * where nothing may be chosen, and every press then opens. */
+		onChoose?: (row: EntryRow, press: Press) => void;
 		/** What the empty part of the list under the rows does: it puts the open
 		 * entry away, the way pressing Escape does. */
 		onDismiss: () => void;
@@ -60,6 +75,8 @@
 	}
 </script>
 
+{@render bar?.()}
+
 <!--
 	Only a press that landed on the empty part below the rows, which is what
 	`currentTarget` says: every row is a button inside this, and a press on one of
@@ -73,14 +90,16 @@
 	{@render before?.()}
 	{#each rows as row (row.id)}
 		{@const here = row.id === open}
+		{@const picked = chosen?.has(row.id) ?? false}
 		<button
 			type="button"
-			onclick={() => onOpen(row)}
+			onclick={(event) => pressOn(event, row, onOpen, onChoose)}
 			onpointerdown={(event) => onPress?.(event, row)}
-			class="relative mb-1 block w-full overflow-hidden rounded-sm border px-3 py-2.5 text-left transition {here ||
-			lifted?.has(row.id)
-				? 'border-hairline bg-raised'
-				: 'border-transparent hover:border-hairline hover:bg-raised/50'}"
+			class="relative mb-1 block w-full overflow-hidden rounded-sm border px-3 py-2.5 text-left transition {picked
+				? `bg-selection ${here ? 'border-hairline' : 'border-transparent'}`
+				: here || lifted?.has(row.id)
+					? 'border-hairline bg-raised'
+					: 'border-transparent hover:border-hairline hover:bg-raised/50'}"
 		>
 			{#if here}
 				<span
@@ -91,18 +110,23 @@
 			<span class="flex min-w-0 items-center gap-2">
 				<Icon
 					name={row.hasPassword || row.attachments === 0 ? 'key' : 'clip'}
-					class="h-3.5 w-3.5 shrink-0 {here ? 'text-txt3' : 'text-txt4'}"
+					class="h-3.5 w-3.5 shrink-0 {here || picked ? 'text-txt3' : 'text-txt4'}"
 				/>
-				<span class="min-w-0 flex-1 truncate text-body {here ? 'text-txt' : 'text-txt2'}">
+				<span class="min-w-0 flex-1 truncate text-body {here || picked ? 'text-txt' : 'text-txt2'}">
 					{#if row.title === null}
 						<Mask />
 					{:else}
 						{row.title}
 					{/if}
+					{#if picked}<span class="sr-only">, selected</span>{/if}
 				</span>
 			</span>
 			<span
-				class="mt-1 block truncate pl-[22px] font-mono text-sub {here ? 'text-txt3' : 'text-txt4'}"
+				class="mt-1 block truncate pl-[22px] font-mono text-sub {picked
+					? 'text-txt2'
+					: here
+						? 'text-txt3'
+						: 'text-txt4'}"
 			>
 				{note ? note(row) : subtitle(row)}
 			</span>

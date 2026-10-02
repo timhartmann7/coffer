@@ -485,9 +485,9 @@ line above the title.
 offer. Undo puts each thing back in the folder it came from, at the end of it,
 for a folder as for an entry. Once the file no longer holds the move - another
 move since, or a file read again in which it never happened or something was
-moved on, gone or deleted - the undo moves nothing and says "Something has
-moved since, so that can no longer be undone." A file read again that still
-holds the move takes it back as before.
+moved on, gone or deleted - the undo moves nothing and says what every undo
+that came too late says, "Something has changed since, so that can no longer be
+undone." A file read again that still holds the move takes it back as before.
 
 **An empty folder says how entries get into it.** The mockup's sentence, "Entries
 can be made here or dragged in from other folders.", now that both are there to
@@ -637,8 +637,9 @@ headed in the mono label the window puts over a column (`text-label`,
 `tracking-label`, `txt4`, upper case), and each row is what the key does in
 `text-small` `txt2` with the key in the search field's own key cap at the end,
 `line` between the rows. The first list is the keys of Coffer's items in the
-menu bar, the second the keys the window answers itself, with the system's
-Close Window, which locks the vault here. The one button is the plain bordered
+menu bar, the second the keys the window answers itself and the presses that
+choose rows in the list, with the system's Close Window, which locks the vault
+here. The one button is the plain bordered
 pill, "Close", and it is where the focus lands; Escape, Close, a press on the
 veil and anything chosen in the menu bar put the sheet away. Put away from
 itself, it gives the focus back where it was, once the screens under it are no
@@ -663,7 +664,10 @@ AppKit looks in the menu.
 Cmd+Backspace deletes to the start of the line, as it does everywhere on a Mac;
 Finder greys its own Move to Trash while a name is being edited, for the same
 reason. It is grey as well for an entry a deletion would erase, because the item
-says the bin: that one is deleted from the pane, which asks first.
+says the bin: that one is deleted from the pane, which asks first. While rows
+are chosen it acts on them rather than on the open entry, and only when every
+one of them goes to the bin; a choice holding one that would go for good is
+deleted from its bar, which asks.
 
 ## Motion
 
@@ -743,6 +747,83 @@ anything. Coffer's row is a `button` with the grid inside it, so that the whole
 of what lights up is the whole of what opens the entry. The two copy buttons at
 the end are laid over the column the mockup leaves empty for them, because a
 button cannot hold a button.
+
+## Choosing several entries
+
+The mockup draws one entry at a time. Choosing several, and acting on them
+together, is built from its tokens.
+
+**A chosen row is drawn on the selection colour.** `selection` is the mockup's
+colour for selected text, and a chosen row is a selection. The wide list's band
+and the narrow list's card take it as their plane - the card with its hairline
+`transparent` - with the name in `txt`, every other line in `txt2`, and the key
+or clip in `txt3`: `txt3` and `txt4` as text fall under 4.5 : 1 on it, and
+`theme.test.ts` holds `txt` and `txt2` to 4.5 there in both themes. A tag chip
+keeps its own `surface2`. The entry open beside the narrow list keeps its accent
+bar and its hairline over the plane. A row is drawn chosen only while the bar is
+drawn, so the entry a plain press opens looks as it always did, and a screen
+reader hears ", selected" after the title of each chosen row. How many are
+chosen is said as it changes, from a region that is never drawn and stays while
+the bar comes and goes: Cmd+A and a Cmd-click leave the focus where it was, on
+nothing that would say so.
+
+**Cmd, Shift and Cmd+A.** Cmd-click chooses a row or lets it go and opens
+nothing; Shift-click chooses every row from the last one pressed to this one, in
+the order the list draws them, on top of what Cmd chose before, and a second
+Shift-click moves the end of that run rather than adding another. A plain press
+opens the row and makes it the whole choice; Control-click is the menu under the
+pointer and chooses nothing. Cmd+A chooses every row the list draws - after a
+search, only what it found, and in the bin never the deleted folders above the
+entries - unless the focus is in a field or in the entry pane, where Select All
+is the system's. A vault Coffer will not write back offers no choosing: every
+press there opens.
+
+**The bar stands where the list's column names were,** in their own type -
+`label` mono, upper case, the label tracking, `py-2` and `px-5` over a `line` -
+so nothing under it moves: "3 selected" in `txt2`, then "Move to…", "Add tag" and
+"Delete" in `txt3` that turn `txt` under the pointer, Delete turning `danger`,
+with a `·` in `txt4` between them, and at the end the cross at 14 pixels in
+`txt4`, "Deselect all · Esc", which lets go the way Escape does. In the bin it
+offers "Put back" in the accent and "Delete forever…". Beside an open entry the
+list has no column names, and the bar is a line of its own above the cards that
+stays put while they scroll. When anything chosen would go out of the file for
+good, Delete reads "Delete forever…" and asks first in the window's question box
+under the bar, on `surface2` with the bar's own margin - "Delete 3 entries
+forever? This can’t be undone.", "Keep them" first and "Delete forever" last in
+red. "Add tag" gives way to the tag chip's own field, drawn into the bar's
+padding (`-my-1`) so the bar keeps its height; Return puts the tag on, and
+Escape or leaving the field lets it go. Unlike an entry's own chip, leaving does
+not put it on: here a tag is a version on every chosen entry, and the press that
+took the focus - the bar's own Delete, anywhere else - was not the reader saying
+it was done. The window going behind another app is not leaving, and the field
+keeps what was typed. "Move to…" opens the folder list an entry's line opens,
+on the pop, under the bar at its padding and the notice's 292 pixels, with the
+folder every chosen entry is in marked, when they are all in one. Escape in any
+of the three closes it and goes no further. Choosing anything else closes
+whichever is open, because it was about other rows.
+
+**What is chosen is what is drawn.** A search that hides a chosen row lets go of
+it, and clearing the search does not bring it back; another folder lets go of
+all of them, and so does the file read again; a change that takes a row out of
+the list lets go of that row. Nothing the bar does reaches an entry the reader
+cannot see. Escape lets go of the choice before it puts the pane away: the
+search first, then the choice, then the pane.
+
+**One notice for the lot,** the notice the window already draws for a change it
+can take back, its Undo taking back the whole batch: "Moved 3 entries to the
+Recycle Bin" with the trash icon, "Moved 3 entries to “Banking”" and "Put back 3
+entries" with the folder icon, "Added “work” to 3 entries" with the check, each
+icon in `txt3`. One entry is named by its title, isolated, as everywhere. A
+batch nothing can take back says so without the button - "Deleted 3 entries
+forever" - and so does a tag every chosen entry already had, "3 entries already
+have “work”", and a put back in a vault that keeps no bin, where the undo could
+only be refused. An undo the vault has moved on from - this one or any other in
+the window, a removed field's and a single move's included - says "Something has
+changed since, so that can no longer be undone." and does nothing.
+
+**Dragging a chosen row carries the choice.** A drag that starts on a chosen
+row carries every chosen row, and the notice names them all; one that starts on
+a row not chosen carries that row alone and leaves the choice as it was.
 
 ## One size that was off the scale
 

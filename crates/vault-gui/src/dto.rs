@@ -95,6 +95,13 @@ pub fn entry_id(text: &str) -> Result<model::EntryId, crate::error::Failure> {
         .map_err(|_| crate::error::Failure::no_such_entry())
 }
 
+/// The entries a batch names, or nothing at all: one id that does not parse
+/// refuses the whole batch before anything is asked of the vault, as one that
+/// parses and names nothing refuses it there.
+pub fn entry_ids(texts: &[String]) -> Result<Vec<model::EntryId>, crate::error::Failure> {
+    texts.iter().map(|text| entry_id(text)).collect()
+}
+
 /// The folder an id names, on the same terms.
 pub fn group_id(text: &str) -> Result<model::GroupId, crate::error::Failure> {
     uuid::Uuid::parse_str(text)
@@ -564,6 +571,43 @@ impl Move {
     }
 }
 
+/// One entry a deletion names, with what the window showed deleting it would
+/// do. The answer the reader agreed to travels with each entry, because it is
+/// for each entry that Rust can find it changed.
+#[derive(Deserialize)]
+pub struct Deleting {
+    pub entry: String,
+    pub deletion: Deletion,
+}
+
+impl Deleting {
+    /// The entry and the deletion shown, or nothing when the id does not
+    /// parse, which is answered the way an id naming nothing is.
+    pub fn shown(&self) -> Result<(model::EntryId, model::Deletion), crate::error::Failure> {
+        Ok((entry_id(&self.entry)?, self.deletion.shown()))
+    }
+}
+
+/// What putting a tag on entries hands back: the tree, and the entries the tag
+/// went on, which are those that did not have it. Only those are what taking
+/// it off again sends.
+#[derive(Serialize)]
+pub struct Tagged {
+    pub tree: Group,
+    pub changed: Vec<String>,
+}
+
+impl Tagged {
+    /// The answer for a tag that went on `changed`, with the vault as it now
+    /// stands.
+    pub fn of(tree: &model::Project, changed: &[model::EntryId]) -> Tagged {
+        Tagged {
+            tree: Group::of(tree),
+            changed: changed.iter().map(ToString::to_string).collect(),
+        }
+    }
+}
+
 /// What the file on disk holds, for the dialog that asks which version to keep.
 #[derive(Serialize)]
 pub struct Rival {
@@ -699,6 +743,9 @@ pub struct EntryRow {
     pub attachments: usize,
     /// When the entry is in the recycle bin, when it went in and where from.
     pub binned: Option<Binned>,
+    /// What deleting the entry would do, so that the window can say before a
+    /// press which of several chosen entries go to the bin and which for good.
+    pub deletion: Deletion,
 }
 
 impl EntryRow {
@@ -714,6 +761,7 @@ impl EntryRow {
             has_password: summary.has_password,
             attachments: summary.attachments,
             binned: summary.binned.map(Binned::of),
+            deletion: Deletion::of(summary.deletion),
         }
     }
 }
@@ -1085,7 +1133,7 @@ mod tests {
     }
 
     #[test]
-    fn a_row_carries_the_four_things_a_list_filters_on_and_nothing_else() {
+    fn a_row_carries_what_the_list_draws_and_no_protected_value() {
         let row = EntryRow::of(&EntrySummary {
             id: EntryId::from_uuid(uuid::Uuid::nil()),
             group: GroupId::from_uuid(uuid::Uuid::nil()),
@@ -1106,11 +1154,14 @@ mod tests {
             attachments: 2,
             versions: 7,
             binned: None,
+            deletion: model::Deletion::Bin,
         });
 
+        // What deleting it would do is on the row so that the window knows it
+        // before a press on several rows, rather than only once one is open.
         assert_eq!(
             json(&row),
-            r#"{"id":"00000000-0000-0000-0000-000000000000","group":"00000000-0000-0000-0000-000000000000","title":"node-3","username":"deploy","url":null,"tags":["prod","ssh"],"modified":"2026-03-12T18:42:00Z","hasPassword":true,"attachments":2,"binned":null}"#
+            r#"{"id":"00000000-0000-0000-0000-000000000000","group":"00000000-0000-0000-0000-000000000000","title":"node-3","username":"deploy","url":null,"tags":["prod","ssh"],"modified":"2026-03-12T18:42:00Z","hasPassword":true,"attachments":2,"binned":null,"deletion":"bin"}"#
         );
     }
 
@@ -1455,6 +1506,79 @@ mod tests {
         assert_eq!(wanted.idle_seconds, 900);
         assert_eq!(wanted.clipboard_seconds, 15);
         assert!(!wanted.lock_on_sleep && wanted.lock_on_screen_lock);
+    }
+
+    /// A deletion from the window names each entry with the answer it was
+    /// shown, in the two words the window spells them with and no others: a
+    /// word it made up is refused, not read as either of the two.
+    #[test]
+    fn a_deletion_reads_each_entry_with_what_the_window_showed() {
+        let read: Vec<Deleting> = serde_json::from_str(
+            r#"[{"entry":"00000000-0000-0000-0000-000000000000","deletion":"forever"},{"entry":"00000000-0000-0000-0000-000000000001","deletion":"bin"}]"#,
+        )
+        .expect("both are read");
+        let shown: Vec<_> = read
+            .iter()
+            .map(|deleting| deleting.shown().expect("the ids parse"))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (
+                    EntryId::from_uuid(uuid::Uuid::nil()),
+                    model::Deletion::Forever
+                ),
+                (
+                    EntryId::from_uuid(uuid::Uuid::from_u128(1)),
+                    model::Deletion::Bin
+                ),
+            ]
+        );
+
+        for refused in [
+            r#"{"entry":"00000000-0000-0000-0000-000000000000","deletion":"Bin"}"#,
+            r#"{"entry":"00000000-0000-0000-0000-000000000000","deletion":"trash"}"#,
+            r#"{"entry":"00000000-0000-0000-0000-000000000000"}"#,
+            r#"{"deletion":"bin"}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<Deleting>(refused).is_err(),
+                "{refused}"
+            );
+        }
+    }
+
+    /// One id in a batch that is not one refuses the batch, wherever it sits:
+    /// the entries before it are not asked about either.
+    #[test]
+    fn an_identifier_in_a_batch_that_is_not_one_refuses_the_batch() {
+        let good = "00000000-0000-0000-0000-000000000000".to_owned();
+        assert_eq!(
+            entry_ids(&[good.clone(), good.clone()])
+                .expect("both parse")
+                .len(),
+            2
+        );
+        assert!(entry_ids(&[]).expect("nothing is nothing").is_empty());
+        for bad in [
+            "",
+            "../../../etc/passwd",
+            "00000000-0000-0000-0000-00000000000",
+        ] {
+            assert!(
+                entry_ids(&[good.clone(), bad.to_owned()]).is_err(),
+                "{bad:?}"
+            );
+            assert!(
+                entry_ids(&[bad.to_owned(), good.clone()]).is_err(),
+                "{bad:?}"
+            );
+            let deleting = Deleting {
+                entry: bad.to_owned(),
+                deletion: Deletion::Bin,
+            };
+            assert!(deleting.shown().is_err(), "{bad:?}");
+        }
     }
 
     #[test]

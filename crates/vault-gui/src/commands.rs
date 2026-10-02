@@ -863,23 +863,29 @@ pub fn create_entry(group: String, session: Held<'_>) -> Result<Made, Failure> {
     })
 }
 
-/// Deletes an entry, and lets go of anything typed into it that the window
-/// said before it asked: the pane it was typed in goes with the entry.
+/// Deletes entries, every one of them or none, and lets go of anything typed
+/// into them that the window said before it asked: the pane it was typed in
+/// goes with them. The entry the pane deletes is a batch of one. See
+/// [`vault_core::Vault::delete_entries`].
 ///
-/// `deletion` is what the window showed the deletion would do. Two deletions
-/// can wait behind one save, and the thread that takes the session first is
-/// not the one that asked first, so an entry whose folder went into the bin
-/// ahead of it is refused with `deletionChanged` rather than erased.
+/// Each entry comes with what the window showed deleting it would do. Two
+/// deletions can wait behind one save, and the thread that takes the session
+/// first is not the one that asked first, so an entry whose folder went into
+/// the bin ahead of it refuses the whole batch with `deletionChanged` rather
+/// than being erased.
 #[tauri::command(async)]
-pub fn delete_entry(
-    entry: String,
-    deletion: dto::Deletion,
+pub fn delete_entries(
+    entries: Vec<dto::Deleting>,
     sequence: u64,
     session: Held<'_>,
 ) -> Result<Group, Failure> {
-    let id = dto::entry_id(&entry)?;
-    session.overtaking(Over::Entry(id), sequence, |vault| {
-        vault.delete_entry(id, deletion.shown())
+    let shown = entries
+        .iter()
+        .map(dto::Deleting::shown)
+        .collect::<Result<Vec<_>, _>>()?;
+    let ids: Vec<_> = shown.iter().map(|&(id, _)| id).collect();
+    session.overtaking(Over::Entries(&ids), sequence, |vault| {
+        vault.delete_entries(&shown)
     })??;
     tree_of(&session)
 }
@@ -898,7 +904,7 @@ pub fn rename_group(group: String, name: String, session: Held<'_>) -> Result<Gr
     tree_of(&session)
 }
 
-/// Deletes a folder, on the terms [`delete_entry`] gives.
+/// Deletes a folder, on the terms [`delete_entries`] gives an entry.
 #[tauri::command(async)]
 pub fn delete_group(
     group: String,
@@ -910,13 +916,42 @@ pub fn delete_group(
     tree_of(&session)
 }
 
-/// Takes an entry out of the recycle bin, back to the folder it was deleted
-/// from, or to the top of the vault when that folder is nowhere to go. The
-/// undo of a move to the bin, and the bin's own way out.
+/// Takes entries out of the recycle bin, every one of them or none, each back
+/// to the folder it was deleted from, or to the top of the vault when that
+/// folder is nowhere to go. The bin's own way out, for the entry in the pane
+/// as a batch of one and for the rows chosen in the bin, and the undo of
+/// entries moved to the bin. See [`vault_core::Vault::put_back_entries`].
 #[tauri::command(async)]
-pub fn put_back_entry(entry: String, session: Held<'_>) -> Result<Group, Failure> {
-    let id = dto::entry_id(&entry)?;
-    session.with_mut(|vault| vault.put_back_entry(id))??;
+pub fn put_back_entries(entries: Vec<String>, session: Held<'_>) -> Result<Group, Failure> {
+    let ids = dto::entry_ids(&entries)?;
+    session.with_mut(|vault| vault.put_back_entries(&ids))??;
+    tree_of(&session)
+}
+
+/// Puts a tag on every entry named that does not have it, one version each,
+/// and answers with the tree and with the entries it went on, which are what
+/// its undo sends to `untag_entries`. See [`vault_core::Vault::tag_entries`].
+#[tauri::command(async)]
+pub fn tag_entries(
+    entries: Vec<String>,
+    tag: String,
+    session: Held<'_>,
+) -> Result<dto::Tagged, Failure> {
+    let ids = dto::entry_ids(&entries)?;
+    let changed = session.with_mut(|vault| vault.tag_entries(&ids, &tag))??;
+    Ok(dto::Tagged::of(&session.tree()?, &changed))
+}
+
+/// Takes a tag off every entry named that has it: the undo of `tag_entries`,
+/// sent the entries that one answered it changed.
+#[tauri::command(async)]
+pub fn untag_entries(
+    entries: Vec<String>,
+    tag: String,
+    session: Held<'_>,
+) -> Result<Group, Failure> {
+    let ids = dto::entry_ids(&entries)?;
+    session.with_mut(|vault| vault.untag_entries(&ids, &tag))??;
     tree_of(&session)
 }
 
@@ -943,11 +978,7 @@ pub fn move_entries(
     into: String,
     session: Held<'_>,
 ) -> Result<Moved, Failure> {
-    let ids = entries
-        .iter()
-        .map(String::as_str)
-        .map(dto::entry_id)
-        .collect::<Result<Vec<_>, _>>()?;
+    let ids = dto::entry_ids(&entries)?;
     let into = dto::group_id(&into)?;
     let moved = session.with_mut(|vault| vault.move_entries(&ids, into))??;
     Ok(Moved {

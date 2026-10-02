@@ -1424,7 +1424,7 @@ mod tests {
                 vault.undo_removal(id, fields::NOTES)
             }),
             ("an erasure of an entry outside the bin", |vault, id| {
-                vault.delete_entry(id, Deletion::Forever)
+                vault.delete_entries(&[(id, Deletion::Forever)])
             }),
             ("tags that cannot be written", |vault, id| {
                 vault.set_tags(id, vec![" padded ".to_owned()])
@@ -1823,7 +1823,7 @@ mod tests {
         assert_eq!(drawn["binned"]["from"], work);
 
         session
-            .with_mut(|vault| vault.put_back_entry(deleted.id))
+            .with_mut(|vault| vault.put_back_entries(&[deleted.id]))
             .expect("the session is open")
             .expect("it is put back");
         let back = serde_json::to_value(crate::dto::Entry::of(
@@ -1835,7 +1835,7 @@ mod tests {
         assert_eq!(back["deletion"], "bin");
 
         assert!(matches!(
-            session.with_mut(|vault| vault.put_back_entry(deleted.id)),
+            session.with_mut(|vault| vault.put_back_entries(&[deleted.id])),
             Ok(Err(VaultError::NotInRecycleBin))
         ));
     }
@@ -2481,8 +2481,8 @@ mod tests {
             ),
             ("the entry deleted", nothing, |session, id| {
                 session
-                    .overtaking(Over::Entry(id), 1, |vault| {
-                        vault.delete_entry(id, Deletion::Bin)
+                    .overtaking(Over::Entries(&[id]), 1, |vault| {
+                        vault.delete_entries(&[(id, Deletion::Bin)])
                     })
                     .expect("the session is open")
                     .expect("the entry goes");
@@ -2498,7 +2498,7 @@ mod tests {
                 "the bin it is in emptied",
                 |session, id| {
                     session
-                        .with_mut(|vault| vault.delete_entry(id, Deletion::Bin))
+                        .with_mut(|vault| vault.delete_entries(&[(id, Deletion::Bin)]))
                         .expect("the session is open")
                         .expect("the entry goes to the bin");
                 },
@@ -2566,8 +2566,8 @@ mod tests {
             .expect("the session is open")
             .expect("a folder is made");
         session
-            .overtaking(Over::Entry(other), 1, |vault| {
-                vault.delete_entry(other, Deletion::Bin)
+            .overtaking(Over::Entries(&[other]), 1, |vault| {
+                vault.delete_entries(&[(other, Deletion::Bin)])
             })
             .expect("the session is open")
             .expect("another entry goes");
@@ -2900,7 +2900,7 @@ mod tests {
                 )?;
                 vault.remove_field(basic.id, "PIN", false)?;
                 // Out of the bin, and so out of the file.
-                vault.delete_entry(binned.id, Deletion::Forever)
+                vault.delete_entries(&[(binned.id, Deletion::Forever)])
             })
             .expect("the vault is open")
             .expect("the changes are made");
@@ -2968,8 +2968,8 @@ mod tests {
             )
             .expect("the draft is heard");
         session
-            .overtaking(Over::Entry(basic.id), 2, |vault| {
-                vault.delete_entry(basic.id, Deletion::Bin)
+            .overtaking(Over::Entries(&[basic.id]), 2, |vault| {
+                vault.delete_entries(&[(basic.id, Deletion::Bin)])
             })
             .expect("the vault is open")
             .expect("the entry goes to the bin");
@@ -2982,7 +2982,7 @@ mod tests {
             )
             .expect("the draft is heard");
         session
-            .with_mut(|vault| vault.put_back_entry(basic.id))
+            .with_mut(|vault| vault.put_back_entries(&[basic.id]))
             .expect("the vault is open")
             .expect("the entry comes back");
         session.with_mut(Vault::save).expect("open").expect("saved");
@@ -3019,6 +3019,291 @@ mod tests {
             value_of(&file, basic.id, fields::URL).as_deref(),
             Some("https://example.com/login?a=1&b=2")
         );
+    }
+
+    /// A deletion of several entries lets go of what was typed into each of
+    /// them, and of nothing else: the lock still writes what was typed into an
+    /// entry the batch did not name.
+    #[test]
+    fn a_batch_deletion_lets_go_of_what_was_typed_into_every_entry_it_names() {
+        let (_directory, database, session) = holding(RICH);
+        let (basic, key, versioned) = (
+            entry_titled(&session, "basic").id,
+            entry_titled(&session, "ssh key").id,
+            entry_titled(&session, "versioned").id,
+        );
+        for (sequence, id) in [basic, key, versioned].into_iter().enumerate() {
+            session
+                .draft(
+                    id,
+                    fields::NOTES,
+                    words("typed and never left", false),
+                    sequence as u64 + 1,
+                )
+                .expect("the draft is heard");
+        }
+
+        session
+            .overtaking(Over::Entries(&[basic, key]), 4, |vault| {
+                vault.delete_entries(&[(basic, Deletion::Bin), (key, Deletion::Bin)])
+            })
+            .expect("the vault is open")
+            .expect("both go to the bin");
+
+        assert!(session.lock(Reason::Idle));
+        let file = reopened(&database);
+        for id in [basic, key] {
+            assert_ne!(
+                value_of(&file, id, fields::NOTES).as_deref(),
+                Some("typed and never left"),
+                "typing in a deleted entry was written"
+            );
+            assert!(file.entry(id).is_some_and(|entry| entry.binned.is_some()));
+        }
+        assert_eq!(
+            value_of(&file, versioned, fields::NOTES).as_deref(),
+            Some("typed and never left"),
+            "typing in an entry the batch did not name was let go"
+        );
+    }
+
+    /// A batch refused - one of its entries would no longer go where the
+    /// window said - deletes nothing, and still lets go of the typing said
+    /// before it: the reader chose to leave those panes behind, as
+    /// [`Session::overtaking`] says.
+    #[test]
+    fn a_refused_batch_deletion_still_lets_go_of_typing_said_before_it() {
+        let (_directory, database, session) = holding(RICH);
+        let basic = entry_titled(&session, "basic");
+        let key = entry_titled(&session, "ssh key");
+        for (sequence, id) in [basic.id, key.id].into_iter().enumerate() {
+            session
+                .draft(
+                    id,
+                    fields::NOTES,
+                    words("typed and never left", false),
+                    sequence as u64 + 1,
+                )
+                .expect("the draft is heard");
+        }
+
+        let refused = session
+            .overtaking(Over::Entries(&[basic.id, key.id]), 3, |vault| {
+                vault.delete_entries(&[(basic.id, Deletion::Bin), (key.id, Deletion::Forever)])
+            })
+            .expect("the vault is open");
+        assert!(matches!(refused, Err(VaultError::DeletionChanged)));
+
+        assert!(session.lock(Reason::Idle));
+        assert!(!session.typed());
+        let file = reopened(&database);
+        for entry in [&basic, &key] {
+            let kept = file.entry(entry.id).expect("nothing was deleted");
+            assert_eq!(kept.group, entry.group, "a refused batch moved an entry");
+            assert_ne!(
+                value_of(&file, entry.id, fields::NOTES).as_deref(),
+                Some("typed and never left")
+            );
+        }
+    }
+
+    /// The file waiting on an entry goes when a batch takes that entry away,
+    /// under the batch's own lock, whichever entry of the batch it was.
+    #[test]
+    fn the_file_waiting_goes_with_any_entry_a_batch_takes_away() {
+        let (_scratch, session) = unlocked(RICH);
+        let basic = entry_titled(&session, "basic").id;
+        let key = entry_titled(&session, "ssh key").id;
+        let before = files_of(&session, key);
+
+        let asked = session
+            .offer(key, KEY.to_owned(), Zeroizing::new(b"a new key".to_vec()))
+            .expect("the file is offered");
+        assert!(matches!(asked, Attached::Taken(_)));
+        session
+            .overtaking(Over::Entries(&[basic, key]), 1, |vault| {
+                vault.delete_entries(&[(basic, Deletion::Bin), (key, Deletion::Bin)])
+            })
+            .expect("the vault is open")
+            .expect("both go to the bin");
+
+        for answer in [Vault::keep_both, Vault::replace_attachment] {
+            let refused = session
+                .answer(key, answer)
+                .expect_err("nothing is waiting any more");
+            assert_eq!(code_of(&refused), "refused");
+        }
+        assert_eq!(files_of(&session, key), before);
+    }
+
+    /// However many entries a batch changes, the window has one list of
+    /// versions to read again, and a batch refused has changed nothing it
+    /// would need to.
+    #[test]
+    fn a_batch_moves_the_revision_once_and_a_refused_one_not_at_all() {
+        let (_scratch, session) = unlocked(RICH);
+        let ids: Vec<EntryId> = ["basic", "ssh key", "versioned"]
+            .into_iter()
+            .map(|title| entry_titled(&session, title).id)
+            .collect();
+        let revision = || {
+            session
+                .listing(|vault| vault.versions(ids[0]))
+                .expect("the vault is open")
+                .0
+        };
+
+        let start = revision();
+        type Batch = fn(&mut Vault, &[EntryId]) -> Result<(), VaultError>;
+        type Refusal = fn(&VaultError) -> bool;
+        let refused: [(&str, Batch, Refusal); 4] = [
+            (
+                "a deletion naming an entry that is not there",
+                |vault, ids| {
+                    let mut shown: Vec<_> = ids.iter().map(|&id| (id, Deletion::Bin)).collect();
+                    shown.push((EntryId::from_uuid(uuid::Uuid::nil()), Deletion::Bin));
+                    vault.delete_entries(&shown)
+                },
+                |error| matches!(error, VaultError::NoSuchEntry),
+            ),
+            (
+                "a put back of entries outside the bin",
+                |vault, ids| vault.put_back_entries(ids),
+                |error| matches!(error, VaultError::NotInRecycleBin),
+            ),
+            (
+                "a tag the format would split",
+                |vault, ids| vault.tag_entries(ids, "a;b").map(drop),
+                |error| matches!(error, VaultError::UnwritableTag),
+            ),
+            (
+                "a tag taken off an entry that is not there",
+                |vault, ids| {
+                    let mut named = ids.to_vec();
+                    named.push(EntryId::from_uuid(uuid::Uuid::nil()));
+                    vault.untag_entries(&named, "work")
+                },
+                |error| matches!(error, VaultError::NoSuchEntry),
+            ),
+        ];
+        for (what, batch, refusal) in refused {
+            let done = session
+                .with_mut(|vault| batch(vault, &ids))
+                .expect("the vault is open");
+            assert!(
+                done.as_ref().is_err_and(refusal),
+                "{what} was not refused for its own reason: {done:?}"
+            );
+            assert_eq!(revision(), start, "{what} moved the revision");
+        }
+
+        let tagged = session
+            .with_mut(|vault| vault.tag_entries(&ids, "batched"))
+            .expect("the vault is open")
+            .expect("the tag goes on");
+        assert_eq!(tagged, ids);
+        assert_eq!(revision(), start + 1, "three versions are one change");
+        session
+            .with_mut(|vault| vault.tag_entries(&ids, "batched"))
+            .expect("the vault is open")
+            .expect("a tag every entry has already writes nothing");
+        assert_eq!(revision(), start + 1, "a batch with nothing to do moved it");
+
+        let shown: Vec<_> = ids.iter().map(|&id| (id, Deletion::Bin)).collect();
+        session
+            .with_mut(|vault| vault.delete_entries(&shown))
+            .expect("the vault is open")
+            .expect("all three go to the bin");
+        assert_eq!(revision(), start + 2);
+        session
+            .with_mut(|vault| vault.put_back_entries(&ids))
+            .expect("the vault is open")
+            .expect("all three come back");
+        assert_eq!(revision(), start + 3);
+    }
+
+    /// What a batch hands the window - the tree, and the entries a tag went
+    /// on - carries no password the vault holds: not one any entry has now,
+    /// and not one a version of it keeps, however many entries it changed.
+    #[test]
+    fn nothing_a_batch_answers_carries_a_password() {
+        fn walk(group: &Project, into: &mut Vec<EntryId>) {
+            into.extend(group.entries.iter().map(|entry| entry.id));
+            for section in &group.sections {
+                walk(section, into);
+            }
+        }
+
+        let (_scratch, session) = unlocked(RICH);
+        let mut ids = Vec::new();
+        walk(&session.tree().expect("the tree comes back"), &mut ids);
+        let mut secrets: Vec<String> = ids
+            .iter()
+            .filter_map(|&id| password_of(&session, id))
+            .collect();
+        session
+            .with(|vault| {
+                for &id in &ids {
+                    for version in vault.versions(id) {
+                        let kept = vault.reveal_version(id, version.index, fields::PASSWORD);
+                        if let Some(text) = kept.as_ref().and_then(|secret| secret.expose_str()) {
+                            secrets.push(text.to_owned());
+                        }
+                    }
+                }
+            })
+            .expect("the vault is open");
+        secrets.retain(|secret| !secret.is_empty());
+        assert!(
+            secrets.len() > ids.len() / 2,
+            "the fixture holds few passwords"
+        );
+        let carried = |payload: &str, what: &str| {
+            for secret in &secrets {
+                assert!(
+                    !payload.contains(secret.as_str()),
+                    "{what} carries a password"
+                );
+            }
+        };
+
+        let changed = session
+            .with_mut(|vault| vault.tag_entries(&ids, "batched"))
+            .expect("the vault is open")
+            .expect("the tag goes on");
+        assert_eq!(changed.len(), ids.len());
+        let tagged =
+            crate::dto::Tagged::of(&session.tree().expect("the tree comes back"), &changed);
+        carried(
+            &serde_json::to_string(&tagged).expect("it serialises"),
+            "a tag's answer",
+        );
+
+        let live: Vec<_> = ids
+            .iter()
+            .map(|&id| (id, session.entry(id).expect("the entry is there").deletion))
+            .filter(|(_, deletion)| *deletion == Deletion::Bin)
+            .collect();
+        assert!(!live.is_empty());
+        let binned: Vec<_> = live.iter().map(|&(id, _)| id).collect();
+        for (what, batch) in [
+            (
+                "a deletion's tree",
+                Box::new(|vault: &mut Vault| vault.delete_entries(&live))
+                    as Box<dyn FnOnce(&mut Vault) -> Result<(), VaultError>>,
+            ),
+            (
+                "a put back's tree",
+                Box::new(|vault: &mut Vault| vault.put_back_entries(&binned)),
+            ),
+        ] {
+            session
+                .with_mut(batch)
+                .expect("the vault is open")
+                .expect("the batch goes through");
+            let tree = crate::dto::Group::of(&session.tree().expect("the tree comes back"));
+            carried(&serde_json::to_string(&tree).expect("it serialises"), what);
+        }
     }
 
     /// A value the database protects goes back protected: a draft is written

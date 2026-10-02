@@ -28,6 +28,7 @@ use crate::storage::{self, Seen, atomic, snapshot, unsaved, watch};
 use crate::text;
 use crate::wipe;
 
+mod batch;
 mod moves;
 
 /// The largest file Coffer will read into memory to try to open.
@@ -829,7 +830,7 @@ impl Vault {
             }
         }
         for entry in entries {
-            if let Err(error) = self.erase_entry(entry) {
+            if let Err(error) = self.erase_entries(&[entry]) {
                 refused.get_or_insert(error);
             }
         }
@@ -994,17 +995,12 @@ impl Vault {
 
     /// Replaces an entry's tags.
     ///
-    /// The format keeps them as one string with semicolons between, and reads
-    /// a comma and a tab as separators too, so a tag holding one of those would
-    /// come back as two tags. A tag padded with spaces comes back trimmed. Both
-    /// are refused rather than written and silently changed.
+    /// A tag the format would split in two, trim or drop is refused rather
+    /// than written and silently changed (see `text::tag`).
     pub fn set_tags(&mut self, id: EntryId, tags: Vec<String>) -> Result<(), VaultError> {
         self.writable()?;
         for tag in &tags {
-            text::writable(tag)?;
-            if tag.is_empty() || tag.trim() != tag || tag.contains([';', ',', '\t']) {
-                return Err(VaultError::UnwritableText);
-            }
+            text::tag(tag)?;
         }
         if self.database.entry(id).is_none() {
             return Err(VaultError::NoSuchEntry);
@@ -1019,63 +1015,9 @@ impl Vault {
         Ok(())
     }
 
-    /// Deletes an entry.
-    ///
-    /// As with a folder: to the recycle bin when the database has one, and out
-    /// of the file and into `DeletedObjects` when it is already there. Which of
-    /// the two happens is what [`Entry::deletion`] said it would.
-    ///
-    /// A move to the bin is not an edit. It writes no version and records no
-    /// deletion, and the entry keeps the folder it came out of as its
-    /// `PreviousParentGroup`, which is where [`Vault::put_back_entry`] takes it.
-    ///
-    /// `shown` is the deletion the reader agreed to, refused with
-    /// [`VaultError::DeletionChanged`] when it is no longer what deleting the
-    /// entry does, for the reasons [`Vault::delete_group`] gives.
-    pub fn delete_entry(&mut self, id: EntryId, shown: Deletion) -> Result<(), VaultError> {
-        self.writable()?;
-        let group = self
-            .database
-            .entry(id)
-            .ok_or(VaultError::NoSuchEntry)?
-            .parent()
-            .id();
-
-        let bin = Bin::of(&self.database);
-        match bin.deletion(bin.standing(&self.database, group)) {
-            deletion if deletion != shown => Err(VaultError::DeletionChanged),
-            Deletion::Forever => self.erase_entry(id),
-            Deletion::Bin => {
-                let into = self.bin(bin.id());
-                self.relocate_entry(id, into)
-            }
-        }
-    }
-
-    /// Takes an entry out of the recycle bin and puts it back where it was.
-    ///
-    /// Back into the folder it was deleted from, when that folder is still
-    /// somewhere to go. One that has gone, one that is in the bin itself, and
-    /// an entry another client put in the bin without saying where from all
-    /// send it to the top of the vault instead: put back somewhere is better
-    /// than left behind. An entry that went in with a deleted folder goes
-    /// where that folder came from ([`Binned::from`]).
-    ///
-    /// Moving is not an edit, so no version is written, and the folder it
-    /// leaves becomes its `PreviousParentGroup` the way every move makes it.
-    pub fn put_back_entry(&mut self, id: EntryId) -> Result<(), VaultError> {
-        self.writable()?;
-        let into = {
-            let entry = self.database.entry(id).ok_or(VaultError::NoSuchEntry)?;
-            let (binned, _) = self.placed(&entry, entry.parent().id());
-            self.back(binned)?
-        };
-        self.relocate_entry(id, into)
-    }
-
     /// Takes a folder out of the recycle bin with everything in it, on the
-    /// same terms as [`Vault::put_back_entry`]. The bin itself is not in the
-    /// bin, and cannot be put back.
+    /// same terms as [`Vault::put_back_entries`] takes an entry. The bin itself
+    /// is not in the bin, and cannot be put back.
     pub fn put_back_group(&mut self, id: GroupId) -> Result<(), VaultError> {
         self.writable()?;
         let into = {
@@ -1682,15 +1624,23 @@ impl Vault {
         Ok(())
     }
 
-    /// Takes an entry out of the file for good.
-    fn erase_entry(&mut self, id: EntryId) -> Result<(), VaultError> {
-        attachment::detach_entries(&mut self.database, &[id])?;
+    /// Takes entries out of the file for good, every one of them or none.
+    ///
+    /// Their files go first, by the pool's rules and for all of them at once:
+    /// [`attachment::detach_entries`] works out where every file goes before it
+    /// writes anything, so a version standing in the way of one entry's file
+    /// refuses them all with the pool as it was. Nothing after it can refuse:
+    /// every caller found each entry first, and names each one once.
+    fn erase_entries(&mut self, ids: &[EntryId]) -> Result<(), VaultError> {
+        attachment::detach_entries(&mut self.database, ids)?;
 
-        self.database
-            .entry_mut(id)
-            .ok_or(VaultError::NoSuchEntry)?
-            .track_changes()
-            .remove();
+        for &id in ids {
+            self.database
+                .entry_mut(id)
+                .ok_or(VaultError::NoSuchEntry)?
+                .track_changes()
+                .remove();
+        }
 
         self.touched();
         Ok(())

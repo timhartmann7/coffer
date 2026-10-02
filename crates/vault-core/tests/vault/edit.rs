@@ -195,7 +195,7 @@ fn a_deleted_entry_goes_to_the_recycle_bin_and_the_second_deletion_takes_it_out_
 
     let id = only_entry(&vault, "basic");
     vault
-        .delete_entry(id, Deletion::Bin)
+        .delete_entries(&[(id, Deletion::Bin)])
         .expect("the entry is deleted");
 
     let bin = vault
@@ -211,7 +211,7 @@ fn a_deleted_entry_goes_to_the_recycle_bin_and_the_second_deletion_takes_it_out_
     );
 
     vault
-        .delete_entry(id, Deletion::Forever)
+        .delete_entries(&[(id, Deletion::Forever)])
         .expect("the entry is deleted again");
     assert!(
         vault.entry(id).is_none(),
@@ -241,7 +241,7 @@ fn an_entry_at_the_top_of_the_vault_goes_to_the_recycle_bin_like_any_other() {
         .expect("the title is written");
 
     vault
-        .delete_entry(id, Deletion::Bin)
+        .delete_entries(&[(id, Deletion::Bin)])
         .expect("the entry is deleted");
 
     let bin = vault
@@ -309,7 +309,7 @@ fn a_database_that_keeps_no_recycle_bin_deletes_outright() {
     let mut vault = open(&path, BUILT_PASSWORD);
     let id = only_entry(&vault, "doomed");
     vault
-        .delete_entry(id, Deletion::Forever)
+        .delete_entries(&[(id, Deletion::Forever)])
         .expect("the entry is deleted");
 
     assert!(vault.entry(id).is_none(), "the entry is still there");
@@ -336,7 +336,7 @@ fn a_database_that_wants_a_recycle_bin_and_has_none_is_given_one() {
     let mut vault = open(&path, BUILT_PASSWORD);
     let id = only_entry(&vault, "doomed");
     vault
-        .delete_entry(id, Deletion::Bin)
+        .delete_entries(&[(id, Deletion::Bin)])
         .expect("the entry is deleted");
     vault.save().expect("the database saves");
     drop(vault);
@@ -494,7 +494,7 @@ fn a_tag_that_would_come_back_as_two_is_refused() {
         assert!(
             matches!(
                 vault.set_tags(id, vec![rejected.to_owned()]),
-                Err(VaultError::UnwritableText)
+                Err(VaultError::UnwritableTag)
             ),
             "{rejected:?} was accepted"
         );
@@ -803,7 +803,7 @@ fn the_recycle_bin_empties_once_the_versions_holding_a_file_have_gone() {
 
     // Into the bin, which never touches the pool.
     vault
-        .delete_entry(first, Deletion::Bin)
+        .delete_entries(&[(first, Deletion::Bin)])
         .expect("it goes to the bin");
 
     // Out of the file, which does. The last file in the pool is held by the
@@ -911,10 +911,10 @@ fn deleting_an_entry_takes_its_files_and_leaves_everybody_elses() {
         // Straight out of the file: the recycle bin would only move it, and a
         // moved entry still holds its files.
         vault
-            .delete_entry(middle, Deletion::Bin)
+            .delete_entries(&[(middle, Deletion::Bin)])
             .expect("the entry goes to the bin");
         vault
-            .delete_entry(middle, Deletion::Forever)
+            .delete_entries(&[(middle, Deletion::Forever)])
             .expect("the entry is deleted");
         vault.save().expect("the database saves");
     }
@@ -1351,7 +1351,7 @@ fn emptying_the_recycle_bin_takes_what_is_in_it_out_of_the_file() {
     let deleted = only_entry(&vault, "deleted entry");
     let living = only_entry(&vault, "basic");
     vault
-        .delete_entry(living, Deletion::Bin)
+        .delete_entries(&[(living, Deletion::Bin)])
         .expect("the entry is deleted");
 
     // A folder in the bin, with a folder in that. Emptying has to take the
@@ -1691,7 +1691,7 @@ fn a_snapshot_is_opened_to_read_and_never_written_back() {
         vault.set_field(id, fields::NOTES, NewValue::Open("x".to_owned())),
         vault.set_protection(id, "x", true),
         vault.rename_field(id, "x", "y"),
-        vault.delete_entry(id, Deletion::Bin),
+        vault.delete_entries(&[(id, Deletion::Bin)]),
         vault.clear_history(id),
         vault.add_attachment(id, "x", b"x").map(drop),
         vault.keep_both(id, "x", b"x"),

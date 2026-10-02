@@ -121,6 +121,24 @@ list is in the spec.
   mid-drag: nothing moves, and the pane and the search stay. A drag that ends
   over the empty part of the folders pane leaves the open entry where it was,
   and a row pressed without moving still opens.
+- Choosing rows, with a trackpad and with a mouse: Cmd-click chooses a row and
+  opens nothing, Shift-click chooses the run from the last row pressed, and
+  Control-click chooses nothing. Cmd+A with the focus on a row, on the empty part
+  of the list and on a folder chooses every row the list draws, selects no text
+  of the page, and the Edit menu does not flash; in the search field and in a
+  field of the entry it selects that field's text, and Edit ▸ Select All chosen
+  with the pointer selects nothing visible. VoiceOver reads ", selected" after a
+  chosen row's title, and says "5 selected" after Cmd+A and the new count after
+  each Cmd-click, with the focus where it was.
+- With several rows chosen: Cmd+Backspace and Edit ▸ Move to Recycle Bin move all
+  of them once, with one notice whose Undo and ⌘Z bring all of them back; in the
+  bin the item is grey and the bar's Delete forever… asks. Several chosen rows
+  dragged onto a folder move together with one notice; a row that is not chosen
+  drags alone and the choice stays. Add tag: Return puts the tag on once, and
+  a Return that ends a kana conversion does not; a click elsewhere, the bar's
+  own Delete included, lets the tag go and puts it on nothing; Cmd+Tab away and
+  back leaves what was typed in the field, and a lock with it typed puts it on
+  nothing.
 - The line above an entry's title: a press opens the folder list with the keys
   in its filter, Return moves the entry, ⌘Z takes it back, and VoiceOver reads
   the line that is chosen. In "All entries", "+ Entry" and Cmd+N open "Put it

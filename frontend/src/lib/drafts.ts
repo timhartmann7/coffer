@@ -173,12 +173,13 @@ export function settle<T>(place: Place, write: (sequence: number) => Promise<T>)
 }
 
 /**
- * An entry is being deleted, or - for `null` - the file read again, and what
- * was typed into it goes with it. Answers with the number the command carries,
- * which is how Rust knows which drafts came before it.
+ * Entries are being deleted, or - for `null` - the file read again, and what
+ * was typed into them goes with them. Answers with the number the command
+ * carries, which is how Rust knows which drafts came before it.
  */
-export function release(entry: string | null): number {
-	const going = [...typing].filter(([, held]) => entry === null || held.place.entry === entry);
+export function release(entries: readonly string[] | null): number {
+	const named = entries === null ? null : new Set(entries);
+	const going = [...typing].filter(([, held]) => named === null || named.has(held.place.entry));
 	for (const [name] of going) forget(name);
 	return next();
 }

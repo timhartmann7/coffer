@@ -64,6 +64,9 @@ pub struct EntrySummary {
     /// When the entry is in the recycle bin, what is known about how it got
     /// there. A row in the bin says when and where from.
     pub binned: Option<Binned>,
+    /// What deleting the entry would do, so that a list can say before a press
+    /// which of several chosen entries go to the bin and which go for good.
+    pub deletion: Deletion,
 }
 
 /// An entry, as much of it as can be looked at without a reveal.
@@ -179,6 +182,7 @@ impl Entry {
             attachments: self.attachments.len(),
             versions: self.versions,
             binned: self.binned,
+            deletion: self.deletion,
         }
     }
 

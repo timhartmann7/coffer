@@ -129,10 +129,13 @@ export function called(entry: Entry): string {
 	return titled(entry.fields.find((field) => field.kind === 'title')?.value);
 }
 
-/** What a sentence calls an entry from its row in the list, on the same terms:
- * a row carries no title the database protects. */
-export function calledRow(row: EntryRow): string {
-	return titled(row.title);
+/**
+ * What a sentence calls entries from their rows in the list: one by its title,
+ * on the terms an entry Rust has read is named on - a row carries no title the
+ * database protects - and any other number by how many there are.
+ */
+export function counted(rows: readonly EntryRow[]): string {
+	return rows.length === 1 ? titled(rows[0].title) : `${rows.length} entries`;
 }
 
 /** What the pane calls the five fields every entry has, by their names in the

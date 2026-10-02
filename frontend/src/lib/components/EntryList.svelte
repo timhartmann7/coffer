@@ -3,6 +3,7 @@
 	import { when } from '$lib/format';
 	import { KEYS, OWN } from '$lib/shortcuts';
 	import type { EntryRow } from '$lib/model';
+	import { pressOn, type Press } from '$lib/selection.svelte';
 	import Icon from './Icon.svelte';
 	import Mask from './Mask.svelte';
 
@@ -14,7 +15,10 @@
 		note,
 		before,
 		lifted,
+		chosen,
+		bar,
 		onOpen,
+		onChoose,
 		onCopy,
 		onPress
 	}: {
@@ -27,9 +31,16 @@
 		before?: Snippet;
 		/** The rows being dragged, which keep the plane they are lifted on. */
 		lifted?: ReadonlySet<string>;
+		/** The rows chosen to act on together, drawn on the selection plane. */
+		chosen?: ReadonlySet<string>;
+		/** What stands where the column names are while rows are chosen. */
+		bar?: Snippet;
 		/** Opens the entry, handed the row that was pressed: it is what the pane
 		 * is drawn from until Rust has read the entry. */
 		onOpen: (row: EntryRow) => void;
+		/** A press with Cmd or Shift, which chooses rather than opens. Left out
+		 * where nothing may be chosen, and every press then opens. */
+		onChoose?: (row: EntryRow, press: Press) => void;
 		onCopy: (row: EntryRow, field: 'UserName' | 'Password') => void;
 		/** A press on a row, which a drag may start from. Left out where
 		 * nothing may be moved. */
@@ -43,16 +54,21 @@
 	const SHOWN = 2;
 </script>
 
-<div
-	class="grid grid-cols-[1.5fr_0.85fr_0.85fr_78px_66px] gap-4 border-b border-line px-5 py-2 font-mono text-label tracking-label text-txt4 uppercase"
->
-	<span>Name</span><span>Login</span><span>Tags</span><span class="text-right">Changed</span><span
-	></span>
-</div>
+{#if bar}
+	{@render bar()}
+{:else}
+	<div
+		class="grid grid-cols-[1.5fr_0.85fr_0.85fr_78px_66px] gap-4 border-b border-line px-5 py-2 font-mono text-label tracking-label text-txt4 uppercase"
+	>
+		<span>Name</span><span>Login</span><span>Tags</span><span class="text-right">Changed</span><span
+		></span>
+	</div>
+{/if}
 
 <div class="flex-1 overflow-y-auto text-body">
 	{@render before?.()}
 	{#each rows as row (row.id)}
+		{@const picked = chosen?.has(row.id) ?? false}
 		<!--
 			The whole row opens the entry, not the name in it. The row is what
 			lights up under the pointer, so the row is what a press has to answer:
@@ -65,36 +81,45 @@
 			name a screen reader never reads out.
 		-->
 		<div
-			class="relative border-b border-line transition-colors {lifted?.has(row.id)
-				? 'bg-raised'
-				: 'hover:bg-raised/50'}"
+			class="relative border-b border-line transition-colors {picked
+				? 'bg-selection'
+				: lifted?.has(row.id)
+					? 'bg-raised'
+					: 'hover:bg-raised/50'}"
 		>
 			<button
 				type="button"
-				onclick={() => onOpen(row)}
+				onclick={(event) => pressOn(event, row, onOpen, onChoose)}
 				onpointerdown={(event) => onPress?.(event, row)}
 				class="grid w-full grid-cols-[1.5fr_0.85fr_0.85fr_78px_66px] items-center gap-4 px-5 py-[11px] text-left"
 			>
 				<span class="block min-w-0">
-					<span class="flex min-w-0 items-center gap-2 truncate text-txt2">
+					<span
+						class="flex min-w-0 items-center gap-2 truncate {picked ? 'text-txt' : 'text-txt2'}"
+					>
 						<Icon
 							name={row.hasPassword || row.attachments === 0 ? 'key' : 'clip'}
-							class="h-3.5 w-3.5 shrink-0 text-txt4"
+							class="h-3.5 w-3.5 shrink-0 {picked ? 'text-txt3' : 'text-txt4'}"
 						/>
 						{#if row.title === null}
 							<Mask />
 						{:else}
 							<span class="truncate">{row.title}</span>
 						{/if}
+						{#if picked}<span class="sr-only">, selected</span>{/if}
 					</span>
 					{#if note}
-						<span class="mt-1 block truncate pl-[22px] font-mono text-sub text-txt4">
+						<span
+							class="mt-1 block truncate pl-[22px] font-mono text-sub {picked
+								? 'text-txt2'
+								: 'text-txt4'}"
+						>
 							{note(row)}
 						</span>
 					{/if}
 				</span>
 
-				<span class="truncate font-mono text-fine text-txt3">
+				<span class="truncate font-mono text-fine {picked ? 'text-txt2' : 'text-txt3'}">
 					{#if row.username === null}
 						<Mask />
 					{:else}
@@ -123,7 +148,9 @@
 					{/if}
 				</span>
 
-				<span class="text-right font-mono text-meta text-txt4">{when(row.modified, now)}</span>
+				<span class="text-right font-mono text-meta {picked ? 'text-txt2' : 'text-txt4'}">
+					{when(row.modified, now)}
+				</span>
 
 				<span aria-hidden="true"></span>
 			</button>

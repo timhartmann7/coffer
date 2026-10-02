@@ -183,6 +183,7 @@ impl From<VaultError> for Failure {
             | VaultError::NoSuchAttachment
             | VaultError::NoSuchVersion => Code::NoSuchEntry,
             VaultError::UnwritableText
+            | VaultError::UnwritableTag
             | VaultError::StandardField
             | VaultError::FieldNameTaken
             | VaultError::UnnamedField
@@ -248,6 +249,7 @@ mod tests {
             (VaultError::TooLarge, "tooLarge"),
             (VaultError::NoSuchEntry, "noSuchEntry"),
             (VaultError::UnwritableText, "refused"),
+            (VaultError::UnwritableTag, "refused"),
             (VaultError::StandardField, "refused"),
             (VaultError::FieldNameTaken, "refused"),
             (VaultError::UnnamedField, "refused"),

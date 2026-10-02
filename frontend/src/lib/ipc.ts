@@ -13,6 +13,7 @@ import type {
 	Calibration,
 	Command,
 	Database,
+	Deleting,
 	Deletion,
 	Entry,
 	Failure,
@@ -31,6 +32,7 @@ import type {
 	Snapshot,
 	Span,
 	Status,
+	Tagged,
 	Target
 } from './model';
 
@@ -290,13 +292,14 @@ export function createEntry(group: string): Promise<Made> {
 }
 
 /**
- * Deletes an entry. `deletion` is what the window showed the deletion would
- * do, and Rust rejects with `deletionChanged`, deleting nothing, when that is
- * no longer what it does. `sequence` is the number `drafts.release` gave for
- * it: whatever was typed into the entry and said before it is let go.
+ * Deletes entries, every one of them or none, each with what the window showed
+ * deleting it would do: Rust rejects the whole batch with `deletionChanged`,
+ * deleting nothing, when that is no longer what happens to any of them. One
+ * entry is a batch of one. `sequence` is the number `drafts.release` gave for
+ * them: whatever was typed into them and said before it is let go.
  */
-export function deleteEntry(entry: string, deletion: Deletion, sequence: number): Promise<Group> {
-	return invoke('delete_entry', { entry, deletion, sequence });
+export function deleteEntries(entries: Deleting[], sequence: number): Promise<Group> {
+	return invoke('delete_entries', { entries, sequence });
 }
 
 export function createGroup(parent: string, name: string): Promise<Group> {
@@ -307,19 +310,35 @@ export function renameGroup(group: string, name: string): Promise<Group> {
 	return invoke('rename_group', { group, name });
 }
 
-/** Deletes a folder and everything in it, on the terms `deleteEntry` gives. */
+/** Deletes a folder and everything in it, on the terms `deleteEntries` gives
+ * each entry. */
 export function deleteGroup(group: string, deletion: Deletion): Promise<Group> {
 	return invoke('delete_group', { group, deletion });
 }
 
 /**
- * Takes an entry out of the recycle bin, back to the folder it was deleted
- * from, or to the top of the vault when that folder is nowhere to go. Rejects
- * with `refused` for anything that is not in the bin, so an undo that arrives
- * after the entry has already come back moves nothing.
+ * Takes entries out of the recycle bin, every one of them or none, each back
+ * to the folder it was deleted from, or to the top of the vault when that
+ * folder is nowhere to go. Rust rejects with `refused` when any of them is no
+ * longer in the bin, so an undo that arrives after one has already come back
+ * moves nothing, and with `noSuchEntry` when one has gone.
  */
-export function putBackEntry(entry: string): Promise<Group> {
-	return invoke('put_back_entry', { entry });
+export function putBackEntries(entries: string[]): Promise<Group> {
+	return invoke('put_back_entries', { entries });
+}
+
+/** Puts a tag on every entry named that lacks it, and answers with the tree
+ * and those entries. Rust refuses the whole batch with `refused`, saying why,
+ * for a tag the file would split or trim, and with `noSuchEntry` when one has
+ * gone. */
+export function tagEntries(entries: string[], tag: string): Promise<Tagged> {
+	return invoke('tag_entries', { entries, tag });
+}
+
+/** Takes a tag off every entry named that has it: the undo of `tagEntries`,
+ * sent only the entries that one answered it changed. */
+export function untagEntries(entries: string[], tag: string): Promise<Group> {
+	return invoke('untag_entries', { entries, tag });
 }
 
 /** Takes a folder out of the recycle bin with everything in it, on the same

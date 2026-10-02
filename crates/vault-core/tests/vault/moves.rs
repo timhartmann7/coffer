@@ -29,10 +29,10 @@ fn order(vault: &Vault, group: GroupId) -> Vec<EntryId> {
 fn erased(vault: &mut Vault, group: GroupId) -> EntryId {
     let id = made(vault, group, "gone");
     vault
-        .delete_entry(id, Deletion::Bin)
+        .delete_entries(&[(id, Deletion::Bin)])
         .expect("it goes to the bin");
     vault
-        .delete_entry(id, Deletion::Forever)
+        .delete_entries(&[(id, Deletion::Forever)])
         .expect("and out of the file");
     id
 }
@@ -367,7 +367,7 @@ fn a_folder_the_bin_is_in_moves_and_the_bin_stays_the_bin() {
     );
 
     vault
-        .delete_entry(top, Deletion::Bin)
+        .delete_entries(&[(top, Deletion::Bin)])
         .expect("it goes to the bin");
     assert_eq!(vault.entry(top).map(|entry| entry.group), Some(bin));
     vault.save().expect("the database saves");
@@ -448,7 +448,7 @@ fn a_batch_moves_all_or_nothing() {
     let b = made(&mut vault, personal, "b");
     let binned = made(&mut vault, personal, "binned");
     vault
-        .delete_entry(binned, Deletion::Bin)
+        .delete_entries(&[(binned, Deletion::Bin)])
         .expect("it goes to the bin");
     let gone = erased(&mut vault, personal);
     let nowhere = erased_folder(&mut vault, root);
@@ -721,7 +721,7 @@ fn what_was_moved_and_then_deleted_goes_back_where_it_was_moved_to() {
 
     vault.move_entries(&[bank], work).expect("it moves");
     vault
-        .delete_entry(bank, Deletion::Bin)
+        .delete_entries(&[(bank, Deletion::Bin)])
         .expect("it goes to the bin");
     vault.move_group(cards, work).expect("the folder moves");
     vault
@@ -744,8 +744,8 @@ fn what_was_moved_and_then_deleted_goes_back_where_it_was_moved_to() {
         .expect("it is in the bin");
     assert_eq!((went.within, went.from), (Some(cards), Some(work)));
 
-    vault.put_back_entry(bank).expect("it is put back");
-    vault.put_back_entry(visa).expect("it is put back");
+    vault.put_back_entries(&[bank]).expect("it is put back");
+    vault.put_back_entries(&[visa]).expect("it is put back");
     assert_eq!(vault.entry(bank).map(|entry| entry.group), Some(work));
     assert_eq!(vault.entry(visa).map(|entry| entry.group), Some(work));
 }
@@ -908,10 +908,10 @@ fn a_move_taken_back_after_one_entry_was_erased_moves_nothing() {
 
     let moved = vault.move_entries(&[a, b], banking).expect("they move");
     vault
-        .delete_entry(b, Deletion::Bin)
+        .delete_entries(&[(b, Deletion::Bin)])
         .expect("it goes to the bin");
     vault
-        .delete_entry(b, Deletion::Forever)
+        .delete_entries(&[(b, Deletion::Forever)])
         .expect("and out of the file");
     let edits = vault.edits();
 

@@ -475,7 +475,7 @@ into Banking a year ago back into the folder it was filed out of. So `Binned`
 names the folder it went in with (`within`, the one the bin holds), and `from`
 is that folder's own way back: where it would be had the folder been put back
 whole, or the top of the vault when that is gone or in the bin too.
-`put_back_entry` and `put_back_group` return nothing; where a thing went is
+`put_back_entries` and `put_back_group` return nothing; where a thing went is
 read off the tree like everything else.
 
 **When something went in is the date its folder went in.** A folder takes what
@@ -495,6 +495,62 @@ whatever reached the vault first. A folder the bin is inside is erased rather th
 binned - it cannot go inside itself - and that is asked of a folder and never of
 an entry, because the top of the vault holds the bin and is where every entry
 Coffer makes lands.
+
+## Many entries at once
+
+The window acts on several entries the reader chose with one call each, and
+offers one undo for all of it. That means something only if a batch is whole.
+
+**Every entry is checked before any is changed.**
+[`vault/batch.rs`](../crates/vault-core/src/vault/batch.rs) holds deleting,
+putting back, putting a tag on and taking it off again for many entries, and
+each looks at every entry it names before it touches one: an entry that is not
+there, one whose deletion is no longer the one the reader was shown, one to be
+put back that is not in the bin, a tag the format would not give back as
+written. One refusal refuses the batch, with nothing changed and `edits` where it
+was. An entry named twice is done once. There is no single deletion or put back
+beside the batch: the pane's Delete is `Vault::delete_entries` with one entry,
+and its Put back `put_back_entries` with one, so each rule is written once.
+Moving several entries, and taking the move back, is `vault/moves.rs`'s, on the
+same terms.
+
+**An erasure of many is one change to the pool.** `attachment::detach_entries`
+is asked once for every entry being erased, and works out where every file goes
+before it writes anything, so a version standing in the way of one entry's file
+refuses them all with `AttachmentInHistory` and the pool is untouched. It runs
+before any move into the bin, because it is the one step left that can say no;
+a batch that erased nothing must not have moved the rest of its entries into the
+bin either. Two entries naming one file - which KeePass 2 writes for identical
+files and Coffer never makes - take it with them when both go in one batch.
+Emptying the bin is different on purpose: it erases what can go and says what
+stayed.
+
+**Where they land, and what it costs.** A batch into the bin and back goes
+through the same `move_to` as a move between folders (see "A large batch costs
+the length of the folder" above), so entries arrive in the order they had, each
+goes to the end of the folder it lands in, and fifty thousand out of one folder
+cost the length of that folder for each: seconds, held under the session's lock
+like a save. `batch::fifty_thousand_entries_go_to_the_bin_and_come_back_in_one_batch`
+is the proof that it ends. Where each one is going is asked once per folder it
+leaves (`bin::Standings`), not once per entry: the walk from the top of the vault
+down to that folder is the same for every entry in it. Putting back asks one
+more thing of each entry, whether the folder it came from is still there and out
+of the bin, which is a walk up from that folder, short and per entry, because
+each names its own.
+
+**A tag has one rule wherever it is written.** `text::tag`: text a KDBX file can
+hold, not empty, not padded with spaces, no `;`, `,` or tab, all of which the
+format reads back as something else. `set_tags` and `tag_entries` both ask it.
+A character no KeePass file can hold is refused with `UnwritableText`, as in any
+other value; the rest with `UnwritableTag`, whose sentence is about tags, since
+the file holds a semicolon or a space anywhere but inside one.
+Unlike a move, a tag is an edit: putting one on writes a version on each entry
+that lacked it and on no other, and answers those, so the undo -
+`untag_entries` with exactly those - leaves the tag on an entry that had it
+before. Taking a tag off writes a version only where it was, removes every copy
+of it, and asks no spelling of a tag the file already holds; an empty one is
+refused, since no window ever put one on. A tag and its undo are two versions,
+and a save prunes to `HistoryMaxItems` as it does for any edit.
 
 ## The pool of files, and why removing one is not a removal
 

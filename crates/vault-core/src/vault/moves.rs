@@ -8,13 +8,12 @@
 //! window chose moves whole or not at all, and the one undo it is offered is
 //! about all of it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-use keepass::Database;
 use keepass::db::{EntryId, GroupId};
 
 use super::Vault;
-use crate::bin::Bin;
+use crate::bin::{Bin, Standings};
 use crate::error::VaultError;
 use crate::model::Move;
 
@@ -61,7 +60,7 @@ impl Vault {
                 .ok_or(VaultError::NoSuchEntry)?
                 .parent()
                 .id();
-            if standings.binned(from) {
+            if standings.of(from).binned() {
                 return Err(VaultError::InRecycleBin);
             }
             if from != into && seen.insert(id) {
@@ -132,7 +131,7 @@ impl Vault {
         self.writable()?;
         let bin = Bin::of(&self.database);
         let mut standings = Standings::new(&bin, &self.database);
-        if self.database.group(into).is_none() || standings.binned(into) {
+        if self.database.group(into).is_none() || standings.of(into).binned() {
             return Err(VaultError::MoveSuperseded);
         }
 
@@ -149,7 +148,7 @@ impl Vault {
             if entry.parent().id() != into
                 || last != Some(from)
                 || from == into
-                || standings.binned(from)
+                || standings.of(from).binned()
             {
                 return Err(VaultError::MoveSuperseded);
             }
@@ -206,34 +205,5 @@ impl Vault {
             Err(VaultError::CannotMoveIntoItself) => Err(VaultError::MoveSuperseded),
             done => done,
         }
-    }
-}
-
-/// Whether folders are in the recycle bin, each asked once.
-///
-/// The answer for one folder is a walk from the top of the vault down to it,
-/// and a batch of fifty thousand entries comes out of a handful of folders.
-struct Standings<'a> {
-    bin: &'a Bin,
-    database: &'a Database,
-    known: HashMap<GroupId, bool>,
-}
-
-impl<'a> Standings<'a> {
-    fn new(bin: &'a Bin, database: &'a Database) -> Standings<'a> {
-        Standings {
-            bin,
-            database,
-            known: HashMap::new(),
-        }
-    }
-
-    /// Whether the folder is the bin or somewhere inside it.
-    fn binned(&mut self, group: GroupId) -> bool {
-        let (bin, database) = (self.bin, self.database);
-        *self
-            .known
-            .entry(group)
-            .or_insert_with(|| bin.standing(database, group).binned())
     }
 }

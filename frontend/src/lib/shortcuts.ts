@@ -29,8 +29,17 @@ export const KEYS = {
 } as const satisfies Partial<Record<Command, string>>;
 
 /**
- * The keys the window answers itself, before AppKit looks in the menu bar, and
- * the system's Close Window, which locks the vault here. None of them is an
- * item's: a key both answered would happen twice.
+ * The keys the window answers itself, before AppKit looks in the menu bar, the
+ * presses that choose rows in the list, and the system's Close Window, which
+ * locks the vault here. None of them is an item's: a key both answered would
+ * happen twice.
  */
-export const OWN = { copy: '⌘C', undo: '⌘Z', away: 'Esc', close: '⌘W' } as const;
+export const OWN = {
+	copy: '⌘C',
+	undo: '⌘Z',
+	choose: '⌘-click',
+	reach: '⇧-click',
+	all: '⌘A',
+	away: 'Esc',
+	close: '⌘W'
+} as const;

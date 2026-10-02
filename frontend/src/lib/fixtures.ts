@@ -36,6 +36,7 @@ export function row(over: Partial<EntryRow> = {}): EntryRow {
 		hasPassword: false,
 		attachments: 0,
 		binned: null,
+		deletion: 'bin',
 		...over
 	};
 }

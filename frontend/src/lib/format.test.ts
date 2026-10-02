@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { entry, field, row } from './fixtures';
-import { ago, at, called, calledRow, copied, day, fully, quoted, size, when } from './format';
+import { ago, at, called, copied, counted, day, fully, quoted, size, when } from './format';
 
 /** The suite runs with TZ pinned to UTC, so the local clock the screen writes
  * in is the same one the database keeps. */
@@ -113,11 +113,19 @@ describe('what a sentence calls an entry', () => {
 	/** A row says the same as the entry it opens: the notice of a move made
 	 * from the list must not name an entry differently from one made from the
 	 * pane. */
-	it('calls a row what it calls the entry', () => {
-		expect(calledRow(row({ title: 'Bank' }))).toBe(called(titled('Bank')));
-		expect(calledRow(row({ title: '' }))).toBe('this entry');
-		expect(calledRow(row({ title: null }))).toBe('this entry');
-		expect(calledRow(row({ title: 'evil\u202Eslip' }))).toBe('“\u2068evil\u202Eslip\u2069”');
+	it('calls one row what it calls the entry', () => {
+		expect(counted([row({ title: 'Bank' })])).toBe(called(titled('Bank')));
+		expect(counted([row({ title: '' })])).toBe('this entry');
+		expect(counted([row({ title: null })])).toBe('this entry');
+		expect(counted([row({ title: 'evil\u202Eslip' })])).toBe('“\u2068evil\u202Eslip\u2069”');
+	});
+
+	/** Any other number is how many: a list of twelve titles is not a notice,
+	 * and none of them is set apart from the rest. */
+	it('counts any other number of rows, titles or none', () => {
+		expect(counted([row({ title: 'Bank' }), row({ title: null })])).toBe('2 entries');
+		expect(counted(Array.from({ length: 50_000 }, () => row()))).toBe('50000 entries');
+		expect(counted([])).toBe('0 entries');
 	});
 });
 

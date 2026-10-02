@@ -100,6 +100,14 @@ export function rowOf(root: Group, id: string): EntryRow | null {
 	return entriesOf(root).find((row) => row.id === id) ?? null;
 }
 
+/** The rows of the entries with these ids, in the order the ids come, leaving
+ * out any the tree does not hold. One walk of the tree however many there are:
+ * fifty thousand chosen rows looked up one at a time are fifty thousand walks. */
+export function rowsOf(root: Group, ids: readonly string[]): EntryRow[] {
+	const rows = new Map(entriesOf(root).map((row) => [row.id, row]));
+	return ids.flatMap((id) => rows.get(id) ?? []);
+}
+
 /** The groups from the root down to `id`, or `null` when there is no such
  * group. The entry screen writes the tail of it above the title. */
 export function pathTo(root: Group, id: string): Group[] | null {

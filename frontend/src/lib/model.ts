@@ -210,6 +210,9 @@ export interface EntryRow {
 	attachments: number;
 	/** When the entry is in the recycle bin, when it went in and where from. */
 	binned: Binned | null;
+	/** What deleting the entry would do, so that a list knows before a press
+	 * which of several chosen entries go to the bin and which go for good. */
+	deletion: Deletion;
 }
 
 export interface Group {
@@ -361,6 +364,21 @@ export interface Move {
 export interface Moved {
 	tree: Group;
 	moved: Move[];
+}
+
+/** One entry a deletion names, with what the window showed deleting it would
+ * do: Rust refuses the deletion when that is no longer what happens. */
+export interface Deleting {
+	entry: string;
+	deletion: Deletion;
+}
+
+/** What putting a tag on entries hands back: the tree, and the entries the tag
+ * went on, which are the ones that did not have it. Only those are what taking
+ * it off again sends. */
+export interface Tagged {
+	tree: Group;
+	changed: string[];
 }
 
 /** What the file on disk holds, for the dialog that asks which version to keep. */

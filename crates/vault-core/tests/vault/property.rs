@@ -469,7 +469,7 @@ proptest! {
                     let shown = vault
                         .entry(id)
                         .map_or(vault_core::model::Deletion::Bin, |entry| entry.deletion);
-                    let done = vault.delete_entry(id, shown);
+                    let done = vault.delete_entries(&[(id, shown)]);
                     // Into the bin it stays an entry; out of the bin it is gone.
                     if done.is_ok() && vault.entry(id).is_none() {
                         expected.remove(&id.to_string());

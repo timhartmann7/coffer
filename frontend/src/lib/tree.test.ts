@@ -10,6 +10,7 @@ import {
 	projects,
 	recycleBin,
 	rowOf,
+	rowsOf,
 	searchedEntries,
 	shownEntries,
 	visible
@@ -146,6 +147,27 @@ describe('walking the tree', () => {
 		expect(rowOf(tree, binned.id)).toBe(binned);
 		expect(rowOf(tree, 'not an entry')).toBeNull();
 		expect(rowOf(group(), deep.id)).toBeNull();
+	});
+
+	/** In the order asked for, not the tree's, and without what has gone: the
+	 * rows a batch is about, looked up in one walk of the tree. */
+	it('finds the rows of many entries in the order they are named, leaving out what has gone', () => {
+		const binned = row({ title: 'thrown away' });
+		const deep = row({ title: 'node-3' });
+		const tree = group({
+			sections: [
+				group({ sections: [group({ entries: [deep] })] }),
+				group({ isRecycleBin: true, entries: [binned] })
+			]
+		});
+
+		expect(rowsOf(tree, [binned.id, 'gone', deep.id])).toEqual([binned, deep]);
+		expect(rowsOf(tree, [])).toEqual([]);
+
+		const many = Array.from({ length: 50_000 }, (_, at) => row({ title: `entry ${at}` }));
+		const wide = group({ entries: many });
+		const ids = many.map((each) => each.id).reverse();
+		expect(rowsOf(wide, ids).map((each) => each.id)).toEqual(ids);
 	});
 
 	it('finds the recycle bin wherever the file puts it', () => {

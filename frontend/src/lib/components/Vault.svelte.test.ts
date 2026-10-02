@@ -1784,7 +1784,7 @@ it('leaves an undo overtaken by another change to Rust, which refuses it', async
 
 		expect(ipc.undoRemoval).toHaveBeenCalledTimes(1);
 		expect(toast()?.textContent).toContain(
-			'The entry has changed since, so that can no longer be undone.'
+			'Something has changed since, so that can no longer be undone.'
 		);
 		expect(undo()).toBeNull();
 		expect(ipc.save, 'a refusal is not a change').toHaveBeenCalledTimes(2);
@@ -2162,8 +2162,8 @@ it('moves the open entry to the bin and offers it back', async () => {
 		]
 	});
 	ipc.entry.mockResolvedValue(titled(bank.id, 'node-3'));
-	ipc.deleteEntry.mockResolvedValue(after);
-	ipc.putBackEntry.mockResolvedValue(before);
+	ipc.deleteEntries.mockResolvedValue(after);
+	ipc.putBackEntries.mockResolvedValue(before);
 	ipc.save.mockResolvedValue(undefined);
 
 	const { component, onTree } = mounted(before);
@@ -2175,7 +2175,10 @@ it('moves the open entry to the bin and offers it back', async () => {
 		pressed('Move to Recycle Bin');
 		await settled();
 
-		expect(ipc.deleteEntry).toHaveBeenCalledWith(bank.id, 'bin', expect.any(Number));
+		expect(ipc.deleteEntries).toHaveBeenCalledWith(
+			[{ entry: bank.id, deletion: 'bin' }],
+			expect.any(Number)
+		);
 		expect(ipc.save).toHaveBeenCalledTimes(1);
 		expect(onTree).toHaveBeenLastCalledWith(after);
 		expect(host.querySelector('h1'), 'the pane stayed open on a deleted entry').toBeNull();
@@ -2187,8 +2190,8 @@ it('moves the open entry to the bin and offers it back', async () => {
 		undo()?.click();
 		await settled();
 
-		expect(ipc.putBackEntry).toHaveBeenCalledTimes(1);
-		expect(ipc.putBackEntry).toHaveBeenCalledWith(bank.id);
+		expect(ipc.putBackEntries).toHaveBeenCalledTimes(1);
+		expect(ipc.putBackEntries).toHaveBeenCalledWith([bank.id]);
 		expect(ipc.save).toHaveBeenCalledTimes(2);
 		expect(onTree).toHaveBeenLastCalledWith(before);
 		expect(ipc.entry, 'the entry taken back was not opened again').toHaveBeenCalledWith(bank.id);
@@ -2210,7 +2213,7 @@ it('withdraws the offer of a moved entry once its eight seconds are up', async (
 		entries: [{ ...bank, binned: { since: null, within: null, from: before.id } }]
 	});
 	ipc.entry.mockResolvedValue(titled(bank.id, 'node-3'));
-	ipc.deleteEntry.mockResolvedValue(group({ ...before, entries: [], sections: [bin] }));
+	ipc.deleteEntries.mockResolvedValue(group({ ...before, entries: [], sections: [bin] }));
 
 	const { component } = mounted(before);
 	try {
@@ -2223,7 +2226,7 @@ it('withdraws the offer of a moved entry once its eight seconds are up', async (
 		flushSync();
 		expect(press('z').defaultPrevented).toBe(false);
 		await settled();
-		expect(ipc.putBackEntry).not.toHaveBeenCalled();
+		expect(ipc.putBackEntries).not.toHaveBeenCalled();
 	} finally {
 		await unmount(component);
 		vi.useRealTimers();
@@ -2240,7 +2243,7 @@ it('says an entry went for good when it is not in the tree that came back', asyn
 	const bank = row({ title: 'node-3' });
 	const before = group({ name: 'Root', entries: [bank] });
 	ipc.entry.mockResolvedValue(titled(bank.id, 'node-3', { deletion: 'bin' }));
-	ipc.deleteEntry.mockResolvedValue(group({ ...before, entries: [] }));
+	ipc.deleteEntries.mockResolvedValue(group({ ...before, entries: [] }));
 
 	const { component } = mounted(before);
 	try {
@@ -2253,7 +2256,7 @@ it('says an entry went for good when it is not in the tree that came back', asyn
 		expect(undo()).toBeNull();
 		expect(press('z').defaultPrevented).toBe(false);
 		await settled();
-		expect(ipc.putBackEntry).not.toHaveBeenCalled();
+		expect(ipc.putBackEntries).not.toHaveBeenCalled();
 	} finally {
 		await unmount(component);
 		vi.useRealTimers();
@@ -2272,7 +2275,7 @@ it('offers nothing back over a move whose save failed', async () => {
 		entries: [{ ...bank, binned: { since: null, within: null, from: before.id } }]
 	});
 	ipc.entry.mockResolvedValue(titled(bank.id, 'node-3'));
-	ipc.deleteEntry.mockResolvedValue(group({ ...before, entries: [], sections: [bin] }));
+	ipc.deleteEntries.mockResolvedValue(group({ ...before, entries: [], sections: [bin] }));
 	ipc.save.mockRejectedValue({ code: 'io', message: 'No space left on device' });
 
 	const { component } = mounted(before);
@@ -2306,7 +2309,7 @@ it('puts an entry back from the bin, or deletes it for good after asking', async
 	});
 	const home = titled(vault.mail.id, 'Old mail', { group: vault.work.id });
 	ipc.entry.mockResolvedValue(inBin);
-	ipc.putBackEntry.mockResolvedValue(vault.tree);
+	ipc.putBackEntries.mockResolvedValue(vault.tree);
 
 	const { component } = mounted(vault.tree);
 	try {
@@ -2323,7 +2326,7 @@ it('puts an entry back from the bin, or deletes it for good after asking', async
 		ipc.entry.mockResolvedValue(home);
 		pressed('Put back', entryCard() ?? host);
 		await settled();
-		expect(ipc.putBackEntry).toHaveBeenCalledWith(vault.mail.id);
+		expect(ipc.putBackEntries).toHaveBeenCalledWith([vault.mail.id]);
 		expect(ipc.save).toHaveBeenCalledTimes(1);
 		expect(entryCard(), 'the pane still says the entry is in the bin').toBeNull();
 		expect(host.querySelector('section h1 input')).not.toBeNull();
@@ -2332,7 +2335,7 @@ it('puts an entry back from the bin, or deletes it for good after asking', async
 		ipc.entry.mockResolvedValue(inBin);
 		pressed('Old mail');
 		await settled();
-		ipc.deleteEntry.mockResolvedValue(
+		ipc.deleteEntries.mockResolvedValue(
 			group({
 				...vault.tree,
 				sections: [vault.personal, vault.work, { ...vault.bin, entries: [] }]
@@ -2343,11 +2346,14 @@ it('puts an entry back from the bin, or deletes it for good after asking', async
 		expect(host.querySelector('[data-confirm]')?.textContent).toContain(
 			'Delete “\u2068Old mail\u2069” forever? This can’t be undone.'
 		);
-		expect(ipc.deleteEntry).not.toHaveBeenCalled();
+		expect(ipc.deleteEntries).not.toHaveBeenCalled();
 		pressed('Delete forever', host.querySelector('[data-confirm]') ?? host);
 		await settled();
 
-		expect(ipc.deleteEntry).toHaveBeenCalledWith(vault.mail.id, 'forever', expect.any(Number));
+		expect(ipc.deleteEntries).toHaveBeenCalledWith(
+			[{ entry: vault.mail.id, deletion: 'forever' }],
+			expect.any(Number)
+		);
 		expect(toast()?.textContent).toContain('Deleted “\u2068Old mail\u2069” forever');
 		expect(undo()).toBeNull();
 	} finally {
@@ -2573,7 +2579,7 @@ it('moves an entry to the bin once however quickly the button is pressed again',
 		entries: [{ ...bank, binned: { since: null, within: null, from: before.id } }]
 	});
 	ipc.entry.mockResolvedValue(titled(bank.id, 'node-3'));
-	ipc.deleteEntry.mockResolvedValue(group({ ...before, entries: [], sections: [bin] }));
+	ipc.deleteEntries.mockResolvedValue(group({ ...before, entries: [], sections: [bin] }));
 
 	const { component } = mounted(before);
 	try {
@@ -2586,7 +2592,7 @@ it('moves an entry to the bin once however quickly the button is pressed again',
 		button?.click();
 		await settled();
 
-		expect(ipc.deleteEntry).toHaveBeenCalledTimes(1);
+		expect(ipc.deleteEntries).toHaveBeenCalledTimes(1);
 		expect(toast()?.textContent).toContain('Moved “\u2068node-3\u2069” to the Recycle Bin');
 	} finally {
 		await unmount(component);
@@ -2648,7 +2654,7 @@ it('deletes an entry with a number newer than anything typed into it', async () 
 		sections: [group({ name: 'Recycle Bin', isRecycleBin: true, deletion: 'forever' })]
 	});
 	ipc.entry.mockResolvedValue(titled(bank.id, 'node-3'));
-	ipc.deleteEntry.mockResolvedValue(before);
+	ipc.deleteEntries.mockResolvedValue(before);
 	ipc.save.mockResolvedValue(undefined);
 
 	const { component } = mounted(before);
@@ -2664,8 +2670,11 @@ it('deletes an entry with a number newer than anything typed into it', async () 
 		pressed('Move to Recycle Bin');
 		await settled();
 
-		expect(ipc.deleteEntry).toHaveBeenCalledWith(bank.id, 'bin', expect.any(Number));
-		expect(ipc.deleteEntry.mock.lastCall?.[2]).toBeGreaterThan(drafted);
+		expect(ipc.deleteEntries).toHaveBeenCalledWith(
+			[{ entry: bank.id, deletion: 'bin' }],
+			expect.any(Number)
+		);
+		expect(ipc.deleteEntries.mock.lastCall?.[1]).toBeGreaterThan(drafted);
 	} finally {
 		await unmount(component);
 		vi.useRealTimers();
@@ -2745,7 +2754,7 @@ it('keeps the place of the bin’s card while an entry in the bin is read', asyn
 		buttons[0].click();
 		buttons[1].click();
 		await settled();
-		expect(ipc.putBackEntry).not.toHaveBeenCalled();
+		expect(ipc.putBackEntries).not.toHaveBeenCalled();
 		expect(host.querySelector('[data-confirm]')).toBeNull();
 
 		reading.resolve(
@@ -3124,7 +3133,7 @@ it('offers an entry moved to the bin back once another is open, and leaves that 
 		Promise.resolve(readOf(id === gmail.id ? gmail : drive))
 	);
 	const moving = Promise.withResolvers<typeof after>();
-	ipc.deleteEntry.mockReturnValueOnce(moving.promise);
+	ipc.deleteEntries.mockReturnValueOnce(moving.promise);
 
 	const { component } = mounted(tree);
 	try {
@@ -3143,11 +3152,11 @@ it('offers an entry moved to the bin back once another is open, and leaves that 
 		expect(toast()?.textContent).toContain('Moved “\u2068Gmail\u2069” to the Recycle Bin');
 		expect(undo()).not.toBeNull();
 
-		ipc.putBackEntry.mockResolvedValue(tree);
+		ipc.putBackEntries.mockResolvedValue(tree);
 		ipc.entry.mockClear();
 		expect(press('z').defaultPrevented).toBe(true);
 		await settled();
-		expect(ipc.putBackEntry).toHaveBeenCalledWith(gmail.id);
+		expect(ipc.putBackEntries).toHaveBeenCalledWith([gmail.id]);
 		expect(ipc.save).toHaveBeenCalledTimes(2);
 		expect(ipc.entry, 'the undo took the pane from Google Drive').not.toHaveBeenCalledWith(
 			gmail.id
@@ -3180,7 +3189,7 @@ it('moves another entry to the bin while the save of the first holds Rust', asyn
 	ipc.entry.mockImplementation((id: string) =>
 		Promise.resolve(readOf(id === gmail.id ? gmail : drive))
 	);
-	ipc.deleteEntry
+	ipc.deleteEntries
 		.mockResolvedValueOnce(group({ ...tree, entries: [drive], sections: [binned([gmail])] }))
 		.mockResolvedValueOnce(group({ ...tree, entries: [], sections: [binned([gmail, drive])] }));
 	const saving = Promise.withResolvers<void>();
@@ -3199,10 +3208,13 @@ it('moves another entry to the bin while the save of the first holds Rust', asyn
 		pressed('Move to Recycle Bin', pane() ?? host);
 		await settled();
 		expect(
-			ipc.deleteEntry,
+			ipc.deleteEntries,
 			'the second move was dropped behind the first save'
 		).toHaveBeenCalledTimes(2);
-		expect(ipc.deleteEntry).toHaveBeenLastCalledWith(drive.id, 'bin', expect.any(Number));
+		expect(ipc.deleteEntries).toHaveBeenLastCalledWith(
+			[{ entry: drive.id, deletion: 'bin' }],
+			expect.any(Number)
+		);
 		expect(pane()).toBeNull();
 
 		saving.resolve();
@@ -3259,7 +3271,7 @@ it('does not move an entry on its own while its folder is on its way to the bin'
 
 		pressed('Move to Recycle Bin', pane() ?? host);
 		await settled();
-		expect(ipc.deleteEntry, 'the entry went after its folder').not.toHaveBeenCalled();
+		expect(ipc.deleteEntries, 'the entry went after its folder').not.toHaveBeenCalled();
 
 		moving.resolve(gone);
 		await settled();
@@ -3298,7 +3310,7 @@ it('says nothing was deleted when Rust refuses a deletion that changed, and read
 	ipc.entry
 		.mockResolvedValueOnce(titled(bank.id, 'Bank', { group: work.id, deletion: 'bin' }))
 		.mockResolvedValue(titled(bank.id, 'Bank', { group: work.id, deletion: 'forever' }));
-	ipc.deleteEntry.mockRejectedValueOnce({
+	ipc.deleteEntries.mockRejectedValueOnce({
 		code: 'deletionChanged',
 		message: 'that deletion would no longer do what was shown, so nothing was deleted'
 	});
@@ -3311,7 +3323,10 @@ it('says nothing was deleted when Rust refuses a deletion that changed, and read
 		pressed('Move to Recycle Bin', pane() ?? host);
 		await settled();
 
-		expect(ipc.deleteEntry).toHaveBeenCalledWith(bank.id, 'bin', expect.any(Number));
+		expect(ipc.deleteEntries).toHaveBeenCalledWith(
+			[{ entry: bank.id, deletion: 'bin' }],
+			expect.any(Number)
+		);
 		expect(toast()?.textContent).toContain('Choose again from the vault as it is now');
 		expect(undo(), 'a deletion that did not happen was offered back').toBeNull();
 		expect(ipc.save, 'a refusal changed nothing to write').not.toHaveBeenCalled();
@@ -3364,7 +3379,7 @@ it('stops offering Put back on an entry as soon as Rust has put it back', async 
 	ipc.entry.mockResolvedValue(
 		titled(vault.mail.id, 'Old mail', { binned: vault.mail.binned, deletion: 'forever' })
 	);
-	ipc.putBackEntry.mockResolvedValue(vault.tree);
+	ipc.putBackEntries.mockResolvedValue(vault.tree);
 	const saving = Promise.withResolvers<void>();
 	ipc.save.mockReturnValueOnce(saving.promise);
 
@@ -3384,7 +3399,7 @@ it('stops offering Put back on an entry as soon as Rust has put it back', async 
 
 		saving.resolve();
 		await settled();
-		expect(ipc.putBackEntry).toHaveBeenCalledTimes(1);
+		expect(ipc.putBackEntries).toHaveBeenCalledTimes(1);
 	} finally {
 		await unmount(component);
 		vi.useRealTimers();
@@ -3405,8 +3420,8 @@ it('puts an entry back without taking the pane from the one chosen meanwhile', a
 	ipc.entry.mockImplementation((id: string) =>
 		Promise.resolve(readOf(id === gmail.id ? gmail : drive))
 	);
-	ipc.deleteEntry.mockResolvedValue(group({ ...tree, entries: [drive], sections: [bin] }));
-	ipc.putBackEntry.mockResolvedValue(tree);
+	ipc.deleteEntries.mockResolvedValue(group({ ...tree, entries: [drive], sections: [bin] }));
+	ipc.putBackEntries.mockResolvedValue(tree);
 
 	const { component } = mounted(tree);
 	try {
@@ -3421,7 +3436,7 @@ it('puts an entry back without taking the pane from the one chosen meanwhile', a
 		ipc.save.mockReturnValueOnce(saving.promise);
 		undo()?.click();
 		await settled();
-		expect(ipc.putBackEntry).toHaveBeenCalledWith(gmail.id);
+		expect(ipc.putBackEntries).toHaveBeenCalledWith([gmail.id]);
 
 		pressed('Google Drive');
 		await settled();
@@ -3926,7 +3941,7 @@ function exactly(label: string): HTMLButtonElement {
 it('keeps the pane and asks when a new password typed there would go with it', async () => {
 	const { drive, tree } = withPasswords();
 	ipc.createEntry.mockReset();
-	ipc.deleteEntry.mockReset();
+	ipc.deleteEntries.mockReset();
 	const { component, onSettings } = mounted(tree);
 	try {
 		pressed('Gmail');
@@ -3964,7 +3979,7 @@ it('keeps the pane and asks when a new password typed there would go with it', a
 		}
 		expect(ipc.entry).not.toHaveBeenCalledWith(drive.id);
 		expect(ipc.createEntry).not.toHaveBeenCalled();
-		expect(ipc.deleteEntry).not.toHaveBeenCalled();
+		expect(ipc.deleteEntries).not.toHaveBeenCalled();
 		expect(onSettings).not.toHaveBeenCalled();
 		expect(ipc.setField).not.toHaveBeenCalled();
 		expect(
@@ -4254,7 +4269,7 @@ it('leaves every key the menu owns to the menu, so none of them happens twice', 
 	expect(ipc.copy).not.toHaveBeenCalled();
 	expect(ipc.createEntry).not.toHaveBeenCalled();
 	expect(ipc.createGroup).not.toHaveBeenCalled();
-	expect(ipc.deleteEntry).not.toHaveBeenCalled();
+	expect(ipc.deleteEntries).not.toHaveBeenCalled();
 	expect(ipc.entry).toHaveBeenCalledTimes(asked);
 	expect(document.activeElement).not.toBe(search());
 	expect(host.querySelector('[aria-label="The name of the new folder"]')).toBeNull();
@@ -4330,7 +4345,7 @@ it('opens the name of a new folder from the menu and never closes it again', asy
  */
 it('moves the open entry to the bin from the menu once, and only one that goes there', async () => {
 	let answer: (tree: typeof root) => void = () => {};
-	ipc.deleteEntry.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+	ipc.deleteEntries.mockReturnValue(new Promise((resolve) => (answer = resolve)));
 	const component = open();
 	flushSync();
 	await reading({ deletion: 'bin' });
@@ -4339,8 +4354,11 @@ it('moves the open entry to the bin from the menu once, and only one that goes t
 	run('moveToBin');
 	run('moveToBin');
 	await tick();
-	expect(ipc.deleteEntry).toHaveBeenCalledTimes(1);
-	expect(ipc.deleteEntry).toHaveBeenCalledWith(kept.id, 'bin', expect.any(Number));
+	expect(ipc.deleteEntries).toHaveBeenCalledTimes(1);
+	expect(ipc.deleteEntries).toHaveBeenCalledWith(
+		[{ entry: kept.id, deletion: 'bin' }],
+		expect.any(Number)
+	);
 	answer(root);
 	await vi.waitFor(() => expect(ipc.save).toHaveBeenCalled());
 	await new Promise((resolve) => setTimeout(resolve, 0));
@@ -4356,7 +4374,7 @@ it('moves the open entry to the bin from the menu once, and only one that goes t
 		expect(applying(), JSON.stringify(over)).not.toContain('moveToBin');
 		run('moveToBin');
 		await tick();
-		expect(ipc.deleteEntry).toHaveBeenCalledTimes(1);
+		expect(ipc.deleteEntries).toHaveBeenCalledTimes(1);
 		expect(reads()).not.toContain('Delete forever?');
 		unmount(again);
 	}
@@ -4381,7 +4399,7 @@ it('greys out Move to Recycle Bin while a field of the entry is being written', 
 		expect(applying(), 'offered while the notes were being written').not.toContain('moveToBin');
 		run('moveToBin');
 		await tick();
-		expect(ipc.deleteEntry).not.toHaveBeenCalled();
+		expect(ipc.deleteEntries).not.toHaveBeenCalled();
 
 		notes?.blur();
 		flushSync();
@@ -4476,7 +4494,7 @@ it('offers no Move to Recycle Bin in a vault Coffer will not write', async () =>
 	run('moveToBin');
 	await tick();
 
-	expect(ipc.deleteEntry).not.toHaveBeenCalled();
+	expect(ipc.deleteEntries).not.toHaveBeenCalled();
 	return unmount(component);
 });
 
@@ -4786,7 +4804,8 @@ it('saves nothing and offers nothing when Rust finds the entry there already', a
 });
 
 /** An undo pressed after the file says something moved since is refused by
- * Rust, and the window says so in its own words. */
+ * Rust, and the window says so in the words every undo that came too late
+ * has. */
 it('says a move can no longer be taken back once something has moved since', async () => {
 	ipc.entry.mockImplementation(() => Promise.resolve(keptIn(vault.id)));
 	ipc.moveEntries.mockResolvedValue({ tree: vault, moved: [{ entry: atTop.id, from: vault.id }] });
@@ -4802,7 +4821,7 @@ it('says a move can no longer be taken back once something has moved since', asy
 		await settled();
 
 		expect(toast()?.textContent).toContain(
-			'Something has moved since, so that can no longer be undone.'
+			'Something has changed since, so that can no longer be undone.'
 		);
 		expect(ipc.save).toHaveBeenCalledTimes(1);
 	} finally {
@@ -4815,13 +4834,13 @@ it('says a move can no longer be taken back once something has moved since', asy
  * would refuse for a choice the reader already made. */
 it('drops a move of an entry whose deletion is on its way', async () => {
 	ipc.entry.mockImplementation(() => Promise.resolve(keptIn(vault.id)));
-	ipc.deleteEntry.mockReturnValue(new Promise(() => {}));
+	ipc.deleteEntries.mockReturnValue(new Promise(() => {}));
 	const { component } = following(vault);
 	try {
 		await openKept();
 		pressed('Move to Recycle Bin', pane() ?? host);
 		await settled();
-		expect(ipc.deleteEntry).toHaveBeenCalledTimes(1);
+		expect(ipc.deleteEntries).toHaveBeenCalledTimes(1);
 
 		await moveOpenTo('Work');
 		expect(ipc.moveEntries).not.toHaveBeenCalled();
@@ -4950,7 +4969,7 @@ it('a drag onto the folder the entry is already in, or onto the bin, moves nothi
 		expect(bin?.closest('[data-drop]'), 'the bin takes a drop').toBeNull();
 		await drag(listRow('Postgres'), bin ?? null);
 		expect(ipc.moveEntries).not.toHaveBeenCalled();
-		expect(ipc.deleteEntry, 'a drop on the bin deleted something').not.toHaveBeenCalled();
+		expect(ipc.deleteEntries, 'a drop on the bin deleted something').not.toHaveBeenCalled();
 	} finally {
 		await unmount(component);
 		vi.useRealTimers();
@@ -5125,7 +5144,7 @@ it('says a folder move can no longer be taken back once the file has moved on', 
 
 		expect(ipc.moveGroupBack).toHaveBeenCalledTimes(1);
 		expect(toast()?.textContent).toContain(
-			'Something has moved since, so that can no longer be undone.'
+			'Something has changed since, so that can no longer be undone.'
 		);
 		expect(ipc.save, 'a refused undo was written').toHaveBeenCalledTimes(1);
 	} finally {
@@ -5529,6 +5548,1416 @@ it('offers no rename and no deletion on Not in a folder', async () => {
 		expect(host.querySelector('[aria-label="Rename this folder"]')).not.toBeNull();
 		expect(host.querySelector('[aria-label="Delete this folder"]')).not.toBeNull();
 	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * A vault to choose rows in: a router at the top, four logins in Work, an
+ * empty Banking, and a recycle bin. Built afresh for each test, because the
+ * trees a test answers with are made from it.
+ */
+function chest() {
+	const work = group({ name: 'Work' });
+	const banking = group({ name: 'Banking' });
+	const bin = group({ name: 'Recycle Bin', isRecycleBin: true, deletion: 'forever' });
+	const tree = group({ name: 'Root', deletion: 'forever' });
+	const router = row({ title: 'Router', group: tree.id });
+	const logins = ['Gmail', 'Drive', 'Slack', 'Jira'].map((title) =>
+		row({ title, username: `${title.toLowerCase()}@example.com`, group: work.id })
+	);
+	tree.entries = [router];
+	tree.sections = [{ ...work, entries: logins }, banking, bin];
+	return { tree, work, banking, bin, router, logins };
+}
+
+/** The tree with every row named taken out of wherever it is. */
+function without(tree: Group, ids: ReadonlySet<string>): Group {
+	return {
+		...tree,
+		entries: tree.entries.filter((each) => !ids.has(each.id)),
+		sections: tree.sections.map((section) => without(section, ids))
+	};
+}
+
+/** The tree after `rows` went to the bin from the folders they were in. */
+function binnedOf(tree: Group, rows: EntryRow[]): Group {
+	const into = (here: Group): Group =>
+		here.isRecycleBin
+			? {
+					...here,
+					entries: [
+						...here.entries,
+						...rows.map((each) => ({
+							...each,
+							group: here.id,
+							deletion: 'forever' as const,
+							binned: { since: null, within: null, from: each.group }
+						}))
+					]
+				}
+			: { ...here, sections: here.sections.map(into) };
+	return into(without(tree, new Set(rows.map((each) => each.id))));
+}
+
+/** The tree after `rows` moved into the folder `into`. */
+function movedOf(tree: Group, rows: EntryRow[], into: string): Group {
+	const put = (here: Group): Group => ({
+		...here,
+		entries:
+			here.id === into
+				? [...here.entries, ...rows.map((each) => ({ ...each, group: into }))]
+				: here.entries,
+		sections: here.sections.map(put)
+	});
+	return put(without(tree, new Set(rows.map((each) => each.id))));
+}
+
+/** The tree with `tag` on every row named. */
+function taggedOf(tree: Group, ids: readonly string[], tag: string): Group {
+	return {
+		...tree,
+		entries: tree.entries.map((each) =>
+			ids.includes(each.id) ? { ...each, tags: [...each.tags, tag] } : each
+		),
+		sections: tree.sections.map((section) => taggedOf(section, ids, tag))
+	};
+}
+
+/** A press on the row with this title, Cmd held unless other keys are said. */
+function choose(title: string, keys: MouseEventInit = { metaKey: true }) {
+	const target = listRow(title);
+	if (!target) throw new Error(`no row for ${title}`);
+	target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ...keys }));
+	flushSync();
+}
+
+/** The bar over the list while rows are chosen. */
+const selectionBar = () => host.querySelector<HTMLElement>('[aria-label="The selected entries"]');
+
+/** How many the bar says are chosen, or nothing when there is no bar. */
+function count(): string | null {
+	return selectionBar()?.querySelector('span')?.textContent?.trim() ?? null;
+}
+
+/** A button of the bar, by its words or its label. */
+function inBar(label: string): HTMLButtonElement {
+	const found = [...(selectionBar()?.querySelectorAll<HTMLButtonElement>('button') ?? [])].find(
+		(each) => (each.getAttribute('aria-label') ?? each.textContent?.trim()) === label
+	);
+	if (!found) throw new Error(`the bar has no ${label}`);
+	return found;
+}
+
+/** The titles of the rows drawn chosen, in the order they are drawn. */
+function lit(): string[] {
+	return [...host.querySelectorAll<HTMLElement>('.bg-selection')].map(
+		(each) => each.textContent?.replace(', selected', '').match(/\S+/)?.[0] ?? ''
+	);
+}
+
+/** Cmd+A, pressed with the focus on `target`. */
+function selectAll(target: EventTarget = document.body): KeyboardEvent {
+	const pressed = press('a', target);
+	flushSync();
+	return pressed;
+}
+
+/** What each entry a deletion sent was sent with. */
+function deleting(call = 0): { entry: string; deletion: string }[] {
+	return ipc.deleteEntries.mock.calls[call]?.[0] ?? [];
+}
+
+/** The bar's Add tag, with `name` typed into its field and Return pressed. */
+function addTag(name: string) {
+	inBar('Add tag').click();
+	flushSync();
+	const field = selectionBar()?.querySelector('input');
+	if (!field) throw new Error('the tag field did not open');
+	field.value = name;
+	field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+}
+
+/** The tree with every row in it saying what `deletion` it would get. */
+function deletingAs(tree: Group, deletion: EntryRow['deletion']): Group {
+	return {
+		...tree,
+		entries: tree.entries.map((each) => ({ ...each, deletion })),
+		sections: tree.sections.map((section) => deletingAs(section, deletion))
+	};
+}
+
+/** The entry Rust reads for a row in the bin: read only, and deleted for good
+ * from there. */
+function inBinOf(read: ReturnType<typeof entry>, from: string) {
+	return { ...read, deletion: 'forever' as const, binned: { since: null, within: null, from } };
+}
+
+/**
+ * Cmd-click chooses a row and opens nothing, Shift-click reaches from the
+ * last one pressed in the order the list draws them, and the chosen rows are
+ * drawn on the selection plane under a bar that says how many.
+ */
+it('chooses rows with Cmd and Shift and opens nothing', async () => {
+	const { tree } = chest();
+	const { component } = following(tree);
+	try {
+		expect(selectionBar()).toBeNull();
+		choose('Gmail');
+		expect(count()).toBe('1 selected');
+		choose('Slack', { shiftKey: true });
+		expect(count()).toBe('3 selected');
+		expect(lit()).toEqual(['Gmail', 'Drive', 'Slack']);
+		expect(host.textContent, 'the column names are still drawn').not.toContain('Changed');
+
+		choose('Drive');
+		expect(lit()).toEqual(['Gmail', 'Slack']);
+		await settled();
+		expect(ipc.entry, 'a press that chose a row opened it').not.toHaveBeenCalled();
+		expect(pane()).toBeNull();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Cmd+A is every row the list draws: after a search only what it found, and
+ * in the bin never the deleted folders above the entries. */
+it('chooses every row the search left on Cmd+A, and nothing it hid or the bin’s folders', async () => {
+	const { tree } = chest();
+	const { component } = following(tree);
+	try {
+		type('i');
+		const all = selectAll();
+		expect(all.defaultPrevented, 'the key went on to the system’s Select All').toBe(true);
+		expect(lit()).toEqual(['Gmail', 'Drive', 'Jira']);
+		expect(count()).toBe('3 selected');
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+
+	const vault = binnedVault();
+	const shown = mounted(vault.tree);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		selectAll();
+		expect(count()).toBe('1 selected');
+		expect(lit()).toEqual(['Old']);
+		expect(inBar('Put back')).toBeTruthy();
+	} finally {
+		await unmount(shown.component);
+		vi.useRealTimers();
+	}
+});
+
+/** Select All is the system's in a field, in the entry pane and wherever
+ * nothing can be chosen: the key is left alone there. */
+it('leaves Cmd+A to a field being typed in, to the entry pane and to a vault it cannot write', async () => {
+	const { tree, logins } = chest();
+	ipc.entry.mockImplementation((id: string) =>
+		Promise.resolve(readOf(logins.find((each) => each.id === id) ?? logins[0]))
+	);
+	const { component } = following(tree);
+	try {
+		expect(selectAll(search()).defaultPrevented).toBe(false);
+		pressed('Gmail');
+		await settled();
+		const inside = pane()?.querySelector('h1') ?? null;
+		expect(inside).not.toBeNull();
+		expect(selectAll(inside ?? host).defaultPrevented).toBe(false);
+		expect(selectionBar()).toBeNull();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+
+	const shut = following(tree, true);
+	try {
+		expect(selectAll().defaultPrevented).toBe(false);
+		choose('Gmail');
+		await settled();
+		expect(selectionBar(), 'a vault Coffer will not write offered a choice').toBeNull();
+		expect(ipc.entry, 'a Cmd-click in a vault it will not write opened nothing').toHaveBeenCalled();
+	} finally {
+		await unmount(shut.component);
+		vi.useRealTimers();
+	}
+});
+
+/** A row a search hides leaves the choice, and clearing the search does not
+ * bring it back: nothing the bar does reaches a row out of sight. */
+it('lets go of rows a search hides, for good', async () => {
+	const { tree } = chest();
+	const { component } = following(tree);
+	try {
+		choose('Gmail');
+		choose('Slack');
+		type('slack');
+		expect(count()).toBe('1 selected');
+		type('');
+		expect(count()).toBe('1 selected');
+		expect(lit()).toEqual(['Slack']);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Another folder is another list, and a file read again is another vault:
+ * either lets go of the choice. */
+it('lets go of the choice when another folder is chosen or the file is read again', async () => {
+	const { tree, logins } = chest();
+	const { component } = following(tree);
+	try {
+		choose('Gmail');
+		choose('Drive');
+		pressed('Work');
+		flushSync();
+		expect(selectionBar()).toBeNull();
+		pressed('All entries');
+		flushSync();
+		expect(selectionBar(), 'the choice came back with the folder').toBeNull();
+
+		ipc.tagEntries.mockResolvedValue({ tree, changed: [logins[0].id] });
+		ipc.save.mockRejectedValue({ code: 'externalChange', message: 'the database changed on disk' });
+		ipc.rival.mockResolvedValue({ modified: null, entries: 5 });
+		ipc.reload.mockResolvedValue(tree);
+		choose('Gmail');
+		choose('Drive');
+		inBar('Add tag').click();
+		flushSync();
+		const field = selectionBar()?.querySelector('input');
+		if (!field) throw new Error('the tag field did not open');
+		field.value = 'work';
+		field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		await settled();
+		exactly('Take the file on disk').click();
+		await settled();
+		expect(ipc.reload).toHaveBeenCalledTimes(1);
+		expect(selectionBar(), 'the choice outlived the vault it was made in').toBeNull();
+	} finally {
+		ipc.save.mockReset();
+		ipc.save.mockResolvedValue(undefined);
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** The tree coming back keeps what is chosen, less what it took out of the
+ * list. */
+it('keeps the choice when the tree comes back, less what left the list', async () => {
+	const { tree, logins } = chest();
+	const { component, props } = following(tree);
+	try {
+		choose('Gmail');
+		choose('Drive');
+		choose('Slack');
+		props.root = without(tree, new Set([logins[1].id]));
+		flushSync();
+		expect(lit()).toEqual(['Gmail', 'Slack']);
+		props.root = tree;
+		flushSync();
+		expect(lit(), 'a row that left came back chosen').toEqual(['Gmail', 'Slack']);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * Three entries to the bin are one call, one save and one notice, whose one
+ * undo puts all three back in one call. The pane on one of them goes with it,
+ * and nothing is opened again when several came back.
+ */
+it('moves every chosen entry to the bin in one call and one save, and takes them all back with one undo', async () => {
+	const { tree, logins } = chest();
+	const going = logins.slice(0, 3);
+	ipc.entry.mockImplementation((id: string) =>
+		Promise.resolve(readOf(logins.find((each) => each.id === id) ?? logins[0]))
+	);
+	ipc.deleteEntries.mockResolvedValue(binnedOf(tree, going));
+	ipc.putBackEntries.mockResolvedValue(tree);
+	const { component } = following(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		choose('Slack', { shiftKey: true });
+		expect(count()).toBe('3 selected');
+		inBar('Delete').click();
+		await settled();
+
+		expect(ipc.deleteEntries).toHaveBeenCalledTimes(1);
+		expect(deleting()).toEqual(going.map((each) => ({ entry: each.id, deletion: 'bin' })));
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+		expect(pane(), 'the pane stayed on an entry in the bin').toBeNull();
+		expect(selectionBar()).toBeNull();
+		expect(toast()?.textContent).toContain('Moved 3 entries to the Recycle Bin');
+
+		ipc.entry.mockClear();
+		expect(press('z').defaultPrevented).toBe(true);
+		await settled();
+		expect(ipc.putBackEntries).toHaveBeenCalledTimes(1);
+		expect(ipc.putBackEntries).toHaveBeenCalledWith(going.map((each) => each.id));
+		expect(ipc.save).toHaveBeenCalledTimes(2);
+		expect(ipc.entry, 'an undo of three opened one of them').not.toHaveBeenCalled();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** In the bin, deleting is for good: the bar asks, and the notice says they
+ * went forever and offers nothing back. */
+it('asks before deleting chosen entries for good, and says they went forever', async () => {
+	const { tree, logins } = chest();
+	const binned = binnedOf(tree, logins.slice(0, 2));
+	ipc.deleteEntries.mockResolvedValue(without(binned, new Set(logins.map((each) => each.id))));
+	const { component } = following(binned);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		choose('Gmail');
+		choose('Drive');
+		inBar('Delete forever…').click();
+		flushSync();
+		expect(ipc.deleteEntries).not.toHaveBeenCalled();
+		expect(reads()).toContain('Delete 2 entries forever? This can’t be undone.');
+
+		exactly('Delete forever').click();
+		await settled();
+		expect(deleting()).toEqual(
+			logins.slice(0, 2).map((each) => ({ entry: each.id, deletion: 'forever' }))
+		);
+		expect(toast()?.textContent).toContain('Deleted 2 entries forever');
+		expect(undo()).toBeNull();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** One of them would no longer do what the rows showed: Rust refuses the lot,
+ * nothing is deleted, and the window says so and reads everything again. */
+it('says nothing was deleted when Rust refuses the batch because one of them changed, and reads again', async () => {
+	const { tree } = chest();
+	ipc.deleteEntries.mockRejectedValue({
+		code: 'deletionChanged',
+		message: 'that deletion would no longer do what was shown, so nothing was deleted'
+	});
+	const { component } = following(tree);
+	try {
+		choose('Gmail');
+		choose('Drive');
+		const reading = ipc.tree.mock.calls.length;
+		inBar('Delete').click();
+		await settled();
+		expect(toast()?.textContent).toContain('so nothing was deleted');
+		expect(ipc.tree.mock.calls.length).toBeGreaterThan(reading);
+		expect(ipc.save).not.toHaveBeenCalled();
+		expect(undo()).toBeNull();
+	} finally {
+		ipc.deleteEntries.mockReset();
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A new password typed into the open entry is the reader's until they say
+ * otherwise. A batch holding that entry asks first, and deletes nothing. */
+it('keeps the pane and asks when a chosen entry holding a new password would go', async () => {
+	const { gmail, tree } = withPasswords();
+	const { component } = mounted(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		const typed = typeNewPassword('n3w-from-the-website');
+		await settled();
+		choose('Google Drive');
+		expect(count()).toBe('2 selected');
+
+		inBar('Delete').click();
+		await settled();
+		expect(ipc.deleteEntries, 'the bar deleted the entry holding it').not.toHaveBeenCalled();
+		expect(titleField()?.value).toBe('Gmail');
+		expect(typed.value).toBe('n3w-from-the-website');
+		expect(reads()).toContain('Save the new password?');
+
+		// From the menu bar too, once the field is left and the item is
+		// offered at all.
+		typed.blur();
+		flushSync();
+		expect(applying()).toContain('moveToBin');
+		run('moveToBin');
+		await settled();
+		expect(ipc.deleteEntries, 'the menu deleted the entry holding it').not.toHaveBeenCalled();
+		expect(titleField()?.value).toBe('Gmail');
+		expect(typed.value).toBe('n3w-from-the-website');
+		expect(count()).toBe('2 selected');
+		expect(ipc.entry).toHaveBeenCalledWith(gmail.id);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A batch lets go of what was typed into each entry it names, with a number
+ * newer than any of it, so a draft still on its way is dropped when it lands. */
+it('deletes chosen entries with a number newer than anything typed into them', async () => {
+	const { gmail, drive, tree } = twoLogins();
+	ipc.entry.mockImplementation((id: string) =>
+		Promise.resolve(readOf(id === gmail.id ? gmail : drive))
+	);
+	ipc.deleteEntries.mockResolvedValue(binnedOf(tree, [gmail, drive]));
+	const { component } = mounted(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		const field = titleField();
+		if (!field) throw new Error('there is no title field');
+		field.value = 'Gmail, renamed';
+		field.dispatchEvent(new Event('input', { bubbles: true }));
+		await vi.advanceTimersByTimeAsync(1_000);
+		const drafted = Math.max(...ipc.draft.mock.calls.map((call) => call[5] as number));
+
+		choose('Google Drive');
+		inBar('Delete').click();
+		await settled();
+		expect(ipc.deleteEntries.mock.lastCall?.[1]).toBeGreaterThan(drafted);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A second press of Delete while the batch is on its way asks for nothing
+ * new, and is dropped rather than refused. */
+it('drops a second press of Delete while the first batch is on its way', async () => {
+	const { tree, logins } = chest();
+	const answered = Promise.withResolvers<Group>();
+	ipc.deleteEntries.mockReturnValue(answered.promise);
+	const { component } = following(tree);
+	try {
+		choose('Gmail');
+		choose('Drive');
+		inBar('Delete').click();
+		inBar('Delete').click();
+		run('moveToBin');
+		await settled();
+		expect(ipc.deleteEntries).toHaveBeenCalledTimes(1);
+
+		answered.resolve(binnedOf(tree, logins.slice(0, 2)));
+		await settled();
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+	} finally {
+		ipc.deleteEntries.mockReset();
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** An entry whose folder is on its way to the bin goes with the folder. Sent
+ * on its own as well, it would reach Rust after the folder and be refused. */
+it('does not send an entry whose folder is on its way to the bin', async () => {
+	const { tree, work, router, logins } = chest();
+	const folderGoing = Promise.withResolvers<Group>();
+	ipc.deleteGroup.mockReturnValue(folderGoing.promise);
+	ipc.deleteEntries.mockResolvedValue(binnedOf(tree, [router]));
+	const { component } = following(tree);
+	try {
+		pressed('Work');
+		flushSync();
+		host.querySelector<HTMLButtonElement>('[aria-label="Delete this folder"]')?.click();
+		flushSync();
+		exactly('Move to Recycle Bin').click();
+		flushSync();
+		expect(ipc.deleteGroup).toHaveBeenCalledWith(work.id, 'bin');
+
+		pressed('All entries');
+		flushSync();
+		choose('Router');
+		choose('Gmail');
+		inBar('Delete').click();
+		await settled();
+		expect(deleting()).toEqual([{ entry: router.id, deletion: 'bin' }]);
+		expect(deleting().map((each) => each.entry)).not.toContain(logins[0].id);
+		folderGoing.resolve(tree);
+		await settled();
+	} finally {
+		ipc.deleteGroup.mockReset();
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * A tag goes on in one call, and the notice offers it back. The open entry
+ * among them is read again, since its chips are part of it, and the undo
+ * takes the tag off only the entries Rust says it went on.
+ */
+it('tags every chosen entry once, reads the open one again, and takes the tag off only where it was added', async () => {
+	const { tree, logins } = chest();
+	const [gmail, drive, slack] = logins;
+	ipc.entry.mockImplementation((id: string) =>
+		Promise.resolve(readOf(logins.find((each) => each.id === id) ?? gmail))
+	);
+	const after = taggedOf(tree, [gmail.id, slack.id], 'work');
+	ipc.tagEntries.mockResolvedValue({ tree: after, changed: [gmail.id, slack.id] });
+	ipc.untagEntries.mockResolvedValue(tree);
+	const { component } = following(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		choose('Drive');
+		choose('Slack');
+		ipc.entry.mockClear();
+		inBar('Add tag').click();
+		flushSync();
+		const field = selectionBar()?.querySelector('input');
+		if (!field) throw new Error('the tag field did not open');
+		field.value = ' work ';
+		field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		await settled();
+
+		expect(ipc.tagEntries).toHaveBeenCalledTimes(1);
+		expect(ipc.tagEntries).toHaveBeenCalledWith([gmail.id, drive.id, slack.id], 'work');
+		expect(ipc.entry, 'the open entry was not read again').toHaveBeenCalledWith(gmail.id);
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+		expect(toast()?.textContent).toContain('Added “\u2068work\u2069” to 2 entries');
+		expect(toast()?.querySelector('use')?.getAttribute('href')).toBe('#i-check');
+
+		undo()?.click();
+		await settled();
+		expect(ipc.untagEntries).toHaveBeenCalledWith([gmail.id, slack.id], 'work');
+		expect(ipc.save).toHaveBeenCalledTimes(2);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Nothing to do is nothing written: no save, no undo, and a sentence that
+ * says why nothing happened. */
+it('says so and saves nothing when every chosen entry already has the tag', async () => {
+	const { tree } = chest();
+	ipc.tagEntries.mockResolvedValue({ tree, changed: [] });
+	const { component } = following(tree);
+	try {
+		choose('Gmail');
+		choose('Drive');
+		inBar('Add tag').click();
+		flushSync();
+		const field = selectionBar()?.querySelector('input');
+		if (!field) throw new Error('the tag field did not open');
+		field.value = 'work';
+		field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		await settled();
+		expect(toast()?.textContent).toContain('2 entries already have “\u2068work\u2069”');
+		expect(undo()).toBeNull();
+		expect(ipc.save).not.toHaveBeenCalled();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A tag the format would split is Rust's to refuse, and its sentence is the
+ * one shown, as on one entry's chip. */
+it('shows Rust’s refusal of a tag the file would split', async () => {
+	const { tree } = chest();
+	ipc.tagEntries.mockRejectedValue({
+		code: 'refused',
+		message:
+			'a tag cannot be empty, hold a semicolon, a comma or a tab, or begin or end with a space'
+	});
+	const { component } = following(tree);
+	try {
+		choose('Gmail');
+		choose('Drive');
+		inBar('Add tag').click();
+		flushSync();
+		const field = selectionBar()?.querySelector('input');
+		if (!field) throw new Error('the tag field did not open');
+		field.value = 'a;b';
+		field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		await settled();
+		expect(toast()?.textContent).toContain('a tag cannot be empty, hold a semicolon');
+		expect(ipc.save).not.toHaveBeenCalled();
+	} finally {
+		ipc.tagEntries.mockReset();
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** The bar's Move to… is the move every other way of moving makes: one call,
+ * one notice, and an undo that takes back exactly what Rust says it moved. */
+it('moves the chosen entries into a folder and moves them back with one undo', async () => {
+	const { tree, work, banking, logins } = chest();
+	const going = logins.slice(0, 2);
+	const moved = going.map((each) => ({ entry: each.id, from: work.id }));
+	ipc.moveEntries.mockResolvedValue({ tree: movedOf(tree, going, banking.id), moved });
+	ipc.moveEntriesBack.mockResolvedValue(tree);
+	const { component } = following(tree);
+	try {
+		choose('Gmail');
+		choose('Drive');
+		inBar('Move to…').click();
+		flushSync();
+		typeInPicker('Banking');
+		inPicker('Enter');
+		await settled();
+
+		expect(ipc.moveEntries).toHaveBeenCalledWith(
+			going.map((each) => each.id),
+			banking.id
+		);
+		expect(toast()?.textContent).toContain('Moved 2 entries to “\u2068Banking\u2069”');
+		press('z');
+		await settled();
+		expect(ipc.moveEntriesBack).toHaveBeenCalledWith(moved, banking.id);
+		expect(ipc.save).toHaveBeenCalledTimes(2);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** An undo whose entries the vault has moved on from - put back by another
+ * way, gone out of the file - is refused whole by Rust, and the window says
+ * it can no longer be done and reads the tree again. */
+it('says something changed since when an undo of a batch is refused', async () => {
+	const { tree, logins } = chest();
+	ipc.deleteEntries.mockResolvedValue(binnedOf(tree, logins.slice(0, 2)));
+	ipc.putBackEntries.mockRejectedValue({
+		code: 'refused',
+		message: 'that is not in the recycle bin'
+	});
+	const { component } = following(tree);
+	try {
+		choose('Gmail');
+		choose('Drive');
+		inBar('Delete').click();
+		await settled();
+		const reading = ipc.tree.mock.calls.length;
+		undo()?.click();
+		await settled();
+		expect(toast()?.textContent).toContain(
+			'Something has changed since, so that can no longer be undone.'
+		);
+		expect(toast()?.textContent).not.toContain('not in the recycle bin');
+		expect(ipc.tree.mock.calls.length).toBeGreaterThan(reading);
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+	} finally {
+		ipc.putBackEntries.mockReset();
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** The bin's own way out, for several: one call, and an undo that sends them
+ * back to the bin, as the bin. */
+it('puts chosen entries back out of the bin, and sends them back on undo', async () => {
+	const { tree, logins } = chest();
+	const going = logins.slice(0, 2);
+	const binned = binnedOf(tree, going);
+	ipc.putBackEntries.mockResolvedValue(tree);
+	ipc.deleteEntries.mockResolvedValue(binned);
+	const { component } = following(binned);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		selectAll();
+		inBar('Put back').click();
+		await settled();
+		expect(ipc.putBackEntries).toHaveBeenCalledWith(going.map((each) => each.id));
+		expect(toast()?.textContent).toContain('Put back 2 entries');
+
+		undo()?.click();
+		await settled();
+		expect(deleting()).toEqual(going.map((each) => ({ entry: each.id, deletion: 'bin' })));
+		expect(ipc.save).toHaveBeenCalledTimes(2);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A batch whose save failed is in memory and not in the file. The failure is
+ * the sentence that matters, and an offer would push it off the screen. */
+it('offers nothing back over a batch whose save failed', async () => {
+	const { tree, logins } = chest();
+	ipc.deleteEntries.mockResolvedValue(binnedOf(tree, logins.slice(0, 2)));
+	ipc.save.mockRejectedValue({ code: 'io', message: 'No space left on device' });
+	const { component } = following(tree);
+	try {
+		choose('Gmail');
+		choose('Drive');
+		inBar('Delete').click();
+		await settled();
+		expect(toast()?.textContent).toContain('No space left on device');
+		expect(undo()).toBeNull();
+	} finally {
+		ipc.save.mockReset();
+		ipc.save.mockResolvedValue(undefined);
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** One entry is named by its title, set apart from the sentence so that a
+ * title that turns text around turns nothing else, and markup in it is text. */
+it('names one chosen entry by its title, isolated, and many by how many', async () => {
+	const evil = row({ title: 'evil\u202E<b>slip</b>' });
+	const plain = row({ title: 'plain' });
+	const tree = group({
+		name: 'Root',
+		entries: [evil, plain],
+		sections: [group({ name: 'Recycle Bin', isRecycleBin: true, deletion: 'forever' })]
+	});
+	ipc.deleteEntries.mockResolvedValue(binnedOf(tree, [evil]));
+	const { component } = following(tree);
+	try {
+		choose('evil');
+		expect(count()).toBe('1 selected');
+		inBar('Delete').click();
+		await settled();
+		expect(toast()?.textContent).toContain(
+			'Moved “\u2068evil\u202E<b>slip</b>\u2069” to the Recycle Bin'
+		);
+		expect(host.querySelector('[data-notice] b')).toBeNull();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** The question is about the rows chosen when it was asked. Choosing again
+ * closes it, so an answer never lands on rows nobody was asked about. */
+it('closes the question when the choice changes under it', async () => {
+	const { tree, logins } = chest();
+	const binned = binnedOf(tree, logins);
+	const { component } = following(binned);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		choose('Gmail');
+		choose('Drive');
+		inBar('Delete forever…').click();
+		flushSync();
+		expect(host.querySelector('[data-confirm]')).not.toBeNull();
+		choose('Slack');
+		expect(host.querySelector('[data-confirm]')).toBeNull();
+		expect(count()).toBe('3 selected');
+		expect(ipc.deleteEntries).not.toHaveBeenCalled();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Move to Recycle Bin in the menu bar acts on the rows chosen, when every one
+ * of them goes to the bin, and on the open entry when nothing is chosen. In
+ * the bin, where they would go for good, it is grey: only the bar's question
+ * erases. */
+it('acts on the choice from the menu’s Move to Recycle Bin, and on the open entry without one', async () => {
+	const { tree, logins } = chest();
+	ipc.entry.mockImplementation((id: string) =>
+		Promise.resolve(readOf(logins.find((each) => each.id === id) ?? logins[0]))
+	);
+	ipc.deleteEntries.mockResolvedValue(tree);
+	const { component } = following(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		expect(applying()).toContain('moveToBin');
+		choose('Drive');
+		run('moveToBin');
+		await settled();
+		expect(deleting(0).map((each) => each.entry)).toEqual([logins[0].id, logins[1].id]);
+
+		pressed('Slack');
+		await settled();
+		expect(selectionBar()).toBeNull();
+		run('moveToBin');
+		await settled();
+		expect(deleting(1)).toEqual([{ entry: logins[2].id, deletion: 'bin' }]);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+
+	const binned = following(binnedOf(tree, logins));
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		choose('Gmail');
+		choose('Drive');
+		expect(applying(), 'offered for rows that would go for good').not.toContain('moveToBin');
+	} finally {
+		await unmount(binned.component);
+		vi.useRealTimers();
+	}
+});
+
+/** Escape lets go of the choice first, back to the entry being read, and only
+ * then puts the pane away. */
+it('lets Escape go of the choice before it puts the pane away', async () => {
+	const { tree, logins } = chest();
+	ipc.entry.mockImplementation((id: string) =>
+		Promise.resolve(readOf(logins.find((each) => each.id === id) ?? logins[0]))
+	);
+	const { component } = following(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		choose('Drive');
+		expect(count()).toBe('2 selected');
+
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		flushSync();
+		expect(selectionBar()).toBeNull();
+		expect(titleField()?.value).toBe('Gmail');
+
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		flushSync();
+		expect(pane()).toBeNull();
+		expect(selectionBar(), 'the entry put away stayed chosen on its own').toBeNull();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A drag that starts on a chosen row carries every chosen row; one that
+ * starts on a row not chosen carries that row alone, and leaves the choice. */
+it('drags every chosen row onto a folder, and a row not chosen alone', async () => {
+	const { tree, banking, logins } = chest();
+	ipc.moveEntries.mockResolvedValue({ tree, moved: [] });
+	const { component } = following(tree);
+	try {
+		choose('Gmail');
+		choose('Drive');
+		await drag(listRow('Drive'), place(banking.id));
+		expect(ipc.moveEntries).toHaveBeenLastCalledWith([logins[0].id, logins[1].id], banking.id);
+
+		await drag(listRow('Jira'), place(banking.id));
+		expect(ipc.moveEntries).toHaveBeenLastCalledWith([logins[3].id], banking.id);
+		expect(count(), 'a drag of another row lost the choice').toBe('2 selected');
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** The choice is read out as it changes, from a region that stays in the
+ * document while the bar comes and goes: Cmd+A chooses with nothing under the
+ * focus that would say so. */
+it('says how many are chosen in a region a screen reader reads out', async () => {
+	const { tree } = chest();
+	const { component } = following(tree);
+	try {
+		const region = host.querySelector('[data-chosen]');
+		expect(region?.getAttribute('role')).toBe('status');
+		expect(region?.getAttribute('aria-live')).toBe('polite');
+		expect(region?.textContent?.trim()).toBe('');
+
+		selectAll();
+		expect(region?.textContent?.trim()).toBe('5 selected');
+		choose('Gmail');
+		expect(region?.textContent?.trim()).toBe('4 selected');
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		flushSync();
+		expect(region?.textContent?.trim()).toBe('');
+		expect(host.querySelector('[data-chosen]'), 'the region was drawn afresh').toBe(region);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A choice of several is the reader's, and putting the pane away - its close,
+ * or the entry in it deleted from it - lets go only of that entry. */
+it('keeps a choice of several when the open entry is put away or deleted from its pane', async () => {
+	const { tree, logins } = chest();
+	const jira = logins[3];
+	ipc.entry.mockImplementation((id: string) =>
+		Promise.resolve(readOf(logins.find((each) => each.id === id) ?? logins[0]))
+	);
+	ipc.deleteEntries.mockResolvedValue(binnedOf(tree, [jira]));
+	const { component } = following(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		choose('Drive');
+		choose('Slack');
+		expect(count()).toBe('3 selected');
+		host.querySelector<HTMLButtonElement>('[aria-label="Close this entry"]')?.click();
+		flushSync();
+		expect(pane()).toBeNull();
+		expect(count(), 'putting the pane away let go of the choice').toBe('3 selected');
+
+		pressed('Jira');
+		await settled();
+		expect(selectionBar(), 'a plain press is a choice of one').toBeNull();
+		choose('Drive');
+		choose('Slack');
+		pressed('Move to Recycle Bin', pane() ?? host);
+		await settled();
+		expect(deleting()).toEqual([{ entry: jira.id, deletion: 'bin' }]);
+		expect(pane()).toBeNull();
+		expect(lit(), 'deleting the open entry let go of the choice').toEqual(['Drive', 'Slack']);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Cmd+A is the system's Select All wherever the list is not the reader's to
+ * choose from - under the settings or the question about the file on disk,
+ * over a list with nothing in it - and with any other key held beside Cmd. */
+it('leaves Cmd+A to the system under the settings, over an empty list and with another key held', async () => {
+	const covered = open({ settings: sheet });
+	flushSync();
+	expect(press('a', document.body).defaultPrevented, 'under the settings').toBe(false);
+	await unmount(covered);
+
+	const { tree, logins } = chest();
+	const asked = following(tree);
+	ipc.tagEntries.mockResolvedValue({ tree, changed: [logins[0].id] });
+	ipc.save.mockRejectedValue({ code: 'externalChange', message: 'the database changed on disk' });
+	ipc.rival.mockResolvedValue({ modified: null, entries: 5 });
+	try {
+		choose('Gmail');
+		addTag('work');
+		await settled();
+		expect(exactly('Take the file on disk')).toBeTruthy();
+		expect(selectAll().defaultPrevented, 'under the question about the file').toBe(false);
+	} finally {
+		ipc.save.mockReset();
+		ipc.save.mockResolvedValue(undefined);
+		await unmount(asked.component);
+		vi.useRealTimers();
+	}
+
+	const { component } = following(tree);
+	try {
+		type('nothing is called this');
+		expect(selectAll().defaultPrevented, 'over a search that found nothing').toBe(false);
+		type('');
+		for (const held of [{ shiftKey: true }, { altKey: true }, { ctrlKey: true }]) {
+			const event = new KeyboardEvent('keydown', {
+				key: held.shiftKey ? 'A' : 'a',
+				metaKey: true,
+				bubbles: true,
+				cancelable: true,
+				...held
+			});
+			document.body.dispatchEvent(event);
+			flushSync();
+			expect(event.defaultPrevented, JSON.stringify(held)).toBe(false);
+		}
+		expect(selectionBar()).toBeNull();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+
+	const empty = following(group({ name: 'Root' }));
+	try {
+		expect(selectAll().defaultPrevented, 'over an empty vault').toBe(false);
+	} finally {
+		await unmount(empty.component);
+		vi.useRealTimers();
+	}
+});
+
+/** Typing a new password into the open entry while Rust makes another keeps
+ * the pane, and the new entry is neither opened nor chosen: chosen beside a
+ * pane on another entry, it would be a choice the reader never made, with a
+ * bar offering to delete it. */
+it('neither opens nor chooses a new entry while a password typed during its making waits', async () => {
+	const { gmail, tree } = withPasswords();
+	const made = row({ title: 'Made', group: tree.id });
+	const making = Promise.withResolvers<{ tree: Group; entry: string }>();
+	ipc.createEntry.mockReturnValue(making.promise);
+	const { component } = following(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		plus().click();
+		await settled();
+		expect(ipc.createEntry).toHaveBeenCalledTimes(1);
+		const typed = typeNewPassword('n3w-from-the-website');
+		await settled();
+
+		making.resolve({ tree: { ...tree, entries: [...tree.entries, made] }, entry: made.id });
+		await settled();
+		expect(titleField()?.value).toBe('Gmail');
+		expect(typed.value).toBe('n3w-from-the-website');
+		expect(selectionBar(), 'the new entry was chosen beside the pane').toBeNull();
+		expect(lit()).toEqual([]);
+		expect(ipc.entry).not.toHaveBeenCalledWith(made.id);
+		expect(ipc.entry).toHaveBeenCalledWith(gmail.id);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/**
+ * The open entry, put back with others, is an entry like any other again, and
+ * a new password can be typed into it. The undo would send it back to the bin,
+ * where the field is not drawn, and the typed password would be nowhere: the
+ * undo asks the pane first, sends nothing, and the field puts its question.
+ */
+it('keeps a new password typed into an entry put back with others when its undo would bin it again', async () => {
+	const { gmail, drive, tree, read } = withPasswords();
+	const binned = binnedOf(tree, [gmail, drive]);
+	ipc.entry.mockImplementation((id: string) => Promise.resolve(inBinOf(read(id), tree.id)));
+	ipc.putBackEntries.mockResolvedValue(tree);
+	ipc.deleteEntries.mockResolvedValue(binned);
+	const { component } = following(binned);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		pressed('Gmail');
+		await settled();
+		choose('Google Drive');
+		expect(count()).toBe('2 selected');
+
+		ipc.entry.mockImplementation((id: string) => Promise.resolve(read(id)));
+		inBar('Put back').click();
+		await settled();
+		expect(toast()?.textContent).toContain('Put back 2 entries');
+		const typed = typeNewPassword('n3w-from-the-website');
+		await settled();
+
+		undo()?.click();
+		await settled();
+		expect(ipc.deleteEntries, 'the undo binned the entry holding it').not.toHaveBeenCalled();
+		expect(typed.isConnected).toBe(true);
+		expect(typed.value).toBe('n3w-from-the-website');
+		expect(reads()).toContain('Save the new password?');
+		expect(titleField()?.value).toBe('Gmail');
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A file whose bin was switched off after it filled still lists what is in
+ * it, and puts it back; but nothing deleted there goes to a bin, so an undo
+ * that sends them back to one could only be refused, and none is offered. */
+it('offers nothing back over entries put back into a vault that keeps no bin', async () => {
+	const { tree, logins } = chest();
+	const going = logins.slice(0, 2);
+	ipc.putBackEntries.mockResolvedValue(deletingAs(tree, 'forever'));
+	const { component } = following(binnedOf(tree, going));
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		selectAll();
+		inBar('Put back').click();
+		await settled();
+		expect(ipc.putBackEntries).toHaveBeenCalledWith(going.map((each) => each.id));
+		expect(toast()?.textContent).toContain('Put back 2 entries');
+		expect(undo()).toBeNull();
+		press('z');
+		await settled();
+		expect(ipc.deleteEntries).not.toHaveBeenCalled();
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** An undo of a put back that would no longer send one of them to the bin -
+ * it went into a folder that went to the bin since - is refused whole by
+ * Rust, and is too late, not broken. */
+it('says something changed since when the undo of a put back finds one no longer goes to the bin', async () => {
+	const { tree, logins } = chest();
+	ipc.putBackEntries.mockResolvedValue(tree);
+	ipc.deleteEntries.mockRejectedValue({
+		code: 'deletionChanged',
+		message: 'that deletion would no longer do what was shown, so nothing was deleted'
+	});
+	const { component } = following(binnedOf(tree, logins.slice(0, 2)));
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		selectAll();
+		inBar('Put back').click();
+		await settled();
+		const reading = ipc.tree.mock.calls.length;
+		undo()?.click();
+		await settled();
+		expect(ipc.deleteEntries).toHaveBeenCalledTimes(1);
+		expect(toast()?.textContent).toContain(
+			'Something has changed since, so that can no longer be undone.'
+		);
+		expect(ipc.tree.mock.calls.length).toBeGreaterThan(reading);
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+	} finally {
+		ipc.deleteEntries.mockReset();
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** An entry a tag went on, erased from the file since, refuses the tag's
+ * undo whole: too late, and said so. */
+it('says something changed since when a tag’s undo finds an entry gone', async () => {
+	const { tree, logins } = chest();
+	const [gmail, drive] = logins;
+	ipc.tagEntries.mockResolvedValue({
+		tree: taggedOf(tree, [gmail.id, drive.id], 'work'),
+		changed: [gmail.id, drive.id]
+	});
+	ipc.untagEntries.mockRejectedValue({
+		code: 'noSuchEntry',
+		message: 'there is no such entry in this database'
+	});
+	const { component } = following(tree);
+	try {
+		choose('Gmail');
+		choose('Drive');
+		addTag('work');
+		await settled();
+		const reading = ipc.tree.mock.calls.length;
+		undo()?.click();
+		await settled();
+		expect(toast()?.textContent).toContain(
+			'Something has changed since, so that can no longer be undone.'
+		);
+		expect(toast()?.textContent).not.toContain('no such entry');
+		expect(ipc.tree.mock.calls.length).toBeGreaterThan(reading);
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+	} finally {
+		ipc.untagEntries.mockReset();
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** An undo that fails for any other reason - the disk, a vault gone read
+ * only - did not come too late. The window shows Rust's own sentence, and
+ * reads nothing again as though the vault had moved on. */
+it('shows the failure itself when an undo of a batch fails for another reason', async () => {
+	const { tree, logins } = chest();
+	ipc.deleteEntries.mockResolvedValue(binnedOf(tree, logins.slice(0, 2)));
+	ipc.putBackEntries.mockRejectedValue({ code: 'io', message: 'the disk would not answer' });
+	const { component } = following(tree);
+	try {
+		choose('Gmail');
+		choose('Drive');
+		inBar('Delete').click();
+		await settled();
+		const reading = ipc.tree.mock.calls.length;
+		undo()?.click();
+		await settled();
+		expect(toast()?.textContent).toContain('the disk would not answer');
+		expect(toast()?.textContent).not.toContain('changed since');
+		expect(ipc.tree.mock.calls.length, 'the tree was read again').toBe(reading);
+	} finally {
+		ipc.putBackEntries.mockReset();
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A tag is a change to the open entry among them: a value revealed before it
+ * is taken off the screen, as for any other change to the entry. */
+it('takes revealed values off the open entry a tag lands on', async () => {
+	const { gmail, drive, tree } = withPasswords();
+	ipc.reveal.mockResolvedValue('the old one');
+	ipc.tagEntries.mockResolvedValue({
+		tree: taggedOf(tree, [gmail.id, drive.id], 'work'),
+		changed: [gmail.id, drive.id]
+	});
+	const shown = () => pane()?.querySelector('[data-value]')?.textContent ?? '';
+	const { component } = following(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		pressed('Show', pane() ?? host);
+		await settled();
+		expect(shown()).toBe('the old one');
+
+		choose('Google Drive');
+		addTag('work');
+		await settled();
+		expect(ipc.tagEntries).toHaveBeenCalledTimes(1);
+		expect(shown(), 'the revealed password stayed up after the tag').toBe('');
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** The undo takes the tag off the open entry, whose chips are part of it, so
+ * the pane reads it again. */
+it('reads the open entry again when the tag’s undo takes it off', async () => {
+	const { tree, logins } = chest();
+	const [gmail, drive] = logins;
+	ipc.entry.mockImplementation((id: string) =>
+		Promise.resolve(readOf(logins.find((each) => each.id === id) ?? gmail))
+	);
+	ipc.tagEntries.mockResolvedValue({
+		tree: taggedOf(tree, [gmail.id, drive.id], 'work'),
+		changed: [gmail.id, drive.id]
+	});
+	ipc.untagEntries.mockResolvedValue(tree);
+	const { component } = following(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		choose('Drive');
+		addTag('work');
+		await settled();
+		ipc.entry.mockClear();
+		undo()?.click();
+		await settled();
+		expect(ipc.untagEntries).toHaveBeenCalledWith([gmail.id, drive.id], 'work');
+		expect(ipc.entry, 'the open entry kept the chip the undo took off').toHaveBeenCalledWith(
+			gmail.id
+		);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A tag whose save failed is in memory and not in the file. The failure is
+ * the sentence that matters, and an offer would push it off the screen. */
+it('offers nothing back over a tag whose save failed', async () => {
+	const { tree, logins } = chest();
+	ipc.tagEntries.mockResolvedValue({
+		tree: taggedOf(tree, [logins[0].id, logins[1].id], 'work'),
+		changed: [logins[0].id, logins[1].id]
+	});
+	ipc.save.mockRejectedValue({ code: 'io', message: 'No space left on device' });
+	const { component } = following(tree);
+	try {
+		choose('Gmail');
+		choose('Drive');
+		addTag('work');
+		await settled();
+		expect(toast()?.textContent).toContain('No space left on device');
+		expect(undo()).toBeNull();
+	} finally {
+		ipc.save.mockReset();
+		ipc.save.mockResolvedValue(undefined);
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** The open entry put back with others is read again before the save, so the
+ * pane does not go on offering Put back, and a deletion for good, on an entry
+ * that has already left the bin for the length of the save. */
+it('reads the open entry again when it is put back with others', async () => {
+	const { tree, logins } = chest();
+	const going = logins.slice(0, 2);
+	ipc.entry.mockImplementation((id: string) =>
+		Promise.resolve(readOf(logins.find((each) => each.id === id) ?? logins[0]))
+	);
+	ipc.putBackEntries.mockResolvedValue(tree);
+	const { component } = following(binnedOf(tree, going));
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		pressed('Gmail');
+		await settled();
+		choose('Drive');
+		ipc.entry.mockClear();
+		inBar('Put back').click();
+		await settled();
+		expect(ipc.entry).toHaveBeenCalledWith(going[0].id);
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+		expect(
+			ipc.entry.mock.invocationCallOrder[0],
+			'the entry was read again only after the save'
+		).toBeLessThan(ipc.save.mock.invocationCallOrder[0]);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A put back whose save failed is offered back to nobody: the failure is the
+ * sentence that matters. */
+it('offers nothing back over a put back whose save failed', async () => {
+	const { tree, logins } = chest();
+	ipc.putBackEntries.mockResolvedValue(tree);
+	ipc.save.mockRejectedValue({ code: 'io', message: 'No space left on device' });
+	const { component } = following(binnedOf(tree, logins.slice(0, 2)));
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		selectAll();
+		inBar('Put back').click();
+		await settled();
+		expect(toast()?.textContent).toContain('No space left on device');
+		expect(undo()).toBeNull();
+	} finally {
+		ipc.save.mockReset();
+		ipc.save.mockResolvedValue(undefined);
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Rust refuses the whole batch when one of them is no longer in the bin, and
+ * its sentence is the one shown: nothing was put back, and nothing is
+ * written. */
+it('shows Rust’s refusal of a batch put back', async () => {
+	const { tree, logins } = chest();
+	ipc.putBackEntries.mockRejectedValue({
+		code: 'refused',
+		message: 'that is not in the recycle bin'
+	});
+	const { component } = following(binnedOf(tree, logins.slice(0, 2)));
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		selectAll();
+		inBar('Put back').click();
+		await settled();
+		expect(toast()?.textContent).toContain('that is not in the recycle bin');
+		expect(undo()).toBeNull();
+		expect(ipc.save).not.toHaveBeenCalled();
+	} finally {
+		ipc.putBackEntries.mockReset();
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A second press of Put back while the first is on its way asks for nothing
+ * new, and is dropped rather than refused for entries already out of the
+ * bin. */
+it('drops a second Put back while the first is on its way', async () => {
+	const { tree, logins } = chest();
+	const answered = Promise.withResolvers<Group>();
+	ipc.putBackEntries.mockReturnValue(answered.promise);
+	const { component } = following(binnedOf(tree, logins.slice(0, 2)));
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		selectAll();
+		inBar('Put back').click();
+		inBar('Put back').click();
+		await settled();
+		expect(ipc.putBackEntries).toHaveBeenCalledTimes(1);
+
+		answered.resolve(tree);
+		await settled();
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+	} finally {
+		ipc.putBackEntries.mockReset();
 		await unmount(component);
 		vi.useRealTimers();
 	}
