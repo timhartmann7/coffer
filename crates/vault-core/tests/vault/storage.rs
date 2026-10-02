@@ -575,7 +575,7 @@ fn a_vault_where_no_lock_file_can_be_written_opens_to_be_read() {
         1,
         "the entries are not readable"
     );
-    assert!(vault.is_read_only());
+    assert_eq!(vault.read_only(), Some(vault_core::ReadOnly::Place));
     assert!(
         matches!(vault.save(), Err(vault_core::VaultError::ReadOnlyPlace)),
         "a save aimed at a place that refuses writes said something else"
@@ -611,8 +611,9 @@ fn a_vault_that_cannot_be_locked_still_writes_a_copy_somewhere_it_can() {
 
     let again = open(&copy, BUILT_PASSWORD);
     assert_eq!(again.tree().entries.len(), 1);
-    assert!(
-        !again.is_read_only(),
+    assert_eq!(
+        again.read_only(),
+        None,
         "the copy inherited the medium the original was on"
     );
 }
@@ -657,7 +658,10 @@ fn a_format_that_cannot_be_read_back_is_still_that_wherever_it_is_kept() {
     let _frozen = support::Frozen::over(scratch.path());
 
     let mut vault = open(&database, SECRET);
-    assert!(vault.is_read_only());
+    assert_eq!(
+        vault.read_only(),
+        Some(vault_core::ReadOnly::Kdbx3Attachments)
+    );
     assert!(
         matches!(
             vault.save(),
@@ -682,7 +686,11 @@ fn a_vault_kept_where_nothing_can_be_written_stays_that_way_when_it_is_read_agai
 
     let mut vault = open(&database, BUILT_PASSWORD);
     vault.reload().expect("the file reads again");
-    assert!(vault.is_read_only(), "a reload thawed the medium");
+    assert_eq!(
+        vault.read_only(),
+        Some(vault_core::ReadOnly::Place),
+        "a reload thawed the medium"
+    );
 }
 
 /// The files Coffer keeps beside a vault open with its password and are not
@@ -709,6 +717,9 @@ fn only_the_names_coffer_keeps_beside_a_vault_are_reserved() {
         ".unsaved.kdbx",
         "unsaved.kdbx",
         "vault.unsaved",
+        // What a backup made the vault keeps the vault's file under: a vault
+        // of its own, opening with whatever password it has.
+        "vault.kdbx.replaced-2026-10-01.kdbx",
         "",
     ] {
         assert!(!reserved(Path::new(name)), "{name} is reserved");

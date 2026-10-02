@@ -16,6 +16,7 @@ use zeroize::Zeroizing;
 
 use vault_core::kind::Kind;
 use vault_core::model::{EntryId, GroupId, Project, fields};
+use vault_core::storage::{Seen, snapshot};
 use vault_core::{Attached, LockPolicy, MasterKey, NewValue, Vault};
 
 /// Set this to run the suite on a machine with no KeePassXC. Everything that
@@ -99,6 +100,26 @@ pub fn files(vault: &Vault) -> Vec<(String, String, Vec<u8>)> {
     }
     found.sort();
     found
+}
+
+/// Everything a reader could look at in the vault: the tree, every entry in
+/// full, every value of every field and every file.
+pub fn everything(vault: &Vault) -> (vault_core::model::Project, Vec<String>) {
+    let mut seen = Vec::new();
+    for summary in all_entries(vault) {
+        let entry = vault.entry(summary.id).expect("the entry is there");
+        for field in &entry.fields {
+            let value = vault
+                .reveal(entry.id, &field.name)
+                .expect("the field has a value");
+            seen.push(format!("{} {} {:?}", entry.id, field.name, value.expose()));
+        }
+        seen.push(format!("{entry:?}"));
+    }
+    for (title, name, data) in files(vault) {
+        seen.push(format!("{title} {name} {data:?}"));
+    }
+    (vault.tree(), seen)
 }
 
 /// Every entry in the database, flattened, with previous versions excluded the
@@ -304,6 +325,90 @@ pub fn built_with(
 
 /// The password every database `built` produces uses.
 pub const BUILT_PASSWORD: &str = "built";
+
+/// One entry, titled "subject", in a database [`built`] makes: saved and
+/// closed, so that the vault under test comes back the way a vault from disk
+/// comes back.
+pub fn vault_with_an_entry(directory: &Path, name: &str) -> PathBuf {
+    built(directory, name, |db| {
+        db.root_mut()
+            .add_entry()
+            .edit(|entry| entry.set_unprotected(keepass::db::fields::TITLE, "subject"));
+    })
+}
+
+/// What the one entry's notes say in a vault [`vault_with_an_entry`] made.
+pub fn notes(vault: &Vault) -> Option<String> {
+    let id = vault.tree().entries[0].id;
+    vault.entry(id).and_then(|entry| {
+        entry
+            .field(keepass::db::fields::NOTES)
+            .and_then(|field| field.value.open().map(str::to_owned))
+    })
+}
+
+/// [`notes`], of the file at `path`.
+pub fn notes_of(path: &Path) -> Option<String> {
+    notes(&open(path, BUILT_PASSWORD))
+}
+
+/// Somebody else's client writing the vault while Coffer may hold it open,
+/// which is what `SPEC.md` section 11 asks the reader to do for the first
+/// month: it takes the lock over when it finds one.
+///
+/// A real second write rather than bytes appended to the file: what the vault
+/// has to find is another version of its database, not a broken one, and the
+/// tests that open the file afterwards need it to still be a database.
+pub fn somebody_else_writes(database: &Path) {
+    let mut theirs = Vault::open(database, password(BUILT_PASSWORD), LockPolicy::TakeOver)
+        .expect("the other client opens it");
+    let id = theirs.tree().entries[0].id;
+    theirs
+        .set_field(
+            id,
+            keepass::db::fields::URL,
+            NewValue::Open("https://theirs.example".into()),
+        )
+        .expect("their change is applied");
+    theirs.save().expect("their save goes through");
+}
+
+/// Every snapshot beside a database, by slot and by content.
+pub fn snapshots(database: &Path) -> Vec<(u32, Vec<u8>)> {
+    (1..=snapshot::SNAPSHOT_COUNT)
+        .filter_map(|index| {
+            let path = snapshot::slot(database, index).ok()?;
+            Some((index, std::fs::read(path).ok()?))
+        })
+        .collect()
+}
+
+/// How the vault's file stands, as the strip over a copy or a backup tells
+/// the reader.
+pub fn told(database: &Path) -> Option<Seen> {
+    Some(Seen::of(database))
+}
+
+/// Overwrites the eight-byte value of a one-letter key in the header's key
+/// derivation dictionary. The dictionary is in the clear, outside everything the
+/// header signature covers, which is exactly why it needs checking before it is
+/// used.
+pub fn forge_kdf_value(bytes: &mut [u8], key: u8, value: u64) -> bool {
+    let pattern = [0x05, 0x01, 0x00, 0x00, 0x00, key, 0x08, 0x00, 0x00, 0x00];
+    let Some(at) = bytes
+        .windows(pattern.len())
+        .position(|window| window == pattern)
+    else {
+        return false;
+    };
+
+    let start = at + pattern.len();
+    let Some(slot) = bytes.get_mut(start..start + 8) else {
+        return false;
+    };
+    slot.copy_from_slice(&value.to_le_bytes());
+    true
+}
 
 /// Puts an extended attribute on a file, leaving its length, its inode and
 /// every byte of its contents alone. That is what the callers need: something a

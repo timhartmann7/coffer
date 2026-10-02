@@ -235,7 +235,7 @@ close", and the middle of those cannot happen on a read-only disk image, inside
 a Time Machine snapshot, on a stick macOS mounted read-only or on a share the
 reader may only read. Reading a database needs no write, so a vault Coffer
 refused to open over a note it could not leave was refusing a file that reads
-perfectly well. It opens, `is_read_only()` is true, every change answers
+perfectly well. It opens, `read_only()` is `Some(ReadOnly::Place)`, every change answers
 `ReadOnlyPlace`, and `save_copy` to somewhere writable is the way off the
 medium. A lock somebody is holding still wins: the medium is only consulted
 where the file could not be created at all.
@@ -813,7 +813,7 @@ The copy is removed only after the publish. A filesystem without hard links is
 `NoExclusiveMove`: an exclusive create followed by a copy would be a name
 holding half a database while it ran, so the copy is opened and promoted
 instead. The lock files beside both names are taken for as long as it runs,
-with `unsaved::claim`, which is stricter than opening: a lock somebody else
+with `lock::claim`, which is stricter than opening: a lock somebody else
 holds is a refusal, not an offer to take it over.
 
 **Making a copy the vault is an ordinary save aimed at another name.**
@@ -838,6 +838,129 @@ for the screen - gone only when nothing at all is at the name, and a link that
 leads nowhere is still something - and it is only ever advice. The two moves
 above ask the disk again, with the publish's hard link and with `Seen` under the
 vault's lock.
+
+## Backups, and making one the vault
+
+The ten snapshots are what the screen calls backups. Everything here is about
+reading the right one back, and about putting one in the vault's place without
+losing the file it replaces.
+
+**A snapshot is found by what it is, not by where it sits.** `snapshot::Taken`
+carries the `Seen` of the slot's own entry: inode, device, length and time.
+`rotate` renames, which keeps all four, so `snapshot::find` answers where a
+snapshot listed at one slot is now. Slot 1 is a hard link to the database it
+replaced, and shares that file's identity only until the commit gives the
+database a new inode; no two slots share one. On a filesystem that numbers a
+file anew when it is renamed (FAT and exFAT may), a rotation between the list
+and the press finds nothing, which is a refusal and never another snapshot.
+
+**Which vault a snapshot belongs to is read off its name.** `snapshot::taken_from`
+takes the slot off the end, as `unsaved::taken_from` takes the suffix off a
+copy, and answers nothing for a name that is not a snapshot's. Nothing inside a
+snapshot or beside it records whose it is.
+
+**Read only has four reasons, and one kind of them is about the data.**
+`Vault::read_only` answers `ReadOnly::Snapshot`, `Place`, `Kdb` or
+`Kdbx3Attachments`, decided once by `classify` from the format and the place and
+held where the vault keeps it; `writable` refuses with the matching error.
+`Vault::copyable` is whether `save_copy` would write what is open somewhere
+else: a snapshot and a place are about where the file is, and a copy goes
+somewhere else, while the two formats are why the bytes cannot be trusted, and a
+copy would carry them. `save_copy` asks the same question, so the screen's offer
+and the write never disagree. `Vault::files_readable` is the same for a file's
+bytes: everything but `Kdbx3Attachments`, whose names lead to another entry's
+bytes (see above). `attachment` refuses on it, and a menu under the pointer
+greys its Save to… on it, so those two never disagree either.
+
+**Making a backup the vault is the ordinary write aimed at the vault's name.**
+`Vault::adopt` and `Vault::promote` share `take_over`: the vault is pointed at the
+vault's name with the lock beside it held, judged for that name before the write
+(a snapshot's own name refuses every write), written the way `save_over` writes,
+and put back whole - path, stamp, content and what it was judged - if the write
+does not go through. `adopt` refuses anything but a snapshot with
+`NotASnapshot`, and a file at a snapshot's name in a format Coffer does not
+write for its format. A snapshot of the copy a lock left is refused with
+`NotASnapshot` as well: the copy is what it would go over, the copy holds the
+only version of work its vault has not got, and nothing but the copy's own
+saves writes over it - `promote` would retire the snapshot that kept what it
+held a moment later. It holds the press to the `Seen` the reader was shown,
+asked once the vault's lock is held, as `promote` does. The key is the one the
+backup opened with, so no password is asked for, and the vault opens with that
+key's password from then on - after a change of the master password, the old
+one. A write that failed after `rotate` moved the open backup a slot on has the
+vault follow it there by `find` (`settle_failed_adoption`, whose test makes the
+rotation by hand, since no fault from outside lands between it and the rename);
+the oldest backup, which the write's own rotate removes, stays open from memory
+under the name it had, and a write that did go through wrote it whole into the
+vault before that mattered.
+
+**A vault file that will not open with the backup's key is kept by a second name
+first.** One that opens is an older or newer state of the same vault, and the
+chain keeps it as the newest snapshot like anything a save replaces. One that
+does not - damaged, under another password, not a vault - would be in the chain
+only until ten later saves pushed it out, and nothing in Coffer could open it to
+say what it held. So `storage::aside::keep` gives it
+`<vault>.replaced-YYYY-MM-DD.kdbx` before the write, numbered from `-2` past any
+name already taken, and nothing removes it. Asking costs a key derivation, so it
+is asked once, at the press, and only of a file that is there.
+
+The second name is a hard link, which refuses a name that is taken - a link
+that leads nowhere included - and shares the file rather than copying it. Its
+mode loses what anybody but the owner may do and gains nothing, because the
+link is the vault's own file: made owner-only outright, a vault its owner had
+made read only would come back writable and the write that follows would go
+over it, where a save checks first and refuses. On a disk without links the
+name is taken with an exclusive create and filled through a staged write, so it
+holds Coffer's empty file or the whole of the vault's, owner-only from birth.
+The `.kdbx` on the end is load-bearing for the reason the copy a lock leaves
+ends in it: every file panel filters on it, and a file under another password
+has to be pickable and openable with that one. The name is none that
+`storage::reserved`, `unsaved::taken_from` or `snapshot::taken_from` reads as a
+file of the vault's own of another kind, so nothing offers it as a copy, rotates
+it or retires it; `home::found` treats it as the vault of its own it is.
+
+Why a second name rather than moving the file away and publishing the backup
+exclusively at the empty name: a move followed by a publish leaves a moment with
+nothing at the vault's name, and any failure between the two - a disk without
+links, a file that arrives - leaves no vault at its name at all, where this
+order never does. It is also the standard library alone: an exclusive rename is
+`renamex_np(RENAME_EXCL)` on macOS, a capability each volume may or may not
+have, and `renameat2` elsewhere. The file still lands in `.1.bak` through the
+ordinary rotate as well, so the guarantee is every save's, plus a name no save
+touches. A press that does not go through takes the second name back with
+`aside::withdraw`, and only while the vault's name still holds the very file -
+the same inode, or the same bytes in a copy - so a refused press leaves no `-2`,
+`-3`... behind it, and a file that may have no other name left keeps this one. A
+process killed between the second name and the commit leaves the vault whole
+and one extra name for it. A refusal of the second name is `VaultFileChanged`
+only when the vault's file no longer stands as the reader was told, asked again
+then; any other is the disk's own answer, so a file that never changed is never
+refused as one that did.
+
+A symbolic link somebody left at the vault's name is linked as the link, both
+for the second name and for slot 1, and neither is tightened: a link's own mode
+means nothing, and tightening through it would change a file outside anything
+Coffer keeps. The write then puts the backup at the vault's name as a file of
+its own. A link that leads nowhere - a vault on a disk that is not plugged in -
+is kept the same way, and the chain does not move, since nothing is there to
+snapshot.
+
+## A copy somewhere else
+
+**`save_copy` never replaces a file.** It takes no snapshot of what is at the
+name it is given, and the panel it is aimed from opens in the vault's own
+folder, where the vault a backup was taken of, the copy a lock left and a file
+kept aside all end in `.kdbx`. So it refuses a name that holds anything, a link
+that leads nowhere included, with `DatabaseExists`, and a name
+`storage::reserved` reads as a snapshot's or a lock's copy's with
+`ReservedName`, as `create` does. The copy is staged beside the name first, the
+name is taken with an exclusive create only once the copy is whole, and the
+rename puts the copy over that empty reservation; a rename that fails takes the
+reservation back. That works on a disk without links as well, where a publish
+by hard link would not, and the name never holds part of a copy. The lock's
+rescue is the one write of a copy that goes over a file: it writes the same
+name every time, the copy an earlier lock with the same trouble left, through
+the same staged write.
 
 ## Making a vault, and what a second of work costs
 
@@ -928,8 +1051,8 @@ or that is the one the vault already has, is refused as well: the first could
 never be typed again, and the second would rotate a snapshot and change nothing.
 
 **A lock's copy is given no new password until it is the vault.** The copy a
-lock left opens as `Source::Writable` - its name is not a slot's and its lock is
-taken - so `writable` alone would let a change through. It would be the copy's
+lock left opens with `read_only()` answering nothing - its name is not a slot's
+and its lock is taken - so `writable` alone would let a change through. It would be the copy's
 alone: the vault and every snapshot of it would go on opening with the old
 password, the count would be the copy's own chain, and after `promote` the
 vault's chain - every slot of it under the old key - would be remembered

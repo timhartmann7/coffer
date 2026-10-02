@@ -303,6 +303,28 @@ mod tests {
         assert_eq!(found(blocked.path()), None);
     }
 
+    /// The file a backup made the vault replaced, kept beside it under a name
+    /// of its own, is a vault of its own: it may open with another password,
+    /// or not at all. Beside the vault, which a backup made the vault always
+    /// wrote after it, the vault is what is found; on its own it is offered
+    /// under its own name, never under the vault's the way a lock's copy is.
+    #[test]
+    fn a_file_a_backup_replaced_is_never_taken_for_the_vault() {
+        let (beside, folder) = home();
+        vault(&folder.join("work.kdbx"), hours_ago(1));
+        vault(
+            &folder.join("work.kdbx.replaced-2026-10-01.kdbx"),
+            hours_ago(48),
+        );
+        assert_eq!(found(beside.path()), Some(folder.join("work.kdbx")));
+
+        let (alone, folder) = home();
+        let kept = folder.join("work.kdbx.replaced-2026-10-01.kdbx");
+        vault(&kept, hours_ago(1));
+        assert_eq!(found(alone.path()), Some(kept.clone()));
+        assert_eq!(standing(&folder.join("work.kdbx")), Standing::Free);
+    }
+
     /// Every way a name can stand, read the way the creation screen and the
     /// offer to open what is there read it.
     #[test]

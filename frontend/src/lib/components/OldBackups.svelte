@@ -14,7 +14,8 @@
 	 */
 	let {
 		count = $bindable(),
-		onDone
+		onDone,
+		onRemoved
 	}: {
 		/** How many still open with the old password. A removal that could not
 		 * take them all leaves it at how many are left, and the question stays
@@ -23,6 +24,9 @@
 		/** The question is answered: kept, with nothing to say, or removed, with
 		 * a sentence saying how many went. */
 		onDone: (said: string | null) => void;
+		/** Rust has answered a removal, which may have taken some of them or
+		 * all: whatever lists the backups reads them again. */
+		onRemoved?: () => void;
 	} = $props();
 
 	let removing = $state(false);
@@ -51,6 +55,7 @@
 		failure = null;
 		try {
 			const { gone, left, refused } = await removeOldSnapshots();
+			onRemoved?.();
 			if (refused) {
 				count = left;
 				unremoved(gone > 0, refused.message);

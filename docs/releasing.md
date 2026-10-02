@@ -121,6 +121,10 @@ list is in the spec.
 - Five minutes idle with a menu open: the window goes when the menu is
   dismissed, and choosing an item from it first does nothing to the vault that
   comes back.
+- A backup open to look at (Settings, Show, "Open to look") and a KDBX 3 vault
+  holding files: a right-click on a row, a folder, the bin's row, a field and a
+  file draws every change greyed out, and copying still works. Save to… on the
+  file writes it out of the backup, and is grey in the KDBX 3 vault.
 - Every key of Coffer's items in the menu bar does its thing once: Cmd+N makes
   one entry, Cmd+D one copy, Cmd+F puts the focus in the search field, Cmd+B and Shift+Cmd+C copy
   once with one notice, Cmd+L locks, Cmd+, opens the settings, Shift+Cmd+N opens
@@ -238,6 +242,45 @@ list is in the spec.
   password" and close the lid straight away: after waking, the unlock screen
   says the master password was changed before locking, the new password opens
   the vault, and the sentence is gone once it is open.
+- Backups, on a vault saved a few times. Settings shows "N copies"; Show lists
+  them to the minute in the Mac's own clock, newest first, with "Open now" on
+  none of them. With a value typed into an entry and not yet left, press "Open
+  to look" on the second: the window comes back on that backup's unlock screen
+  ("A backup, not your vault"), and the typed value is in the vault when it is
+  next opened. Unlock the backup: the strip is up, and "Read only" in the
+  status bar, clicked with the mouse over an open entry, opens its note above
+  it; Escape closes the note and leaves the entry open, and so does a click
+  anywhere else. "Save a copy as…" writes a file KeePassXC opens; aimed at
+  `vault.kdbx` in the panel and answered "Replace", it is refused with "there is
+  already a file with that name" and the vault file is unchanged. "Use this copy as
+  my vault": the notice names `….kdbx.1.bak`, the status bar no longer says Read
+  only, and the vault opens with the same password after a lock. Damage the
+  vault file (`printf 'x' | dd of=vault.kdbx bs=1 seek=4000 conv=notrunc`),
+  unlock it: every backup is listed, and using one keeps the damaged file as
+  `vault.kdbx.replaced-<today>.kdbx`, which is still there ten saves later.
+  Change the master password, then make a backup from before the change the
+  vault: the strip said the vault opens with the backup's password, the old
+  password opens it, and the file it replaced opens with the new one in
+  KeePassXC.
+- Ten backups, a value typed into an entry and not yet left, then Settings,
+  Show, "Open to look" on the tenth: the window comes back on the vault's unlock
+  screen saying the backup is not there any more because the save on the way
+  pushed it out. In Settings, change the master password and remove the old
+  backups: the count under "Automatic backups" follows, and no row is left to
+  open. With a backup open, press "Use this copy as my vault" and Cmd+L at once:
+  the unlock screen says a backup was made the vault, which password opens it,
+  and where the replaced file went.
+- A vault on an exFAT stick, which keeps no hard links: list the backups,
+  save the vault from a second Coffer once, then press "Open to look" on a row
+  the settings showed before - it opens that backup or says it is gone and
+  lists again, never its neighbour. Damage the vault file and use a backup: the
+  old file is kept beside it as `….replaced-<date>.kdbx` (copied, not linked),
+  and the vault opens.
+- A vault on a read-only disk image (`hdiutil create -srcfolder … -format UDRO`):
+  the status bar's Read only says the place, and "Save a copy somewhere else…"
+  writes a copy that opens. A KDBX 3 vault holding files says so and offers no
+  copy. With VoiceOver on, the Read only button is read as collapsed and
+  expanded, and a backup's row button names the file.
 - Both disk images mount, and the application inside each launches on a Mac of
   that architecture. `file Coffer.app/Contents/MacOS/Coffer` says the
   architecture you expect. Run the Intel image on an Intel Mac, not under

@@ -22,13 +22,18 @@ const locked: Status = {
 	unlocked: false,
 	entries: 0,
 	readOnly: false,
+	readOnlyBecause: null,
+	copyable: false,
 	rescue: null,
 	lost: false,
 	file: { there: true, written: null },
 	copy: null,
+	snapshot: null,
 	typed: false,
 	typedBeside: false,
 	rekeyed: false,
+	adopted: null,
+	backupGone: false,
 	lockedBy: null,
 	locksIn: null
 };
@@ -272,7 +277,7 @@ it('counts a key pressed while the sheet of keys is up as the reader being there
 async function offersRekey(heard: (action: Action) => void): Promise<boolean> {
 	heard({ action: 'command', command: 'settings' });
 	flushSync();
-	await vi.waitFor(() => expect(host.textContent).toContain('Snapshots before a write'));
+	await vi.waitFor(() => expect(host.textContent).toContain('Automatic backups'));
 	return [...host.querySelectorAll('button')].some(
 		(each) => each.textContent?.trim() === 'Change…'
 	);
@@ -292,7 +297,13 @@ it('offers to change the master password in the settings of a vault it can write
 });
 
 it('offers no new master password for a vault Coffer does not write', async () => {
-	ipc.status.mockResolvedValue({ ...locked, unlocked: true, entries: 1, readOnly: true });
+	ipc.status.mockResolvedValue({
+		...locked,
+		unlocked: true,
+		entries: 1,
+		readOnly: true,
+		readOnlyBecause: 'kdb'
+	});
 	ipc.tree.mockResolvedValue(root);
 	const heard = await boot();
 	await vi.waitFor(() => expect(host.textContent).toContain('node-3'));
@@ -340,6 +351,41 @@ it('tells the unlock screen the master password changed before the lock', async 
 	);
 });
 
+/** A backup made the vault, and a lock took the window before its notice
+ * could say what became of the file it replaced. The unlock screen says it
+ * instead, with the password the vault opens with now. */
+it('tells the unlock screen a backup was made the vault before the lock', async () => {
+	ipc.status.mockResolvedValue({
+		...locked,
+		adopted: {
+			database,
+			keptAs: null,
+			setAside: 'personal.kdbx.replaced-2026-10-01.kdbx'
+		}
+	});
+	await boot();
+
+	await vi.waitFor(() =>
+		expect(host.textContent).toContain(
+			'A backup was made your vault before locking, and it opens with the password that backup opened with.'
+		)
+	);
+	expect(host.textContent).toContain('personal.kdbx.replaced-2026-10-01.kdbx');
+});
+
+/** "Open to look" from the settings, and the lock's own save pushed that
+ * backup out on the way. The window comes back on the vault's unlock screen,
+ * and says why it is not the backup's. */
+it('tells the unlock screen the backup asked for was pushed out on the way', async () => {
+	ipc.status.mockResolvedValue({ ...locked, backupGone: true });
+	await boot();
+
+	await vi.waitFor(() =>
+		expect(host.textContent).toContain('The backup you asked to look at is not there any more')
+	);
+	expect(host.textContent).toContain('This is your vault.');
+});
+
 /** A lock's copy can be written, and is not the vault: a new password there
  * would leave the vault and its snapshots opening with the old one. The banner
  * that says it is the copy is up, and is the way to make it the vault. */
@@ -362,4 +408,117 @@ it('offers no new master password inside a lock’s copy', async () => {
 	expect(await offersRekey(heard)).toBe(false);
 	expect(host.textContent).not.toContain('Master password');
 	expect(host.textContent, 'the way to make it the vault went').toContain('Make this my vault');
+});
+
+/** A backup open, as Rust says it: read only for being a backup, copyable, and
+ * the vault beside it as it stands. */
+const looking: Status = {
+	...locked,
+	database: { path: '/Users/someone/personal.kdbx.2.bak', name: 'personal.kdbx.2' },
+	unlocked: true,
+	entries: 1,
+	readOnly: true,
+	readOnlyBecause: 'snapshot',
+	copyable: true,
+	snapshot: {
+		vault: 'personal.kdbx',
+		taken: '2026-08-27T18:40:00Z',
+		keptAs: 'personal.kdbx.1.bak',
+		vaultFile: { there: true, written: null },
+		because: 'unopened'
+	}
+};
+
+/**
+ * A backup open in place of a vault that would not open. The strip over it
+ * says so, and is the way to make it the vault; afterwards the strip goes, the
+ * status bar no longer says read only, and the notice says what became of the
+ * file it replaced - read from Rust, which made the decision.
+ */
+it('puts the strip over an open backup, and says what became of the file it replaced', async () => {
+	ipc.status.mockResolvedValue(looking);
+	ipc.tree.mockResolvedValue(root);
+	await boot();
+	await vi.waitFor(() =>
+		expect(host.textContent).toContain('Your vault file could not be opened.')
+	);
+	expect(host.querySelector('button[aria-controls="read-only-note"]')).not.toBeNull();
+
+	ipc.adoptSnapshot.mockResolvedValue({
+		database,
+		keptAs: null,
+		setAside: 'personal.kdbx.replaced-2026-10-01.kdbx'
+	});
+	ipc.status.mockResolvedValue({ ...locked, unlocked: true, entries: 1 });
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Use this copy as my vault')
+		?.click();
+
+	await vi.waitFor(() =>
+		expect(host.querySelector('[data-notice]')?.textContent).toContain(
+			'did not open with this password and is kept as'
+		)
+	);
+	expect(ipc.adoptSnapshot).toHaveBeenCalledTimes(1);
+	expect(host.textContent).not.toContain('Use this copy as my vault');
+	expect(host.querySelector('button[aria-controls="read-only-note"]')).toBeNull();
+});
+
+/** A press Rust refused is said on the strip, which reads the vault's file
+ * again first: the window never decides on its own that the backup won. */
+it('keeps the strip and reads the vault file again when making a backup the vault is refused', async () => {
+	ipc.status.mockResolvedValue(looking);
+	ipc.tree.mockResolvedValue(root);
+	await boot();
+	await vi.waitFor(() => expect(host.textContent).toContain('Use this copy as my vault'));
+	const asked = ipc.status.mock.calls.length;
+
+	ipc.adoptSnapshot.mockRejectedValue({
+		code: 'externalChange',
+		message: 'the vault file is not as it stood when it was shown'
+	});
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.trim() === 'Use this copy as my vault')
+		?.click();
+
+	await vi.waitFor(() => expect(host.textContent).toContain('so nothing was replaced'));
+	expect(ipc.status.mock.calls.length).toBeGreaterThan(asked);
+	expect(host.querySelector('[data-notice]')).toBeNull();
+});
+
+/**
+ * "Open to look" in the settings of an open vault. What is still being typed
+ * reaches Rust before the backup is asked for - Rust locks the vault on the
+ * way, and that lock writes it - and the screen is the backup's unlock screen
+ * once Rust has answered.
+ */
+it('opens a backup from the settings after what is typed, and shows its unlock screen', async () => {
+	ipc.draft.mockResolvedValue(undefined);
+	ipc.snapshots.mockResolvedValue([
+		{ name: 'personal.kdbx.1.bak', index: 1, taken: '2026-08-27T18:40:00Z' },
+		{ name: 'personal.kdbx.2.bak', index: 2, taken: '2026-08-27T18:31:00Z' }
+	]);
+	ipc.chooseSnapshot.mockResolvedValue(looking.database);
+	const heard = await unlocked();
+	typed({ entry: kept.id, field: 'Notes', protect: false }, () => 'written before the look');
+
+	heard({ action: 'command', command: 'settings' });
+	flushSync();
+	await vi.waitFor(() => expect(host.textContent).toContain('2 copies'));
+	[...host.querySelectorAll('button')].find((each) => each.textContent?.trim() === 'Show')?.click();
+	flushSync();
+
+	ipc.status.mockResolvedValue({
+		...locked,
+		database: looking.database,
+		snapshot: looking.snapshot
+	});
+	host.querySelector<HTMLButtonElement>('[aria-label="Open to look personal.kdbx.2.bak"]')?.click();
+
+	await vi.waitFor(() => expect(ipc.chooseSnapshot).toHaveBeenCalledWith(2));
+	expect(ipc.draft.mock.invocationCallOrder[0]).toBeLessThan(
+		ipc.chooseSnapshot.mock.invocationCallOrder[0]
+	);
+	await vi.waitFor(() => expect(host.textContent).toContain('A backup, not your vault'));
+	expect(host.textContent).not.toContain('node-3');
 });

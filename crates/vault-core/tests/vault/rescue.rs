@@ -7,51 +7,10 @@ use vault_core::storage::lock::{self, Lock, Outcome};
 use vault_core::storage::{self, OnDisk, snapshot, unsaved};
 use vault_core::{NewValue, Rescue, Typing, VaultError, Written};
 
-use crate::support::{self, BUILT_PASSWORD, built, open, password, permissions_apply};
-
-/// Somebody else's client writing the file while Coffer holds it open, which is
-/// what `SPEC.md` section 11 asks the reader to do for the first month.
-///
-/// A real second write rather than bytes appended to the file: what the first
-/// vault has to find is another version of its database, not a broken one, and
-/// the tests that open the file afterwards need it to still be a database.
-fn somebody_else_writes(database: &std::path::Path) {
-    let mut theirs = vault_core::Vault::open(
-        database,
-        password(BUILT_PASSWORD),
-        vault_core::LockPolicy::TakeOver,
-    )
-    .expect("the other client opens it");
-    let id = theirs.tree().entries[0].id;
-    theirs
-        .set_field(
-            id,
-            keepass::db::fields::URL,
-            NewValue::Open("https://theirs.example".into()),
-        )
-        .expect("their change is applied");
-    theirs.save().expect("their save goes through");
-}
-
-/// Every snapshot beside a database, by slot and by content.
-fn snapshots(database: &std::path::Path) -> Vec<(u32, Vec<u8>)> {
-    (1..=10)
-        .filter_map(|index| {
-            let path = vault_core::storage::snapshot::slot(database, index).ok()?;
-            Some((index, std::fs::read(path).ok()?))
-        })
-        .collect()
-}
-
-/// One entry, saved and closed, so that the vault under test comes back the way
-/// a vault from disk comes back.
-fn vault_with_an_entry(directory: &std::path::Path, name: &str) -> std::path::PathBuf {
-    built(directory, name, |db| {
-        db.root_mut()
-            .add_entry()
-            .edit(|entry| entry.set_unprotected(keepass::db::fields::TITLE, "subject"));
-    })
-}
+use crate::support::{
+    self, BUILT_PASSWORD, built, notes_of, open, password, permissions_apply, snapshots,
+    somebody_else_writes, told, vault_with_an_entry,
+};
 
 /// The plain course of things, and the three states of a vault in one test:
 /// nothing to write, something to write, and nothing again once it is written.
@@ -622,21 +581,6 @@ fn rescued(directory: &Path, name: &str, note: &str) -> (PathBuf, PathBuf) {
     (database, copy)
 }
 
-/// How the vault's file stands, as the copy's banner tells the reader.
-fn told(database: &Path) -> Option<storage::Seen> {
-    Some(storage::Seen::of(database))
-}
-
-fn notes_of(path: &Path) -> Option<String> {
-    let vault = open(path, BUILT_PASSWORD);
-    let id = vault.tree().entries[0].id;
-    vault.entry(id).and_then(|entry| {
-        entry
-            .field(keepass::db::fields::NOTES)
-            .and_then(|field| field.value.open().map(str::to_owned))
-    })
-}
-
 /// Every lock file, every temporary file and everything kept beside a copy -
 /// its snapshots, a copy of it - in a directory. A move that is over leaves
 /// none of them behind.
@@ -995,7 +939,7 @@ fn a_copy_made_the_vault_keeps_the_file_it_replaced_as_the_newest_snapshot() {
         vault.path(),
         database.canonicalize().expect("the vault is there")
     );
-    assert!(!vault.is_read_only());
+    assert_eq!(vault.read_only(), None);
     assert!(!copy.exists(), "the copy is still there");
     assert!(!copy_lock.exists(), "the copy's lock outlived it");
     assert!(

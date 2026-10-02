@@ -2,14 +2,15 @@
 //! open vault, and what each item sends back to the window.
 //!
 //! Decided here rather than in the window because the facts are here: whether
-//! there is a password to copy, whether Coffer writes this vault back, what
-//! deleting a thing does. An item that does not apply is drawn greyed out
+//! there is a password to copy, whether Coffer writes this vault back - for
+//! whichever reason it does not - and reads its files out, what deleting a
+//! thing does. An item that does not apply is drawn greyed out
 //! rather than left out, so that a menu has the same lines for every row, and
 //! a greyed item cannot be chosen: AppKit draws what it is told and does not
 //! decide for itself (`setAutoenablesItems(false)` in muda 0.19.3).
 //!
 //! Every item is a press the window answers with the function its button
-//! runs. Nothing here changes the vault, and a menu offers no change that the
+//! runs. Nothing here changes the vault, and a menu offers nothing that the
 //! command behind the button would refuse.
 //!
 //! Nothing in this file knows AppKit or Tauri, so every menu is read in a test
@@ -101,7 +102,7 @@ const REMOVE_FILE: &str = "Remove…";
 /// that has gone, or an id that is not one - is refused the way the command
 /// behind its button would refuse it, and no menu is drawn.
 pub fn offered(vault: &Vault, subject: &Subject) -> Result<Vec<Item>, Failure> {
-    let writable = !vault.is_read_only();
+    let writable = vault.read_only().is_none();
     match subject {
         Subject::Entry { entry, places } => Ok(one(&read(vault, entry)?, places, writable)),
         Subject::Entries { entries, places } => many(vault, entries, places, writable),
@@ -118,7 +119,9 @@ pub fn offered(vault: &Vault, subject: &Subject) -> Result<Vec<Item>, Failure> {
             field: name,
             shown,
         } => field(&read(vault, entry)?, name, *shown, writable),
-        Subject::File { entry, name } => file(&read(vault, entry)?, name, writable),
+        Subject::File { entry, name } => {
+            file(&read(vault, entry)?, name, writable, vault.files_readable())
+        }
         // A version's value as well as the entry's, so the field need not be
         // one the entry has now; the entry has to be there.
         Subject::Value { entry, .. } => {
@@ -514,8 +517,14 @@ fn field(
 }
 
 /// A file on an entry: written out through the save panel, or taken off after
-/// the question in its row.
-fn file(entry: &dto::Entry, name: &str, writable: bool) -> Result<Vec<Item>, Failure> {
+/// the question in its row. Written out only from a vault whose files can be
+/// read: in a KDBX 3 one the save would be refused before its panel opened.
+fn file(
+    entry: &dto::Entry,
+    name: &str,
+    writable: bool,
+    readable: bool,
+) -> Result<Vec<Item>, Failure> {
     if !entry
         .attachments
         .iter()
@@ -524,7 +533,7 @@ fn file(entry: &dto::Entry, name: &str, writable: bool) -> Result<Vec<Item>, Fai
         return Err(VaultError::NoSuchAttachment.into());
     }
     Ok(vec![
-        choice(SAVE_TO, Some(Pick::Save)),
+        choice(SAVE_TO, readable.then_some(Pick::Save)),
         Item::Separator,
         choice(
             REMOVE_FILE,
@@ -591,14 +600,28 @@ fn groups(root: &Project) -> impl Iterator<Item = &Project> {
 mod tests {
     use serde_json::{Value, json};
     use vault_core::model::{EntryId, GroupId};
+    use vault_core::{LockPolicy, ReadOnly};
 
     use super::*;
-    use crate::fixtures::{RICH, entry_titled, unlocked};
+    use crate::fixtures::{RICH, SECRET, entry_titled, fixture, password, unlocked};
     use crate::session::Session;
 
     /// A KDBX 3.1 file with files in it: Coffer reads it and does not write it
     /// back, and it holds what the rich one holds.
     const READ_ONLY: &str = "rich-kdbx31.kdbx";
+
+    /// The rich vault as one of its own backups, open: read only because of
+    /// where it is rather than what it is.
+    fn backup() -> (tempfile::TempDir, Session) {
+        let directory = tempfile::tempdir().expect("a scratch directory");
+        let taken = directory.path().join("rich.kdbx.1.bak");
+        std::fs::copy(fixture(RICH), &taken).expect("the fixture copies");
+        let session = Session::new(Some(taken), None);
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the backup opens");
+        (directory, session)
+    }
 
     fn subject(sent: Value) -> Subject {
         serde_json::from_value(sent).expect("the window's subject reads")
@@ -827,73 +850,92 @@ mod tests {
         }
     }
 
-    /// A vault Coffer will not write back is read: every menu in it copies,
-    /// opens, shows and saves, and nothing in any of them changes the vault.
+    /// A vault Coffer will not write back is read, whatever the reason it is
+    /// not written: every menu in it copies, opens and shows, and nothing in
+    /// any of them changes the vault. A file is saved out of it only where the
+    /// vault's files can be read - out of a backup, and not out of a KDBX 3
+    /// vault, whose save would be refused before its panel opened.
     #[test]
     fn nothing_that_writes_is_offered_by_a_vault_coffer_will_not_write() {
-        let (_scratch, session) = unlocked(READ_ONLY);
-        assert!(
-            session
-                .with(Vault::is_read_only)
-                .expect("the vault is open")
-        );
-        let basic = entry_titled(&session, "basic");
-        let fields = entry_titled(&session, "many custom fields");
-        let files = entry_titled(&session, "attachments");
-        let attached = files
-            .attachments
-            .first()
-            .expect("the entry carries files")
-            .name
-            .clone();
-        let deleted = entry_titled(&session, "deleted entry");
-        let work = group_named(&session, "Work");
+        let (_format, format) = unlocked(READ_ONLY);
+        let (_taken, taken) = backup();
+        for (session, why, saves) in [
+            (&format, ReadOnly::Kdbx3Attachments, false),
+            (&taken, ReadOnly::Snapshot, true),
+        ] {
+            assert_eq!(
+                session.with(Vault::read_only).expect("the vault is open"),
+                Some(why)
+            );
+            let basic = entry_titled(session, "basic");
+            let fields = entry_titled(session, "many custom fields");
+            let files = entry_titled(session, "attachments");
+            let attached = files
+                .attachments
+                .first()
+                .expect("the entry carries files")
+                .name
+                .clone();
+            let deleted = entry_titled(session, "deleted entry");
+            let work = group_named(session, "Work");
 
-        let subjects = [
-            row(&session, "basic"),
-            row(&session, "deleted entry"),
-            json!({
-                "kind": "entries",
-                "entries": [basic.id.to_string(), fields.id.to_string()],
-                "places": places(&session, basic.group),
-            }),
-            json!({ "kind": "folder", "group": work.id.to_string(), "places": places(&session, work.id) }),
-            json!({ "kind": "bin" }),
-            json!({ "kind": "field", "entry": basic.id.to_string(), "field": "Password", "shown": false }),
-            json!({ "kind": "field", "entry": fields.id.to_string(), "field": "custom-003", "shown": true }),
-            json!({ "kind": "field", "entry": fields.id.to_string(), "field": "custom-001", "shown": false }),
-            json!({ "kind": "field", "entry": deleted.id.to_string(), "field": "Password", "shown": false }),
-            json!({ "kind": "file", "entry": files.id.to_string(), "name": attached }),
-            json!({ "kind": "value", "entry": basic.id.to_string(), "field": "Password", "range": null }),
-        ];
-        for sent in subjects {
-            let items = opened(&session, sent.clone());
-            for (label, pick) in choices(&items) {
-                assert!(
-                    !pick.is_some_and(changes),
-                    "{label:?} changes a read-only vault in {sent}"
-                );
-            }
-            for item in &items {
-                if let Item::Menu { label, enabled, .. } = item {
-                    assert!(!enabled, "{label:?} can be chosen in {sent}");
+            let subjects = [
+                row(session, "basic"),
+                row(session, "deleted entry"),
+                json!({
+                    "kind": "entries",
+                    "entries": [basic.id.to_string(), fields.id.to_string()],
+                    "places": places(session, basic.group),
+                }),
+                json!({ "kind": "folder", "group": work.id.to_string(), "places": places(session, work.id) }),
+                json!({ "kind": "bin" }),
+                json!({ "kind": "field", "entry": basic.id.to_string(), "field": "Password", "shown": false }),
+                json!({ "kind": "field", "entry": fields.id.to_string(), "field": "custom-003", "shown": true }),
+                json!({ "kind": "field", "entry": fields.id.to_string(), "field": "custom-001", "shown": false }),
+                json!({ "kind": "field", "entry": deleted.id.to_string(), "field": "Password", "shown": false }),
+                json!({ "kind": "file", "entry": files.id.to_string(), "name": attached }),
+                json!({ "kind": "value", "entry": basic.id.to_string(), "field": "Password", "range": null }),
+            ];
+            for sent in subjects {
+                let items = opened(session, sent.clone());
+                for (label, pick) in choices(&items) {
+                    assert!(
+                        !pick.is_some_and(changes),
+                        "{label:?} changes a read-only vault ({why:?}) in {sent}"
+                    );
+                }
+                for item in &items {
+                    if let Item::Menu { label, enabled, .. } = item {
+                        assert!(!enabled, "{label:?} can be chosen ({why:?}) in {sent}");
+                    }
                 }
             }
-        }
 
-        let read = opened(&session, row(&session, "basic"));
-        assert!(pick(&read, "Copy Password").is_some());
-        assert!(pick(&read, "Open Address").is_some());
-        let shown = opened(
-            &session,
-            json!({ "kind": "field", "entry": basic.id.to_string(), "field": "Password", "shown": false }),
-        );
-        assert!(matches!(pick(&shown, "Show"), Some(Pick::Show)));
-        let file = opened(
-            &session,
-            json!({ "kind": "file", "entry": files.id.to_string(), "name": attached }),
-        );
-        assert!(matches!(pick(&file, "Save to…"), Some(Pick::Save)));
+            let read = opened(session, row(session, "basic"));
+            assert!(pick(&read, "Copy Password").is_some(), "{why:?}");
+            assert!(pick(&read, "Open Address").is_some(), "{why:?}");
+            let shown = opened(
+                session,
+                json!({ "kind": "field", "entry": basic.id.to_string(), "field": "Password", "shown": false }),
+            );
+            assert!(matches!(pick(&shown, "Show"), Some(Pick::Show)), "{why:?}");
+            let file = opened(
+                session,
+                json!({ "kind": "file", "entry": files.id.to_string(), "name": attached }),
+            );
+            assert_eq!(
+                matches!(pick(&file, "Save to…"), Some(Pick::Save)),
+                saves,
+                "{why:?}"
+            );
+            assert_eq!(
+                session
+                    .with(|vault| vault.attachment(files.id, &attached).is_ok())
+                    .expect("the vault is open"),
+                saves,
+                "{why:?}: the menu's answer is not the save's"
+            );
+        }
 
         // The fixture Coffer reads only has no folder in its bin, so one is
         // put there in a vault Coffer writes, and its menu worked out as for a
@@ -1510,8 +1552,9 @@ mod tests {
         assert!(pick(&binned, "Copy").is_some());
     }
 
-    /// A file is saved from any entry, and removed only where the entry may be
-    /// changed. Its name is the file's own, `..` and `/` included.
+    /// A file is saved from any entry of a vault whose files can be read, and
+    /// removed only where the entry may be changed. Its name is the file's
+    /// own, `..` and `/` included.
     #[test]
     fn a_file_is_saved_anywhere_and_removed_only_where_the_entry_changes() {
         let (_scratch, session) = unlocked(RICH);

@@ -211,6 +211,7 @@ impl From<VaultError> for Failure {
             | VaultError::NoSuchPart
             | VaultError::CopyOntoItself
             | VaultError::NotACopy
+            | VaultError::NotASnapshot
             | VaultError::NothingToGenerateFrom
             | VaultError::RandomnessUnavailable => Code::Refused,
             VaultError::RemovalForGood => Code::ForGood,
@@ -292,6 +293,7 @@ mod tests {
             (VaultError::NotATemplate, "refused"),
             (VaultError::NoSuchPart, "refused"),
             (VaultError::NotACopy, "refused"),
+            (VaultError::NotASnapshot, "refused"),
             (VaultError::NothingToGenerateFrom, "refused"),
             (VaultError::RemovalForGood, "forGood"),
             (VaultError::RemovalSuperseded, "superseded"),

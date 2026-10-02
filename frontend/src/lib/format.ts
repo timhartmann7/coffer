@@ -47,6 +47,18 @@ export function at(stamp: string | null, now: Date): string {
 }
 
 /**
+ * A moment as a row in a list of files says it, to the minute: "today, 14:05",
+ * "27 Aug, 18:40", with the year for any other year. Nothing for a date that is
+ * not one. The list form of `at`, for files a reader chooses one of - ten
+ * backups taken within the same hour are told apart by the minute alone.
+ */
+export function minute(stamp: string | null, now: Date): string {
+	const moment = parse(stamp);
+	if (!moment) return '';
+	return `${day(stamp, now)}, ${time(moment)}`;
+}
+
+/**
  * How long ago, the way a row in the recycle bin says it: "today",
  * "yesterday", a count of days for the week behind, and the day itself before
  * that. A date after today is a clock somebody else set, and it is written as

@@ -23,12 +23,17 @@
 	 */
 	let {
 		rekey,
-		copyBeside = false
+		copyBeside = false,
+		onBackups
 	}: {
 		/** Gives the vault the new password, through the vault screen's own
 		 * writing of the file, and answers with how many snapshots still open
 		 * with the old one. */
 		rekey: Rekey;
+		/** The backups beside the vault changed - the new password's write
+		 * took one, a removal took the old ones - and whatever lists them reads
+		 * them again. */
+		onBackups?: () => void;
 		/** Whether the copy a lock left sits beside the vault. It opens with
 		 * the password the vault has now and would bring it back if it were
 		 * made the vault after a change, so the row says what to do with it
@@ -169,6 +174,7 @@
 		wrongCurrent = false;
 		try {
 			const left = await rekey(held, wanted);
+			onBackups?.();
 			current.value = '';
 			fresh.value = '';
 			again.value = '';
@@ -301,7 +307,7 @@
 			</form>
 		</div>
 	{:else if outdated > 0}
-		<OldBackups bind:count={outdated} onDone={settled} />
+		<OldBackups bind:count={outdated} onDone={settled} onRemoved={onBackups} />
 	{/if}
 
 	<!-- What the change or the removal came to, said where the focus is not:

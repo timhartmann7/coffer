@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::error::VaultError;
-use crate::storage::lock::{Lock, Outcome};
-use crate::storage::{atomic, sibling, snapshot};
+use crate::storage::lock::claim;
+use crate::storage::{atomic, no_links, sibling, snapshot};
 
 /// Appended to the whole file name, the way `.lock` and `.1.bak` are, so that
 /// the copy lands in the folder the reader chose. The `.kdbx` on the end is
@@ -161,18 +161,9 @@ pub fn put_back(database: &Path) -> Result<(), VaultError> {
 fn unpublished(error: io::Error) -> VaultError {
     match error.kind() {
         io::ErrorKind::AlreadyExists => VaultError::DatabaseExists,
-        // The temporary file was just made in the same folder, so a folder
-        // that will not take a new name is not what refused: the filesystem
-        // keeps no second name for a file. FAT and exFAT answer EPERM, and
-        // most network shares that lack links ENOTSUP, which the standard
-        // library leaves uncategorised.
-        io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported => VaultError::NoExclusiveMove,
-        _ if error
-            .raw_os_error()
-            .is_some_and(|errno| [libc::ENOTSUP, libc::EOPNOTSUPP].contains(&errno)) =>
-        {
-            VaultError::NoExclusiveMove
-        }
+        // The temporary file was just made in the same folder, so the
+        // filesystem is what refused: it keeps no second name for a file.
+        _ if no_links(&error) => VaultError::NoExclusiveMove,
         _ => VaultError::Io(error),
     }
 }
@@ -193,21 +184,6 @@ fn unpublished(error: io::Error) -> VaultError {
 /// go is no reason to say it did not.
 pub(crate) fn retire(copy: &Path) {
     let _ = snapshot::clear(copy);
-}
-
-/// Takes the lock beside a file a copy is about to be moved onto or off, for
-/// as long as the move runs.
-///
-/// Stricter than opening, on purpose. A lock somebody else holds is refused
-/// rather than offered to be taken over, because this is not a reader asking
-/// to open a vault they were shown is held; and a place that will not take the
-/// note beside a file will not take the file either.
-pub(crate) fn claim(path: &Path) -> Result<Lock, VaultError> {
-    match Lock::acquire(path)? {
-        Outcome::Taken(lock) => Ok(lock),
-        Outcome::Held(holder) => Err(VaultError::Locked(holder)),
-        Outcome::Unwritable => Err(VaultError::ReadOnlyPlace),
-    }
 }
 
 #[cfg(test)]

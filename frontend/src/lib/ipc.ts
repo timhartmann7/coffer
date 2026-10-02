@@ -9,6 +9,7 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import type {
 	Action,
+	Adopted,
 	Attached,
 	Calibration,
 	Command,
@@ -289,12 +290,24 @@ export function openUrl(entry: string): Promise<void> {
 	return invoke('open_url', { entry });
 }
 
-/** The snapshots beside the chosen database, most recent first. */
+/** The snapshots beside the chosen database - or, when it is one of them,
+ * beside the vault it was taken from - most recent first. Rust keeps the list,
+ * and the slot `chooseSnapshot` sends back means what it meant in it. */
 export function snapshots(): Promise<Snapshot[]> {
 	return invoke('snapshots');
 }
 
-/** Points Coffer at one of those snapshots instead. */
+/**
+ * Points Coffer at the snapshot the last list showed at `index`, wherever later
+ * saves have moved it, and answers with what is chosen afterwards. Rejects with
+ * `gone`, changing nothing, when it has been pushed out of the chain or was
+ * never listed.
+ *
+ * With a vault open, that vault is locked first, the way any is: this window
+ * may be gone before the answer arrives, and what is chosen afterwards is the
+ * vault itself when the lock kept its work elsewhere, lost it, or pushed the
+ * snapshot out with its own save.
+ */
 export function chooseSnapshot(index: number): Promise<Database> {
 	return invoke('choose_snapshot', { index });
 }
@@ -328,12 +341,21 @@ export function promoteRescue(): Promise<Database> {
 	return invoke('promote_rescue');
 }
 
-/** Goes back from the copy to the vault it was taken from, and answers with
- * what is chosen afterwards: the vault, or the copy when the lock that closed
- * it had to keep its work elsewhere or lost it. A copy that is open is locked
- * on the way, so this window may be gone before the answer arrives. */
-export function leaveRescue(): Promise<Database> {
-	return invoke('leave_rescue');
+/** Makes the open snapshot the vault it was taken beside, and answers with the
+ * vault, which is what is open now, and with what became of the file it
+ * replaced. No password: the vault opens with the one the snapshot opened with
+ * from then on. Refused with `externalChange` when the vault's file no longer
+ * stands as the last `status` said. */
+export function adoptSnapshot(): Promise<Adopted> {
+	return invoke('adopt_snapshot');
+}
+
+/** Goes back from the copy or the snapshot to the vault it was taken from, and
+ * answers with what is chosen afterwards: the vault, or the copy when the lock
+ * that closed it had to keep its work elsewhere or lost it. A file that is open
+ * is locked on the way, so this window may be gone before the answer arrives. */
+export function backToVault(): Promise<Database> {
+	return invoke('back_to_vault');
 }
 
 /** The kinds of entry Coffer makes, a login first, and the names offered for

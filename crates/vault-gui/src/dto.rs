@@ -16,6 +16,7 @@ use vault_core::kind;
 use vault_core::model::{self, FieldValue, fields::Standard};
 use zeroize::Zeroizing;
 
+use crate::session::Looking;
 use crate::settings;
 
 /// The database Coffer has chosen, whether or not it is open.
@@ -166,15 +167,9 @@ pub struct OnDisk {
 
 impl OnDisk {
     pub fn of(found: vault_core::storage::OnDisk) -> OnDisk {
-        match found {
-            vault_core::storage::OnDisk::Gone => OnDisk {
-                there: false,
-                written: None,
-            },
-            vault_core::storage::OnDisk::Written(written) => OnDisk {
-                there: true,
-                written: written.and_then(moment),
-            },
+        OnDisk {
+            there: found != vault_core::storage::OnDisk::Gone,
+            written: written(found),
         }
     }
 }
@@ -205,15 +200,120 @@ impl CopyOf {
     ) -> CopyOf {
         CopyOf {
             vault: file_name(vault),
-            saved: match copy {
-                vault_core::storage::OnDisk::Written(written) => written.and_then(moment),
-                vault_core::storage::OnDisk::Gone => None,
-            },
-            kept_as: vault_core::storage::snapshot::slot(vault, 1)
-                .map(|slot| file_name(&slot))
-                .unwrap_or_default(),
+            saved: written(copy),
+            kept_as: newest(vault),
             vault_file: OnDisk::of(vault_file),
         }
+    }
+}
+
+/// The vault a chosen database was taken beside, when it is one of the
+/// backups Coffer keeps: what the strip over it says about the backup, about
+/// why it is open, and about what making it the vault would do. Names and
+/// times only, as for a copy.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotOf {
+    /// The vault's file name, which is the file the backup would go over.
+    pub vault: String,
+    /// When the backup's file was written, which is when the vault was as the
+    /// backup holds it.
+    pub taken: Option<String>,
+    /// What the vault's file is called once the backup has gone over it, when
+    /// it opens with the backup's password: the newest snapshot.
+    pub kept_as: String,
+    /// The vault's file as it stands, which the backup would go over or, when
+    /// it has gone, take the name of.
+    pub vault_file: OnDisk,
+    /// Why the backup is open: the vault's file would not open, or the reader
+    /// asked to look.
+    pub because: Looking,
+}
+
+impl SnapshotOf {
+    pub fn of(
+        vault: &std::path::Path,
+        backup: vault_core::storage::OnDisk,
+        vault_file: vault_core::storage::OnDisk,
+        because: Looking,
+    ) -> SnapshotOf {
+        SnapshotOf {
+            vault: file_name(vault),
+            taken: written(backup),
+            kept_as: newest(vault),
+            vault_file: OnDisk::of(vault_file),
+            because,
+        }
+    }
+}
+
+/// Why the open database cannot be written back, as the status bar's note
+/// says it: a backup, a place that takes no file, or one of the two formats
+/// Coffer reads and does not write.
+#[derive(Serialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub enum ReadOnly {
+    Snapshot,
+    Place,
+    Kdb,
+    Kdbx3,
+}
+
+impl ReadOnly {
+    pub fn of(why: vault_core::ReadOnly) -> ReadOnly {
+        match why {
+            vault_core::ReadOnly::Snapshot => ReadOnly::Snapshot,
+            vault_core::ReadOnly::Place => ReadOnly::Place,
+            vault_core::ReadOnly::Kdb => ReadOnly::Kdb,
+            vault_core::ReadOnly::Kdbx3Attachments => ReadOnly::Kdbx3,
+        }
+    }
+}
+
+/// A backup made the vault: the vault, which is what is open now, and what
+/// became of the file it replaced, by name. Exactly one of the two names when
+/// a file was there, and neither when the backup took an empty name.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Adopted {
+    pub database: Database,
+    /// The file it replaced opened with the backup's password, and is the
+    /// newest snapshot under this name.
+    pub kept_as: Option<String>,
+    /// The file it replaced would not open with the backup's password, and is
+    /// kept beside the vault under this name, which nothing removes.
+    pub set_aside: Option<String>,
+}
+
+impl Adopted {
+    pub fn of(vault: &std::path::Path, adopted: &vault_core::Adopted) -> Adopted {
+        let (kept_as, set_aside) = match adopted {
+            vault_core::Adopted::Kept(snapshot) => (Some(file_name(snapshot)), None),
+            vault_core::Adopted::SetAside(aside) => (None, Some(file_name(aside))),
+            vault_core::Adopted::Empty => (None, None),
+        };
+        Adopted {
+            database: Database::of(vault),
+            kept_as,
+            set_aside,
+        }
+    }
+}
+
+/// The name a vault's file is kept under as the newest snapshot, for the
+/// sentences that promise it before a copy or a backup goes over it.
+fn newest(vault: &std::path::Path) -> String {
+    vault_core::storage::snapshot::slot(vault, 1)
+        .map(|slot| file_name(&slot))
+        .unwrap_or_default()
+}
+
+/// When a file was last written, when it is there and the filesystem keeps
+/// the time.
+fn written(found: vault_core::storage::OnDisk) -> Option<String> {
+    match found {
+        vault_core::storage::OnDisk::Written(written) => written.and_then(moment),
+        vault_core::storage::OnDisk::Gone => None,
     }
 }
 
@@ -257,6 +357,12 @@ pub struct Status {
     /// Whether this database can be written back at all. A snapshot, a format
     /// Coffer will not write and a place that refuses a write are all read only.
     pub read_only: bool,
+    /// Which of those it is, while a database that cannot be written back is
+    /// open.
+    pub read_only_because: Option<ReadOnly>,
+    /// Whether what is open can be written to a file somewhere else with
+    /// `save_copy`: anything but a format Coffer will not write.
+    pub copyable: bool,
     /// The unsaved copy sitting beside the database Coffer will open next, when
     /// a lock had to write one. Read off the disk rather than remembered, so a
     /// copy left by a run that has since quit is still offered.
@@ -272,6 +378,9 @@ pub struct Status {
     /// The vault the chosen database was copied from, when it is the copy a
     /// lock left.
     pub copy: Option<CopyOf>,
+    /// The vault the chosen database was taken beside, when it is one of its
+    /// backups.
+    pub snapshot: Option<SnapshotOf>,
     /// Whether the last lock found text the reader was still typing and saved
     /// it into the vault with everything else. Which entry is not said: after a
     /// lock nothing of the vault is left to say it with.
@@ -286,6 +395,15 @@ pub struct Status {
     /// while it was open. The window that said so went with the lock, and a
     /// change that finished as the vault locked may never have been said.
     pub rekeyed: bool,
+    /// What became of the vault's file, when the vault the last lock closed
+    /// had just been made from one of its backups and nothing had happened in
+    /// it since. The notice that said so went with the window, and a lock that
+    /// landed while the press ran took it before it could.
+    pub adopted: Option<Adopted>,
+    /// Whether the backup the reader asked to look at from the settings was
+    /// pushed out of the chain by the save of the lock on the way to it, which
+    /// left the session on the vault.
+    pub backup_gone: bool,
     /// Why the vault that was open is not open any more, when it is worth
     /// saying. A lock the reader asked for has nothing to explain.
     pub locked_by: Option<&'static str>,
@@ -2124,6 +2242,88 @@ mod tests {
             missing,
             serde_json::json!({ "there": false, "written": null })
         );
+    }
+
+    /// What the strip over a backup is told, and what the window is told a
+    /// backup made the vault did, is file names, times and a word, never a
+    /// path: the one path is the vault's own, which `Database` always carries.
+    /// The reasons a vault is read only cross as the words the window
+    /// branches on.
+    #[test]
+    fn a_backup_crosses_as_names_and_times_only() {
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_790_000_000);
+        let folder = std::path::Path::new("/Users/someone/Vault");
+        let vault = folder.join("work <b>.kdbx");
+
+        let backup = serde_json::to_value(SnapshotOf::of(
+            &vault,
+            vault_core::storage::OnDisk::Written(Some(at)),
+            vault_core::storage::OnDisk::Gone,
+            Looking::Unopened,
+        ))
+        .expect("the backup serialises");
+        assert_eq!(
+            backup,
+            serde_json::json!({
+                "vault": "work <b>.kdbx",
+                "taken": "2026-09-21T14:13:20Z",
+                "keptAs": "work <b>.kdbx.1.bak",
+                "vaultFile": { "there": false, "written": null },
+                "because": "unopened"
+            })
+        );
+        let asked = serde_json::to_value(SnapshotOf::of(
+            &vault,
+            vault_core::storage::OnDisk::Gone,
+            vault_core::storage::OnDisk::Written(None),
+            Looking::Asked,
+        ))
+        .expect("the backup serialises");
+        assert_eq!(asked["because"], "asked");
+        assert_eq!(asked["taken"], serde_json::Value::Null);
+
+        for (adopted, kept_as, set_aside) in [
+            (
+                vault_core::Adopted::Kept(folder.join("work <b>.kdbx.1.bak")),
+                serde_json::json!("work <b>.kdbx.1.bak"),
+                serde_json::Value::Null,
+            ),
+            (
+                vault_core::Adopted::SetAside(
+                    folder.join("work <b>.kdbx.replaced-2026-10-01.kdbx"),
+                ),
+                serde_json::Value::Null,
+                serde_json::json!("work <b>.kdbx.replaced-2026-10-01.kdbx"),
+            ),
+            (
+                vault_core::Adopted::Empty,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+            ),
+        ] {
+            let said =
+                serde_json::to_value(Adopted::of(&vault, &adopted)).expect("the answer serialises");
+            assert_eq!(said["keptAs"], kept_as, "{said}");
+            assert_eq!(said["setAside"], set_aside, "{said}");
+            assert_eq!(said["database"]["name"], "work <b>");
+            let mut without = said.clone();
+            if let Some(fields) = without.as_object_mut() {
+                fields.remove("database");
+            }
+            assert!(!without.to_string().contains("/Users"), "{said}");
+        }
+
+        for (why, word) in [
+            (vault_core::ReadOnly::Snapshot, "snapshot"),
+            (vault_core::ReadOnly::Place, "place"),
+            (vault_core::ReadOnly::Kdb, "kdb"),
+            (vault_core::ReadOnly::Kdbx3Attachments, "kdbx3"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(ReadOnly::of(why)).expect("the reason serialises"),
+                word
+            );
+        }
     }
 
     /// A removal that could not take everything says how many are left and

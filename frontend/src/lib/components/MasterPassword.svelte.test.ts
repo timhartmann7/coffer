@@ -613,6 +613,38 @@ it('says in the row how many old backups went, and gives the focus back', async 
 	expect(document.activeElement).toBe(button('Change…'));
 });
 
+/** A new password is a save, which takes a backup, and a removal takes the old
+ * ones - one that was refused part of the way too. Whatever lists the backups
+ * is told after each, so its count is the disk's. */
+it('tells the list of backups to read them again after a change and after a removal', async () => {
+	const onBackups = vi.fn();
+	ipc.removeOldSnapshots.mockResolvedValueOnce({
+		gone: 1,
+		left: 1,
+		refused: { code: 'io', message: 'one would not go' }
+	});
+	ipc.removeOldSnapshots.mockResolvedValueOnce({ gone: 1, left: 0, refused: null });
+	drawn.push(
+		mount(MasterPassword, {
+			target: host,
+			props: { rekey: vi.fn<Rekey>().mockResolvedValue(2), onBackups }
+		})
+	);
+	flushSync();
+	fill();
+	submit();
+	await vi.waitFor(() => expect(host.querySelector('[data-confirm]')).not.toBeNull());
+	expect(onBackups).toHaveBeenCalledTimes(1);
+
+	button('Remove old backups').click();
+	await vi.waitFor(() => expect(host.textContent).toContain('one would not go'));
+	expect(onBackups).toHaveBeenCalledTimes(2);
+
+	button('Remove the old backup').click();
+	await vi.waitFor(() => expect(host.textContent).toContain('Removed the old backup.'));
+	expect(onBackups).toHaveBeenCalledTimes(3);
+});
+
 /** Keep is the reader declining the removal, and a sentence about a removal
  * that failed has nothing left to be about. */
 it('takes a failed removal’s sentence away with the question when the backups are kept', async () => {

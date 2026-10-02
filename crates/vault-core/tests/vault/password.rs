@@ -20,7 +20,7 @@ use vault_core::{LockPolicy, NewValue, Recipe, Vault, VaultError};
 
 use crate::normalise::{canonical, differences};
 use crate::support::{
-    self, BUILT_PASSWORD, Frozen, RICH, SECRET, all_entries, built, built_with, fixture, open,
+    self, BUILT_PASSWORD, Frozen, RICH, SECRET, built, built_with, everything, fixture, open,
     permissions_apply, scratch,
 };
 
@@ -107,26 +107,6 @@ impl Before {
             "{what}: the old password no longer opens the file"
         );
     }
-}
-
-/// Everything a reader could look at in the vault: the tree, every entry in
-/// full, every value of every field and every file.
-fn everything(vault: &Vault) -> (vault_core::model::Project, Vec<String>) {
-    let mut seen = Vec::new();
-    for summary in all_entries(vault) {
-        let entry = vault.entry(summary.id).expect("the entry is there");
-        for field in &entry.fields {
-            let value = vault
-                .reveal(entry.id, &field.name)
-                .expect("the field has a value");
-            seen.push(format!("{} {} {:?}", entry.id, field.name, value.expose()));
-        }
-        seen.push(format!("{entry:?}"));
-    }
-    for (title, name, data) in support::files(vault) {
-        seen.push(format!("{title} {name} {data:?}"));
-    }
-    (vault.tree(), seen)
 }
 
 #[test]
@@ -305,7 +285,11 @@ fn a_lock_s_copy_is_given_no_new_password_until_it_is_made_the_vault() {
     let vault_file = std::fs::read(&database).expect("the vault reads");
 
     let mut opened = open(&copy, BUILT_PASSWORD);
-    assert!(!opened.is_read_only(), "a lock's copy could not be written");
+    assert_eq!(
+        opened.read_only(),
+        None,
+        "a lock's copy could not be written"
+    );
     let before = Before::of(&opened);
     for (what, current) in [
         ("the copy's password", BUILT_PASSWORD.as_bytes()),
@@ -719,8 +703,9 @@ fn a_vault_whose_password_is_empty_and_has_no_key_file_can_be_given_one() {
 fn a_kdbx31_vault_given_a_new_password_opens_with_it_only_and_keeps_every_field() {
     let (_scratch, database) = scratch("empty-kdbx31.kdbx");
     let mut vault = open(&database, SECRET);
-    assert!(
-        !vault.is_read_only(),
+    assert_eq!(
+        vault.read_only(),
+        None,
         "no attachments, so it can be written"
     );
 

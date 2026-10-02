@@ -26,6 +26,17 @@ export interface Screen {
  * the settings drawn over it. Absent where no vault Coffer can write is open. */
 export type Rekey = (current: Uint8Array, next: Uint8Array) => Promise<number>;
 
+/**
+ * Writes what is in the window to a file of its own, wherever the reader says
+ * in the save panel, and answers with the sentence that says where - or with
+ * nothing when the panel was closed. The way off a backup, a place that takes
+ * no file, and a file somebody else wrote.
+ */
+export async function keepCopy(): Promise<string | null> {
+	const beside = await saveCopy();
+	return beside ? `Kept as ${quoted(beside.name)}` : null;
+}
+
 export class Saving {
 	/** Whether a write is on its way. */
 	saving = $state(false);
@@ -137,10 +148,10 @@ export class Saving {
 	async keepBoth(): Promise<void> {
 		try {
 			this.saving = true;
-			const beside = await saveCopy();
-			if (!beside) return;
+			const kept = await keepCopy();
+			if (!kept) return;
 			this.conflict = null;
-			this.#screen.notices.tell({ message: `Kept as ${quoted(beside.name)}`, kind: 'copied' });
+			this.#screen.notices.tell({ message: kept, kind: 'copied' });
 			// Only where there is a file to take instead. When the vault itself
 			// is gone there is nothing to read back, and the window goes on
 			// holding the version the copy was made from - which is still the

@@ -6,6 +6,7 @@ pub mod snapshot;
 pub mod unsaved;
 pub mod watch;
 
+pub(crate) mod aside;
 mod process;
 
 use std::io;
@@ -101,6 +102,22 @@ impl Seen {
             stamp: Some(watch::Stamp::of_metadata(metadata)),
         }
     }
+}
+
+/// Whether a refusal to give a file a second name means the filesystem keeps
+/// none, rather than that something is in the way.
+///
+/// FAT and exFAT answer EPERM, and most network shares that lack links
+/// ENOTSUP, which the standard library leaves uncategorised. Asked only where
+/// the folder has just taken a file of Coffer's - a temporary file, a lock -
+/// so a folder that will not take a new name is not what refused.
+pub(crate) fn no_links(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported
+    ) || error
+        .raw_os_error()
+        .is_some_and(|errno| [libc::ENOTSUP, libc::EOPNOTSUPP].contains(&errno))
 }
 
 /// Flushes the directory entry itself, so that a rename survives a power cut.

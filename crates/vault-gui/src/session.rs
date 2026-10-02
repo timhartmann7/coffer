@@ -12,9 +12,10 @@ use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 use vault_core::kdf::{self, Work};
 use vault_core::model::{Entry, EntryId, Project};
-use vault_core::storage::{OnDisk, Seen, unsaved};
+use vault_core::storage::{OnDisk, Seen, snapshot, unsaved};
 use vault_core::{
-    Attached, LockPolicy, MasterKey, Recipe, Rescue, SecretValue, Vault, VaultError, Written,
+    Adopted, Attached, LockPolicy, MasterKey, Recipe, Rescue, SecretValue, Vault, VaultError,
+    Written,
 };
 use zeroize::Zeroizing;
 
@@ -23,7 +24,12 @@ use crate::drafts::{Drafts, Over, Typed};
 use crate::error::Failure;
 use crate::offered::Waiting;
 use crate::recent;
+use backups::{Listing, Shown};
 use slot::Slot;
+
+pub use backups::Looking;
+
+mod backups;
 
 pub struct Session {
     held: Mutex<Held>,
@@ -68,6 +74,22 @@ struct Held {
     /// said at all; the reader at the unlock screen would not know which of two
     /// passwords to type. Cleared with `locked_by`.
     rekeyed: bool,
+    /// What became of the vault's file, when the vault the last lock closed
+    /// had just been made from one of its backups and nothing had happened in
+    /// it since. The window that pressed says so in a notice, and a lock that
+    /// lands while the press runs - the idle deadline, sleep, Cmd+L, a backup
+    /// asked for from the settings - takes that window before it can: the
+    /// name a file was kept under, and the password the vault now opens with,
+    /// would be said nowhere. Nothing is said once anything else happened in
+    /// the vault: a change is a reader at the window that said it, and a save
+    /// since has moved the name a file was kept under. Cleared with
+    /// `locked_by`.
+    adopted: Option<Adopted>,
+    /// Whether the backup the reader asked to look at with a vault open was
+    /// not there once the lock that was to open it had closed the vault: that
+    /// lock's own save pushed it out of the chain. The session stayed on the
+    /// vault, and its screen says why. Cleared with `locked_by`.
+    backup_gone: bool,
     /// The key file the next unlock will use alongside the password, when the
     /// database asks for one.
     ///
@@ -133,17 +155,66 @@ struct Held {
     /// The vault's [`Vault::edits`] when `revision` last caught up with it.
     edits: u64,
     /// How the vault's file stood when the window was last told, while the
-    /// chosen file is a copy a lock left. "Make this my vault" is held to it
-    /// (see [`Vault::promote`]): what the banner said is what the reader
-    /// decided on. Forgotten when the session is pointed somewhere else.
+    /// chosen file is a copy a lock left or a backup. "Make this my vault" and
+    /// "Use this copy as my vault" are held to it (see [`Vault::promote`] and
+    /// [`Vault::adopt`]): what the banner said is what the reader decided on.
+    /// Forgotten when the session is pointed somewhere else.
     shown: Option<Seen>,
-    /// Whether the open copy is being left for the vault it was taken from.
-    /// The lock that closes it decides where the session points afterwards:
-    /// see [`Session::back_to_vault`].
+    /// Whether the open copy or backup is being left for the vault it was
+    /// taken from. The lock that closes it decides where the session points
+    /// afterwards: see [`Session::back_to_vault`].
     returning: bool,
+    /// The backups [`Session::snapshots`] last answered with. A press names a
+    /// backup by the slot it was shown at, and this is what that slot meant.
+    listed: Option<Listing>,
+    /// Whether the last unlock of the chosen file was refused because the
+    /// file itself would not open - damaged, not a database, not there -
+    /// which is when the unlock screen offers the backups instead.
+    unopened: bool,
+    /// Why the chosen backup is chosen, while one is.
+    looking: Option<Looking>,
+    /// The backup the next lock points the session at, once the vault open
+    /// now has closed: see [`Session::look`].
+    looking_after: Option<Shown>,
 }
 
 impl Held {
+    /// Points the session at another file, and forgets everything that was
+    /// about the one before. Whatever was open is dropped without being
+    /// written: a caller that has to keep what it holds locks first.
+    fn point(&mut self, database: PathBuf) {
+        self.open.put(None);
+        self.database = Some(database);
+        // A key file belongs to the vault it opens. Carrying one over to a
+        // different file would turn a right password into a wrong one, with
+        // nothing on the screen to explain it.
+        self.key_file = None;
+        // A flag about the vault that was open says nothing about the one being
+        // chosen, for the same reason the key file does not carry over.
+        self.lost = false;
+        self.typed = Written::Nothing;
+        self.rekeyed = false;
+        self.adopted = None;
+        self.backup_gone = false;
+        self.shown = None;
+        self.returning = false;
+        self.found = None;
+        self.listed = None;
+        self.unopened = false;
+        self.looking = None;
+        self.looking_after = None;
+        self.generation += 1;
+    }
+
+    /// [`Held::point`] at another of the same vault's own files - its vault,
+    /// a backup, the copy a lock left - with the key file kept: they open
+    /// with the same credentials.
+    fn point_beside(&mut self, file: PathBuf) {
+        let key_file = self.key_file.take();
+        self.point(file);
+        self.key_file = key_file;
+    }
+
     /// The open vault, to be changed. The revision moves only if the vault
     /// says it did: see [`Held::revision`].
     fn changing(&mut self) -> Result<&mut Open, Failure> {
@@ -191,6 +262,10 @@ struct Open {
     /// Whether the vault was given a new master password since it opened,
     /// for the lock that ends it to say: see [`Held::rekeyed`].
     rekeyed: bool,
+    /// What became of the vault's file when a backup was made this vault, and
+    /// the vault's [`Vault::edits`] as that write left it, for the lock that
+    /// ends it to say: see [`Held::adopted`].
+    adopted: Option<(u64, Adopted)>,
 }
 
 impl Open {
@@ -200,7 +275,17 @@ impl Open {
             offered: Waiting::default(),
             drafts: Drafts::default(),
             rekeyed: false,
+            adopted: None,
         }
+    }
+
+    /// What became of the vault's file when a backup was made this vault,
+    /// while nothing else has happened in the vault since.
+    fn adopted(&self) -> Option<Adopted> {
+        self.adopted
+            .clone()
+            .filter(|(edits, _)| *edits == self.vault.edits())
+            .map(|(_, adopted)| adopted)
     }
 
     /// Writes what the reader was typing into the vault, the way leaving each
@@ -282,6 +367,8 @@ impl Session {
                 lost: false,
                 typed: Written::Nothing,
                 rekeyed: false,
+                adopted: None,
+                backup_gone: false,
                 key_file: None,
                 making: None,
                 found: None,
@@ -292,6 +379,10 @@ impl Session {
                 edits: 0,
                 shown: None,
                 returning: false,
+                listed: None,
+                unopened: false,
+                looking: None,
+                looking_after: None,
             }),
             unlocked,
             remembering,
@@ -323,23 +414,7 @@ impl Session {
     /// file rather than about a link to it. A path that is not there yet is
     /// kept as it was given; opening it is what will say so.
     pub fn choose(&self, database: PathBuf) {
-        let database = database.canonicalize().unwrap_or(database);
-        let mut held = self.held();
-        held.open.put(None);
-        held.database = Some(database);
-        // A key file belongs to the vault it opens. Carrying one over to a
-        // different file would turn a right password into a wrong one, with
-        // nothing on the screen to explain it.
-        held.key_file = None;
-        // A flag about the vault that was open says nothing about the one being
-        // chosen, for the same reason the key file does not carry over.
-        held.lost = false;
-        held.typed = Written::Nothing;
-        held.rekeyed = false;
-        held.shown = None;
-        held.returning = false;
-        held.found = None;
-        held.generation += 1;
+        self.held().point(resolved(database));
     }
 
     pub fn is_unlocked(&self) -> bool {
@@ -363,22 +438,21 @@ impl Session {
         self.held().key_file = path;
     }
 
-    /// Points the session at one of this database's own files: a snapshot, or
-    /// the unsaved copy a lock left beside it.
+    /// Points the session at another of the chosen vault's own files: the
+    /// vault a copy or a backup was taken from, or the unsaved copy a lock left
+    /// beside it.
     ///
-    /// [`Session::choose`] with the key file put back. Both are copies of the
-    /// same vault and open with the same credentials, so forgetting the key
-    /// file - which is right for any other file - would leave one taken from a
-    /// database that wants one impossible to open.
+    /// [`Session::choose`] with the key file kept (see [`Held::point_beside`]).
+    /// They are copies of the same vault and open with the same credentials,
+    /// so forgetting the key file - which is right for any other file - would
+    /// leave one taken from a database that wants one impossible to open.
     pub fn choose_sibling(&self, sibling: PathBuf) {
-        let key_file = self.key_file();
-        self.choose(sibling);
-        self.use_key_file(key_file);
+        self.held().point_beside(resolved(sibling));
     }
 
-    /// Points the session back at the vault the chosen copy was taken from.
-    /// The path is read off the copy's name, so nothing the window sends names
-    /// it.
+    /// Points the session back at the vault the chosen copy or backup was
+    /// taken from. The path is read off the chosen file's name, so nothing the
+    /// window sends names it.
     ///
     /// A copy that is open stays open, and stays chosen: the lock that has to
     /// follow is what closes it, and it writes out whatever the copy holds the
@@ -388,14 +462,19 @@ impl Session {
     /// vault. A lock that had to put the copy's work in a copy of its own, or
     /// could put it nowhere, leaves the copy chosen, so that the screen that
     /// comes back is the copy's and offers that copy or says what was lost. The
-    /// vault's screen would find neither: they are about the copy.
+    /// vault's screen would find neither: they are about the copy. A backup
+    /// holds nothing to write, so its lock always leads back.
+    ///
+    /// The last press wins: going back takes the place of a backup the reader
+    /// asked to look at before the lock (see [`Session::look`]).
     pub fn back_to_vault(&self) -> Result<(), Failure> {
         let mut held = self.held();
         let chosen = held.database.clone().ok_or_else(Failure::no_vault)?;
-        let vault = unsaved::taken_from(&chosen).ok_or(VaultError::NotACopy)?;
+        let vault = belongs_to(&chosen).ok_or(VaultError::NotACopy)?;
 
         if held.open.get().is_some() {
             held.returning = true;
+            held.looking_after = None;
         } else {
             drop(held);
             self.choose_sibling(vault);
@@ -403,12 +482,12 @@ impl Session {
         Ok(())
     }
 
-    /// The vault the chosen copy was taken from, and how its file stands, as
-    /// the window is about to be told. What it is told is what "Make this my
-    /// vault" is held to.
+    /// The vault the chosen copy or backup was taken from, and how its file
+    /// stands, as the window is about to be told. What it is told is what
+    /// "Make this my vault" and "Use this copy as my vault" are held to.
     pub fn telling(&self) -> Option<(PathBuf, OnDisk)> {
         let mut held = self.held();
-        let vault = held.database.as_deref().and_then(unsaved::taken_from)?;
+        let vault = held.database.as_deref().and_then(belongs_to)?;
         let seen = Seen::of(&vault);
         held.shown = Some(seen);
         Some((vault, seen.on_disk))
@@ -450,9 +529,29 @@ impl Session {
         // Key derivation is a second of work, and it happens with nothing held.
         // A window that asks the session anything meanwhile is answered rather
         // than left waiting on a lock this thread is holding.
-        let vault = Vault::open(&database, key, policy)?;
+        let vault = Vault::open(&database, key, policy)
+            .inspect_err(|error| self.refused(error, generation))?;
 
         self.land(vault, generation, key_file)
+    }
+
+    /// Remembers whether an unlock was refused because the chosen file itself
+    /// will not open - the refusals the unlock screen answers with the list of
+    /// backups - so that a backup opened from that list can say so. A wrong
+    /// password is not one: the file opens, with another. Nothing is
+    /// remembered of an unlock the session has moved on from.
+    fn refused(&self, error: &VaultError, generation: u64) {
+        let mut held = self.held();
+        if held.generation == generation {
+            held.unopened = matches!(
+                error,
+                VaultError::DamagedHeader
+                    | VaultError::DamagedPayload
+                    | VaultError::DamagedContent
+                    | VaultError::NotADatabase
+                    | VaultError::DatabaseGone
+            );
+        }
     }
 
     /// Where both ways in end: the vault that has just opened becomes the one
@@ -496,7 +595,11 @@ impl Session {
             held.lost = false;
             held.typed = Written::Nothing;
             held.rekeyed = false;
+            held.adopted = None;
+            held.backup_gone = false;
             held.returning = false;
+            held.unopened = false;
+            held.looking_after = None;
             opened
         };
 
@@ -561,37 +664,54 @@ impl Session {
         // take it.
         let ended = held.open.get_mut().map(|open| {
             let typed = open.finish_typing();
-            (typed, open.vault.rescue(), open.rekeyed)
+            let rescue = open.vault.rescue();
+            (typed, rescue, open.rekeyed, open.adopted())
         });
         held.open.put(None);
         held.generation += 1;
         let returning = std::mem::take(&mut held.returning);
+        let looking_after = held.looking_after.take();
 
-        let Some((typed, rescue, rekeyed)) = ended else {
+        let Some((typed, rescue, rekeyed, adopted)) = ended else {
             return false;
         };
         held.locked_by = Some(reason);
         held.lost = rescue == Rescue::Lost;
         held.rekeyed = rekeyed;
+        held.adopted = adopted;
+        held.backup_gone = false;
         held.typed = if rescue == Rescue::Saved {
             typed
         } else {
             Written::Nothing
         };
 
-        // Leaving a copy for its vault, and the copy kept everything. Both
-        // flags were about the copy, and the vault's screen must not say its
-        // own file took what the copy took.
+        // Leaving a copy or a backup for its vault, or a vault for one of its
+        // backups, and the lock kept everything where it belongs. Every flag
+        // above was about the file the lock closed, and the next screen must
+        // not say its own file took what that file took. A lock that kept its
+        // work elsewhere or lost it stays on the file it closed, whose screen
+        // is the one that says so.
         let kept_all = matches!(rescue, Rescue::Nothing | Rescue::Saved);
-        if let Some(vault) = held
-            .database
-            .as_deref()
-            .and_then(unsaved::taken_from)
-            .filter(|_| returning && kept_all)
-        {
-            held.database = Some(vault);
-            held.typed = Written::Nothing;
-            held.shown = None;
+        if !kept_all {
+            return true;
+        }
+        if returning {
+            if let Some(vault) = held.database.as_deref().and_then(belongs_to) {
+                held.point_beside(vault);
+            }
+        } else if let Some(shown) = looking_after {
+            // Found again after the lock's own save, which moved every backup
+            // a slot on - and pushed the oldest out, which leaves the session
+            // on the vault rather than on whatever took its slot, and its
+            // screen saying so.
+            match shown.now() {
+                Some(backup) => {
+                    held.point_beside(backup);
+                    held.looking = Some(Looking::Asked);
+                }
+                None => held.backup_gone = true,
+            }
         }
         true
     }
@@ -617,6 +737,19 @@ impl Session {
     /// master password while it was open.
     pub fn rekeyed(&self) -> bool {
         self.held().rekeyed
+    }
+
+    /// What became of the vault's file, when the vault the last lock in this
+    /// run closed had just been made from one of its backups: see
+    /// [`Held::adopted`].
+    pub fn adopted(&self) -> Option<Adopted> {
+        self.held().adopted.clone()
+    }
+
+    /// Whether the backup the reader asked to look at was pushed out of the
+    /// chain by the lock on the way to it: see [`Held::backup_gone`].
+    pub fn backup_gone(&self) -> bool {
+        self.held().backup_gone
     }
 
     /// Why the window is asking for a password again, when there is something
@@ -908,6 +1041,20 @@ impl Session {
             open.offered.withdraw(entry);
         }
     }
+}
+
+/// A path with its links followed, so that everything downstream of a choice -
+/// the snapshots beside it, the name in the window, what gets remembered - is
+/// about the file rather than about a link to it. A path that is not there yet
+/// is kept as it was given; opening it is what will say so.
+fn resolved(path: PathBuf) -> PathBuf {
+    path.canonicalize().unwrap_or(path)
+}
+
+/// The vault a file Coffer keeps beside one belongs to - the copy a lock left,
+/// or a backup - read off its name, or nothing for any other file.
+fn belongs_to(chosen: &Path) -> Option<PathBuf> {
+    unsaved::taken_from(chosen).or_else(|| snapshot::taken_from(chosen))
 }
 
 #[cfg(test)]
@@ -2401,9 +2548,29 @@ mod tests {
     /// not been written yet.
     #[test]
     fn every_way_a_vault_comes_to_be_open_is_written_down() {
-        use crate::source::{functions, shipped};
+        use crate::source::{every_file, functions, shipped};
 
-        let source = shipped(include_str!("session.rs"));
+        // The session is this file and every file in the module beside it, and
+        // a way in written in one nobody named is the one this exists to see.
+        let (session, elsewhere): (Vec<_>, Vec<_>) =
+            every_file().into_iter().partition(|(path, _)| {
+                path.ends_with("src/session.rs")
+                    || path
+                        .parent()
+                        .is_some_and(|parent| parent.ends_with("src/session"))
+            });
+        assert!(
+            session
+                .iter()
+                .any(|(path, _)| path.ends_with("session/backups.rs")),
+            "the session's own module was not read"
+        );
+        let source: String = session
+            .iter()
+            .map(|(_, file)| shipped(file))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let source = source.as_str();
         let putting: Vec<String> = functions(source)
             .into_iter()
             .filter(|body| body.contains("held.open.put(Some("))
@@ -2451,13 +2618,11 @@ mod tests {
         }
 
         // And nowhere else writes one down: a pick is not an opening.
-        for (file, other) in [
-            ("commands.rs", shipped(include_str!("commands.rs"))),
-            ("lib.rs", shipped(include_str!("lib.rs"))),
-        ] {
+        for (file, other) in &elsewhere {
             assert!(
-                !other.contains("recent::remember("),
-                "{file} writes a vault down that has not opened"
+                !shipped(other).contains("recent::remember("),
+                "{} writes a vault down that has not opened",
+                file.display()
             );
         }
     }
@@ -3700,10 +3865,9 @@ mod tests {
         session
             .unlock(password(SECRET), LockPolicy::Respect)
             .expect("the snapshot opens");
-        assert!(
-            session
-                .with(Vault::is_read_only)
-                .expect("the vault is open")
+        assert_eq!(
+            session.with(Vault::read_only).expect("the vault is open"),
+            Some(vault_core::ReadOnly::Snapshot)
         );
 
         let basic = entry_titled(&session, "basic");
@@ -4247,6 +4411,578 @@ mod tests {
             .expect("told again, the copy becomes the vault");
         let first = vault_core::storage::snapshot::slot(&database, 1).expect("a slot has a name");
         assert_eq!(std::fs::read(first).expect("the snapshot reads"), written);
+    }
+
+    /// A session open on a copy of `name`, saved `saves` times with the notes
+    /// of its "basic" entry saying which save it was, so that every backup
+    /// beside it holds something the others do not. The path is the vault's
+    /// as the session reports it, links followed.
+    fn with_backups(name: &str, saves: usize) -> (tempfile::TempDir, PathBuf, Session, EntryId) {
+        let (directory, database, session) = holding(name);
+        let id = entry_titled(&session, "basic").id;
+        for save in 1..=saves {
+            session
+                .with_mut(|vault| {
+                    vault.set_field(
+                        id,
+                        fields::NOTES,
+                        vault_core::NewValue::Open(format!("save {save}")),
+                    )?;
+                    vault.save()
+                })
+                .expect("the session is open")
+                .expect("the vault saves");
+        }
+        let database = database.canonicalize().expect("the vault is there");
+        (directory, database, session, id)
+    }
+
+    fn slot(database: &Path, index: u32) -> PathBuf {
+        snapshot::slot(database, index).expect("a slot has a name")
+    }
+
+    fn read(path: &Path) -> Vec<u8> {
+        std::fs::read(path).expect("the file reads")
+    }
+
+    /// Damages the body of a database and leaves its header alone, which is
+    /// what a power cut part way through somebody else's write leaves.
+    fn damage(path: &Path) {
+        let mut bytes = read(path);
+        let length = bytes.len();
+        for byte in bytes.iter_mut().skip(length - 64) {
+            *byte ^= 0xff;
+        }
+        std::fs::write(path, bytes).expect("the file is damaged");
+    }
+
+    /// Another client opening the vault the session is pointed at, changing
+    /// it, and saving, over the session's own lock if it holds one.
+    fn somebody_else_writes(database: &Path, id: EntryId) {
+        let mut theirs = Vault::open(
+            database,
+            MasterKey::from_password(password(SECRET)),
+            LockPolicy::TakeOver,
+        )
+        .expect("the other client opens the vault");
+        theirs
+            .set_field(
+                id,
+                fields::URL,
+                vault_core::NewValue::Open("https://theirs.example".to_owned()),
+            )
+            .expect("their change is applied");
+        theirs.save().expect("their save goes through");
+    }
+
+    /// The list was read, the vault saved twice, and then slot 2 was pressed.
+    /// What opens is the file the list showed at slot 2, two slots on by now,
+    /// and not whatever the saves moved into the slot.
+    #[test]
+    fn a_backup_is_opened_by_the_file_that_was_shown_not_by_its_slot() {
+        let (_directory, database, session, _) = with_backups(RICH, 3);
+        let listed = session.snapshots().expect("the backups are listed");
+        let shown = read(
+            &listed
+                .iter()
+                .find(|each| each.index == 2)
+                .expect("slot 2 is listed")
+                .path,
+        );
+
+        for _ in 0..2 {
+            session
+                .with_mut(Vault::save)
+                .expect("the session is open")
+                .expect("the vault saves");
+        }
+        assert!(session.lock(Reason::ByHand));
+        assert!(
+            !session.look(2).expect("the backup is still there"),
+            "a lock was asked for with nothing open"
+        );
+
+        let chosen = session.database().expect("a backup is chosen");
+        assert_eq!(snapshot::slot_of(&chosen), Some(4));
+        assert_eq!(read(&chosen), shown);
+        assert_ne!(read(&slot(&database, 2)), shown);
+    }
+
+    /// A slot no list showed, and a backup the list showed that has gone since,
+    /// are `gone`, and nothing the session is pointed at moves.
+    #[test]
+    fn a_backup_that_was_never_listed_or_has_gone_is_not_chosen() {
+        let (_directory, database, session, _) = with_backups(RICH, 3);
+        assert!(session.lock(Reason::ByHand));
+
+        assert_eq!(
+            code_of(&session.look(3).expect_err("nothing was listed")),
+            "gone"
+        );
+        assert_eq!(session.database(), Some(database.clone()));
+
+        session.snapshots().expect("the backups are listed");
+        std::fs::remove_file(slot(&database, 3)).expect("the backup goes");
+        assert_eq!(code_of(&session.look(3).expect_err("it went")), "gone");
+        assert_eq!(
+            code_of(&session.look(7).expect_err("it was never listed")),
+            "gone"
+        );
+        assert_eq!(session.database(), Some(database));
+    }
+
+    /// "Open to look" with a vault open. The vault is locked the ordinary way
+    /// first - what the reader was typing written into it and saved - and only
+    /// then is the session pointed at the backup that was shown, which that
+    /// save has moved a slot on. The backup's screen does not say its file
+    /// took the typing: the vault did.
+    #[test]
+    fn looking_at_a_backup_from_an_open_vault_locks_it_first_and_keeps_what_was_typed() {
+        let (_directory, database, session, id) = with_backups(RICH, 3);
+        session.snapshots().expect("the backups are listed");
+        let shown = read(&slot(&database, 1));
+        session
+            .draft(id, fields::URL, words("https://typed.example", false), 1)
+            .expect("the draft is heard");
+
+        assert!(
+            session.look(1).expect("the backup is there"),
+            "an open vault was not locked first"
+        );
+        assert!(session.is_unlocked(), "the vault went before its lock");
+        assert_eq!(session.database(), Some(database.clone()));
+        assert!(session.lock(Reason::ByHand));
+
+        let chosen = session.database().expect("a backup is chosen");
+        assert_eq!(snapshot::slot_of(&chosen), Some(2));
+        assert_eq!(read(&chosen), shown);
+        assert!(
+            !session.typed(),
+            "the backup's screen says its file took the typing"
+        );
+        assert_eq!(session.looking(), Some(Looking::Asked));
+        assert_eq!(
+            value_of(&reopened(&database), id, fields::URL).as_deref(),
+            Some("https://typed.example")
+        );
+    }
+
+    /// The lock on the way to a backup could not save - another client wrote
+    /// the vault - and kept the work in a copy beside it. The session stays on
+    /// the vault, whose unlock screen is the one that offers that copy.
+    #[test]
+    fn a_lock_that_had_to_keep_its_work_elsewhere_stays_on_the_vault() {
+        let (_directory, database, session, id) = with_backups(RICH, 3);
+        session.snapshots().expect("the backups are listed");
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    id,
+                    fields::USERNAME,
+                    vault_core::NewValue::Open("mine".to_owned()),
+                )
+            })
+            .expect("the session is open")
+            .expect("the field is set");
+        somebody_else_writes(&database, id);
+
+        assert!(session.look(1).expect("the backup is there"));
+        assert!(session.lock(Reason::ByHand));
+
+        assert_eq!(session.database(), Some(database.clone()));
+        assert_eq!(session.looking(), None);
+        assert!(!session.backup_gone(), "the backup is still there");
+        assert!(
+            unsaved::found(&database)
+                .expect("the folder reads")
+                .is_some(),
+            "the lock kept nothing beside the vault"
+        );
+    }
+
+    /// The oldest of ten backups was pressed with a change in the vault, and
+    /// the lock's own save pushed it out of the chain. The session stays on the
+    /// vault, which holds the change - never on the backup that moved into the
+    /// oldest slot.
+    #[test]
+    fn a_backup_the_locks_own_save_pushed_out_leaves_the_session_on_the_vault() {
+        let (_directory, database, session, id) = with_backups(RICH, 10);
+        let listed = session.snapshots().expect("the backups are listed");
+        assert_eq!(listed.len(), 10);
+        let oldest = read(&slot(&database, 10));
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    id,
+                    fields::URL,
+                    vault_core::NewValue::Open("https://after.example".to_owned()),
+                )
+            })
+            .expect("the session is open")
+            .expect("the field is set");
+
+        assert!(session.look(10).expect("the backup is there"));
+        assert!(session.lock(Reason::ByHand));
+
+        assert_eq!(session.database(), Some(database.clone()));
+        assert_eq!(session.looking(), None);
+        assert!(
+            session.backup_gone(),
+            "the vault's screen is not told why it is not the backup's"
+        );
+        assert!(
+            snapshot::taken(&database)
+                .expect("the chain reads")
+                .iter()
+                .all(|taken| read(&taken.path) != oldest),
+            "the oldest backup is still in the chain, so this proves nothing"
+        );
+        assert_eq!(
+            value_of(&reopened(&database), id, fields::URL).as_deref(),
+            Some("https://after.example")
+        );
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the vault opens");
+        assert!(
+            !session.backup_gone(),
+            "an unlock kept the news of the lock"
+        );
+    }
+
+    /// Why a backup is open is what happened before it: the vault's file would
+    /// not open or was not there, or the reader asked. A backup that would not
+    /// open either passes the first reason on, and a wrong password is no
+    /// reason at all: the file opens, with another.
+    #[test]
+    fn why_a_backup_is_open_is_what_happened_before_it() {
+        let (_directory, database, session, _) = with_backups(RICH, 4);
+        assert!(session.lock(Reason::ByHand));
+
+        let wrong = session.unlock(password(b"not it"), LockPolicy::Respect);
+        assert_eq!(
+            code_of(&wrong.expect_err("a wrong password")),
+            "wrongCredentials"
+        );
+        session.snapshots().expect("the backups are listed");
+        session.look(1).expect("the backup is there");
+        assert_eq!(session.looking(), Some(Looking::Asked), "a wrong password");
+
+        session.choose(database.clone());
+        damage(&database);
+        damage(&slot(&database, 1));
+        let refused = session.unlock(password(SECRET), LockPolicy::Respect);
+        assert_eq!(
+            code_of(&refused.expect_err("the vault is damaged")),
+            "damaged"
+        );
+        session.snapshots().expect("the backups are listed");
+        session.look(1).expect("the backup is there");
+        assert_eq!(session.looking(), Some(Looking::Unopened));
+
+        let refused = session.unlock(password(SECRET), LockPolicy::Respect);
+        assert_eq!(
+            code_of(&refused.expect_err("the backup is damaged")),
+            "damaged"
+        );
+        session.snapshots().expect("the backups are listed");
+        session.look(2).expect("the backup is there");
+        assert_eq!(
+            session.looking(),
+            Some(Looking::Unopened),
+            "a damaged backup lost why the reader was looking"
+        );
+
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the second backup opens");
+        session.snapshots().expect("the backups are listed");
+        assert!(session.look(3).expect("the backup is there"));
+        assert!(session.lock(Reason::ByHand));
+        assert_eq!(
+            session.looking(),
+            Some(Looking::Asked),
+            "from an open backup"
+        );
+
+        // Asked for from an open backup, and damaged: the next one opened from
+        // the list it fails to is still one the reader asked for.
+        let asked = session.database().expect("a backup is chosen");
+        damage(&asked);
+        let refused = session.unlock(password(SECRET), LockPolicy::Respect);
+        assert_eq!(
+            code_of(&refused.expect_err("the backup is damaged")),
+            "damaged"
+        );
+        session.snapshots().expect("the backups are listed");
+        session.look(4).expect("the backup is there");
+        assert_eq!(
+            session.looking(),
+            Some(Looking::Asked),
+            "a damaged backup the reader asked for was said to be in place of a vault file that would not open"
+        );
+
+        std::fs::remove_file(&database).expect("the vault goes");
+        session.choose(database.clone());
+        let refused = session.unlock(password(SECRET), LockPolicy::Respect);
+        assert_eq!(code_of(&refused.expect_err("the vault is gone")), "gone");
+        session.snapshots().expect("the backups are listed");
+        session.look(3).expect("the backup is there");
+        assert_eq!(session.looking(), Some(Looking::Unopened));
+    }
+
+    /// "Use this copy as my vault" from a backup of a vault that wants a key
+    /// file, whose own file is damaged. The key file chosen for the vault
+    /// opened the backup and opens the vault; the session is left open on the
+    /// vault, which can be written; and the vault - which never opened, so was
+    /// never written down - is what the next launch offers from then on, and
+    /// not before: not for its refused unlock, not for the backup's, not for a
+    /// press that was refused.
+    #[test]
+    fn a_backup_made_the_vault_leaves_the_session_open_on_the_vault_and_written_down() {
+        let (_directory, database) = scratch("keyfile-kdbx41.kdbx");
+        let database = database.canonicalize().expect("the vault is there");
+        let saving = Session::new(Some(database.clone()), None);
+        saving.use_key_file(Some(fixture("keyfile.key")));
+        saving
+            .unlock(password(b"coffer-keyfile"), LockPolicy::Respect)
+            .expect("the vault opens");
+        for _ in 0..2 {
+            saving
+                .with_mut(Vault::save)
+                .expect("the session is open")
+                .expect("the vault saves");
+        }
+        assert!(saving.lock(Reason::ByHand));
+        damage(&database);
+
+        let config = tempfile::tempdir().expect("a scratch directory");
+        let other = database.with_file_name("other.kdbx");
+        recent::remember(config.path(), &other).expect("another vault is written down");
+        let session = Session::new(Some(database.clone()), Some(config.path().to_path_buf()));
+        session.use_key_file(Some(fixture("keyfile.key")));
+        let refused = session.unlock(password(b"coffer-keyfile"), LockPolicy::Respect);
+        assert_eq!(
+            code_of(&refused.expect_err("the vault is damaged")),
+            "damaged"
+        );
+        assert_eq!(recent::remembered(config.path()), Some(other.clone()));
+
+        session.snapshots().expect("the backups are listed");
+        session.look(2).expect("the backup is there");
+        assert_eq!(session.key_file(), Some(fixture("keyfile.key")));
+        session
+            .unlock(password(b"coffer-keyfile"), LockPolicy::Respect)
+            .expect("the vault's key file opens the backup");
+        assert_eq!(
+            recent::remembered(config.path()),
+            Some(other.clone()),
+            "a backup was written down"
+        );
+        assert_eq!(
+            code_of(&session.adopt().expect_err("nothing was said")),
+            "externalChange"
+        );
+        assert_eq!(recent::remembered(config.path()), Some(other));
+
+        session.telling().expect("the backup has a vault");
+        let (vault, adopted) = session.adopt().expect("the backup becomes the vault");
+
+        assert_eq!(vault, database);
+        assert!(matches!(adopted, vault_core::Adopted::SetAside(_)));
+        assert!(session.is_unlocked());
+        assert_eq!(session.database(), Some(database.clone()));
+        assert_eq!(session.key_file(), Some(fixture("keyfile.key")));
+        assert_eq!(session.looking(), None);
+        assert_eq!(
+            session.with(Vault::read_only).expect("the vault is open"),
+            None
+        );
+        assert_eq!(recent::remembered(config.path()), Some(database.clone()));
+
+        assert!(session.lock(Reason::ByHand));
+        session
+            .unlock(password(b"coffer-keyfile"), LockPolicy::Respect)
+            .expect("the vault opens with the same two halves");
+        assert_eq!(session.database(), Some(database));
+    }
+
+    /// "Use this copy as my vault" goes over the file the strip described and
+    /// over no other. Nothing said, and another client's save after the strip
+    /// said how the vault stood, are refused with nothing written and the
+    /// backup still open; told again, the same press goes through.
+    #[test]
+    fn a_backup_is_made_the_vault_only_over_the_file_the_window_was_told_about() {
+        let (_directory, database, session, id) = with_backups(RICH, 3);
+        assert!(session.lock(Reason::ByHand));
+        session.snapshots().expect("the backups are listed");
+        session.look(1).expect("the backup is there");
+        let backup = session.database().expect("the backup is chosen");
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the backup opens");
+
+        assert_eq!(
+            code_of(&session.adopt().expect_err("nothing was said")),
+            "externalChange"
+        );
+
+        session.telling().expect("the backup has a vault");
+        somebody_else_writes(&database, id);
+        let written = read(&database);
+        assert_eq!(
+            code_of(&session.adopt().expect_err("the vault changed")),
+            "externalChange"
+        );
+        assert_eq!(session.database(), Some(backup));
+        assert_eq!(read(&database), written);
+
+        session.telling().expect("the backup has a vault");
+        let (_, adopted) = session
+            .adopt()
+            .expect("told again, the backup becomes the vault");
+        assert_eq!(adopted, vault_core::Adopted::Kept(slot(&database, 1)));
+        assert_eq!(read(&slot(&database, 1)), written);
+    }
+
+    /// "Back to my vault" from an open backup. Nothing is written anywhere -
+    /// a backup holds nothing a lock has to keep - and the next unlock is of the
+    /// vault. It takes the place of another backup asked for before the lock:
+    /// the last press wins. From a backup that is only chosen it is a choice
+    /// and nothing more.
+    #[test]
+    fn going_back_from_a_backup_asks_for_the_vault() {
+        let (_directory, database, session, _) = with_backups(RICH, 3);
+        assert!(session.lock(Reason::ByHand));
+        let vault = read(&database);
+        let chain: Vec<Vec<u8>> = (1..=3).map(|index| read(&slot(&database, index))).collect();
+
+        session.snapshots().expect("the backups are listed");
+        session.look(1).expect("the backup is there");
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the backup opens");
+        session.snapshots().expect("the backups are listed");
+        assert!(session.look(2).expect("the other backup is there"));
+
+        session.back_to_vault().expect("the backup has a vault");
+        assert!(session.lock(Reason::ByHand));
+
+        assert_eq!(session.database(), Some(database.clone()));
+        assert_eq!(session.looking(), None);
+        assert_eq!(read(&database), vault);
+        let after: Vec<Vec<u8>> = (1..=3).map(|index| read(&slot(&database, index))).collect();
+        assert_eq!(after, chain, "a backup's lock wrote something");
+
+        session.snapshots().expect("the backups are listed");
+        session.look(2).expect("the backup is there");
+        session.back_to_vault().expect("the backup has a vault");
+        assert!(!session.is_unlocked());
+        assert_eq!(session.database(), Some(database.clone()));
+
+        // And the other way round: a backup asked for after "Back to my vault"
+        // is where the lock goes.
+        session.snapshots().expect("the backups are listed");
+        session.look(1).expect("the backup is there");
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the backup opens");
+        session.back_to_vault().expect("the backup has a vault");
+        session.snapshots().expect("the backups are listed");
+        assert!(session.look(3).expect("the other backup is there"));
+        assert!(session.lock(Reason::ByHand));
+        let chosen = session.database().expect("a backup is chosen");
+        assert_eq!(
+            read(&chosen),
+            chain[2],
+            "the way back won over a later press"
+        );
+        assert_eq!(session.looking(), Some(Looking::Asked));
+    }
+
+    /// "Open to look" with a vault open, on a backup that has gone since the
+    /// list was read. It is `gone` before anything is locked: the vault stays
+    /// open, and a lock afterwards for any other reason stays on the vault and
+    /// has nothing to say about a backup.
+    #[test]
+    fn a_backup_that_went_does_not_lock_the_open_vault_for_nothing() {
+        let (_directory, database, session, _) = with_backups(RICH, 3);
+        session.snapshots().expect("the backups are listed");
+        std::fs::remove_file(slot(&database, 2)).expect("the backup goes");
+
+        assert_eq!(code_of(&session.look(2).expect_err("it went")), "gone");
+        assert!(session.is_unlocked(), "the vault was closed for nothing");
+
+        assert!(session.lock(Reason::ByHand));
+        assert_eq!(session.database(), Some(database));
+        assert_eq!(session.looking(), None);
+        assert!(!session.backup_gone());
+    }
+
+    /// A backup open, made the vault - and a lock that takes the window before
+    /// it says what became of the vault's file. The unlock screen says it
+    /// instead, until the vault opens again. A backup asked for from the
+    /// settings while the press ran was about the backup, and the lock it
+    /// asked for stays on the vault the press made.
+    #[test]
+    fn a_backup_made_the_vault_is_said_after_a_lock_that_took_the_window() {
+        let (_directory, database, session, _) = with_backups(RICH, 3);
+        assert!(session.lock(Reason::ByHand));
+        session.snapshots().expect("the backups are listed");
+        session.look(2).expect("the backup is there");
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the backup opens");
+
+        session.snapshots().expect("the backups are listed");
+        assert!(session.look(3).expect("the other backup is there"));
+        session.telling().expect("the backup has a vault");
+        let (_, adopted) = session.adopt().expect("the backup becomes the vault");
+        assert!(session.lock(Reason::Idle));
+
+        assert_eq!(session.database(), Some(database.clone()));
+        assert_eq!(session.looking(), None);
+        assert_eq!(session.adopted(), Some(adopted));
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the vault opens");
+        assert_eq!(
+            session.adopted(),
+            None,
+            "an unlock kept the news of the lock"
+        );
+    }
+
+    /// Anything done in the vault after it was made from a backup is a reader
+    /// at the window that said so - and a save since moves the name the file
+    /// was kept under - so the lock after it has nothing to add.
+    #[test]
+    fn a_backup_made_the_vault_and_worked_in_since_is_not_said_again() {
+        let (_directory, database, session, id) = with_backups(RICH, 3);
+        assert!(session.lock(Reason::ByHand));
+        session.snapshots().expect("the backups are listed");
+        session.look(1).expect("the backup is there");
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the backup opens");
+        session.telling().expect("the backup has a vault");
+        let (_, adopted) = session.adopt().expect("the backup becomes the vault");
+        assert_eq!(adopted, vault_core::Adopted::Kept(slot(&database, 1)));
+
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    id,
+                    fields::URL,
+                    vault_core::NewValue::Open("https://since.example".to_owned()),
+                )
+            })
+            .expect("the session is open")
+            .expect("the field is set");
+        assert!(session.lock(Reason::ByHand));
+
+        assert_eq!(session.database(), Some(database));
+        assert_eq!(session.adopted(), None);
     }
 
     /// Changes the open vault's master password, the way the command does.

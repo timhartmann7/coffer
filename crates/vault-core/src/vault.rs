@@ -22,17 +22,22 @@ use crate::model::{
 };
 use crate::preflight;
 use crate::secret::SecretValue;
-use crate::storage::lock::{Lock, Outcome};
+use crate::storage::lock::{Lock, Outcome, claim};
 use crate::storage::watch::{Change, Content, Stamp};
 use crate::storage::{self, Seen, atomic, snapshot, unsaved, watch};
 use crate::templates;
 use crate::text;
 use crate::wipe;
 
+mod adopt;
 mod batch;
 mod making;
 mod moves;
+mod read_only;
 mod rekey;
+
+pub use adopt::Adopted;
+pub use read_only::ReadOnly;
 
 /// The largest file Coffer will read into memory to try to open.
 ///
@@ -153,7 +158,9 @@ pub struct Vault {
     database: Held,
     path: PathBuf,
     key: MasterKey,
-    source: Source,
+    /// Why the database may not be written back, decided by what it was read
+    /// from - its format and its place - or nothing when it may be.
+    source: Option<ReadOnly>,
     stamp: Stamp,
     /// The bytes the stamp went with. Read only when the stamp cannot decide on
     /// its own, which is when nothing but the change time moved.
@@ -262,31 +269,6 @@ enum Guard {
     Ignore,
 }
 
-/// The format the database was read from, which decides whether it may be
-/// written back.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Source {
-    /// KeePass 1. Read only: the format cannot hold what Coffer would put back.
-    Kdb,
-    /// KDBX 3 carrying attachments. Read only: the reader collapses every
-    /// attachment in a KDBX 3 database onto one, so saving would write fewer
-    /// attachments than were read.
-    Kdbx3WithAttachments,
-    /// One of Coffer's own snapshots. It opens like any other database and is
-    /// not written back: the next save of the database it was taken from would
-    /// rotate it away, so a change written here would be lost within ten saves.
-    /// It can still be written somewhere else, which is what the offer to keep
-    /// a copy is for.
-    Snapshot,
-    /// Kept somewhere that will not take a write: a read-only disk image, a
-    /// Time Machine snapshot, a stick macOS mounted read-only, a share the
-    /// reader may only read. It opens, because reading needs no write, and
-    /// every change is refused because none of them could reach the file.
-    ReadOnlyPlace,
-    /// Anything Coffer can write back as KDBX 4.1.
-    Writable,
-}
-
 impl Vault {
     /// Opens the database at `path`.
     ///
@@ -390,11 +372,6 @@ impl Vault {
         &self.path
     }
 
-    /// Whether this database can be written back at all.
-    pub fn is_read_only(&self) -> bool {
-        self.source != Source::Writable
-    }
-
     /// The database's groups, as a tree.
     ///
     /// The value returned is the root group, which every KeePass database has
@@ -483,7 +460,7 @@ impl Vault {
     /// Refusing to save one was never enough - it has to refuse to read one out
     /// as well.
     pub fn attachment(&self, id: EntryId, name: &str) -> Result<SecretValue, VaultError> {
-        if self.source == Source::Kdbx3WithAttachments {
+        if !self.files_readable() {
             return Err(VaultError::UnreadableAttachments);
         }
 
@@ -1335,24 +1312,53 @@ impl Vault {
     ///
     /// No snapshot is rotated and nothing about this vault changes: the copy is
     /// a copy, and the database is still the one this vault has open.
+    ///
+    /// Only at a name that holds nothing. A copy takes no snapshot of what it
+    /// would replace, and the panel it is aimed from opens in the vault's own
+    /// folder, where every file that must not go ends in `.kdbx`: the vault a
+    /// backup was taken of, the copy a lock left, a file a backup made the
+    /// vault kept aside, anybody's vault. Written over, any of them would be
+    /// gone with nothing behind it, so a name that is taken is refused with
+    /// [`VaultError::DatabaseExists`] rather than confirmed in the panel, as a
+    /// creation's is. The name is taken only once the copy is whole beside
+    /// it, so what is at it is never part of one. Nor is a copy written at one
+    /// of the names Coffer keeps beside a vault ([`storage::reserved`]), where
+    /// it would be taken for that vault's snapshot or its unsaved work.
     pub fn save_copy(&mut self, path: &Path) -> Result<(), VaultError> {
-        match self.source {
-            Source::Kdb => return Err(VaultError::ReadOnlyKdb),
-            Source::Kdbx3WithAttachments => return Err(VaultError::ReadOnlyKdbx3Attachments),
-            // A snapshot and a read-only place are both about where the
-            // database is, and a copy is written somewhere else. That is the
-            // whole point of the offer: it is how the reader gets their work
-            // off a medium that will not take it.
-            Source::Snapshot | Source::ReadOnlyPlace | Source::Writable => {}
+        // A snapshot and a read-only place are both about where the database
+        // is, and a copy is written somewhere else. That is the whole point of
+        // the offer: it is how the reader gets their work off a medium that
+        // will not take it.
+        if let Some(why) = self.source.filter(|why| !why.copyable()) {
+            return Err(why.into());
         }
         if path.canonicalize().is_ok_and(|target| target == self.path) {
             return Err(VaultError::CopyOntoItself);
         }
+        if storage::reserved(path) {
+            return Err(VaultError::ReservedName);
+        }
 
+        let staged = self.staged_copy(path)?;
+        atomic::reserve(path).map_err(|error| match error.kind() {
+            std::io::ErrorKind::AlreadyExists => VaultError::DatabaseExists,
+            _ => VaultError::Io(error),
+        })?;
+        // The name holds Coffer's own empty file from here, and the rename puts
+        // the whole copy over it. One that did not go through takes it back.
+        staged.commit().map_err(|error| {
+            let _ = std::fs::remove_file(path);
+            VaultError::Io(error)
+        })
+    }
+
+    /// The database encrypted into a temporary file beside `path`, whole and
+    /// flushed, for a write that is not a save of this vault's own file.
+    fn staged_copy(&mut self, path: &Path) -> Result<atomic::Staged, VaultError> {
         self.prepare()?;
 
         let mut written = 0;
-        atomic::write_atomic::<VaultError, _>(path, |writer: &mut dyn Write| {
+        atomic::stage::<VaultError, _>(path, |writer: &mut dyn Write| {
             written = encrypt(&self.database, &self.key, writer)?;
             if written > MAX_DATABASE_BYTES {
                 return Err(VaultError::TooLarge);
@@ -1390,7 +1396,12 @@ impl Vault {
             return Rescue::Lost;
         };
 
-        match self.save_copy(&beside) {
+        // Over the copy an earlier lock with the same trouble left, which is
+        // the one name a copy is written over: there is one copy, the newest.
+        let kept = self
+            .staged_copy(&beside)
+            .and_then(|staged| Ok(staged.commit()?));
+        match kept {
             Ok(()) => Rescue::Kept,
             Err(_) => Rescue::Lost,
         }
@@ -1420,25 +1431,12 @@ impl Vault {
     pub fn promote(&mut self, seen: Option<Seen>) -> Result<(), VaultError> {
         let vault = unsaved::taken_from(&self.path).ok_or(VaultError::NotACopy)?;
         self.writable()?;
-        let lock = unsaved::claim(&vault)?;
+        let lock = claim(&vault)?;
         if seen != Some(Seen::of(&vault)) {
             return Err(VaultError::VaultFileChanged);
         }
 
-        // The write is the ordinary one aimed at the vault's name, so that it
-        // proves the place will take it, snapshots what is there and records
-        // what it leaves exactly as every save does. What it records is put
-        // back if it does not go through.
-        let copy = std::mem::replace(&mut self.path, vault);
-        let agreed = (self.stamp, self.content);
-        if let Err(error) = self.write(Guard::Ignore) {
-            self.path = copy;
-            (self.stamp, self.content) = agreed;
-            return Err(error);
-        }
-
-        self._lock = Some(lock);
-        self.source = classify(&self.database, &self.path, self._lock.as_ref());
+        let copy = self.take_over(vault, lock)?;
 
         // A copy that will not go is offered again beside a vault that now
         // holds the same thing, which loses nothing and is said on the unlock
@@ -1495,11 +1493,8 @@ impl Vault {
     /// may not.
     fn writable(&self) -> Result<(), VaultError> {
         match self.source {
-            Source::Kdb => Err(VaultError::ReadOnlyKdb),
-            Source::Kdbx3WithAttachments => Err(VaultError::ReadOnlyKdbx3Attachments),
-            Source::Snapshot => Err(VaultError::ReadOnlySnapshot),
-            Source::ReadOnlyPlace => Err(VaultError::ReadOnlyPlace),
-            Source::Writable => Ok(()),
+            Some(why) => Err(why.into()),
+            None => Ok(()),
         }
     }
 
@@ -1917,20 +1912,22 @@ fn parse_without_dying(bytes: &[u8], key: keepass::DatabaseKey) -> Result<Databa
 }
 
 /// What the database is, for the purpose of deciding whether it may be written
-/// back.
+/// back: why not, or nothing for anything Coffer can write back as KDBX 4.1.
 ///
 /// The format comes first and the place second, on purpose. A KDBX 3 database
 /// carrying attachments is refused a read of those attachments as well as a
 /// save, and that refusal has to survive the file being on a read-only medium:
 /// the medium is why a save cannot go anywhere, the format is why the bytes
 /// cannot be trusted, and only the second of those is about the data.
-fn classify(database: &Database, path: &Path, lock: Option<&Lock>) -> Source {
+fn classify(database: &Database, path: &Path, lock: Option<&Lock>) -> Option<ReadOnly> {
     match database.config.version {
-        DatabaseVersion::KDB(_) | DatabaseVersion::KDB2(_) => Source::Kdb,
-        DatabaseVersion::KDB3(_) if database.num_attachments() > 0 => Source::Kdbx3WithAttachments,
-        _ if snapshot::slot_of(path).is_some() => Source::Snapshot,
-        _ if lock.is_none() => Source::ReadOnlyPlace,
-        _ => Source::Writable,
+        DatabaseVersion::KDB(_) | DatabaseVersion::KDB2(_) => Some(ReadOnly::Kdb),
+        DatabaseVersion::KDB3(_) if database.num_attachments() > 0 => {
+            Some(ReadOnly::Kdbx3Attachments)
+        }
+        _ if snapshot::slot_of(path).is_some() => Some(ReadOnly::Snapshot),
+        _ if lock.is_none() => Some(ReadOnly::Place),
+        _ => None,
     }
 }
 

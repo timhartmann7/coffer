@@ -675,6 +675,85 @@ banner said when it last changed, the window reads it again, the second line
 says how it stands now, and the refusal says nothing was replaced and points at
 that line. The strip is not part of the panes, so the settings do not cover it.
 
+## Looking at a backup
+
+The mockup draws no backup, and nothing of a vault Coffer will not write.
+Everything below is the copy's strip and card, the settings' own rows, the
+generator's small pills, the dropdown's card and the notice's.
+
+**A backup that is open says so across the top of the window.** The strip an
+open copy wears - `warnwash` behind a `warn/35` hairline at its foot, the warn
+icon - is one component now, `Strip.svelte`, for both. The first line, in
+`small` and `txt`, says it is a backup and the moment it holds the vault as, to
+the minute, and why it is open: the vault's own file could not be opened, or is
+not there any more, or, when the reader opened it to look, that nothing in it
+can be changed. The second, in `fine` and `txt2`, says what "Use this copy as my
+vault" does to the vault's file: which file it goes in place of and when that
+file last changed, that a file which opens with this backup's password is kept
+as the newest backup until later saves push it out and one that does not is kept
+beside it under a name of its own, and that nothing is deleted - or, when the
+vault's file has gone, that the backup goes back as it. Both end on the password: from then on, the vault opens
+with the one this backup opens with, which after a change of the master password
+is the old one, and a reader who changed it because it leaked hears that before
+the press. File names are in mono. At the end, "Back to my vault" and "Save a
+copy as…" in the bordered `h-9` pill and "Use this copy as my vault" in the
+accent pill, which takes the Unlock button's busy look and reads "Making it your
+vault…". A refusal is said under the second line in `danger` - a copy aimed at a
+name that holds a file among them, in Rust's words, since a copy never replaces
+one - and a copy that was kept, where it went, in `txt2`. What became of the
+replaced file is said afterwards in the notice, with the toast's copy icon, the
+way "Kept as" is.
+
+**What a lock took the window from saying, its unlock screen says.** Two lines
+in the place and type of the one about a password changed before locking -
+centred, `small`, `txt2`. A backup made the vault and a lock that landed before
+its notice: the vault was made from a backup, it opens with the password that
+backup opened with, and the replaced file's name. A backup asked for from the
+settings that the lock's own save pushed out of the chain on the way: that it
+is not there any more, why, and that this is the vault's screen.
+
+**A chosen backup's unlock screen says what it is.** The copy's card, headed "A
+backup, not your vault": the vault's file name in mono, the moment the backup
+holds it as, the password it opens with - the one the vault had then - and "Back
+to my vault" in the bordered pill.
+
+**Backups are a list wherever they are offered.** A row is the moment in `small`
+and `txt` ("Today, 14:05", "27 Aug, 18:40"), to the minute because ten saves an
+hour apart are told from each other by nothing else, the file name under it in
+mono `meta` `txt4`, isolated, and the action at the end in the bordered `h-7`
+pill the generator and the Change field use. Rows are divided by `line`. A
+filesystem that keeps no times says "Time not kept" in `txt3`. In the settings,
+"Automatic backups" takes the place of the row that named the snapshots' file
+names: how many there are in mono `fine` `txt3`, and "Show" in the bordered pill
+"Open another" wears, which opens the rows under it inside the same divided
+list, at the rows' own `px-8`, each with "Open to look", and "Open now" in `fine`
+`txt4` for the one already open. On the screen for a vault file that will not
+open, or is not there, the same rows sit in the rescue card's plane (`surface2`,
+a hairline, `rounded-sm`) under a line in `small` and `txt2` that says each opens
+with the password the vault had then, each with "Open" - all but the chosen
+file itself, when it is a backup that would not open either. A backup that went
+before it was pressed is said under the list in `small` `danger`, and the list
+is read again; one read again with nothing in it says "No backups are left." in
+`small` `txt3` above that line, rather than taking it away with the list. The
+settings read the list again after the password row moved it: a new master
+password is a save, and old backups removed are gone.
+
+**Read only is a button, and its note says why.** The status bar's word, in the
+status bar's own type, opens a note above it on the pop: the dropdown's card -
+`raised` behind a hairline, `rounded-sm` - at the notice's width, `w-[292px]`,
+with the reason in `fine` `txt2` and, where a copy can be written somewhere
+else, "Save a copy somewhere else…" in the small bordered pill. The note sits
+inside the status bar, which spaces its letters and draws in mono capitals, so
+it puts back the sans face, the case and the spacing every sentence in the
+mockup has; the spacing is the one value here the mockup does not name, because
+it never had to: `--tracking-normal`, zero, the absence of one. It closes on
+Escape, which goes no further, when the focus leaves it, and when its button is
+pressed again; a notice rising in the corner is drawn over it. WebKit gives a
+button no focus when it is clicked, so the note puts the focus on its button
+when it opens, and its copy button keeps the focus where it is on a press:
+otherwise a note opened by a pointer would hear neither Escape nor a press
+elsewhere, and Escape would close the entry under it.
+
 ## The settings, and the way in and out of them
 
 The mockup draws the settings as a whole window with a title bar of their own and
@@ -889,8 +968,10 @@ now does the same, where it used to open the field and leave the focus behind.
 An item that would take the pane away while it holds a new password does
 nothing, and that field's question rises, as with its button. An item that
 does not apply is drawn greyed out rather than left out: Copy Password on an
-entry with none, Open Address for an address Coffer would not open, and every
-change in a vault Coffer does not write back.
+entry with none, Open Address for an address Coffer would not open, every
+change in a vault Coffer does not write back, whichever reason the note behind
+Read only gives, and Save to… on a file of a KDBX 3 vault, which Coffer does
+not read out.
 
 **Two parts of what a hidden field could offer are left out.** The item is
 Copy, not "Copy (clears in 1 min)": the notice every copy puts up says how long
@@ -932,8 +1013,8 @@ nothing defines a fourth:
 - **a fade**, 130ms, for something already the size it is that only had to
   appear: a pane, a dialog's veil, an empty state;
 - **a pop**, 120ms, for a list that belongs to the control under it, growing out
-  of that control's edge. The dropdown on the settings screen, the folder list
-  and the list of kinds under "+ Entry" are the three.
+  of that control's edge. The dropdown on the settings screen, the folder list,
+  the list of kinds under "+ Entry" and the note behind Read only are the four.
 
 None is longer than a fifth of a second, and every one is silenced by reduced
 motion — which is the whole difference between them and the two drains above.

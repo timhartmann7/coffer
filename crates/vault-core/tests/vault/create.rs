@@ -48,7 +48,7 @@ fn a_vault_that_was_just_made_opens_again() {
     let mut made = make(&path, SECRET, "Work").expect("the vault is made");
     assert_eq!(made.count(), 0);
     assert_eq!(made.tree().name, "Work");
-    assert!(!made.is_read_only());
+    assert_eq!(made.read_only(), None);
     assert_eq!(made.rescue(), vault_core::Rescue::Nothing);
     drop(made);
 

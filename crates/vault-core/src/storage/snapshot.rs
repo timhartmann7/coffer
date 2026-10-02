@@ -15,8 +15,15 @@ use crate::storage::{Seen, atomic::write_atomic, sibling};
 /// A hard link shares its inode with the database, so this also tightens the
 /// database. That is the same thing the next save does anyway, and the spec asks
 /// for owner-only on both.
+///
+/// A symbolic link somebody left at the database's name is linked as the link,
+/// and left as it is: a link's own mode means nothing, and tightening through
+/// it would change a file outside anything Coffer keeps.
 fn owner_only(path: &Path) -> Result<(), io::Error> {
     use std::os::unix::fs::PermissionsExt;
+    if path.symlink_metadata()?.file_type().is_symlink() {
+        return Ok(());
+    }
     std::fs::set_permissions(
         path,
         std::fs::Permissions::from_mode(crate::storage::OWNER_ONLY),
@@ -70,6 +77,21 @@ pub fn slot(database: &Path, index: u32) -> Result<PathBuf, io::Error> {
 /// written back, because the next save of the database beside it would rotate
 /// it away.
 pub fn slot_of(path: &Path) -> Option<u32> {
+    parse(path).map(|(_, index)| index)
+}
+
+/// The database a snapshot was taken beside, read off the snapshot's name, or
+/// nothing when the name is not a snapshot's.
+///
+/// The name is the whole of the record, as it is for the copy a lock leaves
+/// (see [`crate::storage::unsaved::taken_from`]): nothing inside a snapshot
+/// or beside it says whose it is.
+pub fn taken_from(path: &Path) -> Option<PathBuf> {
+    parse(path).map(|(database, _)| path.with_file_name(database))
+}
+
+/// A snapshot's name taken apart: the database's file name, and the slot.
+fn parse(path: &Path) -> Option<(&str, u32)> {
     let name = path.file_name()?.to_str()?;
     let (database, index) = name.strip_suffix(".bak")?.rsplit_once('.')?;
     if database.is_empty() {
@@ -77,7 +99,9 @@ pub fn slot_of(path: &Path) -> Option<u32> {
     }
 
     let index: u32 = index.parse().ok()?;
-    (1..=SNAPSHOT_COUNT).contains(&index).then_some(index)
+    (1..=SNAPSHOT_COUNT)
+        .contains(&index)
+        .then_some((database, index))
 }
 
 /// A snapshot that exists on disk.
@@ -133,6 +157,22 @@ pub fn taken(database: &Path) -> Result<Vec<Taken>, io::Error> {
     }
 
     Ok(found)
+}
+
+/// Where a snapshot listed earlier is now: the slot beside `database` that
+/// holds the same file, or nothing when none does.
+///
+/// Every save renames each snapshot a slot further down and keeps the file,
+/// so a slot read before a save names the neighbour after it, and this is how
+/// the one that was shown is found instead. Nothing when the snapshot has been
+/// pushed off the end of the chain, or taken away, since. Nothing as well on a
+/// filesystem that numbers a file anew when it is renamed, which FAT and exFAT
+/// may: there a save between the listing and the asking is a snapshot not
+/// found, and never another snapshot found in its place.
+pub fn find(database: &Path, shown: &Taken) -> Result<Option<Taken>, io::Error> {
+    Ok(taken(database)?
+        .into_iter()
+        .find(|each| each.seen == shown.seen))
 }
 
 /// What removing the snapshots that open with an old master password came to.

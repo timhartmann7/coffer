@@ -121,8 +121,44 @@ it('does not blame the password for a vault that will not open', async () => {
 	return unmount(component);
 });
 
-it('offers the newest snapshot when the file itself will not open', async () => {
+/** Three backups beside a vault whose file will not open. Every one is
+ * offered, newest first - when the newest is damaged too, the reader used to
+ * have nowhere to go - and each opens by the slot it was shown at. */
+it('offers every backup when the file itself will not open', async () => {
 	ipc.unlock.mockRejectedValue({ code: 'damaged', message: 'the database body is damaged' });
+	ipc.snapshots.mockResolvedValue([
+		{ name: 'personal.kdbx.1.bak', index: 1, taken: '2026-08-27T18:40:00Z' },
+		{ name: 'personal.kdbx.2.bak', index: 2, taken: '2026-08-27T18:31:00Z' },
+		{ name: 'personal.kdbx.3.bak', index: 3, taken: '2026-08-26T09:05:00Z' }
+	]);
+	ipc.chooseSnapshot.mockResolvedValue({
+		path: '/Users/someone/personal.kdbx.2.bak',
+		name: 'personal.kdbx.2'
+	});
+	const component = open();
+
+	submit('correct horse battery staple');
+	await vi.waitFor(() => expect(reads()).toContain('personal.kdbx.3.bak'));
+	flushSync();
+
+	expect(reads()).toContain(
+		'Each of these opens with the password the vault had then, to look at, and from inside one you can make it your vault.'
+	);
+	expect(reads()).toContain('27 Aug, 18:40');
+	expect(reads()).toContain('26 Aug, 9:05');
+	expect(host.querySelectorAll('li')).toHaveLength(3);
+	expect(ipc.snapshots).toHaveBeenCalledTimes(1);
+
+	host.querySelector<HTMLButtonElement>('[aria-label="Open personal.kdbx.2.bak"]')?.click();
+	await vi.waitFor(() => expect(ipc.chooseSnapshot).toHaveBeenCalledWith(2));
+
+	return unmount(component);
+});
+
+/** A vault whose file has gone, with no copy a lock left beside it to put
+ * back: the backups are what is left of it, and they are offered. */
+it('offers the backups when the vault file is not there', async () => {
+	ipc.unlock.mockRejectedValue({ code: 'gone', message: 'the database file is gone' });
 	ipc.snapshots.mockResolvedValue([
 		{ name: 'personal.kdbx.1.bak', index: 1, taken: '2026-08-27T18:40:00Z' }
 	]);
@@ -130,17 +166,14 @@ it('offers the newest snapshot when the file itself will not open', async () => 
 
 	submit('correct horse battery staple');
 	await vi.waitFor(() => expect(reads()).toContain('personal.kdbx.1.bak'));
-	flushSync();
-
-	expect(reads()).toContain('A snapshot from 27 Aug 2026 sits beside it');
-	expect(ipc.snapshots).toHaveBeenCalledTimes(1);
+	expect(reads()).toContain('the database file is gone');
 
 	return unmount(component);
 });
 
-/** A filesystem that keeps no modification time still has a snapshot worth
- * offering, and the sentence must not say the word "unknown". */
-it('offers a snapshot whose date the filesystem lost', async () => {
+/** A filesystem that keeps no modification time still has backups worth
+ * offering, and the row must not say the word "unknown". */
+it('offers a backup whose time the filesystem lost', async () => {
 	ipc.unlock.mockRejectedValue({ code: 'damaged', message: 'the database body is damaged' });
 	ipc.snapshots.mockResolvedValue([{ name: 'personal.kdbx.1.bak', index: 1, taken: null }]);
 	const component = open();
@@ -150,7 +183,65 @@ it('offers a snapshot whose date the filesystem lost', async () => {
 	flushSync();
 
 	expect(reads()).not.toContain('unknown');
-	expect(reads()).toContain('It opens with the same password');
+	expect(reads()).toContain('Time not kept');
+
+	return unmount(component);
+});
+
+/** A password that did not fit is the password's fault, and the file opens: no
+ * backup is offered in place of a vault that is fine. */
+it('offers no backup for a wrong password', async () => {
+	ipc.unlock.mockRejectedValue({ code: 'wrongCredentials', message: 'wrong password or key file' });
+	ipc.snapshots.mockResolvedValue([
+		{ name: 'personal.kdbx.1.bak', index: 1, taken: '2026-08-27T18:40:00Z' }
+	]);
+	const component = open();
+
+	submit('not it');
+	await vi.waitFor(() => expect(reads()).toContain('wrong password or key file'));
+	expect(ipc.snapshots).not.toHaveBeenCalled();
+	expect(host.querySelector('li')).toBeNull();
+
+	return unmount(component);
+});
+
+/** The backup that was shown went before the press reached it. The list says
+ * so and is read again, and the screen stays where it was. */
+it('says a backup that went is gone and lists what is there now', async () => {
+	const onChoose = vi.fn();
+	ipc.unlock.mockRejectedValue({ code: 'damaged', message: 'the database body is damaged' });
+	ipc.snapshots
+		.mockResolvedValueOnce([
+			{ name: 'personal.kdbx.1.bak', index: 1, taken: '2026-08-27T18:40:00Z' },
+			{ name: 'personal.kdbx.2.bak', index: 2, taken: '2026-08-27T18:31:00Z' }
+		])
+		.mockResolvedValueOnce([
+			{ name: 'personal.kdbx.1.bak', index: 1, taken: '2026-08-27T18:52:00Z' }
+		]);
+	ipc.chooseSnapshot.mockRejectedValue({ code: 'gone', message: 'the database file is gone' });
+	const component = mount(Unlock, {
+		target: host,
+		props: {
+			database,
+			onChoose,
+			onKeyFile: vi.fn(),
+			onCreate: vi.fn(),
+			onGone: vi.fn(),
+			onUnlocked: vi.fn()
+		}
+	});
+	flushSync();
+
+	submit('correct horse battery staple');
+	await vi.waitFor(() => expect(reads()).toContain('personal.kdbx.2.bak'));
+	host.querySelector<HTMLButtonElement>('[aria-label="Open personal.kdbx.2.bak"]')?.click();
+
+	await vi.waitFor(() =>
+		expect(reads()).toContain('That backup is not there any more. The list is as it stands now.')
+	);
+	expect(ipc.snapshots).toHaveBeenCalledTimes(2);
+	expect(host.querySelectorAll('li')).toHaveLength(1);
+	expect(onChoose).not.toHaveBeenCalled();
 
 	return unmount(component);
 });
@@ -429,9 +520,7 @@ it('keeps the key file when the reader opens a snapshot of the same vault', asyn
 	await vi.waitFor(() => expect(reads()).toContain('personal.kdbx.1.bak'));
 	flushSync();
 
-	[...host.querySelectorAll('button')]
-		.find((each) => each.textContent?.includes('Open personal.kdbx.1.bak'))
-		?.click();
+	host.querySelector<HTMLButtonElement>('[aria-label="Open personal.kdbx.1.bak"]')?.click();
 	await vi.waitFor(() => expect(ipc.chooseSnapshot).toHaveBeenCalledTimes(1));
 
 	expect(onKeyFile, 'the screen threw away a key file Rust is still using').not.toHaveBeenCalled();
@@ -759,7 +848,7 @@ it('offers to look at the copy when the vault is still there', () => {
  */
 it('takes the reader from a copy back to the vault it was taken from', async () => {
 	const vault = { path: database.path, name: database.name };
-	ipc.leaveRescue.mockResolvedValue(vault);
+	ipc.backToVault.mockResolvedValue(vault);
 	const onChoose = vi.fn();
 	const onKeyFile = vi.fn();
 	const component = mount(Unlock, {
@@ -789,7 +878,136 @@ it('takes the reader from a copy back to the vault it was taken from', async () 
 
 	button('Back to my vault').click();
 	await vi.waitFor(() => expect(onChoose).toHaveBeenCalledWith(vault));
-	expect(ipc.leaveRescue).toHaveBeenCalledWith();
+	expect(ipc.backToVault).toHaveBeenCalledWith();
+	expect(onKeyFile).not.toHaveBeenCalled();
+
+	unmount(component);
+});
+
+/** The backup pressed was the last one, and it went before the press reached
+ * it. The list says so, and that none are left, rather than vanishing with the
+ * sentence that would have said why. */
+it('says the last backup went, and that none are left', async () => {
+	ipc.unlock.mockRejectedValue({ code: 'damaged', message: 'the database body is damaged' });
+	ipc.snapshots
+		.mockResolvedValueOnce([
+			{ name: 'personal.kdbx.1.bak', index: 1, taken: '2026-08-27T18:40:00Z' }
+		])
+		.mockResolvedValueOnce([]);
+	ipc.chooseSnapshot.mockRejectedValue({ code: 'gone', message: 'the database file is gone' });
+	const component = open();
+
+	submit('correct horse battery staple');
+	await vi.waitFor(() => expect(reads()).toContain('personal.kdbx.1.bak'));
+	host.querySelector<HTMLButtonElement>('[aria-label="Open personal.kdbx.1.bak"]')?.click();
+
+	await vi.waitFor(() => expect(reads()).toContain('not there any more'));
+	expect(reads()).toContain('No backups are left.');
+	expect(host.querySelectorAll('li')).toHaveLength(0);
+
+	unmount(component);
+});
+
+/** A backup that would not open either is the one this screen is for. The
+ * list offers the others, and not that one again: pressed, it would only bring
+ * the same refusal back. */
+it('does not offer the backup that just would not open', async () => {
+	ipc.unlock.mockRejectedValue({ code: 'damaged', message: 'the database body is damaged' });
+	ipc.snapshots.mockResolvedValue([
+		{ name: 'personal.kdbx.1.bak', index: 1, taken: '2026-08-27T18:40:00Z' },
+		{ name: 'personal.kdbx.2.bak', index: 2, taken: '2026-08-27T18:31:00Z' }
+	]);
+	const component = mount(Unlock, {
+		target: host,
+		props: {
+			database: { path: '/Users/someone/personal.kdbx.1.bak', name: 'personal.kdbx.1' },
+			snapshot: {
+				vault: 'personal.kdbx',
+				taken: '2026-08-27T18:40:00Z',
+				keptAs: 'personal.kdbx.1.bak',
+				vaultFile: { there: true, written: null },
+				because: 'unopened'
+			},
+			onChoose: vi.fn(),
+			onKeyFile: vi.fn(),
+			onCreate: vi.fn(),
+			onGone: vi.fn(),
+			onUnlocked: vi.fn()
+		}
+	});
+	flushSync();
+
+	submit('correct horse battery staple');
+	await vi.waitFor(() => expect(host.querySelectorAll('li')).toHaveLength(1));
+	expect(host.querySelector('[aria-label="Open personal.kdbx.2.bak"]')).not.toBeNull();
+	expect(host.querySelector('[aria-label="Open personal.kdbx.1.bak"]')).toBeNull();
+	unmount(component);
+
+	ipc.snapshots.mockResolvedValue([
+		{ name: 'personal.kdbx.1.bak', index: 1, taken: '2026-08-27T18:40:00Z' }
+	]);
+	const alone = mount(Unlock, {
+		target: host,
+		props: {
+			database: { path: '/Users/someone/personal.kdbx.1.bak', name: 'personal.kdbx.1' },
+			onChoose: vi.fn(),
+			onKeyFile: vi.fn(),
+			onCreate: vi.fn(),
+			onGone: vi.fn(),
+			onUnlocked: vi.fn()
+		}
+	});
+	flushSync();
+	submit('correct horse battery staple');
+	await vi.waitFor(() => expect(ipc.snapshots).toHaveBeenCalledTimes(2));
+	await tick();
+	expect(reads()).not.toContain('Coffer keeps the vault as it was');
+	expect(host.querySelectorAll('li')).toHaveLength(0);
+	unmount(alone);
+});
+
+/**
+ * The unlock screen of a backup says what it is - the vault as it was, to the
+ * minute - and which password opens it: the one the vault had then, which is
+ * not the one it has now after a change. The way back to the vault is a press,
+ * and the key file stays, since the backup opens with it.
+ */
+it('says a chosen backup is not the vault, and leads back to it', async () => {
+	const vault = { path: database.path, name: database.name };
+	ipc.backToVault.mockResolvedValue(vault);
+	const onChoose = vi.fn();
+	const onKeyFile = vi.fn();
+	const component = mount(Unlock, {
+		target: host,
+		props: {
+			database: { path: '/Users/someone/personal.kdbx.2.bak', name: 'personal.kdbx.2' },
+			keyFile: { path: '/Users/someone/personal.key', name: 'personal' },
+			snapshot: {
+				vault: 'personal.kdbx',
+				taken: '2026-08-27T18:40:00Z',
+				keptAs: 'personal.kdbx.1.bak',
+				vaultFile: { there: true, written: null },
+				because: 'asked'
+			},
+			file: { there: true, written: null },
+			onChoose,
+			onKeyFile,
+			onCreate: vi.fn(),
+			onGone: vi.fn(),
+			onUnlocked: vi.fn()
+		}
+	});
+	flushSync();
+
+	expect(reads()).toContain('A backup, not your vault');
+	expect(reads()).toContain(
+		'This is personal.kdbx as it was on 27 Aug at 18:40. It opens with the password the vault had then.'
+	);
+	expect(host.querySelector('form')?.hidden).toBe(false);
+
+	button('Back to my vault').click();
+	await vi.waitFor(() => expect(onChoose).toHaveBeenCalledWith(vault));
+	expect(ipc.backToVault).toHaveBeenCalledWith();
 	expect(onKeyFile).not.toHaveBeenCalled();
 
 	unmount(component);

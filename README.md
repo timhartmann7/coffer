@@ -103,7 +103,13 @@ an hour after the refusal, so the command is the reliable one.
 - Every write is staged beside the file and renamed into place, so a crash
   halfway leaves the old database whole.
 - Ten rotating snapshots, `vault.kdbx.1.bak` through `vault.kdbx.10.bak`, beside
-  the database. The database and every snapshot are `0600`.
+  the database. Settings lists them as automatic backups and opens any of them
+  to look at, and one press makes a backup the vault again: the file it replaces
+  is kept as the newest snapshot until later saves push it out, and for good as
+  `vault.kdbx.replaced-<date>.kdbx` when it does not open with the backup's
+  password. A backup opens with the password the vault had when it was taken,
+  and so does the vault made from it. A copy saved from one is never written
+  over a file that is there. The database and every snapshot are `0600`.
 - The master password can be changed in Settings. The file is written again
   under the new one, with its key derivation unchanged. The snapshots beside it
   were written under the old one and still open with it until later saves push

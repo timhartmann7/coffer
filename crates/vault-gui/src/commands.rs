@@ -49,7 +49,7 @@ use crate::error::Failure;
 use crate::home::Standing;
 use crate::menu::{self, Command};
 use crate::route::Route;
-use crate::session::Session;
+use crate::session::{Looking, Session};
 use crate::{clipboard, closing, context, generator, home, lock, opener, settings, window};
 
 /// The session is behind an `Arc` so that a command can take it onto a blocking
@@ -69,10 +69,11 @@ const KDBX: &str = "KDBX database";
 
 #[tauri::command(async)]
 pub fn status(app: AppHandle, session: Held<'_>) -> Status {
-    let (entries, read_only) = session
-        .with(|vault| (vault.count(), vault.is_read_only()))
-        .unwrap_or((0, false));
+    let (entries, read_only, copyable) = session
+        .with(|vault| (vault.count(), vault.read_only(), vault.copyable()))
+        .unwrap_or((0, None, false));
     let database = session.database();
+    let (copy, snapshot) = beside(&session);
 
     Status {
         found: looked_home(&session, home_of(&app).ok().as_deref())
@@ -93,25 +94,54 @@ pub fn status(app: AppHandle, session: Held<'_>) -> Status {
         file: database
             .as_deref()
             .map(|chosen| dto::OnDisk::of(storage::on_disk(chosen))),
-        // What is said here about the vault's file is what "Make this my
-        // vault" is then held to, so it is the session that reads it.
-        copy: database.as_deref().and_then(|copy| {
-            let (vault, vault_file) = session.telling()?;
-            Some(dto::CopyOf::of(&vault, storage::on_disk(copy), vault_file))
-        }),
+        copy,
+        snapshot,
         typed: session.typed(),
         typed_beside: session.typed_beside(),
         rekeyed: session.rekeyed(),
+        adopted: session
+            .adopted()
+            .zip(database.as_deref())
+            .map(|(adopted, vault)| dto::Adopted::of(vault, &adopted)),
+        backup_gone: session.backup_gone(),
         database: database.as_deref().map(Database::of),
         key_file: session.key_file().as_deref().map(Database::of),
         unlocked: session.is_unlocked(),
         entries,
-        read_only,
+        read_only: read_only.is_some(),
+        read_only_because: read_only.map(dto::ReadOnly::of),
+        copyable,
         locked_by: session.locked_by().and_then(Reason::explained),
         locks_in: app
             .try_state::<Arc<Timer>>()
             .and_then(|timer| timer.left())
             .map(|left| left.as_secs()),
+    }
+}
+
+/// The vault the chosen file belongs to, for the strip across the top of the
+/// window and the card on its unlock screen: as the copy a lock left, as one of
+/// its backups, or neither. Which one is read off the chosen file's name, and
+/// it decides which strip is drawn - a backup given the copy's would offer to
+/// make it the vault through a press that refuses anything but a copy.
+///
+/// What is said here about the vault's file is what "Make this my vault" and
+/// "Use this copy as my vault" are then held to, so it is the session that
+/// reads it, once, for whichever of the two the chosen file is.
+fn beside(session: &Session) -> (Option<dto::CopyOf>, Option<dto::SnapshotOf>) {
+    let Some((chosen, (vault, vault_file))) = session.database().zip(session.telling()) else {
+        return (None, None);
+    };
+    let file = storage::on_disk(&chosen);
+
+    if snapshot::slot_of(&chosen).is_some() {
+        let because = session.looking().unwrap_or(Looking::Asked);
+        (
+            None,
+            Some(dto::SnapshotOf::of(&vault, file, vault_file, because)),
+        )
+    } else {
+        (Some(dto::CopyOf::of(&vault, file, vault_file)), None)
     }
 }
 
@@ -794,41 +824,38 @@ pub fn open_url(entry: String, session: Held<'_>) -> Result<(), Failure> {
     }
 }
 
-/// The snapshots beside the chosen database, most recent first. The unlock
-/// screen offers them when the database itself will not open.
+/// The snapshots beside the chosen database - or, when it is one of them,
+/// beside the vault it was taken from - most recent first. The unlock screen
+/// offers them when the database itself will not open, and the settings offer
+/// them to look at. Rust keeps the list, and a slot sent back means what it
+/// meant in it (see [`Session::snapshots`]).
 #[tauri::command(async)]
 pub fn snapshots(session: Held<'_>) -> Result<Vec<Snapshot>, Failure> {
-    let database = session.database().ok_or_else(Failure::no_vault)?;
-    let taken = snapshot::taken(&database).map_err(Failure::io)?;
-    Ok(taken.iter().map(Snapshot::of).collect())
+    Ok(session.snapshots()?.iter().map(Snapshot::of).collect())
 }
 
-/// Points the session at one of those snapshots.
+/// Points the session at the snapshot the last list showed at `index`, and
+/// answers with what is chosen afterwards: see [`Session::look`].
 ///
-/// The index is all the webview sends; the path is built here from the database
-/// the user chose, so no message from the screen can name a file.
+/// The index is all the webview sends, and the file is the one the list Rust
+/// kept named, so no message from the screen can name a file. With a vault
+/// open, that vault is locked first the way any is: this window may be gone
+/// before the answer, and what is chosen afterwards is the vault itself when
+/// the lock kept its work elsewhere, lost it, or pushed the snapshot out of
+/// the chain with its own save.
 #[tauri::command(async)]
-pub fn choose_snapshot(index: u32, session: Held<'_>) -> Result<Database, Failure> {
-    if session.is_unlocked() {
-        return Err(Failure::lock_first());
+pub fn choose_snapshot(index: u32, app: AppHandle, session: Held<'_>) -> Result<Database, Failure> {
+    if session.look(index)? {
+        by_hand(&app);
     }
-
-    let database = session.database().ok_or_else(Failure::no_vault)?;
-    let path = snapshot::slot(&database, index).map_err(Failure::io)?;
-
-    if !path.is_file() {
-        return Err(Failure::gone());
-    }
-
-    session.choose_sibling(path.clone());
-    Ok(Database::of(&path))
+    let chosen = session.database().ok_or_else(Failure::no_vault)?;
+    Ok(Database::of(&chosen))
 }
 
 /// Points the session at the unsaved copy a lock left beside the database.
 ///
 /// Nothing is sent: the path is built here from the database the reader chose,
-/// so no message from the window can name a file. The same shape as
-/// `choose_snapshot`, for the same reason.
+/// so no message from the window can name a file, as none names a snapshot.
 #[tauri::command(async)]
 pub fn choose_rescue(session: Held<'_>) -> Result<Database, Failure> {
     if session.is_unlocked() {
@@ -896,18 +923,38 @@ pub async fn promote_rescue(session: Held<'_>) -> Result<Database, Failure> {
     Ok(Database::of(&vault))
 }
 
-/// Goes back from the copy a lock left to the vault it was taken from, and
-/// answers with what is chosen afterwards.
+/// Makes the open snapshot the vault it was taken beside, with the vault's
+/// file as it stood kept as the newest snapshot - and under a name of its own
+/// as well when it does not open with the snapshot's password: see
+/// [`vault_core::Vault::adopt`]. Answers with the vault, which is what is open
+/// now, and what became of that file.
 ///
-/// A copy that is open is locked on the way, which is how any open vault is
-/// left: what it holds is written out into the copy, its window goes, and the
+/// No password: the snapshot opened with the one it was written under, and
+/// the vault opens with that one from then on. Two key derivations - one to
+/// ask whether the vault's file opens, one for the write - so it happens on a
+/// thread that is allowed to block.
+#[tauri::command]
+pub async fn adopt_snapshot(session: Held<'_>) -> Result<dto::Adopted, Failure> {
+    let session = Arc::clone(&session);
+    let (vault, adopted) = tauri::async_runtime::spawn_blocking(move || session.adopt())
+        .await
+        .map_err(|_| Failure::internal("the backup could not be made the vault"))??;
+
+    Ok(dto::Adopted::of(&vault, &adopted))
+}
+
+/// Goes back from the copy a lock left, or from a snapshot, to the vault it
+/// was taken from, and answers with what is chosen afterwards.
+///
+/// A file that is open is locked on the way, which is how any open vault is
+/// left: what it holds is written out into it, its window goes, and the
 /// window that comes back asks for the vault's password - or for the copy's,
 /// when the lock had to keep the copy's work somewhere else or lost it, so
 /// that the screen saying so is the one about the copy (see
-/// [`Session::back_to_vault`]). A copy that is only chosen is simply not
+/// [`Session::back_to_vault`]). A file that is only chosen is simply not
 /// chosen any more, and nothing is locked.
 #[tauri::command(async)]
-pub fn leave_rescue(app: AppHandle, session: Held<'_>) -> Result<Database, Failure> {
+pub fn back_to_vault(app: AppHandle, session: Held<'_>) -> Result<Database, Failure> {
     session.back_to_vault()?;
     by_hand(&app);
     let chosen = session.database().ok_or_else(Failure::no_vault)?;
@@ -1608,6 +1655,10 @@ pub async fn save_over(session: Held<'_>) -> Result<(), Failure> {
 /// Writes what is in the window to a file of its own, leaving the database
 /// alone. The way out of a conflict that keeps both, and the way out of a
 /// snapshot.
+///
+/// Never over a file that is there, whatever the panel was answered: the
+/// panel opens beside the vault, and the files there that must not go are
+/// the ones its filter shows (see [`Vault::save_copy`]).
 #[tauri::command]
 pub async fn save_copy(app: AppHandle, session: Held<'_>) -> Result<Option<Database>, Failure> {
     let database = session.database().ok_or_else(Failure::no_vault)?;
@@ -1836,14 +1887,16 @@ mod tests {
         // The ones that reach it, named so that the reason survives a rewrite
         // of their bodies. Locking wipes the tree, which takes the same mutex a
         // save is holding - and writes the vault out first, so it costs a key
-        // derivation as well - and going back from an open copy to its vault
-        // is a lock. A shortened timeout that has already gone, and a stir
+        // derivation as well - and going back from an open copy or backup to
+        // its vault is a lock, and so is looking at a backup with a vault
+        // open. A shortened timeout that has already gone, and a stir
         // that arrives after the time ran out, are both answered by a lock on
         // the thread that posted them. Closing the window is a lock reached
         // through `closing::lock`, which the check above cannot see into.
         for reaching in [
             "pub fn lock(",
-            "pub fn leave_rescue(",
+            "pub fn back_to_vault(",
+            "pub fn choose_snapshot(",
             "pub fn set_settings(",
             "pub fn stirred(",
             "pub fn close_window(",
@@ -2344,6 +2397,74 @@ mod tests {
         let printed = format!("{taken:?}");
         assert!(printed.contains("[redacted]"), "{printed}");
         assert!(!printed.contains("the old one") && !printed.contains("the new one"));
+    }
+
+    /// What the strip over the chosen file is told: the vault it belongs to,
+    /// as the copy a lock left or as a backup, and for a backup why it is open.
+    /// Read off the chosen file's name, and the name decides which strip is
+    /// drawn - a backup drawn as a copy would offer "Make this my vault", which
+    /// refuses anything but a copy.
+    #[test]
+    fn the_strip_over_a_chosen_file_is_the_one_its_name_calls_for() {
+        let folder = tempfile::tempdir().expect("a scratch directory");
+        let vault = folder.path().join("vault.kdbx");
+        let said = |chosen: &Path| {
+            let (copy, snapshot) = beside(&Session::new(Some(chosen.to_path_buf()), None));
+            let copy = copy.map(|copy| serde_json::to_value(copy).expect("the copy serialises"));
+            let snapshot = snapshot
+                .map(|snapshot| serde_json::to_value(snapshot).expect("the backup serialises"));
+            (
+                copy.map(|copy| copy["vault"].clone()),
+                snapshot.map(|snapshot| (snapshot["vault"].clone(), snapshot["because"].clone())),
+            )
+        };
+
+        assert_eq!(said(&vault), (None, None), "a vault");
+        assert_eq!(
+            said(&folder.path().join("vault.kdbx.unsaved.kdbx")),
+            (Some(serde_json::json!("vault.kdbx")), None),
+            "a lock's copy"
+        );
+        assert_eq!(
+            said(&folder.path().join("vault.kdbx.2.bak")),
+            (
+                None,
+                Some((serde_json::json!("vault.kdbx"), serde_json::json!("asked")))
+            ),
+            "a backup"
+        );
+        assert_eq!(
+            said(&folder.path().join("vault.kdbx.unsaved.kdbx.2.bak")),
+            (
+                None,
+                Some((
+                    serde_json::json!("vault.kdbx.unsaved.kdbx"),
+                    serde_json::json!("asked")
+                ))
+            ),
+            "a backup of a lock's copy"
+        );
+
+        // Opened from the list a vault file that would not open was answered
+        // with, a backup says that is why.
+        std::fs::write(&vault, b"not a database").expect("the file is written");
+        std::fs::write(folder.path().join("vault.kdbx.1.bak"), b"nor this")
+            .expect("the file is written");
+        let session = Session::new(Some(vault), None);
+        let refused = session
+            .unlock(
+                Zeroizing::new(b"coffer-test".to_vec()),
+                vault_core::LockPolicy::Respect,
+            )
+            .expect_err("the file is not a database");
+        assert_eq!(code_of(refused), "notADatabase");
+        session.snapshots().expect("the backups are listed");
+        session.look(1).expect("the backup is there");
+        let (copy, snapshot) = beside(&session);
+        assert!(copy.is_none());
+        let snapshot = serde_json::to_value(snapshot.expect("a backup is chosen"))
+            .expect("the backup serialises");
+        assert_eq!(snapshot["because"], "unopened");
     }
 
     #[test]

@@ -139,9 +139,6 @@ pub enum VaultError {
     #[error("that entry is not one of the templates this vault keeps")]
     NotATemplate,
 
-    /// What is open is one of Coffer's own snapshots. It opens like any other
-    /// database and is not written back: the next save of the database it was
-    /// taken from would rotate it away.
     /// The folder the database sits in will not take a file: a read-only disk
     /// image, a Time Machine snapshot, a stick macOS mounted read-only, a share
     /// the reader may only read. Coffer opens the database anyway, because
@@ -149,8 +146,19 @@ pub enum VaultError {
     #[error("this folder is read only, so nothing can be written to it")]
     ReadOnlyPlace,
 
+    /// What is open is one of Coffer's own snapshots. It opens like any other
+    /// database and is not written back: the next save of the database it was
+    /// taken from would rotate it away.
     #[error("a snapshot is opened to read, not to write")]
     ReadOnlySnapshot,
+
+    /// Only a file at one of Coffer's snapshot names can become the vault it
+    /// was taken beside this way, and what was asked of is not one - or it is
+    /// one kept beside the copy a lock left, which nothing but the copy's own
+    /// saves writes over: the copy holds the only version of work its vault
+    /// has not got.
+    #[error("this is not one of the snapshots Coffer keeps beside a vault")]
+    NotASnapshot,
 
     /// The entry has no field of that name.
     #[error("that entry has no such field")]
@@ -301,14 +309,16 @@ pub enum VaultError {
     #[error("the copy a lock left beside this vault has to be made the vault or removed first")]
     PasswordBesideACopy,
 
-    /// There is already a file where the new vault would go. Nothing is written
-    /// over: a creation takes no snapshot, so what was there would be gone.
+    /// There is already a file where the new vault, or a copy of the open one,
+    /// would go. Nothing is written over: neither takes a snapshot, so what was
+    /// there would be gone.
     #[error("there is already a file with that name")]
     DatabaseExists,
 
-    /// The new vault would take a name Coffer gives a file of its own beside a
-    /// database: a snapshot, which every save is refused for, or the copy a
-    /// lock leaves when it could not save, which the next such lock overwrites.
+    /// The new vault, or a copy of the open one, would take a name Coffer gives
+    /// a file of its own beside a database: a snapshot, which every save is
+    /// refused for, or the copy a lock leaves when it could not save, which the
+    /// next such lock overwrites.
     #[error("that name belongs to a file Coffer keeps beside a vault")]
     ReservedName,
 

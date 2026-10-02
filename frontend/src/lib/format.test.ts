@@ -9,6 +9,7 @@ import {
 	day,
 	fully,
 	isolated,
+	minute,
 	quoted,
 	size,
 	when
@@ -61,6 +62,19 @@ describe('a moment two files are compared by', () => {
 	it('writes nothing for a time the filesystem did not keep', () => {
 		expect(at(null, now)).toBe('');
 		expect(at('not a date', now)).toBe('');
+	});
+
+	/** Ten backups are often ten saves within the hour, so a row in their list
+	 * always has the minute, and is told from its neighbours by nothing else. */
+	it('gives a row in a list of files the minute, after the day', () => {
+		expect(minute('2026-08-29T14:05:00Z', now)).toBe('today, 14:05');
+		expect(minute('2026-08-29T14:04:00Z', now)).toBe('today, 14:04');
+		expect(minute('2026-08-27T18:40:00Z', now)).toBe('27 Aug, 18:40');
+		expect(minute('2025-08-27T18:40:00Z', now)).toBe('27 Aug 2025, 18:40');
+		expect(minute('3000-01-01T00:00:00Z', now)).toBe('1 Jan 3000, 0:00');
+		expect(minute(null, now)).toBe('');
+		expect(minute('', now)).toBe('');
+		expect(minute('not a date', now)).toBe('');
 	});
 });
 

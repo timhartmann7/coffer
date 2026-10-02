@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { tick } from 'svelte';
 	import Create from '$lib/components/Create.svelte';
+	import InBackup from '$lib/components/InBackup.svelte';
 	import InCopy from '$lib/components/InCopy.svelte';
 	import Settings, { type Handed } from '$lib/components/Settings.svelte';
 	import Shortcuts from '$lib/components/Shortcuts.svelte';
@@ -12,9 +13,11 @@
 	import { report } from '$lib/greying';
 	import { lockByHand } from '$lib/locking';
 	import {
+		adoptSnapshot,
+		backToVault,
 		chooseDatabase,
+		chooseSnapshot,
 		kinds as loadKinds,
-		leaveRescue,
 		listen,
 		promoteRescue,
 		settings as loadSettings,
@@ -24,16 +27,20 @@
 	import { answer, applying } from '$lib/menu.svelte';
 	import { outside } from '$lib/outside';
 	import { Presence } from '$lib/presence';
+	import { adopted } from '$lib/replacing';
 	import { wear } from '$lib/theme';
 	import type {
+		Adopted,
 		CopyOf,
 		Database,
 		Found,
 		Group,
 		Kinds,
 		OnDisk,
+		ReadOnlyBecause,
 		Rescued,
 		Settings as Chosen,
+		SnapshotOf,
 		Status
 	} from '$lib/model';
 
@@ -44,6 +51,10 @@
 	let keyFile = $state<Database | null>(null);
 	let root = $state<Group | null>(null);
 	let readOnly = $state(false);
+	/** Why the open vault cannot be written back, when it cannot. */
+	let readOnlyBecause = $state<ReadOnlyBecause | null>(null);
+	/** Whether what is open can be written to a file somewhere else. */
+	let copyable = $state(false);
 	let ready = $state(false);
 	let chosen = $state<Chosen | null>(null);
 	/** What a new entry can start as. Rust's, the same for every vault, and
@@ -64,11 +75,23 @@
 	/** Whether the vault the last lock closed was given a new master password
 	 * while it was open. */
 	let rekeyed = $state(false);
+	/** What became of the vault's file, when the vault the last lock closed
+	 * had just been made from one of its backups and no notice said so. */
+	let adoptedBefore = $state<Adopted | null>(null);
+	/** Whether the backup asked for from the settings was pushed out by the
+	 * lock on the way to it. */
+	let backupGone = $state(false);
 	/** The chosen file as the disk has it, which is what the sentences about
 	 * a lock's copy and about lost work are measured against. */
 	let file = $state<OnDisk | null>(null);
 	/** The vault the chosen file was copied from, when it is a lock's copy. */
 	let copy = $state<CopyOf | null>(null);
+	/** The vault the chosen file was taken beside, when it is one of its
+	 * backups. */
+	let snapshot = $state<SnapshotOf | null>(null);
+	/** What the vault screen is to say when it is next drawn: what became of
+	 * the file a backup replaced. */
+	let news = $state<{ message: string } | null>(null);
 
 	/** The throttle on telling Rust that somebody is at the machine. */
 	const presence = new Presence();
@@ -137,19 +160,24 @@
 		root = await tree();
 		const now = await status();
 		database = now.database;
-		readOnly = now.readOnly;
 		reason = null;
 		heard(now);
 	}
 
-	/** What Rust says about the files beside the vault, which every reading of
-	 * the status brings. */
+	/** What Rust says about the vault and the files beside it, which every
+	 * reading of the status brings. */
 	function heard(now: Status | null) {
+		readOnly = now?.readOnly ?? false;
+		readOnlyBecause = now?.readOnlyBecause ?? null;
+		copyable = now?.copyable ?? false;
+		snapshot = now?.snapshot ?? null;
 		rescue = now?.rescue ?? null;
 		lost = now?.lost ?? false;
 		typed = now?.typed ?? false;
 		typedBeside = now?.typedBeside ?? false;
 		rekeyed = now?.rekeyed ?? false;
+		adoptedBefore = now?.adopted ?? null;
+		backupGone = now?.backupGone ?? false;
 		file = now?.file ?? null;
 		copy = now?.copy ?? null;
 	}
@@ -174,20 +202,51 @@
 		try {
 			database = await promoteRescue();
 		} finally {
-			const now = await status();
-			readOnly = now.readOnly;
-			heard(now);
+			heard(await status());
 		}
 	}
 
 	/**
-	 * Goes back from the copy to its vault. With the copy open that is a lock,
-	 * which takes this window with it, so the screen is only cleared once Rust
-	 * has answered - the same order `lockByHand` keeps, for the same reason.
+	 * Makes the open backup the vault it was taken beside. The session stays
+	 * open, now on the vault, so the window reads again what is true of it, and
+	 * the vault screen says what became of the file the backup replaced.
+	 *
+	 * Read again however it went, for the reason `promote` is: Rust holds the
+	 * press to how the strip last said the vault's file stood.
+	 */
+	async function adopt() {
+		try {
+			const made = await adoptSnapshot();
+			database = made.database;
+			news = { message: adopted(made) };
+		} finally {
+			heard(await status());
+		}
+	}
+
+	/**
+	 * Goes back from the copy or the backup to its vault. With it open that is
+	 * a lock, which takes this window with it, so the screen is only cleared
+	 * once Rust has answered - the same order `lockByHand` keeps, for the same
+	 * reason.
 	 */
 	async function back() {
 		await flush();
-		database = await leaveRescue();
+		database = await backToVault();
+		root = null;
+		showing = 'vault';
+		await chosen_elsewhere();
+	}
+
+	/**
+	 * Opens a backup the settings listed, to look at. With a vault open, Rust
+	 * locks it first, which takes this window with it, so what is still on its
+	 * way to Rust is waited for first, and the screen is cleared only once Rust
+	 * has answered - in the order `back` keeps.
+	 */
+	async function look(index: number) {
+		await flush();
+		database = await chooseSnapshot(index);
 		root = null;
 		showing = 'vault';
 		await chosen_elsewhere();
@@ -303,6 +362,7 @@
 			{...handed}
 			rekey={copy ? undefined : handed.rekey}
 			copyBeside={rescue !== null}
+			onLook={look}
 		/>
 	{/if}
 {/snippet}
@@ -339,6 +399,8 @@
 			{:else if root && database && kinds}
 				{#if copy}
 					<InCopy {copy} onPromote={promote} onBack={back} />
+				{:else if snapshot}
+					<InBackup {snapshot} onAdopt={adopt} onBack={back} />
 				{/if}
 				<!-- An open vault keeps the screen, and the settings go over it. There is
 				     one way in and out of them while a vault is open, it is in the status
@@ -348,6 +410,9 @@
 					{root}
 					{kinds}
 					{readOnly}
+					{readOnlyBecause}
+					{copyable}
+					{news}
 					settings={showing === 'settings' ? settingsScreen : undefined}
 					onSettings={toggleSettings}
 					onTree={(tree) => (root = tree)}
@@ -366,9 +431,12 @@
 					{lost}
 					{file}
 					{copy}
+					{snapshot}
 					{typed}
 					{typedBeside}
 					{rekeyed}
+					adopted={adoptedBefore}
+					{backupGone}
 					onChoose={(picked) => {
 						database = picked;
 						void chosen_elsewhere();

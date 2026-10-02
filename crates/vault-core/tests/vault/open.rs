@@ -585,7 +585,10 @@ fn a_kdbx3_database_with_attachments_is_read_only() {
     let (_scratch, database) = support::scratch("rich-kdbx31.kdbx");
     let mut vault = open(&database, SECRET);
 
-    assert!(vault.is_read_only());
+    assert_eq!(
+        vault.read_only(),
+        Some(vault_core::ReadOnly::Kdbx3Attachments)
+    );
     assert!(matches!(
         vault.save().expect_err("saving is refused"),
         VaultError::ReadOnlyKdbx3Attachments
@@ -612,8 +615,9 @@ fn an_empty_database_opens_with_nothing_in_it() {
     let vault = open(&database, SECRET);
 
     assert!(all_entries(&vault).is_empty());
-    assert!(
-        !vault.is_read_only(),
+    assert_eq!(
+        vault.read_only(),
+        None,
         "no attachments, so it can be upgraded"
     );
 }

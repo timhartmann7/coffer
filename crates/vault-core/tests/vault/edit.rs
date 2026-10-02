@@ -1713,7 +1713,7 @@ fn a_snapshot_is_opened_to_read_and_never_written_back() {
     let mut vault = open(&snapshot, SECRET);
     let id = only_entry(&vault, "basic");
 
-    assert!(vault.is_read_only());
+    assert_eq!(vault.read_only(), Some(vault_core::ReadOnly::Snapshot));
     for refused in [
         vault.set_field(id, fields::NOTES, NewValue::Open("x".to_owned())),
         vault.set_protection(id, "x", true),
@@ -1735,7 +1735,7 @@ fn a_snapshot_is_opened_to_read_and_never_written_back() {
     // A copy is the way out, and it is a database like any other.
     let beside = database.with_extension("recovered.kdbx");
     vault.save_copy(&beside).expect("the copy is written");
-    assert!(!open(&beside, SECRET).is_read_only());
+    assert_eq!(open(&beside, SECRET).read_only(), None);
 }
 
 #[test]
@@ -2099,8 +2099,9 @@ fn a_file_four_entries_share_stays_whole_as_the_names_come_off_one_by_one() {
         let vault = open(&path, SECRET);
         // `QualityCheck` is what makes keepassxc write KDBX 4.1, which is the
         // format that keeps its files where Coffer can read them.
-        assert!(
-            !vault.is_read_only(),
+        assert_eq!(
+            vault.read_only(),
+            None,
             "the import came back in a format Coffer will not write"
         );
         assert_eq!(

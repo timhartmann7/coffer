@@ -30,7 +30,7 @@
 	import { overtaken } from '$lib/overtaken';
 	import { placesFor, targets, type Moving } from '$lib/places';
 	import { conceal } from '$lib/reveal.svelte';
-	import { Saving, type Rekey } from '$lib/saving.svelte';
+	import { keepCopy, Saving, type Rekey } from '$lib/saving.svelte';
 	import { Selection, type Press } from '$lib/selection.svelte';
 	import { tag } from '$lib/tagging';
 	import {
@@ -46,6 +46,7 @@
 		type Kinds,
 		type Offer,
 		type Position,
+		type ReadOnlyBecause,
 		type Span
 	} from '$lib/model';
 	import { index, search } from '$lib/search';
@@ -77,6 +78,7 @@
 	import InBin from './InBin.svelte';
 	import NewEntry from './NewEntry.svelte';
 	import Opening from './Opening.svelte';
+	import ReadOnly from './ReadOnly.svelte';
 	import SelectionBar from './SelectionBar.svelte';
 	import type { Handed } from './Settings.svelte';
 	import Toast from './Toast.svelte';
@@ -87,6 +89,9 @@
 		root,
 		kinds,
 		readOnly,
+		readOnlyBecause = null,
+		copyable = false,
+		news = null,
 		settings,
 		onSettings,
 		onTree
@@ -99,6 +104,15 @@
 		/** A snapshot, or a format Coffer reads and does not write. Nothing on
 		 * the screen offers a change it would only be refused. */
 		readOnly: boolean;
+		/** Why, for the status bar to say when it is asked. */
+		readOnlyBecause?: ReadOnlyBecause | null;
+		/** Whether what is open can be written to a file somewhere else, which
+		 * the status bar's note offers where it can. */
+		copyable?: boolean;
+		/** Something that happened to the vault on the way to this screen, for
+		 * its notice to say: what became of the file a backup replaced. A new
+		 * object each time, so that the same words twice are said twice. */
+		news?: { message: string } | null;
 		/**
 		 * The settings screen, when it is the one being read, handed what this
 		 * screen does for them: the way to change the master password when this
@@ -1030,6 +1044,26 @@
 	// An item chosen after the screen went has nothing left to act on.
 	$effect(() => () => forget());
 
+	// Said in the notice rather than where the press was: the strip that was
+	// pressed goes once its backup is the vault.
+	$effect(() => {
+		if (news) {
+			const { message } = news;
+			untrack(() => notices.tell({ message, kind: 'copied' }));
+		}
+	});
+
+	/** Writes what is open to a file of its own somewhere else, from the
+	 * status bar's note, and says where. A panel closed says nothing. */
+	async function keepACopy() {
+		try {
+			const kept = await keepCopy();
+			if (kept) notices.tell({ message: kept, kind: 'copied' });
+		} catch (thrown) {
+			failed(thrown);
+		}
+	}
+
 	// What the menu bar's items do on this screen: each runs what its button
 	// runs, on the condition its button is drawn on.
 	$effect(() =>
@@ -1109,6 +1143,12 @@
 			return;
 		}
 
+		// A key a control has already answered is not the window's as well:
+		// Cmd+C on a protected value's own row copies that value, not the
+		// password, and an Escape a list or a note took put that away and
+		// nothing else.
+		if (event.defaultPrevented) return;
+
 		if (!event.metaKey) {
 			if (cancels(event)) {
 				if (query !== '') query = '';
@@ -1128,15 +1168,10 @@
 			return;
 		}
 
-		// Cmd+C with nothing selected copies the open entry's password, as the
-		// mockup has it. Every other key with Cmd is the menu bar's: the page sees
-		// a key before AppKit looks in the menu, and one answered here as well
-		// would happen twice.
+		// Cmd+A and Cmd+C are the page's. Every other key with Cmd is the menu
+		// bar's: the page sees a key before AppKit looks in the menu, and one
+		// answered here as well would happen twice.
 		//
-		// A key a row of the pane has already answered: Cmd+C on a protected
-		// value's own row copies that value, not the password.
-		if (event.defaultPrevented) return;
-
 		// Cmd+A chooses every row the list draws. In a field, in the entry pane
 		// and with nothing to choose it is the system's Select All, which the
 		// key goes on to.
@@ -1149,9 +1184,10 @@
 			return;
 		}
 
-		// Text the reader is writing is theirs to copy. A selection is copied by
-		// the node holding it, and a revealed value's node hands that to Rust
-		// itself, with the part that was selected.
+		// Cmd+C with nothing selected copies the open entry's password, as the
+		// mockup has it. Text the reader is writing is theirs to copy. A
+		// selection is copied by the node holding it, and a revealed value's
+		// node hands that to Rust itself, with the part that was selected.
 		if (!copying(event) || !filled('password')) return;
 		event.preventDefault();
 		void copyOpen('password');
@@ -1768,8 +1804,8 @@
 			     mockup has no vault whose writes are failing, and a reader with
 			     one has to be told for as long as it is true. -->
 			<span class="text-warn">Not saved</span>
-		{:else if readOnly}
-			<span class="text-txt3">Read only</span>
+		{:else if readOnlyBecause}
+			<ReadOnly because={readOnlyBecause} {copyable} onCopy={keepACopy} />
 		{/if}
 		<!-- The settings go over the pane, which is the pane gone from where the
 		     reader can answer a question in it. -->

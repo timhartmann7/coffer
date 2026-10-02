@@ -13,7 +13,7 @@ import { drawing, entry, field, generated, group, kinds, row, version } from '$l
 import { focused } from '$lib/focus.svelte';
 import { hold } from '$lib/holding';
 import { applying, run } from '$lib/menu.svelte';
-import type { Entry, EntryRow, Group, Version } from '$lib/model';
+import type { Entry, EntryRow, Group, ReadOnlyBecause, Version } from '$lib/model';
 import { reactive } from '$lib/props.svelte';
 import type { Stubbed } from '$lib/stubbed';
 import type { Handed } from './Settings.svelte';
@@ -100,6 +100,9 @@ const sheet = createRawSnippet(() => ({ render: () => '<p>The settings</p>' }));
 function open(
 	over: {
 		readOnly?: boolean;
+		readOnlyBecause?: ReadOnlyBecause | null;
+		copyable?: boolean;
+		news?: { message: string } | null;
 		settings?: Snippet<[Handed]>;
 		onSettings?: () => void;
 		onTree?: (tree: typeof root) => void;
@@ -928,8 +931,8 @@ it('keeps the work elsewhere when the vault file is gone', async () => {
 	await vi.waitFor(() => expect(ipc.saveCopy).toHaveBeenCalledTimes(1));
 	flushSync();
 
+	await vi.waitFor(() => expect(host.textContent).toContain('Kept as “\u2068rescued\u2069”'));
 	expect(ipc.reload, 'it read back a file that is not there').not.toHaveBeenCalled();
-	expect(host.textContent).toContain('Kept as “\u2068rescued\u2069”');
 
 	return unmount(component);
 });
@@ -937,7 +940,7 @@ it('keeps the work elsewhere when the vault file is gone', async () => {
 /** A vault Coffer will not write back offers nothing that would only be
  * refused. */
 it('offers no change at all on a database it cannot write', () => {
-	const component = open({ readOnly: true });
+	const component = open({ readOnly: true, readOnlyBecause: 'snapshot' });
 	flushSync();
 
 	const named = [...host.querySelectorAll('button')].map((each) => each.textContent?.trim());
@@ -1110,13 +1113,178 @@ it('offers the settings from the status bar, and counts nothing down', () => {
 /** Two `ml-auto` siblings in a flex row do not both push right: the second one
  * lands wherever the first one left it, which is the middle of the status bar. */
 it('keeps everything on the right in one group', () => {
-	const component = open({ readOnly: true });
+	const component = open({ readOnly: true, readOnlyBecause: 'snapshot' });
 	flushSync();
 
 	const pushed = [...host.querySelectorAll('.ml-auto')];
 	expect(pushed).toHaveLength(1);
 	expect(pushed[0].textContent).toContain('Read only');
 	expect(pushed[0].textContent).toContain('Settings');
+
+	unmount(component);
+});
+
+/** The status bar's "Read only", pressed. */
+function readOnlyWord(): HTMLButtonElement {
+	const found = host.querySelector<HTMLButtonElement>('button[aria-controls="read-only-note"]');
+	if (!found) throw new Error('the status bar has no Read only button');
+	return found;
+}
+
+/** "Read only" used to be the same two words for four different things. It
+ * is a button now, and its note says which this is. */
+it('says why the vault is read only when that is pressed', () => {
+	const component = open({ readOnly: true, readOnlyBecause: 'place', copyable: true });
+	flushSync();
+
+	expect(readOnlyWord().getAttribute('aria-expanded')).toBe('false');
+	readOnlyWord().click();
+	flushSync();
+
+	expect(readOnlyWord().getAttribute('aria-expanded')).toBe('true');
+	expect(host.querySelector('#read-only-note')?.textContent).toContain(
+		'This vault is kept somewhere that will not take a file'
+	);
+
+	unmount(component);
+});
+
+/** A copy somewhere else is offered where Rust says one can be written, and
+ * not for a format a copy would carry with it. */
+it('offers a copy only where one can be written', () => {
+	const component = open({ readOnly: true, readOnlyBecause: 'kdb', copyable: false });
+	flushSync();
+	readOnlyWord().click();
+	flushSync();
+
+	expect(host.querySelector('#read-only-note')?.textContent).toContain('This vault is in KDB');
+	expect(host.querySelector('#read-only-note button')).toBeNull();
+
+	unmount(component);
+});
+
+/** The copy is written by Rust through its own panel, and where it went is
+ * said in the notice "Kept as" is always said in. A panel closed says
+ * nothing. */
+it('keeps a copy from the note and says where', async () => {
+	ipc.saveCopy.mockResolvedValueOnce(null);
+	const component = open({ readOnly: true, readOnlyBecause: 'snapshot', copyable: true });
+	flushSync();
+
+	readOnlyWord().click();
+	flushSync();
+	host.querySelector<HTMLButtonElement>('#read-only-note button')?.click();
+	await vi.waitFor(() => expect(ipc.saveCopy).toHaveBeenCalledTimes(1));
+	await tick();
+	expect(host.querySelector('[data-notice]')).toBeNull();
+
+	ipc.saveCopy.mockResolvedValueOnce({ path: '/Users/someone/Desktop/kept.kdbx', name: 'kept' });
+	readOnlyWord().click();
+	flushSync();
+	host.querySelector<HTMLButtonElement>('#read-only-note button')?.click();
+	await vi.waitFor(() =>
+		expect(host.querySelector('[data-notice]')?.textContent).toContain('Kept as “\u2068kept\u2069”')
+	);
+
+	unmount(component);
+});
+
+/** Escape in the note puts the note away and leaves the entry open: the pane
+ * is what Escape closes everywhere else, and one key is one thing put away. */
+it('closes the note before it closes the entry on Escape', async () => {
+	ipc.entry.mockResolvedValue(entry({ id: kept.id, group: root.id }));
+	const component = open({ readOnly: true, readOnlyBecause: 'snapshot', copyable: true });
+	flushSync();
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('node-3'))
+		?.click();
+	await vi.waitFor(() => expect(ipc.entry).toHaveBeenCalledWith(kept.id));
+	flushSync();
+	const pane = () => host.querySelector('.w-\\[384px\\]');
+	expect(pane(), 'the entry did not open').not.toBeNull();
+
+	readOnlyWord().click();
+	flushSync();
+	readOnlyWord().dispatchEvent(
+		new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+	);
+	flushSync();
+
+	expect(host.querySelector('#read-only-note')).toBeNull();
+	expect(pane(), 'the Escape that closed the note closed the entry too').not.toBeNull();
+
+	window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+	flushSync();
+	expect(pane(), 'the next Escape is the pane’s, and it stayed').toBeNull();
+
+	unmount(component);
+});
+
+/** A copy Rust would not write - a name already taken beside the vault - is
+ * said in the warning notice, and nothing is said to have been kept. */
+it('says why a copy from the note was not written', async () => {
+	ipc.saveCopy.mockRejectedValueOnce({
+		code: 'taken',
+		message: 'there is already a file with that name'
+	});
+	const component = open({ readOnly: true, readOnlyBecause: 'snapshot', copyable: true });
+	flushSync();
+
+	readOnlyWord().click();
+	flushSync();
+	host.querySelector<HTMLButtonElement>('#read-only-note button')?.click();
+	await vi.waitFor(() =>
+		expect(host.querySelector('[data-notice]')?.textContent).toContain(
+			'there is already a file with that name'
+		)
+	);
+	expect(host.querySelector('[data-notice]')?.textContent).not.toContain('Kept as');
+	expect(host.querySelector('[data-notice] use[href="#i-warn"]')).not.toBeNull();
+
+	unmount(component);
+});
+
+/** WebKit gives a button no focus when it is clicked. The note opened by a
+ * pointer over an open entry still takes Escape where the focus is, and the
+ * entry stays. */
+it('closes a note a pointer opened on Escape, and leaves the entry open', async () => {
+	ipc.entry.mockResolvedValue(entry({ id: kept.id, group: root.id }));
+	const component = open({ readOnly: true, readOnlyBecause: 'snapshot', copyable: true });
+	flushSync();
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('node-3'))
+		?.click();
+	await vi.waitFor(() => expect(ipc.entry).toHaveBeenCalledWith(kept.id));
+	flushSync();
+	const pane = () => host.querySelector('.w-\\[384px\\]');
+	expect(pane(), 'the entry did not open').not.toBeNull();
+
+	(document.activeElement as HTMLElement | null)?.blur();
+	readOnlyWord().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+	flushSync();
+	expect(host.querySelector('#read-only-note')).not.toBeNull();
+	(document.activeElement ?? document.body).dispatchEvent(
+		new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+	);
+	flushSync();
+
+	expect(host.querySelector('#read-only-note')).toBeNull();
+	expect(pane(), 'the Escape that closed the note closed the entry too').not.toBeNull();
+
+	unmount(component);
+});
+
+/** A backup made the vault: the strip that was pressed is gone, and the
+ * notice says what became of the file it replaced. */
+it('says what became of the vault file when a backup became the vault', () => {
+	const component = open({
+		news: { message: 'This backup is your vault now. The file it replaced is kept as “x”.' }
+	});
+	flushSync();
+
+	expect(host.querySelector('[data-notice]')?.textContent).toContain(
+		'This backup is your vault now.'
+	);
 
 	unmount(component);
 });

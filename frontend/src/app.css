@@ -65,6 +65,9 @@
 	--tracking-label: 0.14em;
 	--tracking-wordmark: 0.14em;
 	--tracking-mask: 0.25em;
+	/* Not a spacing: the absence of one, which every sentence in the mockup
+	   has, for prose drawn inside a row that spaces its letters. */
+	--tracking-normal: 0em;
 
 	--radius-xs: 4px;
 	--radius-sm: 6px;

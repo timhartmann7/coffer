@@ -27,6 +27,7 @@ beforeEach(() => {
 	host = document.createElement('div');
 	document.body.appendChild(host);
 	ipc.setSettings.mockImplementation((wanted: Chosen) => Promise.resolve(wanted));
+	ipc.snapshots.mockResolvedValue([]);
 });
 
 afterEach(() => host.remove());
@@ -39,6 +40,7 @@ function show(props: Record<string, unknown> = {}) {
 			database: { path: '/Users/someone/Vault/personal.kdbx', name: 'personal' },
 			onSettings: vi.fn(),
 			onChoose: vi.fn(),
+			onLook: vi.fn(),
 			...props
 		}
 	});
@@ -68,20 +70,159 @@ it('draws what was chosen, in words rather than in seconds', () => {
 	expect(chip(IDLE).textContent).toContain('5 minutes');
 	expect(chip(CLIPBOARD).textContent).toContain('1 minute');
 	expect(host.textContent).toContain('/Users/someone/Vault/personal.kdbx');
-	expect(host.textContent).toContain('personal.1–10.bak');
 
 	unmount(component);
 });
 
-/** A vault's file name may hold a right-to-left override, and running into the
- * suffix it drew the suffix backwards. The name is isolated from it. */
-it('keeps the name of the vault apart from the names of its snapshots', () => {
-	const component = show({ database: { path: '/Users/someone/a\u202Eb.kdbx', name: 'a\u202Eb' } });
-	flushSync();
+/** Ten backups beside the open vault, the third of them open now, as Rust
+ * lists them. */
+function backups() {
+	return Array.from({ length: 10 }, (_, at) => ({
+		name: `personal.kdbx.${at + 1}.bak`,
+		index: at + 1,
+		taken: `2026-08-27T18:${String(40 - at).padStart(2, '0')}:00Z`
+	}));
+}
 
-	const name = [...host.querySelectorAll('bdi')].find((each) => each.textContent === 'a\u202Eb');
-	expect(name, 'the name is not isolated').toBeDefined();
-	expect(name?.nextSibling?.textContent).toBe('.1–10.bak');
+function pressed(label: string) {
+	const found = [...host.querySelectorAll('button')].find(
+		(each) => each.textContent?.trim() === label
+	);
+	if (!found) throw new Error(`there is no button called ${label}`);
+	found.click();
+	flushSync();
+	return found;
+}
+
+/** How many backups there are is said at once; the list is under the row only
+ * when asked for, and says which one is open now. A file name is isolated in
+ * its row, whatever it holds. */
+it('counts the backups and lists them only when asked', async () => {
+	ipc.snapshots.mockResolvedValue([
+		...backups(),
+		{ name: 'a\u202Eb.kdbx.11.bak', index: 11, taken: null }
+	]);
+	const component = show({
+		database: { path: '/Users/someone/Vault/personal.kdbx.3.bak', name: 'personal.kdbx.3' }
+	});
+
+	await vi.waitFor(() => expect(host.textContent).toContain('11 copies'));
+	expect(host.textContent).toContain('Automatic backups');
+	expect(host.querySelector('#backups')).toBeNull();
+
+	const opened = pressed('Show');
+	expect(opened.getAttribute('aria-expanded')).toBe('true');
+	expect(opened.getAttribute('aria-controls')).toBe('backups');
+	const list = host.querySelector('#backups');
+	expect(list?.querySelectorAll('li')).toHaveLength(11);
+	expect(list?.querySelectorAll('li')[2].textContent).toContain('Open now');
+	expect([...(list?.querySelectorAll('bdi') ?? [])].map((each) => each.textContent)).toContain(
+		'a\u202Eb.kdbx.11.bak'
+	);
+
+	pressed('Hide');
+	expect(host.querySelector('#backups')).toBeNull();
+	unmount(component);
+});
+
+/** A vault never saved has none, and with nothing chosen there is nothing to
+ * ask Rust about: both say so, and offer nothing to show. */
+it('says none yet for a vault that was never saved, or none chosen', async () => {
+	let component = show();
+	await vi.waitFor(() => expect(ipc.snapshots).toHaveBeenCalledTimes(1));
+	expect(host.textContent).toContain('None yet');
+	expect(
+		[...host.querySelectorAll('button')].map((each) => each.textContent?.trim())
+	).not.toContain('Show');
+	unmount(component);
+
+	ipc.snapshots.mockClear();
+	component = show({ database: null });
+	flushSync();
+	expect(host.textContent).toContain('None yet');
+	expect(ipc.snapshots).not.toHaveBeenCalled();
+	unmount(component);
+
+	ipc.snapshots.mockResolvedValue([backups()[0]]);
+	component = show();
+	await vi.waitFor(() => expect(host.textContent).toContain('1 copy'));
+	unmount(component);
+});
+
+/** "Open to look" is the slot the row was shown at, handed up: the window
+ * above is what locks an open vault on the way. */
+it('opens a backup to look at by its slot', async () => {
+	ipc.snapshots.mockResolvedValue(backups());
+	const onLook = vi.fn().mockResolvedValue(undefined);
+	const component = show({ onLook });
+
+	await vi.waitFor(() => expect(host.textContent).toContain('10 copies'));
+	pressed('Show');
+	host.querySelector<HTMLButtonElement>('[aria-label="Open to look personal.kdbx.2.bak"]')?.click();
+	await vi.waitFor(() => expect(onLook).toHaveBeenCalledWith(2));
+
+	unmount(component);
+});
+
+/** The backup pressed went before the press reached it, and it was the last
+ * one. The list says so and that none are left, rather than vanishing with the
+ * sentence that would have said why. */
+it('says the last backup went, and that none are left', async () => {
+	ipc.snapshots.mockResolvedValueOnce([backups()[0]]).mockResolvedValue([]);
+	const onLook = vi.fn().mockRejectedValue({ code: 'gone', message: 'the database file is gone' });
+	const component = show({ onLook });
+
+	await vi.waitFor(() => expect(host.textContent).toContain('1 copy'));
+	pressed('Show');
+	host.querySelector<HTMLButtonElement>('[aria-label="Open to look personal.kdbx.1.bak"]')?.click();
+
+	await vi.waitFor(() => expect(host.textContent).toContain('No backups are left.'));
+	expect(host.textContent).toContain('That backup is not there any more.');
+	expect(host.textContent).toContain('None yet');
+	pressed('Hide');
+	expect(host.querySelector('#backups')).toBeNull();
+
+	unmount(component);
+});
+
+/** The password row writes the vault, which moves the backups: the count is
+ * read again after a new password and after the old backups are removed, so
+ * it never says ten beside a sentence that says they went. */
+it('reads the backups again after the password row changes them', async () => {
+	ipc.snapshots.mockResolvedValueOnce(backups()).mockResolvedValue([backups()[0]]);
+	ipc.removeOldSnapshots.mockResolvedValue({ gone: 10, left: 0, refused: null });
+	const component = show({ rekey: vi.fn().mockResolvedValue(10) });
+	await vi.waitFor(() => expect(host.textContent).toContain('10 copies'));
+
+	pressed('Change…');
+	const fields = [...host.querySelectorAll<HTMLInputElement>('input[type="password"]')];
+	expect(fields).toHaveLength(3);
+	for (const [at, value] of ['the one it had', 'a new one', 'a new one'].entries()) {
+		fields[at].value = value;
+		fields[at].dispatchEvent(new Event('input', { bubbles: true }));
+	}
+	flushSync();
+	host.querySelector('form')?.dispatchEvent(new Event('submit', { cancelable: true }));
+	await vi.waitFor(() => expect(host.querySelector('[data-confirm]')).not.toBeNull());
+	expect(ipc.snapshots).toHaveBeenCalledTimes(2);
+
+	pressed('Remove old backups');
+	await vi.waitFor(() => expect(host.textContent).toContain('Removed 10 old backups.'));
+	expect(ipc.snapshots).toHaveBeenCalledTimes(3);
+	expect(host.textContent).toContain('1 copy');
+	expect(host.textContent).not.toContain('10 copies');
+
+	unmount(component);
+});
+
+/** A folder that would not be read is said on the line every refusal here
+ * is said on, and nothing is listed. */
+it('says why the backups could not be read', async () => {
+	ipc.snapshots.mockRejectedValue({ code: 'io', message: 'the folder would not be read' });
+	const component = show();
+
+	await vi.waitFor(() => expect(host.textContent).toContain('the folder would not be read'));
+	expect(host.textContent).toContain('None yet');
 
 	unmount(component);
 });

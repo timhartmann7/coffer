@@ -19,11 +19,12 @@
 </script>
 
 <script lang="ts">
-	import { asFailure, setSettings } from '$lib/ipc';
+	import { asFailure, setSettings, snapshots } from '$lib/ipc';
 	import { named } from '$lib/duration';
 	import { answer } from '$lib/menu.svelte';
 	import { LOOKS } from '$lib/theme';
-	import type { Database, Settings } from '$lib/model';
+	import type { Database, Settings, Snapshot } from '$lib/model';
+	import Backups from './Backups.svelte';
 	import Choice from './Choice.svelte';
 	import Icon from './Icon.svelte';
 	import MasterPassword from './MasterPassword.svelte';
@@ -44,6 +45,7 @@
 		database,
 		onSettings,
 		onChoose,
+		onLook,
 		rekey,
 		copyBeside = false
 	}: Handed & {
@@ -64,9 +66,46 @@
 		 * presses again.
 		 */
 		onChoose: () => Promise<void>;
+		/**
+		 * Opens the backup the list showed at this slot, to look at. With a
+		 * vault open that is a lock first, which takes this window with it. A
+		 * refusal is thrown back to the list.
+		 */
+		onLook: (index: number) => Promise<void>;
 	} = $props();
 
 	let failure = $state<string | null>(null);
+
+	/** The backups beside the chosen vault, as Rust last listed them. */
+	let backups = $state<Snapshot[]>([]);
+	/** Whether they are drawn under their row. */
+	let showing = $state(false);
+
+	/** How many there are, in the words the row says it in. */
+	const counted = $derived(
+		backups.length === 0 ? 'None yet' : backups.length === 1 ? '1 copy' : `${backups.length} copies`
+	);
+
+	/** The file name of the one open now, when it is one of them. */
+	const openNow = $derived(database?.path.split('/').at(-1) ?? null);
+
+	/** Reads the backups beside the chosen vault again. A list that cannot be
+	 * read is said where every other refusal here is. */
+	async function listBackups() {
+		try {
+			backups = await snapshots();
+		} catch (thrown) {
+			backups = [];
+			failure = asFailure(thrown).message;
+		}
+	}
+
+	// Read whenever the settings open, and again for another vault: a save
+	// since the last reading is another backup.
+	$effect(() => {
+		backups = [];
+		if (database) void listBackups();
+	});
 
 	async function pick() {
 		failure = null;
@@ -170,23 +209,47 @@
 			</button>
 		</div>
 
+		<!-- The password row writes the vault, which moves the backups: a new
+		     password is a save, and old backups removed are gone. The list is
+		     read again after either, so the count and the rows are the disk's. -->
 		{#if rekey}
-			<MasterPassword {rekey} {copyBeside} />
+			<MasterPassword {rekey} {copyBeside} onBackups={listBackups} />
 		{/if}
 
 		<div class="flex items-center justify-between gap-6 px-8 py-5">
 			<div>
-				<div class="text-row text-txt">Snapshots before a write</div>
+				<div class="text-row text-txt">Automatic backups</div>
 				<div class="mt-1 text-fine text-txt3">
-					Ten copies beside the vault; the oldest is pushed out
+					Before every save, the vault as it was is kept beside it. The ten newest stay.
 				</div>
 			</div>
-			<span class="shrink-0 font-mono text-fine text-txt3">
-				<!-- Isolated: a right-to-left override in the vault's name drew the
-				     suffix after it backwards. -->
-				{#if database}<bdi>{database.name}</bdi>.1–10.bak{:else}1–10.bak{/if}
-			</span>
+			<div class="flex shrink-0 items-center gap-3">
+				<span class="font-mono text-fine text-txt3">{counted}</span>
+				{#if backups.length > 0 || showing}
+					<button
+						type="button"
+						aria-expanded={showing}
+						aria-controls="backups"
+						onclick={() => (showing = !showing)}
+						class="h-9 shrink-0 rounded-full border border-hairline px-4 text-small text-txt2 transition-colors hover:border-txt4 hover:text-txt active:bg-raised"
+					>
+						{showing ? 'Hide' : 'Show'}
+					</button>
+				{/if}
+			</div>
 		</div>
+
+		{#if showing}
+			<div id="backups" class="px-8 pb-4">
+				<Backups
+					{backups}
+					act="Open to look"
+					open={openNow}
+					onOpen={onLook}
+					onAgain={listBackups}
+				/>
+			</div>
+		{/if}
 	</div>
 
 	{#if failure}

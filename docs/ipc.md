@@ -47,7 +47,7 @@ the first over all ten. Rust reads it off the value in
 
 | Command | Takes | Answers |
 |---|---|---|
-| `status` | | the chosen database, whether it is open, how many entries, whether it can be written, why it locked, whether that lock saved something being typed and whether some of it was kept beside the value it was for, whether the vault it closed had been given a new master password, the unsaved copy sitting beside it, the chosen file as it stands on disk, the vault it was copied from when it is a lock's copy, and - when nothing is remembered - a vault found in Coffer's own folder |
+| `status` | | the chosen database, whether it is open, how many entries, whether it can be written and why not, whether what is open can be written to a file somewhere else, why it locked, whether that lock saved something being typed and whether some of it was kept beside the value it was for, whether the vault it closed had been given a new master password, what became of the vault's file when that vault had just been made from a backup, whether the backup asked for on the way was pushed out by that lock's save, the unsaved copy sitting beside it, the chosen file as it stands on disk, the vault it was copied from when it is a lock's copy, the vault it was taken beside, why it is open and the vault's file as it stands when it is one of that vault's backups, and - when nothing is remembered - a vault found in Coffer's own folder |
 | `choose_database` | | the database the user picked, or nothing if they closed the dialog |
 | `choose_found` | | the vault the last `status` found in Coffer's own folder, now chosen |
 | `unlock` | the master password, as the raw body | nothing |
@@ -57,13 +57,14 @@ the first over all ten. Rust reads it off the value in
 | `reveal` | `entry`, `field` | the value of that field |
 | `copy` | `entry`, `field`, `range` | the seconds until Coffer clears the pasteboard |
 | `open_url` | `entry` | nothing |
-| `snapshots` | | the `.bak` files beside the chosen database, newest first |
-| `choose_snapshot` | `index` | the snapshot now chosen |
+| `snapshots` | | the `.bak` files beside the chosen database - or, when it is one of them, beside the vault it was taken from - newest first; Rust keeps the list it answered |
+| `choose_snapshot` | `index` | what is chosen afterwards: the snapshot that list showed at that slot, wherever saves have moved it since, or the vault when the lock on the way kept its work elsewhere, lost it or pushed the snapshot out |
 | `choose_rescue` | | the unsaved copy now chosen |
 | `discard_rescue` | | |
 | `put_back_rescue` | | the vault, now at its own name again |
 | `promote_rescue` | | the vault, which is what is open now |
-| `leave_rescue` | | what is chosen afterwards: the vault the copy was taken from, or the copy when the lock that closed it kept its work elsewhere or lost it |
+| `adopt_snapshot` | | the vault, which is what is open now, and what became of its file: kept as the newest snapshot, or beside the vault under a name of its own |
+| `back_to_vault` | | what is chosen afterwards: the vault the copy or the snapshot was taken from, or the copy when the lock that closed it kept its work elsewhere or lost it |
 
 Everything slice 3 added:
 
@@ -105,7 +106,7 @@ Everything slice 3 added:
 | `generate_password` | `recipe`, `purpose` | a password, the kinds asked for that it lacks, and the generator as that recipe settles it |
 | `save` | | nothing |
 | `save_over` | | nothing |
-| `save_copy` | | the file it wrote, or nothing if the panel was closed |
+| `save_copy` | | the file it wrote, or nothing if the panel was closed; `taken` for a name that holds a file, `refused` for a name Coffer keeps beside a vault |
 | `reload` | `sequence` | the tree |
 | `rival` | | when the file on disk was written and how many entries it holds |
 
@@ -711,7 +712,7 @@ bytes, and the question is about what the entry has now.
 
 Nothing that names a file comes from the webview. `choose_database` opens the
 system's own dialog and keeps the answer; `choose_snapshot` takes a slot number
-and builds the path from the database the user already chose; `choose_found`
+from the list Rust last sent and opens the file that list named; `choose_found`
 takes the vault the session is holding from the last `status`, and
 `choose_existing` the place it is holding for a new vault. There is no command
 that opens a path the frontend sends.
@@ -735,7 +736,8 @@ the screen branches on: `wrongCredentials`, `notADatabase`, `unsupportedFormat`,
 Where the right words depend on what the screen showed, the window writes the
 sentence and the message is only a description of the refusal, kept out of
 sight: `needsOpening` from `put_back_rescue` (the unlock screen's card), and
-`externalChange` from `promote_rescue` (the banner over a copy). One sentence
+`externalChange` from `promote_rescue` and `adopt_snapshot` (the strip over a
+copy or a backup, which share the sentence in `replacing.ts`). One sentence
 lives in one place.
 
 `versionsChanged` is a position read at a revision the vault has moved on from
@@ -755,6 +757,12 @@ came too late has (see above).
 file, and nothing was moved: the unlock screen offers to open the copy instead
 (see below).
 
+`gone` from `choose_snapshot` is a backup the list showed that has since been
+pushed out of the chain or taken away, or a slot no list showed. Nothing was
+chosen, and a vault that was open was not locked: the list says the backup is
+not there any more and is read again, and says so as well when nothing is left
+in it (see Backups).
+
 `taken` is `create_database` finding a file where the new vault would go, or the
 copy a lock left of a vault by that name beside it. The creation screen reads
 the place again with `target`, says what is there in its own sentence, which
@@ -762,7 +770,8 @@ names the place and the way on, and hands back the two passwords it emptied on
 submit: this is the one refusal that says nothing about them. It is also
 `put_back_rescue` finding something at the vault's name by the time the copy
 would go there, and the unlock screen says so in a sentence about the move (see
-below).
+below); and `save_copy` aimed at a name that holds a file, which is said in
+Rust's words where the copy was pressed for.
 
 `wrongCredentials` from `change_master_password` is the current password typed
 wrong, and is said under the form, never on the unlock screen.
@@ -784,6 +793,17 @@ something: `reload` takes the version on disk and drops what is in the window,
 `save_copy` writes what is in the window to a file of its own first, and
 `save_over` writes over the file - with the version that was there going into
 `<database>.1.bak` on the way, so it can still be opened afterwards.
+
+**A copy never replaces a file.** `save_copy` takes no snapshot of what is at
+the name the panel answered with, and the panel opens in the vault's own folder,
+where the vault a backup was taken of, the copy a lock left and a file a backup
+made the vault kept aside all end in `.kdbx` and pass its filter. So a name that
+holds anything - a link that leads nowhere included - is refused with `taken`
+after the panel's own "Replace" was answered, as `create_database` refuses one,
+and a name Coffer keeps beside a vault (a snapshot's, a lock's copy's) with
+`refused`. The window says Rust's sentence where the press was. The copy is
+encrypted beside the name first and the name taken only then, so nothing at it
+is ever part of a copy.
 
 A rejected command rejects with that object and not with an `Error`, so
 `instanceof` and `.message` are both useless on the raw value. `asFailure` in
@@ -1051,7 +1071,9 @@ screen), a file (`file`) and a revealed value (`value`, with the positions of
 the part selected). `at` is where the pointer was, in the window's points. Rust
 reads the vault (`context::offered`): whether there is a login or a password to
 copy, whether the address is one it would open, whether it writes this vault
-back, what deleting the thing does, whether the bin holds anything. An item
+back (`read_only`, whichever of the four reasons in Backups), whether its files
+can be read out (`files_readable`: not a `kdbx3` vault's), what deleting the
+thing does, whether the bin holds anything. An item
 that does not apply is drawn greyed out, so nothing is offered that the command
 behind its button would refuse. Something the vault does not have - gone a
 moment before, or an id that is not one - is refused `noSuchEntry`, and the
@@ -1237,6 +1259,90 @@ opens with the new one, until the next unlock or another file is chosen. The
 old-backups question does not come back with it: the answer that asked it went
 with the window, and a later change counts the whole chain again.
 
+## Backups, and a vault Coffer does not write
+
+The ten snapshots a save leaves beside the vault are called backups on the
+screen, which is the word a reader has for them. They are listed wherever they
+are offered - on the screen for a vault file that will not open, and in the
+settings - and any of them can be opened to look at and made the vault.
+
+**A backup is opened by the file that was shown, not by its slot.** `snapshots`
+answers with slot numbers, and Rust keeps what each one named: the file's
+inode, device, length and time, as `snapshot::Taken` holds them. Every save
+renames every backup one slot on, so a slot read before a save names the
+neighbour after it. `choose_snapshot` finds the file that was shown wherever
+the chain has moved it, and answers `gone` when it has been pushed out or was
+never listed. No path crosses: the window sends the slot it was shown.
+
+**Looking at a backup with a vault open is a lock first.** The settings list the
+backups of whatever is open and offer each one to look at. With a vault open,
+`choose_snapshot` locks it the ordinary way - what was being typed written, a
+save tried, a copy beside the vault when the file will not take it - and only
+when that lock kept everything where it belongs does the session point at the
+backup, with the key file kept, which is what `back_to_vault` does for a copy.
+A backup that has gone since the list was read is answered `gone` before
+anything is locked: the vault is never closed for a backup that is not there.
+When the lock kept its work beside the vault or lost it, the session stays on
+the vault, and its unlock screen says what the lock left. When its own save
+pushed the backup out of the chain - the oldest, with work the window had not
+saved - the session stays on the vault as well, and `status` sends
+`backupGone`, so that its unlock screen says why it is the vault's and not the
+backup's. The window sends what is being typed before it asks, as it does
+before a lock, and is gone by the time the answer comes. The command is
+answered off the drawing thread, like every command that reaches the lock.
+The settings read the list again after anything on the same screen moved it:
+a new master password, which is a save, and old backups removed.
+
+**Why a backup is open is Rust's to say.** `status` sends `snapshot` while the
+chosen file is one of the vault's backups: the vault's file name, when the
+backup was written, the name the vault's file will be kept under as the newest
+backup (`keptAs`), the vault's file as it stands (`vaultFile`), and `because`.
+That is `unopened` when the last unlock of the file chosen before was refused
+as damaged, not a database or gone - the refusals the unlock screen answers with
+the list - and `asked` otherwise. A backup that would not open either passes its
+reason on to the next one chosen; a wrong password is not a reason, since the
+file opens with another. Names and times, as for a copy; the strip over the
+backup and its unlock screen's card are drawn from them.
+
+**A backup becomes the vault in one press, and nothing is deleted on the way.**
+`adopt_snapshot` asks for no password: the backup opened with the one the vault
+had when it was taken, and the vault opens with that one from then on - which,
+after a change of the master password, is the old one, so the strip says so
+before the press. It is held to how `status` last said the vault's file stood,
+like `promote_rescue`, and refused with `externalChange` otherwise. A file that
+opens with the backup's key is written over the ordinary way and is the newest
+backup afterwards. One that does not - damaged, under another password, not a
+vault - is first given a name of its own beside the vault,
+`<vault>.replaced-YYYY-MM-DD.kdbx`, numbered past any name already taken, never
+written over and never removed, and is the newest backup as well. A vault whose
+file has gone takes the backup at its name. The answer says which of the three
+happened, by file name (`keptAs`, `setAside`), and the window says it in a
+notice. The vault is written down for the next launch and stays open. A refusal
+before the write touches nothing, and takes back the name it had just given
+the vault's file. A write that failed after the backups moved on leaves them
+moved, with the open backup followed to its new slot, or kept open from memory
+when it was the oldest; the backup is still open, read only, either way. A
+backup of the copy a lock left is refused with `refused`: it would go over that
+copy, which holds the only version of work its vault has not got.
+
+A lock that lands while the press runs - the idle deadline, sleep, Cmd+L, a
+backup asked for from the settings - takes the window before its notice can say
+what became of the file. The session keeps the answer with the vault, and the
+lock that ends it hands it to `status` as `adopted`, which the unlock screen
+says, with the password the vault opens with now, until the vault opens again;
+nothing is kept once anything else has happened in the vault, since a change is
+a reader at the window that said it and a save moves the name a file was kept
+under. A backup asked for, or a way back to the vault, pressed while the press
+ran was about the backup, which is the vault by then: both are let go, and the
+lock that follows stays on the vault.
+
+**Read only says why.** `status` sends `readOnlyBecause` beside `readOnly` -
+`snapshot`, `place`, `kdb` or `kdbx3` - and `copyable`, Rust's answer to whether
+`save_copy` would write what is open: everything but the two formats Coffer
+does not write, whose bytes a copy would carry. The status bar's "Read only" is
+a button whose note says the reason in words, and offers `save_copy` only where
+`copyable` is true.
+
 ## Why the shape of a command is what it is
 
 **`unlock` and `choose_database` are `async`.** A plain `#[tauri::command]` runs
@@ -1320,7 +1426,9 @@ still holding every value the reader looked at, in a heap nothing in this
 process can reach.
 
 One route in, whatever asked. The idle deadline, the machine's own
-notifications, the button and the close button all post to
+notifications, the button, the close button and the two presses that leave an
+open file for another (`back_to_vault`, and `choose_snapshot` with a vault
+open) all post to
 [`autolock::timer`](../crates/vault-gui/src/autolock/timer.rs), which is what
 calls [`lock.rs`](../crates/vault-gui/src/lock.rs); a close calls it once more
 after the timer, for an unlock still in flight (see The menu bar). That order is
@@ -1449,13 +1557,6 @@ read the vault. The status bar says `Saving…`. If that ever becomes a wait
 worth avoiding, the answer is to hold the write behind a short delay rather than
 to let two of them overlap.
 
-**A snapshot opened from the unlock screen becomes the chosen database for the
-rest of the session,** and it is read only. Writing to a `.bak` would put the
-change in a file the next save of the database beside it rotates away, so every
-change is refused with `readOnly` and `save_copy` is the way out: it writes what
-is in the window to a file of the reader's choosing, which then opens like any
-other database.
-
 **A lock writes the vault out before it wipes it.** A vault is dirty exactly
 when saving is what failed, so locking on its own would be a session's work
 ended by a timer. What the reader was typing and had not finished goes in first,
@@ -1505,7 +1606,7 @@ said so, and `promote_rescue` is held to it.
   `externalChange` and nothing written, and the window reads `status` again so
   that the banner says how it stands now before the reader presses again. A
   refusal or a failure before the write lands leaves both files as they were,
-  and the copy still open. `leave_rescue` goes back instead: with the copy open
+  and the copy still open. `back_to_vault` goes back instead: with the copy open
   it locks, so what the copy holds is written into the copy on the way out.
   Only when that lock kept nothing beside the copy - nothing to write, or the
   copy took it - is the session pointed at the vault, and the window that comes
@@ -1550,7 +1651,8 @@ on a read-only disk image, inside a Time Machine snapshot, on a stick macOS
 mounted read-only or on a share the reader may only read cannot have a lock file
 written beside it, and used not to open at all. It opens, `read_only` is true in
 `status`, every change answers `readOnly`, and `save_copy` writes what is in the
-window somewhere the reader can write.
+window somewhere the reader can write. `readOnlyBecause` is `place`, and the
+status bar's note offers that copy (see Backups).
 
 ## Where this departs from SPEC.md
 
@@ -1581,13 +1683,23 @@ name:
 
 - Lock when this Mac goes to sleep, and Lock when the screen locks: section 7's
   two triggers, which a reader may turn off one at a time.
-- Snapshots before a write: where the ten copies section 7 asks for are, so a
-  reader can find them.
+- Automatic backups: how many of the ten copies section 7 asks for are beside
+  the vault, and, shown, each of them by when it was taken, to open and look
+  at, so a reader can find them and get back to one (see Backups).
 - Master password, drawn only while a vault Coffer can write is open, and not
   inside the copy a lock left until it is made the vault (see The master
   password); beside such a copy it says what to do with the copy first.
   Section 3 rules out recovering one and says nothing against changing one, and
   a reader whose password was seen had nowhere to change it but another client.
+
+**The unlock screen offers every backup, not only the most recent.** `SPEC.md`
+section 8 offers the most recent `.bak` for a corrupt file. When that one is
+damaged too - the power cut that broke the vault can break the save before it -
+the reader had nowhere to go, so all of them are listed, newest first, and the
+most recent is still the first offer. The same list is offered for a vault file
+that is not there at all, which section 8 does not name, and one opened backup
+can become the vault: section 3's "no merge" holds, because it is one whole file
+chosen over another, and the file it replaces is kept (see Backups).
 
 **TypeScript needs two majors installed.** `svelte-check` will not run against
 TypeScript 7 unless 6 is installed beside it and the check is given `--tsgo`,

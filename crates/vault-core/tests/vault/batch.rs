@@ -376,7 +376,7 @@ fn a_batch_erasure_of_two_entries_sharing_a_file_erases_both_and_keeps_every_oth
     {
         let mut vault = open(&path, SECRET);
         assert!(
-            !vault.is_read_only(),
+            vault.read_only().is_none(),
             "the import is not a file Coffer writes"
         );
         let (a, b) = (entry_titled(&vault, "a").id, entry_titled(&vault, "b").id);

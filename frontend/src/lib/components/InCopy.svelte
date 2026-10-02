@@ -1,17 +1,15 @@
 <script lang="ts">
 	import { at } from '$lib/format';
-	import { asFailure } from '$lib/ipc';
 	import type { CopyOf } from '$lib/model';
-	import Icon from './Icon.svelte';
+	import { refusal } from '$lib/replacing';
+	import Strip from './Strip.svelte';
 
 	/**
 	 * What a vault opened from the copy a lock left says about itself, across
 	 * the top of the window for as long as it is open, and the two ways out.
 	 *
-	 * Everything changed here changes the copy, and the line that says so is
-	 * the first thing under the title bar rather than a word in the status
-	 * line: a reader who forgot which file this is would be editing the one
-	 * they did not mean to.
+	 * Everything changed here changes the copy, and the strip says so (see
+	 * `Strip.svelte`).
 	 *
 	 * "Make this my vault" is the accent, because it is what the copy was
 	 * opened to decide. It goes over the vault's file, so the sentence beside
@@ -50,13 +48,6 @@
 	});
 	const changed = $derived(at(copy.vaultFile.written, now));
 
-	/** What a refusal says, in words about the banner when it is about what
-	 * the banner said. */
-	const refusedBecause: Record<string, string> = {
-		externalChange:
-			'Your vault file changed after this was shown, so nothing was replaced. What is said above is how it stands now.'
-	};
-
 	/** One press at a time: either answer ends what this banner is about. */
 	async function run(which: 'promoting' | 'leaving', action: () => Promise<void>) {
 		if (busy) return;
@@ -65,38 +56,31 @@
 		try {
 			await action();
 		} catch (thrown) {
-			const refused = asFailure(thrown);
-			failure = refusedBecause[refused.code] ?? refused.message;
+			failure = refusal(thrown);
 		} finally {
 			busy = null;
 		}
 	}
 </script>
 
-<div
-	data-copy
-	class="flex shrink-0 items-start gap-3 border-b border-warn/35 bg-warnwash px-4 py-3"
->
-	<Icon name="warn" class="mt-0.5 h-4 w-4 shrink-0 text-warn" />
-	<div class="min-w-0 flex-1">
-		<p class="text-small text-txt">
-			{heading} What you change here changes the copy, not your vault.
-		</p>
-		<p class="mt-1 text-fine leading-relaxed text-txt2">
-			{#if !copy.vaultFile.there}
-				<bdi class="font-mono">{copy.vault}</bdi> is not there any more, so making this your vault puts
-				the copy in its place.
-			{:else}
-				Making this your vault puts it in place of <bdi class="font-mono">{copy.vault}</bdi
-				>{#if changed}, last changed {changed}{/if}, which is kept as
-				<bdi class="font-mono">{copy.keptAs}</bdi> until later saves push it out of the snapshots.
-			{/if}
-		</p>
-		{#if failure}
-			<p class="mt-1 line-clamp-3 text-fine leading-relaxed break-words text-danger">{failure}</p>
+<Strip>
+	<p class="text-small text-txt">
+		{heading} What you change here changes the copy, not your vault.
+	</p>
+	<p class="mt-1 text-fine leading-relaxed text-txt2">
+		{#if !copy.vaultFile.there}
+			<bdi class="font-mono">{copy.vault}</bdi> is not there any more, so making this your vault puts
+			the copy in its place.
+		{:else}
+			Making this your vault puts it in place of <bdi class="font-mono">{copy.vault}</bdi
+			>{#if changed}, last changed {changed}{/if}, which is kept as
+			<bdi class="font-mono">{copy.keptAs}</bdi> until later saves push it out of the snapshots.
 		{/if}
-	</div>
-	<div class="flex shrink-0 gap-2">
+	</p>
+	{#if failure}
+		<p class="mt-1 line-clamp-3 text-fine leading-relaxed break-words text-danger">{failure}</p>
+	{/if}
+	{#snippet actions()}
 		<button
 			type="button"
 			onclick={() => run('leaving', onBack)}
@@ -115,5 +99,5 @@
 		>
 			{busy === 'promoting' ? 'Making it your vault…' : 'Make this my vault'}
 		</button>
-	</div>
-</div>
+	{/snippet}
+</Strip>

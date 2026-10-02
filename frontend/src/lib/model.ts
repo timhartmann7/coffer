@@ -63,6 +63,11 @@ export interface Status {
 	entries: number;
 	/** Whether this database can be written back at all. */
 	readOnly: boolean;
+	/** Which of the reasons it cannot be, while one that cannot is open. */
+	readOnlyBecause: ReadOnlyBecause | null;
+	/** Whether what is open can be written to a file somewhere else with
+	 * `saveCopy`: anything but a format Coffer will not write. */
+	copyable: boolean;
 	/** The unsaved copy sitting beside the database Coffer will open next, when
 	 * a lock had to write one. Read off the disk rather than remembered, so a
 	 * copy left by a run that has since quit is still offered. */
@@ -78,6 +83,9 @@ export interface Status {
 	/** The vault the chosen database was copied from, when it is the copy a
 	 * lock left. */
 	copy: CopyOf | null;
+	/** The vault the chosen database was taken beside, when it is one of its
+	 * backups. */
+	snapshot: SnapshotOf | null;
 	/** Whether the last lock found text the reader was still typing and saved
 	 * it into the vault with everything else. It does not say which entry: after
 	 * a lock nothing of the vault is left to say it with. */
@@ -90,6 +98,15 @@ export interface Status {
 	 * while it was open. The window that said so went with the lock, and a
 	 * change that finished as the vault locked may never have been said. */
 	rekeyed: boolean;
+	/** What became of the vault's file, when the vault the last lock closed had
+	 * just been made from one of its backups and nothing had happened in it
+	 * since. The notice that said so went with the window, and a lock that
+	 * landed while the press ran took it before it could. */
+	adopted: Adopted | null;
+	/** Whether the backup the reader asked to look at from the settings was
+	 * pushed out of the chain by the save of the lock on the way to it, which
+	 * left the vault chosen. */
+	backupGone: boolean;
 	/** Why the vault that was open is not open any more, when it is worth
 	 * saying. A lock the reader asked for has nothing to explain. */
 	lockedBy: 'idle' | 'sleeping' | 'screenLocked' | 'sessionSwitched' | null;
@@ -125,6 +142,47 @@ export interface CopyOf {
 	/** The vault's file as it stands, which the copy would go over or, when it
 	 * has gone, take the name of. */
 	vaultFile: OnDisk;
+}
+
+/**
+ * Why a database cannot be written back:
+ * - `snapshot`: one of the backups Coffer keeps beside a vault;
+ * - `place`: kept somewhere that will not take a file;
+ * - `kdb`: the older format Coffer reads and does not write;
+ * - `kdbx3`: KDBX 3 holding files, which Coffer cannot write back whole.
+ * Only the last two refuse a copy somewhere else.
+ */
+export type ReadOnlyBecause = 'snapshot' | 'place' | 'kdb' | 'kdbx3';
+
+/** The vault a chosen database was taken beside, when it is one of its
+ * backups. Names and times only: the paths stay in Rust. */
+export interface SnapshotOf {
+	/** The vault's file name, which is the file the backup would go over. */
+	vault: string;
+	/** When the backup's file was written, which is when the vault was as the
+	 * backup holds it. */
+	taken: string | null;
+	/** What the vault's file is called once the backup has gone over it, when
+	 * it opens with the backup's password: the newest snapshot. */
+	keptAs: string;
+	/** The vault's file as it stands, which the backup would go over or, when
+	 * it has gone, take the name of. */
+	vaultFile: OnDisk;
+	/** Why the backup is open: the vault's file would not open or was not
+	 * there, or the reader asked to look. */
+	because: 'unopened' | 'asked';
+}
+
+/** A backup made the vault: the vault, which is what is open now, and what
+ * became of the file it replaced, by name. */
+export interface Adopted {
+	database: Database;
+	/** The file it replaced opened with the backup's password, and is the
+	 * newest snapshot under this name. */
+	keptAs: string | null;
+	/** The file it replaced would not open with the backup's password, and is
+	 * kept beside the vault under this name, which nothing removes. */
+	setAside: string | null;
 }
 
 /** A snapshot Coffer took before one of its own saves. */
