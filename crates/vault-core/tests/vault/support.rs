@@ -10,8 +10,8 @@ use std::process::{Command, Stdio};
 use keepass::{Database, DatabaseKey};
 use zeroize::Zeroizing;
 
-use vault_core::model::EntryId;
-use vault_core::{Attached, LockPolicy, MasterKey, Vault};
+use vault_core::model::{EntryId, GroupId, Project, fields};
+use vault_core::{Attached, LockPolicy, MasterKey, NewValue, Vault};
 
 /// Set this to run the suite on a machine with no KeePassXC. Everything that
 /// needs an external implementation is skipped, and the round-trip criterion
@@ -118,6 +118,46 @@ pub fn entry_titled(vault: &Vault, title: &str) -> vault_core::model::Entry {
     vault
         .entry(found.remove(0).id)
         .expect("the entry the tree named is in the database")
+}
+
+/// The folder with this id, wherever it sits in the tree.
+pub fn folder(tree: &Project, id: GroupId) -> Option<&Project> {
+    if tree.id == id {
+        return Some(tree);
+    }
+    tree.sections.iter().find_map(|section| folder(section, id))
+}
+
+/// The folder holding a folder, wherever the two sit in the tree.
+pub fn holder(tree: &Project, id: GroupId) -> Option<GroupId> {
+    if tree.sections.iter().any(|section| section.id == id) {
+        return Some(tree.id);
+    }
+    tree.sections.iter().find_map(|section| holder(section, id))
+}
+
+/// The file as the library reads it, with nothing of Coffer's in between,
+/// which is what another client finds there.
+pub fn library(path: &Path, secret: &str) -> Database {
+    let mut file = std::fs::File::open(path).expect("the file opens");
+    Database::open(&mut file, DatabaseKey::new().with_password(secret))
+        .expect("the library reads it")
+}
+
+/// An entry with a title, made where it is asked for.
+pub fn made(vault: &mut Vault, group: GroupId, title: &str) -> EntryId {
+    let id = vault.create_entry(group).expect("the entry is made");
+    vault
+        .set_field(id, fields::TITLE, NewValue::Open(title.to_owned()))
+        .expect("the title is written");
+    id
+}
+
+/// An empty vault of [`built`]'s, in a scratch directory of its own.
+pub fn cheap(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let path = built(scratch.path(), name, |_| {});
+    (scratch, path)
 }
 
 /// The one folder with this name, wherever it sits.

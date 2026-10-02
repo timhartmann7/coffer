@@ -114,6 +114,17 @@ list is in the spec.
   search field instead. With the sheet up, Shift+Tab to the title bar's Lock
   button and Cmd+C copies nothing and Escape puts the sheet away, not the
   entry.
+- Drag a row of the list onto a folder, onto TextEdit and onto the Desktop: the
+  folder takes it and the notice says so; TextEdit and the Finder take nothing
+  and draw no drop badge, because nothing went to the drag pasteboard. The same
+  for a folder dragged out of the tree. Rest on a folded folder: it opens. Escape
+  mid-drag: nothing moves, and the pane and the search stay. A drag that ends
+  over the empty part of the folders pane leaves the open entry where it was,
+  and a row pressed without moving still opens.
+- The line above an entry's title: a press opens the folder list with the keys
+  in its filter, Return moves the entry, ⌘Z takes it back, and VoiceOver reads
+  the line that is chosen. In "All entries", "+ Entry" and Cmd+N open "Put it
+  in" on the folder the last new entry went into.
 - Cmd+W and the red button, with a vault open and a value typed a moment before:
   the window goes, Coffer stays in the Dock, the lock file beside the vault is
   gone, the Dock icon brings back the unlock screen where the window was, and

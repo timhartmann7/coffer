@@ -20,8 +20,10 @@
 		open,
 		note,
 		before,
+		lifted,
 		onOpen,
-		onDismiss
+		onDismiss,
+		onPress
 	}: {
 		rows: EntryRow[];
 		open: string | null;
@@ -31,12 +33,17 @@
 		note?: (row: EntryRow) => string;
 		/** Rows of another kind at the top of the list, scrolled with it. */
 		before?: Snippet;
+		/** The rows being dragged, which keep the plane they are lifted on. */
+		lifted?: ReadonlySet<string>;
 		/** Opens the entry, handed the row that was pressed: it is what the pane
 		 * is drawn from until Rust has read the entry. */
 		onOpen: (row: EntryRow) => void;
 		/** What the empty part of the list under the rows does: it puts the open
 		 * entry away, the way pressing Escape does. */
 		onDismiss: () => void;
+		/** A press on a row, which a drag may start from. Left out where
+		 * nothing may be moved. */
+		onPress?: (event: PointerEvent, row: EntryRow) => void;
 	} = $props();
 
 	/**
@@ -69,7 +76,9 @@
 		<button
 			type="button"
 			onclick={() => onOpen(row)}
-			class="relative mb-1 block w-full overflow-hidden rounded-sm border px-3 py-2.5 text-left transition {here
+			onpointerdown={(event) => onPress?.(event, row)}
+			class="relative mb-1 block w-full overflow-hidden rounded-sm border px-3 py-2.5 text-left transition {here ||
+			lifted?.has(row.id)
 				? 'border-hairline bg-raised'
 				: 'border-transparent hover:border-hairline hover:bg-raised/50'}"
 		>

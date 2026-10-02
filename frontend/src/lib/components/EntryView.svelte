@@ -34,6 +34,7 @@
 	import Changer from './Changer.svelte';
 	import Confirm from './Confirm.svelte';
 	import Editable from './Editable.svelte';
+	import FolderLine from './FolderLine.svelte';
 	import Heading from './Heading.svelte';
 	import Icon from './Icon.svelte';
 	import InBin from './InBin.svelte';
@@ -64,6 +65,7 @@
 		onClose,
 		onDelete,
 		onPutBack,
+		onMove,
 		onFieldRemoved,
 		onFailure
 	}: {
@@ -94,6 +96,9 @@
 		onDelete: () => void;
 		/** Takes the entry out of the recycle bin. */
 		onPutBack: () => void;
+		/** Moves the entry to another folder, or to the top of the vault; the
+		 * window says so and offers it back. */
+		onMove: (into: string) => void;
 		/** One of the reader's own fields came off, and the change has been
 		 * handed to the window like any other. The window is what can offer it
 		 * back, because it is what knows whether the change reached the file.
@@ -562,8 +567,16 @@
 	{/if}
 {/snippet}
 
+<!-- Keyed by the entry, so a folder list open over one entry is never open
+     over the next. -->
+{#snippet where()}
+	{#key entry.id}
+		<FolderLine {path} {root} current={entry.group} {onMove} />
+	{/key}
+{/snippet}
+
 <section class="flex h-full flex-col overflow-hidden bg-surface">
-	<Heading {path} masked={masked(title)} {onClose}>
+	<Heading {path} place={locked ? undefined : where} masked={masked(title)} {onClose}>
 		{@const at = place(title, 'Title')}
 		<Editable
 			value={title?.value ?? ''}

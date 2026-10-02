@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { NO_LOGIN, UNTITLED } from '$lib/format';
-	import type { EntryRow, Group } from '$lib/model';
+	import { untouchable, type EntryRow, type Group } from '$lib/model';
 	import Bare from './Bare.svelte';
 	import Field from './Field.svelte';
+	import FolderLine from './FolderLine.svelte';
 	import Heading from './Heading.svelte';
 	import InBin from './InBin.svelte';
 	import Mask from './Mask.svelte';
@@ -45,8 +46,19 @@
 	} = $props();
 </script>
 
+<!-- The line above the title is drawn as the entry will draw it once read,
+     with nothing to press yet: an entry that can be moved says where it is. -->
+{#snippet where()}
+	<FolderLine {path} {root} current={row.group} />
+{/snippet}
+
 <section class="flex h-full flex-col overflow-hidden bg-surface" aria-busy="true">
-	<Heading {path} masked={row.title === null} {onClose}>
+	<Heading
+		{path}
+		place={untouchable(row, readOnly) ? undefined : where}
+		masked={row.title === null}
+		{onClose}
+	>
 		<Bare>
 			<span class="min-w-0 flex-1 truncate {row.title === '' ? 'text-txt4' : 'text-txt'}">
 				{row.title || UNTITLED}

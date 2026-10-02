@@ -14,6 +14,7 @@
 		versions as loadVersions
 	} from '$lib/ipc';
 	import { deleted as deletedLine, eraseQuestion } from '$lib/bin';
+	import { Dragging, LANDING } from '$lib/dragging.svelte';
 	import { flush } from '$lib/drafts';
 	import { named as howLong } from '$lib/duration';
 	import { writing } from '$lib/focus.svelte';
@@ -24,6 +25,7 @@
 	import { answer } from '$lib/menu.svelte';
 	import { Moves } from '$lib/moves';
 	import { COPIED, Notices } from '$lib/notices.svelte';
+	import { targets, type Moving } from '$lib/places';
 	import { conceal } from '$lib/reveal.svelte';
 	import { Saving } from '$lib/saving.svelte';
 	import {
@@ -44,7 +46,9 @@
 		find,
 		inBin,
 		liveEntries,
+		loose,
 		pathTo,
+		projects,
 		recycleBin,
 		rowOf,
 		searchedEntries,
@@ -57,6 +61,7 @@
 	import EntryList from './EntryList.svelte';
 	import EntryListCompact from './EntryListCompact.svelte';
 	import EntryView from './EntryView.svelte';
+	import FolderPicker from './FolderPicker.svelte';
 	import Icon from './Icon.svelte';
 	import InBin from './InBin.svelte';
 	import Opening from './Opening.svelte';
@@ -162,6 +167,13 @@
 		failed,
 		notices
 	});
+	/** A row or a folder on its way across the window under the pointer. */
+	const dragging = new Dragging({
+		targets: (moving) => targets(root, moving),
+		drop,
+		open: (id) => expanded.add(id)
+	});
+	$effect(() => () => dragging.cancel());
 
 	// Timestamps are written against the moment the vault was opened rather than
 	// against a clock that ticks, so that a list of a thousand rows is not
@@ -169,18 +181,31 @@
 	const now = new Date();
 
 	const shown = $derived(group === null ? root : (find(root, group) ?? root));
+	/** Whether "Not in a folder" is shown: the entries the top of the vault holds
+	 * itself. */
+	const top = $derived(group === root.id);
+	/** Whether a folder is shown, which can be renamed and deleted. "Not in a
+	 * folder" is no folder. */
+	const folder = $derived(group !== null && !top);
 	// Walked once. The tree is the whole vault, and three walks of fifty
 	// thousand entries to draw one screen is three too many.
 	const live = $derived(liveEntries(root));
+	const outside = $derived(loose(root));
 	const rows = $derived(
-		group === null ? live : query === '' ? shownEntries(shown) : searchedEntries(shown)
+		group === null
+			? live
+			: top
+				? outside
+				: query === ''
+					? shownEntries(shown)
+					: searchedEntries(shown)
 	);
 	const indexed = $derived(index(rows));
 	const found = $derived(search(indexed, query));
 	const bin = $derived(recycleBin(root));
 	const path = $derived(pane ? (pathTo(root, (pane.entry ?? pane.row).group) ?? []).slice(1) : []);
 	/** Where a new folder or entry goes: the folder being shown, or the top of
-	 * the vault when the list is showing everything. */
+	 * the vault when the list is showing everything or what sits there. */
 	const inside = $derived(group === null ? root.id : shown.id);
 	/** Whether the list is showing the recycle bin or a folder inside it, where
 	 * nothing is made or changed and everything is read one folder at a time. */
@@ -189,6 +214,32 @@
 	 * header's buttons are drawn on this, and so are the menu bar's New Entry
 	 * and New Folder. */
 	const changeable = $derived(!readOnly && !binned);
+	/** Whether the vault has folders of its own, which is when where an entry
+	 * goes is a question, and "Not in a folder" a place worth a row. */
+	const foldered = $derived(projects(root).length > 0);
+	/** Whether "+ Entry" asks where the new entry goes: in "All entries", which
+	 * is no one place, of a vault with folders. */
+	const asking = $derived(group === null && foldered);
+	/** Whether "+ Entry"'s list of folders is open. */
+	let choosing = $state(false);
+	let newEntryButton = $state<HTMLButtonElement>();
+	/**
+	 * The folder the last entry made in this window went into: what "+ Entry"
+	 * in "All entries" offers first, so that filing ten logins into one folder
+	 * is ten presses of Return. Kept by the window and nowhere else, so a lock
+	 * forgets it with everything else of the vault. A folder that has gone, or
+	 * gone to the bin, since is no longer in the list, and the list opens on the
+	 * top of the vault, its first line.
+	 */
+	let filed = $state<string | null>(null);
+	/** The rows being dragged, which keep the plane they were lifted on. */
+	const lifted = $derived(
+		new Set(
+			dragging.moving && 'entries' in dragging.moving
+				? dragging.moving.entries.map((row) => row.id)
+				: []
+		)
+	);
 	/** The folders drawn above the entries in the bin. A search is for entries,
 	 * and a folder row among its answers would be one it did not look inside. */
 	const folders = $derived(binned && query === '' ? shown.sections : []);
@@ -223,6 +274,7 @@
 		group = id;
 		pane = null;
 		query = '';
+		choosing = false;
 		naming = false;
 		renaming = false;
 		emptying = false;
@@ -384,17 +436,36 @@
 	}
 
 	/**
-	 * Makes an entry and opens it.
+	 * "+ Entry", the empty list's "Add an entry", and New Entry in the menu bar.
 	 *
-	 * Opened only when the pane is where it was when the button was pressed: an
-	 * entry the reader chose while Rust was making this one is the later choice,
-	 * and the new entry waits in the list rather than taking the pane from it.
+	 * In "All entries" of a vault with folders it asks where first, with the
+	 * list on the folder the last entry went into, so Return makes it there.
+	 * Anywhere else it is made where the list is: the folder shown, or the top
+	 * of the vault for "Not in a folder".
 	 */
-	async function addEntry() {
+	function newEntry() {
+		if (held()) return;
+		if (asking) choosing = true;
+		else void makeIn(inside);
+	}
+
+	/**
+	 * Makes an entry in a folder and opens it.
+	 *
+	 * Asks `held` again: the list closes when the focus leaves it, and a reader
+	 * who went back into a Change field in between has typing to answer for
+	 * first. Opened only when the pane is where it was when the button was
+	 * pressed: an entry the reader chose while Rust was making this one is the
+	 * later choice, and the new entry waits in the list rather than taking the
+	 * pane from it.
+	 */
+	async function makeIn(into: string) {
+		choosing = false;
 		if (held()) return;
 		const at = showing;
 		try {
-			const made = await createEntry(inside);
+			const made = await createEntry(into);
+			filed = into;
 			onTree(made.tree);
 			file.changedAt = new Date();
 			const row = rowOf(made.tree, made.entry);
@@ -457,6 +528,32 @@
 		if (opened) void moves.putBackEntry(opened.id);
 	}
 
+	/** Moves the entry in the pane to another folder: the line above its title.
+	 * A move takes no pane away, so nothing has to stay for it. */
+	function moveEntry(into: string) {
+		if (opened) void moves.moveEntries([opened.id], into);
+	}
+
+	/** A drag let go over a place that takes it. */
+	function drop(moving: Moving, into: string) {
+		if ('folder' in moving) void moves.moveFolder(moving.folder.id, into);
+		else
+			void moves.moveEntries(
+				moving.entries.map((row) => row.id),
+				into
+			);
+	}
+
+	/** A press on a row of the list, which may become a drag. */
+	function pressRow(event: PointerEvent, row: EntryRow) {
+		dragging.press(event, { entries: [row] });
+	}
+
+	/** A press on a folder of the tree, which may become a drag. */
+	function pressFolder(event: PointerEvent, pressed: Group) {
+		dragging.press(event, { folder: pressed });
+	}
+
 	/** Opens the field that asks for a name, and closes it again. The press is
 	 * kept from moving the focus, so the open field does not write a folder on
 	 * its way out and leave the button looking as though it had done nothing. */
@@ -482,7 +579,7 @@
 
 	async function rename(name: string) {
 		renaming = false;
-		if (group === null || name.trim() === '') return;
+		if (!folder || group === null || name.trim() === '') return;
 		try {
 			await reshaped(await renameGroup(group, name.trim()));
 		} catch (thrown) {
@@ -495,7 +592,8 @@
 	function removeFolder() {
 		if (held()) return;
 		deleting = false;
-		if (group !== null) void moves.removeFolder(group, quoted(shown.name), shown.deletion);
+		if (folder && group !== null)
+			void moves.removeFolder(group, quoted(shown.name), shown.deletion);
 	}
 
 	/** Deletes the folder being shown in the bin for good. */
@@ -580,7 +678,7 @@
 	// runs, on the condition its button is drawn on.
 	$effect(() =>
 		answer({
-			newEntry: { run: addEntry, when: () => free && changeable },
+			newEntry: { run: newEntry, when: () => free && changeable },
 			// Opens the name and never closes it: the plus in the folders pane
 			// is the way to change one's mind.
 			newFolder: { run: addFolder, when: () => free && changeable && !naming },
@@ -698,7 +796,11 @@
 	<BinFolders {folders} {root} {now} compact={pane !== null} onOpen={choose} />
 {/snippet}
 
-<div class="relative flex flex-1 animate-fade flex-col overflow-hidden">
+<div
+	class="relative flex flex-1 animate-fade flex-col overflow-hidden {dragging.moving
+		? 'cursor-grabbing'
+		: ''}"
+>
 	<!--
 		Inert while the settings are over it, and not merely covered.
 
@@ -735,7 +837,7 @@
 			<div class="flex shrink-0 items-center gap-1 px-4 py-3">
 				<span class="flex-1 font-mono text-label tracking-label text-txt3 uppercase">Folders</span>
 				{#if changeable}
-					{#if group !== null}
+					{#if folder}
 						<button
 							type="button"
 							onmousedown={(event) => event.preventDefault()}
@@ -758,7 +860,7 @@
 					>
 						<Icon name="plus" class="h-4 w-4" />
 					</button>
-					{#if group !== null}
+					{#if folder}
 						<!-- Last, in a box of its own and a step further off, like every
 						     other trash: it used to sit four pixels between Rename and New
 						     folder at the size of each. The box is drawn into the row's
@@ -796,7 +898,7 @@
 				/>
 			{/if}
 
-			{#if renaming && group !== null}
+			{#if renaming && folder}
 				<input
 					type="text"
 					autocomplete="off"
@@ -815,7 +917,7 @@
 				/>
 			{/if}
 
-			{#if deleting && group !== null}
+			{#if deleting && folder}
 				<!-- Named by what it does, which Rust has already said: a folder
 				     the bin is inside, or one in a vault that keeps no bin, goes
 				     for good. -->
@@ -840,13 +942,19 @@
 				onclick={(event) => event.target === event.currentTarget && dismiss()}
 				class="flex-1 overflow-y-auto px-2 pb-2 text-body"
 			>
+				<!-- Both rows are the top of the vault to a drag, and each lights on its
+				     own key. -->
 				<button
 					type="button"
+					data-drop="all"
+					data-into={root.id}
 					onclick={() => choose(null)}
-					class="relative flex w-full items-center gap-2 rounded-sm px-2 py-[7px] transition-colors {group ===
-					null
-						? 'bg-raised text-txt'
-						: 'text-txt2 hover:bg-raised/60'}"
+					class="relative flex w-full items-center gap-2 rounded-sm px-2 py-[7px] transition-colors {dragging.over ===
+					'all'
+						? LANDING
+						: group === null
+							? 'bg-raised text-txt'
+							: 'text-txt2 hover:bg-raised/60'}"
 				>
 					{#if group === null}
 						<span
@@ -856,7 +964,9 @@
 					{/if}
 					<Icon
 						name="folder"
-						class="h-4 w-4 shrink-0 {group === null ? 'text-accent' : 'text-txt4'}"
+						class="h-4 w-4 shrink-0 {group === null || dragging.over === 'all'
+							? 'text-accent'
+							: 'text-txt4'}"
 					/>
 					<span class="flex-1 text-left">All entries</span>
 					<span class="font-mono text-meta {group === null ? 'text-txt3' : 'text-txt4'}">
@@ -864,12 +974,50 @@
 					</span>
 				</button>
 
+				<!-- What sits at the top of the vault, outside every folder, which
+				     "All entries" mixes in with everything else. Drawn while there is
+				     something there, and while it is chosen. -->
+				{#if foldered && (outside.length > 0 || top)}
+					<button
+						type="button"
+						data-drop="loose"
+						data-into={root.id}
+						onclick={() => choose(root.id)}
+						class="relative flex w-full items-center gap-2 rounded-sm px-2 py-[7px] transition-colors {dragging.over ===
+						'loose'
+							? LANDING
+							: top
+								? 'bg-raised text-txt'
+								: 'text-txt2 hover:bg-raised/60'}"
+					>
+						{#if top}
+							<span
+								class="absolute top-1 left-0 h-[calc(100%-8px)] w-[2px] rounded-full bg-accent"
+								aria-hidden="true"
+							></span>
+						{/if}
+						<Icon
+							name="disk"
+							class="h-4 w-4 shrink-0 {top || dragging.over === 'loose'
+								? 'text-accent'
+								: 'text-txt4'}"
+						/>
+						<span class="flex-1 text-left">Not in a folder</span>
+						<span class="font-mono text-meta {top ? 'text-txt3' : 'text-txt4'}">
+							{outside.length}
+						</span>
+					</button>
+				{/if}
+
 				<Tree
 					{root}
 					selected={group}
 					{expanded}
+					drop={dragging.over}
+					lifted={dragging.moving && 'folder' in dragging.moving ? dragging.moving.folder.id : null}
 					onSelect={choose}
 					onToggle={(id) => (expanded.has(id) ? expanded.delete(id) : expanded.add(id))}
+					onPress={readOnly ? undefined : pressFolder}
 				/>
 			</div>
 
@@ -941,13 +1089,44 @@
 					</kbd>
 				</span>
 				{#if changeable}
-					<button
-						type="button"
-						onclick={addEntry}
-						class="flex h-9 shrink-0 items-center gap-2 rounded-full border border-hairline px-4 text-small text-txt2 transition-colors hover:border-txt4 hover:text-txt active:bg-raised"
-					>
-						<Icon name="plus" class="h-4 w-4" /> Entry
-					</button>
+					<!-- The list hangs from the button, in one box with it: a press on
+					     the button while the list is open closes it. That press keeps
+					     the focus in the list's filter, as the line above an entry's
+					     title does: WebKit gives a pressed button no focus, so the
+					     filter would lose it to nothing, the list would close on the
+					     press, and the click would open it again. With the list shut
+					     the press is an ordinary one, and a value being typed into the
+					     pane is left, and written, before the new entry takes it. -->
+					<span class="relative shrink-0">
+						<button
+							bind:this={newEntryButton}
+							type="button"
+							onmousedown={(event) => {
+								if (choosing) event.preventDefault();
+							}}
+							onclick={() => (choosing ? (choosing = false) : newEntry())}
+							aria-haspopup={asking ? 'listbox' : undefined}
+							aria-expanded={asking ? choosing : undefined}
+							class="flex h-9 shrink-0 items-center gap-2 rounded-full border border-hairline px-4 text-small text-txt2 transition-colors hover:border-txt4 hover:text-txt active:bg-raised"
+						>
+							<Icon name="plus" class="h-4 w-4" /> Entry
+						</button>
+						{#if choosing}
+							<FolderPicker
+								{root}
+								heading="Put it in"
+								label="Find the folder for the new entry"
+								current={null}
+								chosen={filed ?? root.id}
+								class="top-full right-0 w-[292px]"
+								onPick={(into) => void makeIn(into)}
+								onClose={(escaped) => {
+									choosing = false;
+									if (escaped) newEntryButton?.focus();
+								}}
+							/>
+						{/if}
+					</span>
 				{/if}
 			</div>
 
@@ -995,7 +1174,7 @@
 						{#if !readOnly}
 							<button
 								type="button"
-								onclick={addEntry}
+								onclick={newEntry}
 								class="h-9 rounded-full border border-hairline px-5 text-small text-txt transition-colors hover:border-txt3"
 							>
 								Add an entry
@@ -1003,6 +1182,14 @@
 						{/if}
 					{/snippet}
 				</Empty>
+			{:else if found.length === 0 && top}
+				<!-- Nothing to add from here: an entry made at the top of the vault
+				     is the one thing this list exists to show. -->
+				<Empty
+					icon="disk"
+					title="Every entry is in a folder"
+					detail="Entries at the top of the vault, outside every folder, show up here."
+				/>
 			{:else if found.length === 0 && folders.length === 0 && binned}
 				{#if shown.isRecycleBin}
 					<Empty
@@ -1018,16 +1205,20 @@
 					/>
 				{/if}
 			{:else if found.length === 0 && !binned}
+				<!-- The mockup's sentence, where both of its ways are there to take.
+				     A vault Coffer will not write back offers neither. -->
 				<Empty
 					icon="folder"
 					title="There is nothing in {quoted(shown.name)} yet"
-					detail="Entries live in folders. This one has none of its own."
+					detail={readOnly
+						? 'Entries live in folders. This one has none of its own.'
+						: 'Entries can be made here or dragged in from other folders.'}
 				>
 					{#snippet action()}
 						{#if !readOnly}
 							<button
 								type="button"
-								onclick={addEntry}
+								onclick={newEntry}
 								class="h-9 rounded-full border border-hairline px-5 text-small text-txt transition-colors hover:border-txt3"
 							>
 								Add an entry
@@ -1041,8 +1232,10 @@
 					open={pane.id}
 					note={whence}
 					before={folders.length > 0 ? deletedFolders : undefined}
+					{lifted}
 					onOpen={open}
 					onDismiss={dismiss}
+					onPress={readOnly || binned ? undefined : pressRow}
 				/>
 			{:else}
 				<EntryList
@@ -1050,8 +1243,10 @@
 					{now}
 					note={whence}
 					before={folders.length > 0 ? deletedFolders : undefined}
+					{lifted}
 					onOpen={open}
 					onCopy={copyFrom}
+					onPress={readOnly || binned ? undefined : pressRow}
 				/>
 			{/if}
 		</div>
@@ -1084,6 +1279,7 @@
 							onClose={dismiss}
 							onDelete={removeEntry}
 							onPutBack={putBack}
+							onMove={moveEntry}
 							onFieldRemoved={fieldRemoved}
 							onFailure={failed}
 						/>

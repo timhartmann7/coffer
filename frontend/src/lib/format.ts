@@ -1,6 +1,6 @@
 /** Values as the screen writes them. */
 
-import type { Entry } from './model';
+import type { Entry, EntryRow } from './model';
 
 /**
  * A timestamp out of the database, in the reader's own clock.
@@ -120,9 +120,19 @@ export function quoted(name: string): string {
  * it has none to show - left empty, or kept protected by the database, which
  * no notice is a reason to reveal.
  */
-export function called(entry: Entry): string {
-	const title = entry.fields.find((field) => field.kind === 'title')?.value;
+function titled(title: string | null | undefined): string {
 	return title ? quoted(title) : 'this entry';
+}
+
+/** What a sentence calls an entry Rust has read. */
+export function called(entry: Entry): string {
+	return titled(entry.fields.find((field) => field.kind === 'title')?.value);
+}
+
+/** What a sentence calls an entry from its row in the list, on the same terms:
+ * a row carries no title the database protects. */
+export function calledRow(row: EntryRow): string {
+	return titled(row.title);
 }
 
 /** What the pane calls the five fields every entry has, by their names in the

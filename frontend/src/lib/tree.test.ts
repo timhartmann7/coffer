@@ -5,6 +5,7 @@ import {
 	find,
 	inBin,
 	liveEntries,
+	loose,
 	pathTo,
 	projects,
 	recycleBin,
@@ -153,6 +154,19 @@ describe('walking the tree', () => {
 
 		expect(recycleBin(tree)?.id).toBe(bin.id);
 		expect(recycleBin(group())).toBeNull();
+	});
+
+	/** "Not in a folder" is what the top holds itself: nothing under a folder,
+	 * and nothing of a file whose top group is the bin. */
+	it('gives the entries at the top of the vault and nothing from below it', () => {
+		const loner = row({ title: 'loner' });
+		const tree = group({
+			entries: [loner],
+			sections: [group({ entries: [row({ title: 'filed' })] })]
+		});
+
+		expect(loose(tree)).toEqual([loner]);
+		expect(loose(group({ isRecycleBin: true, entries: [row()] }))).toEqual([]);
 	});
 
 	it('keeps the recycle bin out of the projects, which the tree draws apart', () => {

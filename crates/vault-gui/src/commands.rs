@@ -39,7 +39,8 @@ use crate::autolock::timer::Timer;
 use crate::autolock::{Event, Reason};
 use crate::drafts::{Over, Typed};
 use crate::dto::{
-    self, Action, Database, Entry, Group, Made, Revealed, Rival, Snapshot, Status, Target, Versions,
+    self, Action, Database, Entry, Group, Made, Moved, Revealed, Rival, Snapshot, Status, Target,
+    Versions,
 };
 use crate::error::Failure;
 use crate::home::Standing;
@@ -925,6 +926,78 @@ pub fn put_back_entry(entry: String, session: Held<'_>) -> Result<Group, Failure
 pub fn put_back_group(group: String, session: Held<'_>) -> Result<Group, Failure> {
     let group = dto::group_id(&group)?;
     session.with_mut(|vault| vault.put_back_group(group))??;
+    tree_of(&session)
+}
+
+/// Moves entries into a folder, or to the top of the vault, every one of them
+/// or none, and answers with the tree and each entry that changed folder. See
+/// [`vault_core::Vault::move_entries`].
+///
+/// An id that does not parse refuses the whole batch, like one that names
+/// nothing. Nothing typed into the entries is let go, and neither is a file
+/// waiting on one: an entry keeps its id wherever it goes, so a lock writes
+/// what was typed into it where it now stands.
+#[tauri::command(async)]
+pub fn move_entries(
+    entries: Vec<String>,
+    into: String,
+    session: Held<'_>,
+) -> Result<Moved, Failure> {
+    let ids = entries
+        .iter()
+        .map(String::as_str)
+        .map(dto::entry_id)
+        .collect::<Result<Vec<_>, _>>()?;
+    let into = dto::group_id(&into)?;
+    let moved = session.with_mut(|vault| vault.move_entries(&ids, into))??;
+    Ok(Moved {
+        tree: tree_of(&session)?,
+        moved: moved.into_iter().map(dto::Move::of).collect(),
+    })
+}
+
+/// Takes a move back: each entry `move_entries` answered goes back out of
+/// `into` to the folder it left, every one of them or none, and only while the
+/// file still says that is where it came from. See
+/// [`vault_core::Vault::move_entries_back`].
+#[tauri::command(async)]
+pub fn move_entries_back(
+    moved: Vec<dto::Move>,
+    into: String,
+    session: Held<'_>,
+) -> Result<Group, Failure> {
+    let moved = moved
+        .iter()
+        .map(dto::Move::parsed)
+        .collect::<Result<Vec<_>, _>>()?;
+    let into = dto::group_id(&into)?;
+    session.with_mut(|vault| vault.move_entries_back(&moved, into))??;
+    tree_of(&session)
+}
+
+/// Moves a folder with everything in it, on the terms `move_entries` gives.
+#[tauri::command(async)]
+pub fn move_group(group: String, into: String, session: Held<'_>) -> Result<Group, Failure> {
+    let group = dto::group_id(&group)?;
+    let into = dto::group_id(&into)?;
+    session.with_mut(|vault| vault.move_group(group, into))??;
+    tree_of(&session)
+}
+
+/// Takes a folder's move back out of `into` to `from`, the folder it left,
+/// only while the file still says that is where it came from. See
+/// [`vault_core::Vault::move_group_back`].
+#[tauri::command(async)]
+pub fn move_group_back(
+    group: String,
+    from: String,
+    into: String,
+    session: Held<'_>,
+) -> Result<Group, Failure> {
+    let group = dto::group_id(&group)?;
+    let from = dto::group_id(&from)?;
+    let into = dto::group_id(&into)?;
+    session.with_mut(|vault| vault.move_group_back(group, from, into))??;
     tree_of(&session)
 }
 

@@ -28,6 +28,16 @@ export function liveEntries(root: Group): EntryRow[] {
 }
 
 /**
+ * The entries the top of the vault holds itself, outside every folder.
+ *
+ * What "Not in a folder" lists. A file that keeps its recycle bin at the top
+ * holds nothing live there.
+ */
+export function loose(root: Group): EntryRow[] {
+	return root.isRecycleBin ? [] : root.entries;
+}
+
+/**
  * Whether a folder is the recycle bin or somewhere inside it.
  *
  * Everything there is read only and goes back out through Put back, and it is

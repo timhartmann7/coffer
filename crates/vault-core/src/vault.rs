@@ -28,6 +28,8 @@ use crate::storage::{self, Seen, atomic, snapshot, unsaved, watch};
 use crate::text;
 use crate::wipe;
 
+mod moves;
+
 /// The largest file Coffer will read into memory to try to open.
 ///
 /// A KeePass database is decrypted whole, so the file's own size bounds the
@@ -795,7 +797,7 @@ impl Vault {
             Deletion::Forever => self.erase_group(id),
             Deletion::Bin => {
                 let into = self.bin(bin.id());
-                self.move_group(id, into)
+                self.relocate_group(id, into)
             }
         }
     }
@@ -1045,7 +1047,7 @@ impl Vault {
             Deletion::Forever => self.erase_entry(id),
             Deletion::Bin => {
                 let into = self.bin(bin.id());
-                self.move_entry(id, into)
+                self.relocate_entry(id, into)
             }
         }
     }
@@ -1068,7 +1070,7 @@ impl Vault {
             let (binned, _) = self.placed(&entry, entry.parent().id());
             self.back(binned)?
         };
-        self.move_entry(id, into)
+        self.relocate_entry(id, into)
     }
 
     /// Takes a folder out of the recycle bin with everything in it, on the
@@ -1089,7 +1091,7 @@ impl Vault {
                 group.previous_parent().map(|previous| previous.id()),
             ))?
         };
-        self.move_group(id, into)
+        self.relocate_group(id, into)
     }
 
     /// Where putting something back takes it: the folder it came from, or the
@@ -1099,9 +1101,29 @@ impl Vault {
         Ok(binned.from.unwrap_or_else(|| self.database.root().id()))
     }
 
+    /// Whether something may be put into `into` by any way but deleting it: a
+    /// folder that is there, and neither the recycle bin nor anything inside
+    /// it. Deleting is the one way into the bin, because it is the one that
+    /// says first whether it can be undone.
+    fn destination(&self, bin: &Bin, into: GroupId) -> Result<(), VaultError> {
+        if self.database.group(into).is_none() {
+            return Err(VaultError::NoSuchGroup);
+        }
+        if bin.standing(&self.database, into).binned() {
+            return Err(VaultError::IntoRecycleBin);
+        }
+        Ok(())
+    }
+
     /// Moves an entry into another folder, which is not an edit: no version,
     /// and the modification time stays where it was.
-    fn move_entry(&mut self, id: EntryId, into: GroupId) -> Result<(), VaultError> {
+    ///
+    /// No question about where: every caller has decided that already, the
+    /// deletion by the bin's rule, putting back by where the thing came from,
+    /// a move between folders by [`Vault::move_entries`]'s checks, and taking
+    /// one back by [`Vault::move_entries_back`]'s, which go by what the file
+    /// says of the move rather than by [`Vault::destination`].
+    fn relocate_entry(&mut self, id: EntryId, into: GroupId) -> Result<(), VaultError> {
         let mut entry = self.database.entry_mut(id).ok_or(VaultError::NoSuchEntry)?;
         entry.move_to(into).map_err(|_| VaultError::NoSuchGroup)?;
         entry.times.location_changed = Some(Times::now());
@@ -1616,7 +1638,10 @@ impl Vault {
         made
     }
 
-    fn move_group(&mut self, id: GroupId, into: GroupId) -> Result<(), VaultError> {
+    /// Moves a folder, with everything in it, into another folder, on the
+    /// terms [`Vault::relocate_entry`] moves an entry. The library's own walk
+    /// refuses the top of the vault and a folder going inside itself.
+    fn relocate_group(&mut self, id: GroupId, into: GroupId) -> Result<(), VaultError> {
         use keepass::db::MoveGroupError;
 
         let mut group = self.database.group_mut(id).ok_or(VaultError::NoSuchGroup)?;

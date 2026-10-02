@@ -13,6 +13,7 @@ mod edit;
 mod fields;
 mod generate;
 mod history;
+mod moves;
 mod normalise;
 mod open;
 mod portable;

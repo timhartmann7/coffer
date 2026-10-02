@@ -74,6 +74,10 @@ Everything slice 3 added:
 | `delete_group` | `group`, `deletion` | the tree |
 | `put_back_entry` | `entry` | the tree |
 | `put_back_group` | `group` | the tree |
+| `move_entries` | `entries`, `into` | the tree, and each entry that changed folder with the folder it left |
+| `move_entries_back` | `moved`, `into` | the tree |
+| `move_group` | `group`, `into` | the tree |
+| `move_group_back` | `group`, `from`, `into` | the tree |
 | `empty_recycle_bin` | | the tree |
 | `set_field` | `entry`, `field`, `value`, `protect`, `sequence` | the entry |
 | `remove_field` | `entry`, `field`, `forever` | the entry |
@@ -482,6 +486,45 @@ database Coffer will not write back. Putting back is a move and not an edit: no
 version is written, the modification time stays, and nothing is added to
 `DeletedObjects`; the same is true of the move into the bin.
 
+**`move_entries` and `move_group` move things between folders, and a batch
+moves whole.** `move_entries` takes the ids of entries and the folder they go
+into - the top of the vault is the root's id, which the tree already carries -
+and `move_group` one folder and where it goes. Rust checks everything before
+anything moves, so a batch holding one entry it refuses moves none: anything in
+the recycle bin, the bin itself included, is refused with `refused`, because
+putting back is the way out of it, and so is a destination in the bin, because
+deleting is the way in and says first whether it can be undone. A folder cannot
+go inside itself or anything under it, and the top of the vault goes nowhere.
+Something already where it is sent stays, in its place in the folder, and a
+move that finds nothing to do leaves nothing to save and the revision where it
+was. A move is not an edit, exactly as a move to the bin is not: no version,
+the modification time kept, nothing in `DeletedObjects`, and `LocationChanged`
+and `PreviousParentGroup` written the way KeePass and KeePassXC write them. It
+lets go of no typing and of no file waiting: an entry keeps its id wherever it
+goes, so a lock writes what was being typed into it where it now stands.
+
+**A move is taken back by what the file says of it.** `move_entries` answers
+with the tree and `moved`: each entry that changed folder, in the order sent,
+with `from`, the folder it left. That list is the undo. `move_entries_back`
+takes it and the folder the entries went into, and moves each back to its
+`from`, every one or none, only while the file still says the same: every entry
+still in that folder, its `PreviousParentGroup` still the `from` it was answered
+with, and neither folder gone or in the bin. Anything else is something done
+after the move - another move of the reader's, or another client's read in by a
+reload, an entry moved away and back by way of a third folder included - and
+the undo is refused with `superseded`, moving nothing. The list is only a claim
+the window makes: Rust checks it against the file and takes back nothing the
+file does not bear out. Each entry goes to the end of the folder it came from,
+because the library has no way to put one back where it stood. A folder's undo
+is `move_group_back`, on the same terms: the folder, the folder it left
+(`from`, which the window read off its tree before the move) and the one it
+went into. Rust moves it back only while the file says the folder is in `into`
+with `from` as its `PreviousParentGroup`, neither of them in the bin and `from`
+not since moved inside it, and answers `superseded` otherwise. The window sends
+neither undo while anything it is about - what moved, or a folder it comes out
+of or goes back to - is still on its way somewhere: the undo and that move
+would reach Rust in no fixed order.
+
 **`add_attachment` and `export_attachment` open their panel in Rust.** The
 bytes of a file never cross in either direction and neither does a path: the
 webview asks, the reader picks, and Rust reads or writes. The name a save panel
@@ -570,9 +613,10 @@ lives in one place.
 reads the list again and says the versions changed while the reader was
 choosing.
 
-`forGood` and `superseded` are about a removed field (see above), and neither
-did anything. `forGood` is answered with a question, and `superseded` with the
-sentence that the removal can no longer be undone.
+`forGood` and `superseded` are about a removed field (see above), and
+`superseded` about a move taken back as well; neither did anything. `forGood`
+is answered with a question, and `superseded` with the sentence that the removal,
+or the move, can no longer be undone.
 
 `deletionChanged` is a deletion that would no longer do what the window showed
 (see above), and nothing was deleted.
@@ -998,10 +1042,10 @@ command - the dialog it opens, the thread it moves work onto. Testing one needs
 Tauri's mock runtime and belongs with the window work rather than with this
 slice.
 
-**An entry cannot be moved between folders.** It is made in the folder that is
-open and it stays there until it is deleted, which moves it to the recycle bin,
-and put back from there, which returns it. The mockup shows dragging a row into
-another folder; nothing here does that yet.
+**A folder is moved with the pointer only.** An entry moves from the line above
+its title, which the keyboard reaches like any other button; a folder has no
+such line, and is dragged onto another in the folders pane. A reader without a
+pointer cannot move one yet.
 
 **The three window buttons are not moved at all.** macOS puts the close,
 minimise and zoom buttons a fixed distance below the top of the window, and it

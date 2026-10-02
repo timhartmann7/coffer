@@ -408,6 +408,59 @@ nothing in `DeletedObjects`: a record there would make every other client delete
 the entry at its next merge. Putting back moves the same way, and the folder it
 leaves - the bin, or a folder in it - becomes its `PreviousParentGroup`.
 
+**Moving between folders is the same move, closed at the bin.**
+`Vault::move_entries` and `Vault::move_group`
+([`vault/moves.rs`](../crates/vault-core/src/vault/moves.rs)) are the
+deletion's move with checks in front of it: nothing in the bin moves, because
+putting back is the way out and says where to; nothing moves into it, because
+deleting is the way in and says first whether it can be undone
+(`InRecycleBin`, `IntoRecycleBin`); and a batch is checked whole before
+anything in it moves, so it moves all or none. A folder the bin sits inside may
+move, and the bin goes with it and is still the bin.
+
+The checks stand in front of the library because the library makes none of
+them. `EntryMut::move_to` and `GroupMut::move_to` (`db/types/entry.rs:581-599`,
+`db/types/group.rs:556-586`) do not ask whether the folder is a new one: a move
+to where something already is takes it out of its place, puts it at the end of
+the folder, and writes the folder as the one it came from. Coffer leaves such a
+thing alone - it is not moved, not answered as moved, and leaves nothing to
+save - so a select-all sent to a folder that already holds some of it changes
+nothing about those. Neither `move_to` sets `LocationChanged`; only
+`EntryTrack::move_to` (`entry.rs:712-717`) does, and that one writes a version.
+So Coffer sets it itself, to the second, as `Times::now` gives it.
+
+**A large batch costs the length of the folder, and keeps its order.** Both
+`move_to`s take the thing out of its folder with `IndexSet::shift_remove`, which
+costs the length of the folder. Emptying a folder of fifty thousand entries in
+one batch takes about two seconds - 2.13 s measured on Apple silicon with the
+library optimised, as the workspace builds it even in debug - held under the
+session's lock the way a save is. Moving from the end of the folder first takes
+12 ms and lands everything in reverse. The order is kept instead, because a
+batch that size is a select-all and the reader's order is theirs.
+`fifty_thousand_entries_move_out_of_one_folder_and_back` is the proof that it
+ends; nothing asserts the time.
+
+**Taking a move back goes by what the file says.** `move_entries` answers each
+entry it moved with the folder it left (`model::Move`), and
+`Vault::move_entries_back` takes that list and the folder they went into. It
+moves each back only while the entry is still in that folder and its
+`PreviousParentGroup`, which every move writes, is still the folder it left. A
+later move writes another, whoever made it, and so does a trip away and back
+by way of a third folder; either way the undo is refused whole with
+`MoveSuperseded`, and nothing moves. The folder left is what is checked rather
+than `LocationChanged`, because a client writing through this library's
+`move_to` moves an entry without dating the move. There is no way to put
+something at a position, so a move taken back goes to the end of the folder it
+came from, and an entry named twice goes once: the second would be the move to
+where it already is. An entry gone out of the file since is refused the same
+way: that too was done after the move. `Vault::move_group_back` is the same
+rule for a folder, which `move_group` answers nothing for because the window
+already knows the one folder it moved and where from: the folder must still be
+in the folder it went into, with the folder it left as its
+`PreviousParentGroup`, and neither of them in the bin. A folder it left that has
+since been moved inside it would take it inside itself; the library's own walk
+refuses that before anything moves, and it is answered `MoveSuperseded` too.
+
 **Where something goes back to is the folder it came from, while that is
 somewhere to go.** Not when it has gone, and not when it is in the bin itself:
 an entry whose folder followed it into the bin goes to the top of the vault

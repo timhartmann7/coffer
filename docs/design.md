@@ -153,7 +153,8 @@ same box, drawn afresh so that it moves where the reader is looking - with the
 focus on Save, the answer that loses nothing. Once it is answered, the press
 works. While the new value is on its way to the vault the pane waits for it
 without asking, since there is nothing left to answer. A state the mockup does
-not draw, built from the question it already has.
+not draw, built from the question it already has. A move is not on that list:
+the entry stays in the pane wherever it goes, and so does the field.
 
 **A protected field of the reader's own has its Change on the line under it.**
 Its row keeps the mockup's shape - name, value, eye - and has no room for a word
@@ -428,6 +429,86 @@ the same two lines. Emptying the bin asks in the same box as before, and says
 what it is: everything in the bin deleted forever, with nothing to put back
 afterwards.
 
+## Moving things
+
+The mockup draws a folder line above an entry's title and a tree of folders,
+and nothing that moves an entry or a folder between them. Everything below is
+built from what it does draw.
+
+**The line above the title is where the entry is, and where it goes.** The
+mockup writes the folders down to an entry above its title in `label` mono
+`txt4`. In an entry Coffer can write, the same line is a button in the same
+type, `txt2` under the pointer, with the sprite's `chev-d` at the settings
+chip's size after it, and it reads "Top of the vault" for an entry in no folder,
+where the line used to be left out. Each folder's name in it is isolated, so a
+right-to-left name turns nothing round but itself. An entry still being read
+draws the same line with nothing to press, so nothing moves when it arrives; an
+entry Coffer will not write, and one in the bin, keep the plain line.
+
+**The folder list is the settings chip's list with a filter on top.**
+`bg-raised` behind a hairline, `rounded-sm`, arriving on the pop: a heading in
+`label` mono `txt3` ("Move to", "Put it in"), the field a new folder's name is
+typed in with "Find a folder", and the places in the tree's order, each a line
+of the tree's height - the folder icon, the name in `small`, the folders above
+it after it in `meta` mono `txt4`, each name isolated as the line above the
+title isolates them - with the top of the vault first under the sprite's disk.
+Nothing in the bin is listed. Where the thing is now has its icon in the
+accent, the way the tree marks the folder being shown; the line the keys are on
+is `surface2`, as the chip's chosen value is, and Return takes it. The list
+scrolls past `h-40`, and keeps the line the keys are on in sight, the one it
+opens on included, so Return never takes a line the reader was not shown. A
+folder chosen from it gives the focus back to the line above the title, which
+stays wherever the entry goes. Under the title it is the header's width; under
+"+ Entry" it is the notice's 292 pixels. "No folder matches “…”" in `fine`
+`txt4` when nothing does. Escape, and the focus leaving it, close it with
+nothing moved, and Escape goes no further: the search and the pane stay.
+
+**A row or a folder is dragged with the pointer, not by the system.** Nothing is
+drawn under the pointer: an image that followed it would be a position written
+into a style, which `style-src 'self'` forbids, and a system drag would put the
+row on the drag pasteboard, where whatever application is under the pointer
+reads it. A press that travels four pixels lifts the row, which keeps the
+`raised` plane, the cursor is the closed hand, and the folder it would land in
+is drawn the way the tree draws the folder being shown, with the accent outline
+the focus ring is - two pixels, inside the line so the pane does not clip it.
+Only a place that takes it lights: not where it already is, not itself or a
+folder under it, nothing in the bin. "All entries" and "Not in a folder" are
+the top of the vault, and each lights on its own. A folded folder opens when the
+pointer rests on it for 0.7 s. Escape lets go with nothing moved, and the
+release that follows presses nothing under it. The tree does
+not scroll by itself under a drag; a folder out of sight is reached through the
+line above the title.
+
+**A move is said, and taken back, in the notice.** "Moved “Chase” to
+“Banking”", "Moved “Home” to the top of the vault", with the folder icon in
+`txt3` where a deletion's notice has the trash, and Undo and ⌘Z as for every
+offer. Undo puts each thing back in the folder it came from, at the end of it,
+for a folder as for an entry. Once the file no longer holds the move - another
+move since, or a file read again in which it never happened or something was
+moved on, gone or deleted - the undo moves nothing and says "Something has
+moved since, so that can no longer be undone." A file read again that still
+holds the move takes it back as before.
+
+**An empty folder says how entries get into it.** The mockup's sentence, "Entries
+can be made here or dragged in from other folders.", now that both are there to
+do. A vault Coffer will not write back offers neither, and says "Entries live in
+folders. This one has none of its own." instead, with no button.
+
+**"Not in a folder" lists what sits at the top of the vault.** Under "All
+entries", in its row's shape, with the disk icon and the count, drawn in a vault
+with folders while the top holds entries of its own, and while it is chosen.
+Its list is only those entries, and so is a search in it. Chosen and empty: the
+disk icon over "Every entry is in a folder" and "Entries at the top of the
+vault, outside every folder, show up here." It is no folder, so the folders
+header offers no rename and no deletion on it.
+
+**"+ Entry" in "All entries" asks where.** In a vault with folders it opens the
+list as "Put it in" under the button, on the folder the last entry this window
+made went into, so Return makes it there - and on the top of the vault when this
+window has made none. A lock forgets it, as it forgets everything of the vault
+(`docs/ipc.md`). In a folder, in "Not in a folder", and in a vault with no
+folders, the entry is made there with no question.
+
 ## A vault that is already there
 
 The mockup's first run is for somebody who has nothing, and its creation screen
@@ -594,7 +675,8 @@ nothing defines a fourth:
 - **a fade**, 130ms, for something already the size it is that only had to
   appear: a pane, a dialog's veil, an empty state;
 - **a pop**, 120ms, for a list that belongs to the control under it, growing out
-  of that control's edge. The dropdown on the settings screen is the only one.
+  of that control's edge. The dropdown on the settings screen and the folder
+  list are the two.
 
 None is longer than a fifth of a second, and every one is silenced by reduced
 motion — which is the whole difference between them and the two drains above.

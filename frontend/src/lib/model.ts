@@ -349,6 +349,20 @@ export interface Made {
 	entry: string;
 }
 
+/** One entry a move between folders took somewhere else, and the folder it
+ * left: the top of the vault is the root's id. */
+export interface Move {
+	entry: string;
+	from: string;
+}
+
+/** What a move of entries hands back: the tree, and each entry that changed
+ * folder, which is what taking the move back sends again. */
+export interface Moved {
+	tree: Group;
+	moved: Move[];
+}
+
 /** What the file on disk holds, for the dialog that asks which version to keep. */
 export interface Rival {
 	modified: string | null;

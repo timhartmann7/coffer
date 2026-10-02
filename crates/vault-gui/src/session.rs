@@ -850,7 +850,7 @@ impl Session {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use vault_core::model::{Deletion, fields};
+    use vault_core::model::{Deletion, GroupId, Move, fields};
 
     use super::*;
 
@@ -1416,7 +1416,7 @@ mod tests {
         let root = session.tree().expect("the tree comes back");
 
         type Change = fn(&mut Vault, EntryId) -> Result<(), VaultError>;
-        let refused: [(&str, Change); 4] = [
+        let refused: [(&str, Change); 8] = [
             ("a field that is not there", |vault, id| {
                 vault.remove_field(id, "no such field", false)
             }),
@@ -1429,6 +1429,32 @@ mod tests {
             ("tags that cannot be written", |vault, id| {
                 vault.set_tags(id, vec![" padded ".to_owned()])
             }),
+            ("a move into a folder that is not there", |vault, id| {
+                let nowhere = GroupId::from_uuid(uuid::Uuid::nil());
+                vault.move_entries(&[id], nowhere).map(drop)
+            }),
+            ("a folder moved into itself", |vault, _| {
+                let work = folder_named(vault, "Work");
+                vault.move_group(work, work)
+            }),
+            ("a move taken back that never happened", |vault, id| {
+                let top = vault.tree().id;
+                let into = vault.entry(id).map_or(top, |entry| entry.group);
+                vault.move_entries_back(
+                    &[Move {
+                        entry: id,
+                        from: top,
+                    }],
+                    into,
+                )
+            }),
+            (
+                "a folder's move taken back that never happened",
+                |vault, _| {
+                    let (top, work) = (vault.tree().id, folder_named(vault, "Work"));
+                    vault.move_group_back(work, folder_named(vault, "Personal"), top)
+                },
+            ),
         ];
         for (what, change) in refused {
             let done = session
@@ -1451,6 +1477,12 @@ mod tests {
             })
             .expect("the vault is open")
             .expect("typing what is there already writes nothing");
+        let home = session.entry(basic).expect("the entry comes back").group;
+        let moved = session
+            .with_mut(|vault| vault.move_entries(&[basic], home))
+            .expect("the vault is open")
+            .expect("a move to where it is already moves nothing");
+        assert!(moved.is_empty());
 
         let (again, _) = session
             .listing(|vault| vault.versions(basic))
@@ -1463,6 +1495,129 @@ mod tests {
             .at_mut(listed, |vault| vault.delete_version(basic, newest))
             .expect("the list is current")
             .expect("the version is dropped");
+    }
+
+    /// The folder with this name among the vault's own.
+    fn folder_named(vault: &Vault, name: &str) -> GroupId {
+        vault
+            .tree()
+            .sections
+            .iter()
+            .find(|section| section.name == name)
+            .map(|section| section.id)
+            .expect("the fixture has the folder")
+    }
+
+    /// A move is a change like any other to a position read before it: the
+    /// revision moves, and a version named from a list read before the move is
+    /// refused rather than acted on. Taking the move back moves it again.
+    #[test]
+    fn a_move_moves_the_revision() {
+        let (_scratch, session) = unlocked(RICH);
+        let versioned = entry_titled(&session, "versioned").id;
+        let work = session
+            .with(|vault| folder_named(vault, "Work"))
+            .expect("the vault is open");
+        let (listed, versions) = session
+            .listing(|vault| vault.versions(versioned))
+            .expect("the vault is open");
+        let oldest = versions.first().expect("the entry has history").index;
+
+        let moved = session
+            .with_mut(|vault| vault.move_entries(&[versioned], work))
+            .expect("the vault is open")
+            .expect("it moves");
+        let (now, _) = session
+            .listing(|vault| vault.versions(versioned))
+            .expect("the vault is open");
+        assert_eq!(now, listed + 1, "a move is one change");
+        assert_eq!(
+            refusal(session.at_mut(listed, |vault| vault.restore_version(versioned, oldest))),
+            "versionsChanged"
+        );
+
+        session
+            .with_mut(|vault| vault.move_entries_back(&moved, work))
+            .expect("the vault is open")
+            .expect("the move is taken back");
+        let (back, _) = session
+            .listing(|vault| vault.versions(versioned))
+            .expect("the vault is open");
+        assert_eq!(back, now + 1);
+
+        let (top, personal) = session
+            .with(|vault| (vault.tree().id, folder_named(vault, "Personal")))
+            .expect("the vault is open");
+        type Folder = fn(&mut Vault, GroupId, GroupId, GroupId) -> Result<(), VaultError>;
+        let there_and_back: [Folder; 2] = [
+            |vault, folder, into, _| vault.move_group(folder, into),
+            |vault, folder, into, from| vault.move_group_back(folder, from, into),
+        ];
+        for change in there_and_back {
+            let (before, _) = session
+                .listing(|vault| vault.versions(versioned))
+                .expect("the vault is open");
+            session
+                .with_mut(|vault| change(vault, work, personal, top))
+                .expect("the vault is open")
+                .expect("the folder moves");
+            let (after, _) = session
+                .listing(|vault| vault.versions(versioned))
+                .expect("the vault is open");
+            assert_eq!(after, before + 1, "a folder's move is one change");
+        }
+    }
+
+    /// A move takes nothing the reader was typing into an entry, and no file
+    /// waiting on one: an entry keeps its id wherever it goes. What was being
+    /// typed is written by the lock into the entry where it now stands, and a
+    /// file asked about before the move goes on when the question is answered
+    /// after it.
+    #[test]
+    fn a_move_keeps_what_is_being_typed_and_the_file_waiting() {
+        let (_directory, database, session) = holding(RICH);
+        let basic = entry_titled(&session, "basic").id;
+        let key = entry_titled(&session, "ssh key").id;
+        let (personal, work) = session
+            .with(|vault| (folder_named(vault, "Personal"), folder_named(vault, "Work")))
+            .expect("the vault is open");
+
+        session
+            .draft(
+                basic,
+                fields::URL,
+                words("https://half.example/pa", false),
+                1,
+            )
+            .expect("the draft is heard");
+        let asked = session
+            .offer(key, KEY.to_owned(), Zeroizing::new(b"a new key".to_vec()))
+            .expect("the file is offered");
+        assert!(matches!(asked, Attached::Taken(_)));
+
+        for (id, into) in [(basic, work), (key, personal)] {
+            session
+                .with_mut(|vault| vault.move_entries(&[id], into))
+                .expect("the vault is open")
+                .expect("it moves");
+        }
+        session
+            .answer(key, Vault::keep_both)
+            .expect("the file is still waiting on the entry");
+        assert!(
+            files_of(&session, key).contains(&(format!("{KEY} 2"), b"a new key".to_vec())),
+            "the file waiting went with the move"
+        );
+
+        assert!(session.lock(Reason::Sleeping));
+        let file = reopened(&database);
+        assert_eq!(
+            value_of(&file, basic, fields::URL).as_deref(),
+            Some("https://half.example/pa"),
+            "what was typed went with the move"
+        );
+        assert_eq!(file.entry(basic).map(|entry| entry.group), Some(work));
+        assert_eq!(file.entry(key).map(|entry| entry.group), Some(personal));
     }
 
     /// The case the revision is for. A save brings every entry's history

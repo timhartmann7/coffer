@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { LANDING } from '$lib/dragging.svelte';
 	import type { Group } from '$lib/model';
 	import { visible } from '$lib/tree';
 	import Icon from './Icon.svelte';
@@ -7,15 +8,25 @@
 		root,
 		selected,
 		expanded,
+		drop = null,
+		lifted = null,
 		onSelect,
-		onToggle
+		onToggle,
+		onPress
 	}: {
 		root: Group;
 		/** The group being shown, or `null` for every entry in the vault. */
 		selected: string | null;
 		expanded: Set<string>;
+		/** The `data-drop` key of the place a drag would land in now. */
+		drop?: string | null;
+		/** The folder being dragged. */
+		lifted?: string | null;
 		onSelect: (id: string) => void;
 		onToggle: (id: string) => void;
+		/** A press on a folder, which a drag may start from. Left out where
+		 * nothing may be moved. */
+		onPress?: (event: PointerEvent, group: Group) => void;
 	} = $props();
 
 	const lines = $derived(visible(root, expanded));
@@ -30,10 +41,16 @@
 
 {#each lines as { group, depth, entries } (group.id)}
 	{@const here = selected === group.id}
+	{@const landing = drop === group.id}
 	<div
-		class="relative flex items-center gap-1 rounded-sm px-2 py-[7px] transition-colors {here
-			? 'bg-raised text-txt'
-			: 'text-txt2 hover:bg-raised/60'}"
+		data-drop={group.id}
+		data-into={group.id}
+		data-opens={group.sections.length > 0 && !expanded.has(group.id) ? group.id : undefined}
+		class="relative flex items-center gap-1 rounded-sm px-2 py-[7px] transition-colors {landing
+			? LANDING
+			: here || lifted === group.id
+				? 'bg-raised text-txt'
+				: 'text-txt2 hover:bg-raised/60'}"
 	>
 		{#if here}
 			<span
@@ -60,9 +77,13 @@
 		<button
 			type="button"
 			onclick={() => onSelect(group.id)}
+			onpointerdown={(event) => onPress?.(event, group)}
 			class="flex min-w-0 flex-1 items-center gap-2 text-left"
 		>
-			<Icon name="folder" class="h-4 w-4 shrink-0 {here ? 'text-accent' : 'text-txt4'}" />
+			<Icon
+				name="folder"
+				class="h-4 w-4 shrink-0 {here || landing ? 'text-accent' : 'text-txt4'}"
+			/>
 			<span class="flex-1 truncate">{group.name}</span>
 			<span class="shrink-0 font-mono text-meta {here ? 'text-txt3' : 'text-txt4'}">{entries}</span>
 		</button>

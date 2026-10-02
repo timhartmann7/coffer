@@ -3,6 +3,7 @@
 	import type { Group } from '$lib/model';
 	import Icon from './Icon.svelte';
 	import Mask from './Mask.svelte';
+	import Path from './Path.svelte';
 
 	/**
 	 * The top of the entry pane: the folders down to the entry, its name, and
@@ -14,6 +15,7 @@
 	 */
 	let {
 		path,
+		place,
 		masked,
 		onClose,
 		children
@@ -21,6 +23,9 @@
 		/** The folders from the vault down to the entry, for the line above
 		 * the name. */
 		path: Group[];
+		/** The line above the name when it is a control rather than a reading:
+		 * where the entry is, and the way to move it. */
+		place?: Snippet;
 		/** The database protects the name, and it is drawn as a secret is. */
 		masked: boolean;
 		/** Puts the pane away. */
@@ -34,11 +39,15 @@
 	<!--
 		The folders down to this entry, and only when there are any. An entry at
 		the top of a vault has none, and the empty line it used to leave was
-		what pushed the title below the two buttons beside it.
+		what pushed the title below the two buttons beside it. An entry that can
+		be moved says where it is either way, because the line is the way to move
+		it.
 	-->
-	{#if path.length > 0}
+	{#if place}
+		{@render place()}
+	{:else if path.length > 0}
 		<div class="mb-1.5 truncate font-mono text-label tracking-label text-txt4 uppercase">
-			{path.map((group) => group.name).join(' · ')}
+			<Path names={path.map((group) => group.name)} />
 		</div>
 	{/if}
 

@@ -20,8 +20,10 @@ export interface Indexed {
  * Case and composition are folded the same way on both sides, so that a title
  * written with a combining accent is found by a query written with a composed
  * one. A protected field contributes nothing: its value is not here to search.
+ * The folder list a move picks from filters names the same way, so the two
+ * finders never disagree about what matches.
  */
-function fold(text: string): string {
+export function fold(text: string): string {
 	return text.normalize('NFC').toLowerCase();
 }
 

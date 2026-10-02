@@ -526,6 +526,44 @@ pub struct Made {
     pub entry: String,
 }
 
+/// What a move between folders hands back: the tree as it is now, and every
+/// entry that changed folder with the folder it left, which is what taking the
+/// move back sends again.
+#[derive(Serialize)]
+pub struct Moved {
+    pub tree: Group,
+    pub moved: Vec<Move>,
+}
+
+/// One entry a move took out of a folder, and that folder.
+///
+/// It comes back from the window to take the move back, where it is only a
+/// claim: [`vault_core::Vault::move_entries_back`] takes nothing back unless
+/// the file says the same.
+#[derive(Serialize, Deserialize)]
+pub struct Move {
+    pub entry: String,
+    pub from: String,
+}
+
+impl Move {
+    pub fn of(moved: model::Move) -> Move {
+        Move {
+            entry: moved.entry.to_string(),
+            from: moved.from.to_string(),
+        }
+    }
+
+    /// The move this names, or nothing when either id does not parse, which
+    /// is answered the way an id naming nothing is.
+    pub fn parsed(&self) -> Result<model::Move, crate::error::Failure> {
+        Ok(model::Move {
+            entry: entry_id(&self.entry)?,
+            from: group_id(&self.from)?,
+        })
+    }
+}
+
 /// What the file on disk holds, for the dialog that asks which version to keep.
 #[derive(Serialize)]
 pub struct Rival {

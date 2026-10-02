@@ -117,6 +117,20 @@ pub struct Binned {
     pub from: Option<GroupId>,
 }
 
+/// One entry a move between folders took somewhere else, and the folder it
+/// took it out of.
+///
+/// What taking the move back goes by: the entry goes back to `from`, and only
+/// while the file still says `from` is where it was last moved from. Ids and
+/// nothing of the reader's, so it prints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Move {
+    pub entry: EntryId,
+    /// The folder the entry was in before the move: a folder, or the top of
+    /// the vault.
+    pub from: GroupId,
+}
+
 /// The KeePass field names Coffer treats as standard. Every other field an
 /// entry carries is a custom field.
 pub mod fields {

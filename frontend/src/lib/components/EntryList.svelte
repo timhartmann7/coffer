@@ -13,8 +13,10 @@
 		now,
 		note,
 		before,
+		lifted,
 		onOpen,
-		onCopy
+		onCopy,
+		onPress
 	}: {
 		rows: EntryRow[];
 		now: Date;
@@ -23,10 +25,15 @@
 		note?: (row: EntryRow) => string;
 		/** Rows of another kind at the top of the list, scrolled with it. */
 		before?: Snippet;
+		/** The rows being dragged, which keep the plane they are lifted on. */
+		lifted?: ReadonlySet<string>;
 		/** Opens the entry, handed the row that was pressed: it is what the pane
 		 * is drawn from until Rust has read the entry. */
 		onOpen: (row: EntryRow) => void;
 		onCopy: (row: EntryRow, field: 'UserName' | 'Password') => void;
+		/** A press on a row, which a drag may start from. Left out where
+		 * nothing may be moved. */
+		onPress?: (event: PointerEvent, row: EntryRow) => void;
 	} = $props();
 
 	/**
@@ -57,10 +64,15 @@
 			the other way round - a button stretched behind the row - is a row whose
 			name a screen reader never reads out.
 		-->
-		<div class="relative border-b border-line transition-colors hover:bg-raised/50">
+		<div
+			class="relative border-b border-line transition-colors {lifted?.has(row.id)
+				? 'bg-raised'
+				: 'hover:bg-raised/50'}"
+		>
 			<button
 				type="button"
 				onclick={() => onOpen(row)}
+				onpointerdown={(event) => onPress?.(event, row)}
 				class="grid w-full grid-cols-[1.5fr_0.85fr_0.85fr_78px_66px] items-center gap-4 px-5 py-[11px] text-left"
 			>
 				<span class="block min-w-0">

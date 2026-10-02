@@ -1,24 +1,9 @@
 /** What the recycle bin says about what is in it, and what a deletion asks
  * before it, in the words the window uses. */
 
-import { ago, day, quoted } from './format';
+import { ago, day } from './format';
 import type { Binned, Group } from './model';
-import { find } from './tree';
-
-/**
- * What a sentence calls the top of the vault. The file gives the top group a
- * name, and the window never shows it: the folders pane calls everything in
- * the vault "All entries", so a sentence that named the top group would be
- * naming a folder the reader has never seen.
- */
-const TOP = 'the top of the vault';
-
-/** A folder of the tree as a sentence names it, or `null` when the tree does
- * not hold it. */
-function named(root: Group, id: string): string | null {
-	const folder = find(root, id);
-	return folder ? quoted(folder.name) : null;
-}
+import { movedTo, placeOf, TOP } from './places';
 
 /**
  * The folder something goes back to, as a sentence names it, or `null` when
@@ -28,9 +13,7 @@ function named(root: Group, id: string): string | null {
  * since the deletion is called what it is called now.
  */
 function whence(binned: Binned, root: Group): string | null {
-	if (binned.from === null) return null;
-	if (binned.from === root.id) return TOP;
-	return named(root, binned.from);
+	return binned.from === null ? null : placeOf(root, binned.from);
 }
 
 /**
@@ -42,7 +25,7 @@ function whence(binned: Binned, root: Group): string | null {
  * place it goes back to is the folder's.
  */
 function companion(binned: Binned, root: Group): string | null {
-	return binned.within === null ? null : named(root, binned.within);
+	return binned.within === null ? null : placeOf(root, binned.within);
 }
 
 /**
@@ -88,7 +71,7 @@ export function eraseQuestion(name: string, folder = false): string {
 
 /** What a move into the bin says, for an entry and for a folder alike. */
 export function moved(name: string): string {
-	return `Moved ${name} to the Recycle Bin`;
+	return movedTo(name, 'the Recycle Bin');
 }
 
 /** What is said once something has gone out of the file, where nothing can

@@ -112,3 +112,72 @@ it('marks the group being shown with the bar, and only that one', () => {
 
 	return unmount(component);
 });
+
+/** Only the folder a drop would go into lights, in the accent, and the folder
+ * being dragged keeps the plane it was lifted on. */
+it('marks the folder a drag would land in with the accent, and only that one', () => {
+	const servers = group({ name: 'Servers' });
+	const work = group({ name: 'Work', sections: [servers] });
+	const home = group({ name: 'Home' });
+	const root = group({ sections: [work, home] });
+
+	const component = mount(Tree, {
+		target: host,
+		props: {
+			root,
+			selected: null,
+			expanded: new SvelteSet<string>(),
+			drop: home.id,
+			lifted: work.id,
+			onSelect: vi.fn(),
+			onToggle: vi.fn(),
+			onPress: vi.fn()
+		}
+	});
+	flushSync();
+
+	const line = (id: string) => host.querySelector<HTMLElement>(`[data-drop="${id}"]`);
+	expect(line(home.id)?.className).toContain('outline-accent');
+	expect(line(home.id)?.querySelector('svg')?.getAttribute('class')).toContain('text-accent');
+	expect(line(work.id)?.className).not.toContain('outline-accent');
+	expect(line(work.id)?.className).toContain('bg-raised');
+
+	// Where a drop goes, and which folded folder a rest opens, by id only.
+	expect(line(home.id)?.dataset.into).toBe(home.id);
+	expect(line(work.id)?.dataset.opens).toBe(work.id);
+	expect(line(home.id)?.dataset.opens, 'a folder with nothing to open').toBeUndefined();
+
+	return unmount(component);
+});
+
+/** The press a drag starts from is on the folder's own button, not on the
+ * chevron that folds it. */
+it('hands a press on a folder to the screen, and none on its chevron', () => {
+	const servers = group({ name: 'Servers' });
+	const work = group({ name: 'Work', sections: [servers] });
+	const onPress = vi.fn();
+
+	const component = mount(Tree, {
+		target: host,
+		props: {
+			root: group({ sections: [work] }),
+			selected: null,
+			expanded: new SvelteSet<string>(),
+			onSelect: vi.fn(),
+			onToggle: vi.fn(),
+			onPress
+		}
+	});
+	flushSync();
+
+	host
+		.querySelector('[aria-label="Expand Work"]')
+		?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+	expect(onPress).not.toHaveBeenCalled();
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('Work'))
+		?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+	expect(onPress).toHaveBeenCalledWith(expect.any(PointerEvent), work);
+
+	return unmount(component);
+});

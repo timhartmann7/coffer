@@ -103,6 +103,9 @@ an hour after the refusal, so the command is the reliable one.
   the file changed underneath.
 - Previous versions of an entry live in the file's own history block, pruned to
   the limits the file carries.
+- A move between folders is written the way other clients of the format write
+  one - the folder it left and when - and is not a change to the entry: no
+  version, and its modification date stays.
 - The vault locks itself after five minutes idle, on sleep, on screen lock, and
   when you close its window. After a close, Coffer waits in the Dock until you
   click it; after the others, the window comes back asking for the password.

@@ -118,6 +118,19 @@ pub enum VaultError {
     #[error("that is not in the recycle bin")]
     NotInRecycleBin,
 
+    /// Something in the recycle bin, or the bin itself, was to be moved between
+    /// folders. What is in the bin comes out by being put back, which takes it
+    /// to where it came from and says so; a move would take it out without
+    /// either.
+    #[error("what is in the recycle bin is put back, not moved")]
+    InRecycleBin,
+
+    /// Something was to go into the recycle bin, or a folder inside it, by a
+    /// way other than deleting it. Deleting says before it happens whether it
+    /// can be undone, and nothing else that lands in the bin would.
+    #[error("the recycle bin takes nothing but what is deleted")]
+    IntoRecycleBin,
+
     /// What is open is one of Coffer's own snapshots. It opens like any other
     /// database and is not written back: the next save of the database it was
     /// taken from would rotate it away.
@@ -164,6 +177,16 @@ pub enum VaultError {
     /// more than the field.
     #[error("the entry has changed since that field came off")]
     RemovalSuperseded,
+
+    /// A move asked to be taken back is no longer what the file says of where
+    /// every entry or the folder it names is: one of them has gone, is not in
+    /// the folder the move took it to, or the file says it was last moved
+    /// there from another folder; the folder it came from has gone or is in
+    /// the bin, or has since been moved inside the folder going back; or the
+    /// folder it was moved into has gone or is in the bin. Taking it back then
+    /// would undo something done after it. Nothing moved.
+    #[error("something has moved since, so that move can no longer be taken back")]
+    MoveSuperseded,
 
     /// A deletion would no longer do what the reader was shown before they
     /// asked for it: what was going to the bin would now go for good, because

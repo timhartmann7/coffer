@@ -7,7 +7,10 @@ import { RISE, span } from './motion';
 
 export type Notice = {
 	message: string;
-	kind: 'copied' | 'failed' | 'removed';
+	/** What the notice is about, which is the icon it carries: a copy, a
+	 * failure, something gone to the bin or out of the file, or something
+	 * moved between folders. */
+	kind: 'copied' | 'failed' | 'removed' | 'moved';
 	/** Takes back what the notice is about, while that is still on offer. */
 	undo?: () => void;
 };
@@ -86,9 +89,11 @@ export class Notices {
 	 * undo acts on what it is about by its id, whichever entry the pane shows by
 	 * then, and never opens anything over the reader's later choice, and one the
 	 * vault has moved on from is refused by Rust at the press and said to be.
+	 *
+	 * `kind` is what was done: something taken away, by default, or moved.
 	 */
-	offer(message: string, undo: () => Promise<void>): void {
-		this.tell({ message, kind: 'removed', undo: () => void this.#takeBack(undo) }, UNDOABLE);
+	offer(message: string, undo: () => Promise<void>, kind: Notice['kind'] = 'removed'): void {
+		this.tell({ message, kind, undo: () => void this.#takeBack(undo) }, UNDOABLE);
 		this.#offered = undo;
 	}
 

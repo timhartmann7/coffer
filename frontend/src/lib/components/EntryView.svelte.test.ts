@@ -54,6 +54,7 @@ function props<Over extends Partial<ComponentProps<typeof EntryView>>>(over: Ove
 		onClose: vi.fn(),
 		onDelete: vi.fn(),
 		onPutBack: vi.fn(),
+		onMove: vi.fn(),
 		onFieldRemoved: vi.fn(),
 		onFailure: vi.fn(),
 		...over
@@ -1338,7 +1339,9 @@ it('offers a way out of the entry, and it is not the way to delete one', () => {
 	flushSync();
 
 	const header = host.querySelector('header');
-	const buttons = [...(header?.querySelectorAll('button') ?? [])].map((each) =>
+	// The line above the title opens a list of folders, which moves the entry
+	// and loses nothing.
+	const buttons = [...(header?.querySelectorAll('button:not([aria-haspopup])') ?? [])].map((each) =>
 		each.getAttribute('aria-label')
 	);
 	expect(buttons, 'something that loses the entry is back beside the close').toEqual([
@@ -4872,6 +4875,126 @@ it("asks the password's generator and a field's as what each is, and puts each o
 	expect(screen()).not.toContain('4711');
 	expect(screen()).not.toContain('Made-Password-123');
 	expect(onFailure).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/**
+ * The line above the title is where the entry is and the way to move it, in an
+ * entry Coffer can write. In the bin, and in a vault it will not write back, it
+ * is the line the mockup draws and nothing more: nothing there moves.
+ */
+it('the line above the title moves the entry, and is plain text in the bin and in a vault it cannot write', () => {
+	const work = group({ name: 'Work' });
+	const banking = group({ name: 'Banking' });
+	const root = group({ name: 'Root', sections: [work, banking] });
+	const onMove = vi.fn();
+	const component = mount(EntryView, {
+		target: host,
+		props: props({ entry: entry({ group: work.id }), root, path: [work], onMove })
+	});
+	flushSync();
+
+	const line = host.querySelector<HTMLButtonElement>('header button[aria-haspopup="listbox"]');
+	expect(line?.textContent).toContain('Work');
+	expect(line?.getAttribute('aria-expanded')).toBe('false');
+	line?.click();
+	flushSync();
+	expect(line?.getAttribute('aria-expanded')).toBe('true');
+	const filter = host.querySelector<HTMLInputElement>('input[role="combobox"]');
+	expect(document.activeElement).toBe(filter);
+	expect(host.querySelector('[aria-current="location"]')?.textContent).toContain('Work');
+
+	filter?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+	flushSync();
+	filter?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+	flushSync();
+	expect(onMove).toHaveBeenCalledWith(banking.id);
+	expect(host.querySelector('input[role="combobox"]'), 'the list stayed open').toBeNull();
+	// The entry stays in the pane wherever it goes, and the keys stay on the
+	// line that moved it rather than falling to the top of the window.
+	expect(document.activeElement, 'the focus fell out of the pane').toBe(line);
+	unmount(component);
+
+	for (const over of [
+		{ readOnly: true },
+		{ entry: entry({ group: work.id, binned: { since: null, within: null, from: work.id } }) }
+	]) {
+		const still = mount(EntryView, {
+			target: host,
+			props: props({ entry: entry({ group: work.id }), root, path: [work], onMove, ...over })
+		});
+		flushSync();
+		expect(host.querySelector('header button[aria-haspopup]'), JSON.stringify(over)).toBeNull();
+		expect(host.querySelector('header')?.textContent).toContain('Work');
+		unmount(still);
+	}
+	expect(onMove).toHaveBeenCalledTimes(1);
+});
+
+/** The mockup leaves the line out at the top of the vault. An entry that can
+ * be moved says where it is there too, because the line is the way out of it. */
+it('an entry at the top of the vault says so above its title', () => {
+	const root = group({ name: 'Passwords', sections: [group({ name: 'Work' })] });
+	const component = mount(EntryView, {
+		target: host,
+		props: props({ entry: entry({ group: root.id }), root, path: [] })
+	});
+	flushSync();
+
+	const line = host.querySelector('header button[aria-haspopup="listbox"]');
+	expect(line?.textContent).toContain('Top of the vault');
+	expect(line?.textContent, 'the top group was named').not.toContain('Passwords');
+
+	// Escape closes the list and gives the focus back to the line.
+	(line as HTMLButtonElement | null)?.click();
+	flushSync();
+	host
+		.querySelector('input[role="combobox"]')
+		?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+	flushSync();
+	expect(host.querySelector('input[role="combobox"]')).toBeNull();
+	expect(document.activeElement).toBe(line);
+
+	return unmount(component);
+});
+
+/**
+ * The window hands the pane one entry and then another. A folder list opened
+ * over the first is not open over the second, where a Return meant for the
+ * first would move the second.
+ */
+it('a folder list open over one entry is not open over the next', () => {
+	const work = group({ name: 'Work' });
+	const banking = group({ name: 'Banking' });
+	const root = group({ name: 'Root', sections: [work, banking] });
+	const onMove = vi.fn();
+	const handed = reactive(props({ entry: entry({ group: work.id }), root, path: [work], onMove }));
+	const component = mount(EntryView, { target: host, props: handed });
+	flushSync();
+
+	host.querySelector<HTMLButtonElement>('header button[aria-haspopup="listbox"]')?.click();
+	flushSync();
+	const filter = host.querySelector<HTMLInputElement>('input[role="combobox"]');
+	expect(filter).not.toBeNull();
+	filter?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+	flushSync();
+
+	handed.entry = entry({ group: work.id });
+	flushSync();
+	expect(
+		host.querySelector('input[role="combobox"]'),
+		'the list stayed over the next entry'
+	).toBeNull();
+	expect(
+		host.querySelector('header button[aria-haspopup="listbox"]')?.getAttribute('aria-expanded')
+	).toBe('false');
+	filter?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+	document.activeElement?.dispatchEvent(
+		new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+	);
+	flushSync();
+	expect(onMove).not.toHaveBeenCalled();
 
 	return unmount(component);
 });

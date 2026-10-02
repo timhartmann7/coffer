@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { entry, field } from './fixtures';
-import { ago, at, called, copied, day, fully, quoted, size, when } from './format';
+import { entry, field, row } from './fixtures';
+import { ago, at, called, calledRow, copied, day, fully, quoted, size, when } from './format';
 
 /** The suite runs with TZ pinned to UTC, so the local clock the screen writes
  * in is the same one the database keeps. */
@@ -108,6 +108,16 @@ describe('what a sentence calls an entry', () => {
 		// Protected: the value is not here, and a notice is no reason to fetch it.
 		expect(called(titled(null))).toBe('this entry');
 		expect(called(entry({ fields: [] }))).toBe('this entry');
+	});
+
+	/** A row says the same as the entry it opens: the notice of a move made
+	 * from the list must not name an entry differently from one made from the
+	 * pane. */
+	it('calls a row what it calls the entry', () => {
+		expect(calledRow(row({ title: 'Bank' }))).toBe(called(titled('Bank')));
+		expect(calledRow(row({ title: '' }))).toBe('this entry');
+		expect(calledRow(row({ title: null }))).toBe('this entry');
+		expect(calledRow(row({ title: 'evil\u202Eslip' }))).toBe('“\u2068evil\u202Eslip\u2069”');
 	});
 });
 

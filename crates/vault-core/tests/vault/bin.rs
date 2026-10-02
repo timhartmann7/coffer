@@ -6,19 +6,15 @@ use std::path::{Path, PathBuf};
 use keepass::DatabaseKey;
 use keepass::db::fields;
 use vault_core::model::{Deletion, EntryId, GroupId, Project};
-use vault_core::{NewValue, Rescue, Vault, VaultError};
+use vault_core::{Rescue, Vault, VaultError};
 
-use crate::support::{self, BUILT_PASSWORD, RICH, SECRET, built, entry_titled, only_group, open};
+use crate::support::{
+    self, BUILT_PASSWORD, RICH, SECRET, built, cheap, entry_titled, folder, holder, library, made,
+    only_group, open,
+};
 
-/// The folder with this id, wherever it sits in the tree.
-fn folder(tree: &Project, id: GroupId) -> Option<&Project> {
-    if tree.id == id {
-        return Some(tree);
-    }
-    tree.sections.iter().find_map(|section| folder(section, id))
-}
-
-fn bin_of(tree: &Project) -> &Project {
+/// The recycle bin, wherever the tree holds it.
+pub fn bin_of(tree: &Project) -> &Project {
     fn walk(group: &Project) -> Option<&Project> {
         if group.is_recycle_bin {
             return Some(group);
@@ -26,15 +22,6 @@ fn bin_of(tree: &Project) -> &Project {
         group.sections.iter().find_map(walk)
     }
     walk(tree).expect("the vault has a recycle bin")
-}
-
-/// An entry with a title, made where it is asked for.
-fn made(vault: &mut Vault, group: GroupId, title: &str) -> EntryId {
-    let id = vault.create_entry(group).expect("the entry is made");
-    vault
-        .set_field(id, fields::TITLE, NewValue::Open(title.to_owned()))
-        .expect("the title is written");
-    id
 }
 
 /// Puts an entry back, and says which folder it is in afterwards.
@@ -45,23 +32,8 @@ fn put_back(vault: &mut Vault, id: EntryId) -> GroupId {
 
 /// Puts a folder back, and says which folder holds it afterwards.
 fn put_back_folder(vault: &mut Vault, id: GroupId) -> GroupId {
-    fn holder(group: &Project, id: GroupId) -> Option<GroupId> {
-        if group.sections.iter().any(|section| section.id == id) {
-            return Some(group.id);
-        }
-        group
-            .sections
-            .iter()
-            .find_map(|section| holder(section, id))
-    }
     vault.put_back_group(id).expect("it is put back");
     holder(&vault.tree(), id).expect("it is still in the file")
-}
-
-fn cheap(name: &str) -> (tempfile::TempDir, PathBuf) {
-    let scratch = tempfile::tempdir().expect("a scratch directory");
-    let path = built(scratch.path(), name, |_| {});
-    (scratch, path)
 }
 
 /// The whole round a reader makes: an entry goes to the bin, the file is
@@ -209,9 +181,7 @@ fn a_move_to_the_bin_and_back_is_neither_an_edit_nor_a_deletion() {
     assert_eq!(back.versions, versions, "a move wrote a version");
     assert_eq!(back.times.modified, versioned.times.modified);
 
-    let mut file = std::fs::File::open(&database).expect("the file opens");
-    let written = keepass::Database::open(&mut file, DatabaseKey::new().with_password(SECRET))
-        .expect("the library reads it");
+    let written = library(&database, SECRET);
     for moved in [versioned.id.uuid(), work.uuid()] {
         assert!(
             !written.deleted_objects.contains_key(&moved),
@@ -669,7 +639,7 @@ fn a_read_only_database_says_what_is_in_the_bin_and_puts_nothing_back() {
 
 /// A vault shaped to catch every way the answer could be wrong: the bin inside
 /// a folder, a folder inside the bin, and an entry in each place.
-fn awkward(directory: &Path, name: &str, keeps: bool) -> PathBuf {
+pub fn awkward(directory: &Path, name: &str, keeps: bool) -> PathBuf {
     built(directory, name, |database| {
         let root = database.root().id();
         let archive = {
@@ -803,8 +773,7 @@ fn what_a_deletion_will_do_follows_a_file_another_client_changed() {
 
     {
         let key = || DatabaseKey::new().with_password(BUILT_PASSWORD);
-        let mut file = std::fs::File::open(&path).expect("the file opens");
-        let mut other = keepass::Database::open(&mut file, key()).expect("the library reads it");
+        let mut other = library(&path, BUILT_PASSWORD);
         other.meta.recyclebin_enabled = Some(false);
         let mut file = std::fs::File::create(&path).expect("the file is rewritten");
         other

@@ -21,6 +21,8 @@ import type {
 	Group,
 	History,
 	Made,
+	Move,
+	Moved,
 	Position,
 	Purpose,
 	Recipe,
@@ -324,6 +326,41 @@ export function putBackEntry(entry: string): Promise<Group> {
  * terms. */
 export function putBackGroup(group: string): Promise<Group> {
 	return invoke('put_back_group', { group });
+}
+
+/**
+ * Moves entries into a folder, or to the top of the vault with the root's id,
+ * every one of them or none. Rust refuses the whole batch with `refused` when
+ * one of them, or the folder, is in the recycle bin, and with `noSuchEntry`
+ * when one of them or the folder is not there. One already in the folder stays
+ * where it is and is not among those answered.
+ */
+export function moveEntries(entries: string[], into: string): Promise<Moved> {
+	return invoke('move_entries', { entries, into });
+}
+
+/**
+ * Takes a move back: each entry `moveEntries` answered goes out of `into` to
+ * the folder it left, every one of them or none. Rust refuses with
+ * `superseded`, moving nothing, once the file says any of them has moved since.
+ */
+export function moveEntriesBack(moved: Move[], into: string): Promise<Group> {
+	return invoke('move_entries_back', { moved, into });
+}
+
+/** Moves a folder with everything in it, on the terms `moveEntries` gives. A
+ * folder cannot go inside itself or a folder under it. */
+export function moveGroup(group: string, into: string): Promise<Group> {
+	return invoke('move_group', { group, into });
+}
+
+/**
+ * Takes a folder's move back out of `into` to `from`, the folder it left. Rust
+ * refuses with `superseded`, moving nothing, once the file says the folder has
+ * moved since, or either folder has gone or is in the recycle bin.
+ */
+export function moveGroupBack(group: string, from: string, into: string): Promise<Group> {
+	return invoke('move_group_back', { group, from, into });
 }
 
 export function emptyRecycleBin(): Promise<Group> {

@@ -65,8 +65,9 @@ enum Code {
     /// whether they mean it.
     ForGood,
     /// A removal the reader asked to take back is no longer the last thing
-    /// that happened to its entry. Nothing was done, and the screen says the
-    /// removal can no longer be undone.
+    /// that happened to its entry, or a move is no longer the last that
+    /// happened to where its entries are. Nothing was done, and the screen
+    /// says it can no longer be undone.
     Superseded,
     /// A deletion would no longer do what the window showed before the reader
     /// asked for it: a move to the bin would now erase, or the other way round,
@@ -196,13 +197,15 @@ impl From<VaultError> for Failure {
             | VaultError::CannotMoveRoot
             | VaultError::CannotMoveIntoItself
             | VaultError::NotInRecycleBin
+            | VaultError::InRecycleBin
+            | VaultError::IntoRecycleBin
             | VaultError::NoSuchPart
             | VaultError::CopyOntoItself
             | VaultError::NotACopy
             | VaultError::NothingToGenerateFrom
             | VaultError::RandomnessUnavailable => Code::Refused,
             VaultError::RemovalForGood => Code::ForGood,
-            VaultError::RemovalSuperseded => Code::Superseded,
+            VaultError::RemovalSuperseded | VaultError::MoveSuperseded => Code::Superseded,
             VaultError::DeletionChanged => Code::DeletionChanged,
             VaultError::Io(_) => Code::Io,
             _ => Code::Other,
@@ -268,12 +271,16 @@ mod tests {
             (VaultError::AttachmentPinned, "refused"),
             (VaultError::AttachmentTooLarge, "refused"),
             (VaultError::CannotMoveRoot, "refused"),
+            (VaultError::CannotMoveIntoItself, "refused"),
             (VaultError::NotInRecycleBin, "refused"),
+            (VaultError::InRecycleBin, "refused"),
+            (VaultError::IntoRecycleBin, "refused"),
             (VaultError::NoSuchPart, "refused"),
             (VaultError::NotACopy, "refused"),
             (VaultError::NothingToGenerateFrom, "refused"),
             (VaultError::RemovalForGood, "forGood"),
             (VaultError::RemovalSuperseded, "superseded"),
+            (VaultError::MoveSuperseded, "superseded"),
             (VaultError::DeletionChanged, "deletionChanged"),
             (VaultError::Io(io::Error::other("a disk")), "io"),
         ] {
