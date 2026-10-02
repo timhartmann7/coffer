@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use crate::storage::{atomic::write_atomic, sibling};
+use crate::storage::{Seen, atomic::write_atomic, sibling};
 
 /// Tightens a snapshot to owner-only.
 ///
@@ -89,6 +89,14 @@ pub struct Taken {
     /// When it was taken, as far as the filesystem knows. Absent on a
     /// filesystem that does not keep the time.
     pub taken: Option<std::time::SystemTime>,
+    /// Which file it is, wherever later saves move it: every save renames each
+    /// snapshot a slot further down, which keeps all four things this holds.
+    ///
+    /// The name's own entry rather than what it leads to. Coffer never puts a
+    /// link at a slot, and a link somebody else put there is known as the link:
+    /// the file it leads to may be the vault itself, and every later save
+    /// would hand that file's identity to the snapshot it pushes into slot 1.
+    pub(crate) seen: Seen,
 }
 
 /// The snapshots beside `database`, most recent first.
@@ -97,27 +105,116 @@ pub struct Taken {
 /// history of saves, and a database saved three times has three of them. This
 /// is what the screen offers when a database will not open, so it asks about
 /// the file the user chose rather than about a database Coffer managed to read.
+///
+/// A slot that cannot be asked about is skipped the same way, one slot at a
+/// time: a link somebody left that leads round in a circle, or a disk that
+/// answered with an error. One slot nobody can read is no reason to hide the
+/// nine beside it, from the screen or from a removal.
 pub fn taken(database: &Path) -> Result<Vec<Taken>, io::Error> {
     let mut found = Vec::new();
 
     for index in 1..=SNAPSHOT_COUNT {
         let path = slot(database, index)?;
-        let metadata = match std::fs::metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error),
+        let Ok(opens) = std::fs::metadata(&path) else {
+            continue;
+        };
+        let Ok(own) = path.symlink_metadata() else {
+            continue;
         };
 
-        if metadata.is_file() {
+        if opens.is_file() {
             found.push(Taken {
                 index,
                 path,
-                taken: metadata.modified().ok(),
+                taken: opens.modified().ok(),
+                seen: Seen::of_metadata(&own),
             });
         }
     }
 
     Ok(found)
+}
+
+/// What removing the snapshots that open with an old master password came to.
+#[derive(Debug)]
+pub struct Removal {
+    /// How many went.
+    pub gone: usize,
+    /// How many would not go. Each is still beside the vault, still opens with
+    /// the old password, and is remembered to be removed by the next press.
+    pub left: usize,
+    /// Why the first of those would not go. There whenever any are left.
+    pub refused: Option<io::Error>,
+}
+
+/// Snapshots that open with a master password the vault no longer has.
+///
+/// Known by the file each one is, as [`Taken::seen`] keeps it, and never by its
+/// slot. Every later save renames each one a slot further down, which keeps
+/// what is known of it, and puts a snapshot written under the new password in
+/// slot 1, which is another file. The time and the length are there as well as
+/// the inode because a filesystem that reuses inode numbers could hand a
+/// removed snapshot's number to a new one.
+#[derive(Default)]
+pub(crate) struct Superseded(Vec<Seen>);
+
+impl Superseded {
+    /// Every snapshot beside `database` as it stands. Asked straight after the
+    /// write that changed the key, when every one of them is older than it.
+    pub(crate) fn now(database: &Path) -> Result<Superseded, io::Error> {
+        Ok(Superseded(
+            taken(database)?.into_iter().map(|each| each.seen).collect(),
+        ))
+    }
+
+    pub(crate) fn count(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Takes off the disk every slot beside `database` that holds one of these
+    /// files now, and answers with how many went and how many would not.
+    ///
+    /// A file that will not go stays remembered, to be asked about again; the
+    /// rest still go. One that is in no slot any more - pushed off the end of
+    /// the chain by later saves - is forgotten with the ones taken. Nothing but
+    /// a slot's own name is ever removed, so a link at a slot goes as a link
+    /// and the file it leads to stays.
+    pub(crate) fn remove(&mut self, database: &Path) -> Removal {
+        let listed = match taken(database) {
+            Ok(listed) => listed,
+            Err(error) => {
+                return Removal {
+                    gone: 0,
+                    left: self.count(),
+                    refused: Some(error),
+                };
+            }
+        };
+
+        let mut gone = 0;
+        let mut kept: Vec<Seen> = Vec::new();
+        let mut refused: Option<io::Error> = None;
+
+        for each in listed {
+            if !self.0.contains(&each.seen) {
+                continue;
+            }
+            match remove_if_present(&each.path) {
+                Ok(()) => gone += 1,
+                Err(error) => {
+                    kept.push(each.seen);
+                    refused.get_or_insert(error);
+                }
+            }
+        }
+
+        self.0.retain(|old| kept.contains(old));
+        Removal {
+            gone,
+            left: self.count(),
+            refused,
+        }
+    }
 }
 
 /// Takes every snapshot beside `database` off the disk. Only for a database

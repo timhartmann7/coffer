@@ -939,6 +939,32 @@ it('says a new value was kept beside the old one, and names nothing', () => {
 	}
 });
 
+/** The settings that said the master password changed went with the lock, and
+ * a change pressed as the lid closed may never have been said. The screen that
+ * asks for a password says which one, and says nothing when nothing changed. */
+it('says the master password was changed before locking, and only then', () => {
+	for (const rekeyed of [true, false]) {
+		const component = mount(Unlock, {
+			target: host,
+			props: {
+				database,
+				rekeyed,
+				onChoose: vi.fn(),
+				onKeyFile: vi.fn(),
+				onCreate: vi.fn(),
+				onGone: vi.fn(),
+				onUnlocked: vi.fn()
+			}
+		});
+		flushSync();
+
+		expect(reads().includes('The master password was changed before locking'), `${rekeyed}`).toBe(
+			rekeyed
+		);
+		unmount(component);
+	}
+});
+
 /** The first-run screen, with nothing remembered and whatever Rust found. */
 function firstRun(
 	found: { name: string; folder: string; copy?: boolean } | null,

@@ -690,6 +690,100 @@ accessibility tree. Every value in an entry the database does not protect is a
 live field that commits what the reader wrote in it when focus leaves, so a
 covered pane is an entry that can be rewritten by keys aimed at something else.
 
+## Changing the master password
+
+The mockup's settings draw no row for it, and its creation screen is the only
+place it draws a password typed twice; the row is built from both. `SPEC.md`
+names four things for this screen, and key derivation still does not appear.
+
+**A row like the vault's, with the creation screen's fields under it.** "Master
+password" is in `row` and `txt`, with "What you type to unlock this vault -
+nothing, if its key file alone opens it" under it in `fine` and `txt3`: true of
+a password alone, of a password beside a key file, and of a key file alone,
+whose reader would otherwise have nothing telling them the current password is
+an empty field. "Change…" is the bordered `h-9` pill "Open another" is. The row
+comes right after the vault's, and is drawn only while a vault Coffer can write
+is open - and not inside the copy a lock left, which can be written and is not
+the vault: a password given there would be the copy's alone, while the vault and
+every snapshot of it went on opening with the old one. The copy's banner is the
+way to make it the vault, and the row is there from then on. With such a copy
+beside the vault, the row is drawn without the pill, and a line under it in
+`small` and `txt2` says why and what to do: "Not while the copy a lock left sits
+beside this vault, which opens with the same password. Lock the vault, then make
+the copy your vault or remove it, and the password can be changed here." The
+unlock screen's card about the copy is where both are done. Pressed, the pill
+gives way to three fields under the row, with the cursor in the first. "Current
+password" is on a line of its own, at the width of one column; "New password"
+and "Once more" sit side by side. They use the creation screen's field, its mono
+label and its two-column grid with a `5` gap. Under them is the creation
+screen's warning, the same component at the same size, because the new password
+is as unrecoverable as the first. Then come "Never mind", the plain `h-9` pill
+in `txt3`, and "Change the password", the accent pill at `h-9` that "Put back"
+is. While Rust works the button reads "Changing it…", both buttons are disabled
+and every field is read only. Return in the first two fields moves to the next,
+and sends from the third.
+
+**Every field has the mockup's eye.** The mockup draws one at the end of the
+unlock field and of the creation screen's first field, in `txt3` at sixteen
+pixels, and the check alone at the end of the creation screen's "Once more".
+Pressed, the field shows what is typed, in mono, until the focus leaves the
+field and its eye; then it is a mask again, so a password is never left on the
+screen by a reader who went to type somewhere else. Pressing the eye leaves the
+focus in the field. Its name is what it does next, "Show the password" or "Hide
+the password", as the eye on a revealed value is named, and it is not also a
+pressed toggle. Here "Once more" has an eye as well as the check, so that each
+of the three can be read back before it is sent. "Once more" draws the mockup's
+check before its eye, in the same `txt3`, once the two new passwords are the
+same. They are compared when the focus leaves either, not on every key, and a
+key in either takes the check away. The creation screen's two fields are this
+same field drawn without the eye, so its look and its wrong state live in one
+component; that screen still draws neither the eye nor the check the mockup
+gives it.
+
+**Refusals are said under the form, in `small` and `danger`.** Two new passwords
+that differ give the creation screen's sentence; only "Once more" is emptied,
+with the cursor in it, and nothing is sent. An empty one gives the creation
+screen's sentence for that. Anything Rust refuses begins "The password was not
+changed:" and keeps everything typed. A wrong current password paints that
+field's border `danger/60`, the mockup's wrong-password state, and puts the
+cursor back in it with its text selected; a new one Rust refuses puts the cursor
+in "New password". A file somebody else wrote stops the change the way it stops
+a save, and the conflict dialog rises over the settings; a file that is not
+there any more raises the dialog a save raises for that. Each sentence arrives
+in a live region that was there before it, so a screen reader says it wherever
+the focus is, and "Once more" is described by the sentence about the two while
+it stands.
+
+**The settings stay while the change is on its way.** Escape and the status
+bar's button do nothing until Rust answers, because the answer is the one place
+that says which password now opens the vault. Otherwise Escape in the form puts
+the form away, with what was typed, and leaves the settings open with the focus
+on "Change…".
+
+**Afterwards, the snapshots are asked about in the window's one question box,**
+on `surface2` under the row: "Master password changed. Your 4 automatic backups
+of earlier saves still open with the old password until later saves replace
+them. Removing them can’t be undone." One is said in the singular, with "Keep
+it" and "Remove the old backup". "Keep them" is the way out and where the focus
+lands, and Escape is Keep; "Remove old backups" is last, in `danger`. Closing
+the settings keeps them. A line in `fine` and `txt3` under the row then says how
+many went, in a live region, because the focus goes back to "Change…", which
+says nothing of it. A removal that could not take every one says why in `danger`
+- "Not every old backup could be removed: …" when some went, "The old backups
+could not be removed: …" when none did - and leaves the question up, about how
+many are left rather than how many there were; Keep then takes the sentence away
+with the question. A change that left no snapshot to ask about says only "Master
+password changed." No notice rises for any of it: the row is where it is said.
+
+**A lock after a change says so on the unlock screen.** The row that said which
+password opens the vault goes with the window, and a change pressed as the lid
+closed may never have said it at all. So the first unlock screen after a lock
+that closed a vault whose password changed while it was open says "The master
+password was changed before locking, and the vault opens with the new one." in
+the place and the type of the line about typing a lock saved - `small`,
+centred, `mt-6`, in `txt2`. It is gone once the vault is open again, and is not
+said about any other file. The question about old backups is not asked again.
+
 ## The menu bar and the keyboard
 
 The mockup draws no menu bar and no list of keys. Both follow from the window:
@@ -760,13 +854,14 @@ value each draw Coffer's menu where the pointer is. The name of the password's
 row and of a field of the reader's own belong to that row, and draw its menu.
 Anywhere else - "All entries", "Not in a folder", blank space, the name over a
 login, an address, notes or tags - draws none. In a field the reader types
-into - the search, a value being written, a name, a new password - WebKit's own
-menu stays, because its Cut, Copy, Paste and spelling are about their typing. A
-revealed value is not typing: its menu is Copy, through Rust, and Hide, and
-Look Up, Translate, Search and Share never appear on it. Nor do they anywhere
-else while part of a value is still selected: WebKit's menu is about the
-selection, wherever the pointer is, so a right-click in the search field then
-draws no menu at all.
+into - the search, a value being written, a name, a new password, the three of
+the master password in the settings - WebKit's own menu stays, because its Cut,
+Copy, Paste and spelling are about their typing; a field made read only, as
+those three are while a change is on its way, draws none. A revealed value is
+not typing: its menu is Copy, through Rust, and Hide, and Look Up, Translate,
+Search and Share never appear on it. Nor do they anywhere else while part of a
+value is still selected: WebKit's menu is about the selection, wherever the
+pointer is, so a right-click in the search field then draws no menu at all.
 
 **What the menu is about is marked while it is open.** The row, the folder, the
 bin's row or the file carries the accent hairline a field takes with the focus,

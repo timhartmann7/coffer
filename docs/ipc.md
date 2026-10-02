@@ -47,7 +47,7 @@ the first over all ten. Rust reads it off the value in
 
 | Command | Takes | Answers |
 |---|---|---|
-| `status` | | the chosen database, whether it is open, how many entries, whether it can be written, why it locked, whether that lock saved something being typed and whether some of it was kept beside the value it was for, the unsaved copy sitting beside it, the chosen file as it stands on disk, the vault it was copied from when it is a lock's copy, and - when nothing is remembered - a vault found in Coffer's own folder |
+| `status` | | the chosen database, whether it is open, how many entries, whether it can be written, why it locked, whether that lock saved something being typed and whether some of it was kept beside the value it was for, whether the vault it closed had been given a new master password, the unsaved copy sitting beside it, the chosen file as it stands on disk, the vault it was copied from when it is a lock's copy, and - when nothing is remembered - a vault found in Coffer's own folder |
 | `choose_database` | | the database the user picked, or nothing if they closed the dialog |
 | `choose_found` | | the vault the last `status` found in Coffer's own folder, now chosen |
 | `unlock` | the master password, as the raw body | nothing |
@@ -764,6 +764,9 @@ submit: this is the one refusal that says nothing about them. It is also
 would go there, and the unlock screen says so in a sentence about the move (see
 below).
 
+`wrongCredentials` from `change_master_password` is the current password typed
+wrong, and is said under the form, never on the unlock screen.
+
 `attachmentInHistory` is the one the entry screen has an answer for. Removing a
 file is refused while previous versions of the entry still hold it - the format
 keeps them inside the entry and nothing can rewrite one - so the screen offers
@@ -798,8 +801,9 @@ construction, and no shape of message changes that. It is the reader's own,
 typed by them; a value Coffer revealed is never in a field anything can type
 into. The master password is different in one
 way that matters - it is never displayed, never edited in place, and it opens
-everything - so it is worth the machinery of a raw body, and `unlock` is the
-only command that gets it.
+everything - so it is worth the machinery of a raw body, and the four commands
+that carry one - `unlock`, `unlock_over`, `create_database` and
+`change_master_password` - get it as the whole body and nothing else.
 
 What the boundary is for still holds in both directions: a value the database
 protects **leaves** the vault only through `reveal`, `reveal_version` or
@@ -1124,6 +1128,114 @@ this process frees. What is still out of reach is WebKit's own copy, which is in
 another process, and anything Objective-C allocated - the pasteboard's string
 included, which is why the clipboard is cleared on a timer rather than trusted
 to a wipe.
+
+Changing the master password added:
+
+| Command | Takes | Answers |
+|---|---|---|
+| `change_master_password` | the current master password and the new one, as the raw body | how many snapshots beside the vault still open with the old password |
+| `remove_old_snapshots` | | `Removed`: how many of those it took off the disk, how many would not go, and why the first would not |
+
+**Changing it sends two passwords in the one body a message has,** framed so
+that Rust can cut them apart:
+
+```ts
+const body = new Uint8Array(4 + current.length + next.length);
+new DataView(body.buffer).setUint32(0, current.length);
+body.set(current, 4);
+body.set(next, 4 + current.length);
+```
+
+A raw body cannot sit beside named arguments, so the two travel as one frame:
+the current password's length in four bytes, big-endian, then the current
+password, then the new one, which runs to the end of the body. `ipc.ts` builds
+the frame, wipes the two encoded passwords as soon as it holds them, and wipes
+the frame when the call is over, whatever it answered. Rust refuses a JSON body
+exactly as `unlock` does, and refuses a frame whose length the body does not
+hold rather than reading it as far as it goes. Both passwords are in
+`Zeroizing` the moment they are cut out, and the stack the change ran on is
+written over afterwards.
+
+**The current password is checked against the key the vault holds, not against
+the file.** The vault was opened with it, and a vault that can save already
+holds it. The two are compared digest against digest in constant time, so how
+long the refusal took says nothing about how close what was typed came, however
+long it was. From this command, `wrongCredentials` is only ever the current
+password typed wrong: a key file the vault was opened with is kept and stays
+part of the key. The check spends no key derivation, so on its own it would
+answer a guess in a millisecond where the unlock screen takes a second - to
+anybody at an unlocked Mac, driving the three fields by hand or by automation,
+without ever copying the file. And the answer would be the master password
+itself, which opens every snapshot, every copy made elsewhere and every later
+version of the file. So a wrong current password is answered only after
+`kdf::TARGET`, the second a calibrated unlock costs
+(`Session::change_master_password`). The wait runs on the command's blocking
+thread with the session let go, so no save and no lock waits behind it. Changes
+go one at a time, the wait included: guesses sent side by side still cost a
+second each, and a guess sent while a wrong one waits is not answered until that
+wait is over.
+
+**A change is a save with another key.** It writes the file the way `save` does:
+it is refused with `externalChange` or `gone` before anything is written, takes
+a snapshot first, keeps the same key derivation parameters, and sets
+`MasterKeyChanged` to now. Like `save` it runs on a blocking thread and holds
+the session for the whole second, and whatever the vault held that the file had
+not got is written with it. A write that does not go through leaves the vault on
+the old password, so what the reader was told did not change is what both the
+file and the vault still open with. These are refused before anything is
+written: a vault Coffer does not write back (`readOnly`); the copy a lock left,
+which can be written and is not the vault, and a vault with such a copy beside
+it (both `refused`, before the current password is asked about); a wrong current
+password (`wrongCredentials`); and an empty new password, one that is not text,
+or the one the vault already has (`refused`). A password given to the copy would
+be the copy's alone: the vault and every snapshot of it would go on opening with
+the old one, the count could only be the copy's own snapshots, and making the
+copy the vault afterwards leaves the vault's old chain under the old password
+with nothing remembered to offer. So the window does not offer the row inside a
+copy, and Rust refuses it there too; once the copy is made the vault, a change
+counts the vault's whole chain. Beside the vault, the copy opens with the
+password the vault has now, and every sentence the unlock screen says about it
+says so. A change there would make those sentences false, and "Make this my
+vault" or putting the copy back would then bring the old password back with
+nothing said. So while `status` reports a `rescue` beside the open vault, the
+row says the copy has to be made the vault or removed first and offers nothing
+to type, and Rust refuses the change there as well. The window checks that the
+new one was typed the same way twice; Rust never sees the second copy. In the
+window a change goes through the same object as a save (`saving.svelte.ts`), so
+a file somebody else wrote raises the conflict dialog over the settings, and a
+change that went through clears "Not saved".
+
+**The answer is about the snapshots, because they did not change.** Every
+`<vault>.N.bak` was written before the change and still opens with the old
+password, and the reason a reader changes a password is often that they believe
+the old one is known. `change_master_password` answers with how many there are,
+and the window asks whether to remove them. `remove_old_snapshots` takes nothing
+and removes exactly those files. Rust keeps them by what each file is, not by
+its slot, so a save between the answer and the press still removes the right
+ones: that save moves each one down a slot and puts a snapshot under the new
+password in slot 1. The chain is read one slot at a time, so a slot nobody can
+read - a link left there that leads round in a circle, a disk that answers with
+an error - hides none of the others from the count or from the removal. A file
+that will not go is kept for the next press. The removal answers rather than
+fails when some would not go - `{ gone, left, refused }`, with `refused` a
+`Failure` like any command's - so that the question the window goes on asking is
+about how many are left, not how many there were. Nothing else is touched: not
+the vault or its lock, not the copy a lock left beside it, not any copy
+elsewhere, and a link at a slot goes as a link. Each of those goes on opening
+with the password it was written under. Closing the settings is keeping them.
+
+**A lock that arrives during a change waits for it,** because the change holds
+the session as a save does. The vault locks under whichever key the file ended
+with, and the question goes with the window. The window keeps the settings open
+while the change is on its way (`holding.ts`), so the one place that says which
+password now opens the vault is not closed in the second before it says so - but
+nothing in a window holds off a lid closing or the idle timer. So the session
+remembers, with the vault, that its password changed while it was open, and a
+lock that closes such a vault leaves `status` answering `rekeyed`: the unlock
+screen says the master password was changed before locking and that the vault
+opens with the new one, until the next unlock or another file is chosen. The
+old-backups question does not come back with it: the answer that asked it went
+with the window, and a later change counts the whole chain again.
 
 ## Why the shape of a command is what it is
 
@@ -1461,6 +1573,21 @@ change count checked before the clear and the contents never read.
 default layout. Coffer has one workspace with two crates, as the same document
 says two paragraphs earlier, so the capability files, the configuration and the
 window icon live in the crate that runs `tauri_build::build()`.
+
+**The settings have rows section 8 does not name.** `SPEC.md` gives the screen
+the auto-lock timer, the clipboard timer, the theme and the database path, and
+says key derivation does not appear; it still does not. The rows it does not
+name:
+
+- Lock when this Mac goes to sleep, and Lock when the screen locks: section 7's
+  two triggers, which a reader may turn off one at a time.
+- Snapshots before a write: where the ten copies section 7 asks for are, so a
+  reader can find them.
+- Master password, drawn only while a vault Coffer can write is open, and not
+  inside the copy a lock left until it is made the vault (see The master
+  password); beside such a copy it says what to do with the copy first.
+  Section 3 rules out recovering one and says nothing against changing one, and
+  a reader whose password was seen had nowhere to change it but another client.
 
 **TypeScript needs two majors installed.** `svelte-check` will not run against
 TypeScript 7 unless 6 is installed beside it and the check is given `--tsgo`,

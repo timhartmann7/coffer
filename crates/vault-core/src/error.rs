@@ -266,11 +266,40 @@ pub enum VaultError {
     )]
     UnwritableTag,
 
-    /// A vault is being made with no master password at all. The library would
-    /// write one happily; a file anybody can open is not what the reader asked
-    /// for. Opening a database that already has one is untouched.
-    #[error("a new vault needs a master password")]
+    /// A vault is being made, or given a new password, with nothing in it. The
+    /// library would write one happily; a file anybody can open is not what
+    /// the reader asked for. Opening a database that already has one is
+    /// untouched.
+    #[error("a vault needs a master password")]
     EmptyMasterPassword,
+
+    /// The password typed as the vault's current one is not the one it was
+    /// opened with. Asked of the key the vault holds, never of the file.
+    #[error("that is not the vault's current password")]
+    NotTheCurrentPassword,
+
+    /// The new master password is the one the vault already has. Writing it
+    /// would rotate a snapshot and change nothing, and the snapshots would
+    /// still open with it.
+    #[error("the new password is the one the vault already has")]
+    SamePassword,
+
+    /// The open file is the copy a lock left beside a vault, and a new
+    /// password given to it would be the copy's alone: the vault and every
+    /// snapshot of it would go on opening with the old one, while the count
+    /// of old snapshots could only be the copy's. Made the vault first, the
+    /// copy is the vault, and a change reaches what it has to.
+    #[error("make this copy your vault before giving it a new password")]
+    PasswordOfACopy,
+
+    /// The vault has the copy a lock left beside it, which opens with the
+    /// password the vault has now. Changed beside it, the vault would open with
+    /// one password and the copy with another, every sentence about the copy
+    /// that says it opens with the same password would be false, and making the
+    /// copy the vault would bring the old password back with nothing said.
+    /// Made the vault, or removed, the copy is out of the way.
+    #[error("the copy a lock left beside this vault has to be made the vault or removed first")]
+    PasswordBesideACopy,
 
     /// There is already a file where the new vault would go. Nothing is written
     /// over: a creation takes no snapshot, so what was there would be gone.

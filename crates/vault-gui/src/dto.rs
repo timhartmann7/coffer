@@ -123,6 +123,16 @@ impl Snapshot {
     }
 }
 
+impl Removed {
+    pub fn of(removal: vault_core::storage::snapshot::Removal) -> Removed {
+        Removed {
+            gone: removal.gone,
+            left: removal.left,
+            refused: removal.refused.map(crate::error::Failure::io),
+        }
+    }
+}
+
 impl Found {
     pub fn of(path: &std::path::Path) -> Found {
         Found {
@@ -272,6 +282,10 @@ pub struct Status {
     /// value being the field's now. Which field is not said, for the same
     /// reason.
     pub typed_beside: bool,
+    /// Whether the vault the last lock closed was given a new master password
+    /// while it was open. The window that said so went with the lock, and a
+    /// change that finished as the vault locked may never have been said.
+    pub rekeyed: bool,
     /// Why the vault that was open is not open any more, when it is worth
     /// saying. A lock the reader asked for has nothing to explain.
     pub locked_by: Option<&'static str>,
@@ -746,6 +760,18 @@ pub struct Snapshot {
     /// the screen sends back to open it.
     pub index: u32,
     pub taken: Option<String>,
+}
+
+/// What removing the snapshots that open with an old master password came to.
+#[derive(Serialize)]
+pub struct Removed {
+    pub gone: usize,
+    /// How many would not go. Each is still beside the vault and still opens
+    /// with the old password, so the window goes on asking about them.
+    pub left: usize,
+    /// Why the first of those would not go, said the way a command that fails
+    /// says it. Nothing when none is left.
+    pub refused: Option<crate::error::Failure>,
 }
 
 #[derive(Serialize)]
@@ -2097,6 +2123,36 @@ mod tests {
         assert_eq!(
             missing,
             serde_json::json!({ "there": false, "written": null })
+        );
+    }
+
+    /// A removal that could not take everything says how many are left and
+    /// why, in the shape every refusal has, so the window can keep asking
+    /// about what is left and say what stopped the rest.
+    #[test]
+    fn a_removal_crosses_with_what_went_what_is_left_and_why() {
+        use vault_core::storage::snapshot::Removal;
+
+        let partly = serde_json::to_value(Removed::of(Removal {
+            gone: 3,
+            left: 1,
+            refused: Some(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        }))
+        .expect("the removal serialises");
+        assert_eq!(partly["gone"], 3);
+        assert_eq!(partly["left"], 1);
+        assert_eq!(partly["refused"]["code"], "io");
+        assert!(partly["refused"]["message"].is_string(), "{partly}");
+
+        let whole = serde_json::to_value(Removed::of(Removal {
+            gone: 4,
+            left: 0,
+            refused: None,
+        }))
+        .expect("the removal serialises");
+        assert_eq!(
+            whole,
+            serde_json::json!({ "gone": 4, "left": 0, "refused": null })
         );
     }
 

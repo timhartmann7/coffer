@@ -26,6 +26,8 @@
 use std::path::Path;
 
 use keepass::db::fields;
+use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use crate::scan::Sweep;
 use crate::support::{BUILT_PASSWORD, RICH, SECRET, built, fixtures, open, scratch};
@@ -216,4 +218,69 @@ fn reading_the_file_on_disk_leaves_none_of_it() {
         "the version on disk is still in memory after being read"
     );
     drop(vault);
+}
+
+/// Changes the password of the vault at `path` to `first` and then to
+/// `second`, and lets the vault go. Deliberately not inlined, for the reason
+/// [`open_and_drop`] is not.
+#[inline(never)]
+fn change_twice_and_drop(path: &Path, first: &[u8], second: &[u8]) {
+    let mut vault = open(path, BUILT_PASSWORD);
+    vault
+        .change_master_password(BUILT_PASSWORD.as_bytes(), Zeroizing::new(first.to_vec()))
+        .expect("the password is changed");
+    vault
+        .change_master_password(first, Zeroizing::new(second.to_vec()))
+        .expect("the password is changed again");
+    drop(vault);
+}
+
+/// A password's SHA-256: what KeePass folds into the key, and what a change
+/// compares the current password by. Not inlined, for the reason
+/// [`open_and_drop`] is not: the copy left on this frame is one the stack wipe
+/// has to reach, or the sweep would find it and blame the vault.
+#[inline(never)]
+fn digest_of(password: &str) -> Vec<u8> {
+    Sha256::digest(password.as_bytes()).to_vec()
+}
+
+/// A change holds two passwords at once - the one the key had, kept until
+/// the write answers, and the one it has - and hashes both to compare them.
+/// Neither the password a change put aside, nor the digests of either, nor
+/// the keys the writes were derived from leave a password behind once the
+/// vault goes. A digest is as good as the password to anybody opening the
+/// file, so it is looked for as well: it holds none of the password's bytes,
+/// and a sweep for those alone would pass whatever became of it.
+#[test]
+fn neither_master_password_survives_a_change_and_the_vault_being_dropped() {
+    let directory = tempfile::tempdir().expect("a scratch directory");
+    let path = crowded(
+        directory.path(),
+        "changed.kdbx",
+        &protected_value("changed"),
+        &open_value("changed"),
+    );
+    let first = protected_value("the first new master password");
+    let second = protected_value("the second new master password");
+    let digests = [digest_of(&first), digest_of(&second)];
+
+    change_twice_and_drop(&path, first.as_bytes(), second.as_bytes());
+    vault_core::scrub::stack();
+
+    for needle in [first, second] {
+        let mut sweep = Sweep::for_needle(needle.into_bytes());
+        assert_eq!(
+            sweep.hits(),
+            0,
+            "a master password the vault had is still in this process's memory"
+        );
+    }
+    for needle in digests {
+        let mut sweep = Sweep::for_needle(needle);
+        assert_eq!(
+            sweep.hits(),
+            0,
+            "the digest of a master password the vault had is still in this process's memory"
+        );
+    }
 }

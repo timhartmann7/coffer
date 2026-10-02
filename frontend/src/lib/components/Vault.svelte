@@ -30,7 +30,7 @@
 	import { overtaken } from '$lib/overtaken';
 	import { placesFor, targets, type Moving } from '$lib/places';
 	import { conceal } from '$lib/reveal.svelte';
-	import { Saving } from '$lib/saving.svelte';
+	import { Saving, type Rekey } from '$lib/saving.svelte';
 	import { Selection, type Press } from '$lib/selection.svelte';
 	import { tag } from '$lib/tagging';
 	import {
@@ -78,6 +78,7 @@
 	import NewEntry from './NewEntry.svelte';
 	import Opening from './Opening.svelte';
 	import SelectionBar from './SelectionBar.svelte';
+	import type { Handed } from './Settings.svelte';
 	import Toast from './Toast.svelte';
 	import Tree from './Tree.svelte';
 
@@ -99,7 +100,9 @@
 		 * the screen offers a change it would only be refused. */
 		readOnly: boolean;
 		/**
-		 * The settings screen, when it is the one being read.
+		 * The settings screen, when it is the one being read, handed what this
+		 * screen does for them: the way to change the master password when this
+		 * vault can be written.
 		 *
 		 * Drawn here rather than in place of this whole screen so that the way in
 		 * to it stays where it was pressed. It sits in the status bar, and a
@@ -107,7 +110,7 @@
 		 * button to the other corner of the window the moment it opened - which
 		 * is a button walking away from the finger that is still on it.
 		 */
-		settings?: Snippet;
+		settings?: Snippet<[Handed]>;
 		/** Opens the settings screen, and closes it again. */
 		onSettings: () => void;
 		onTree: (tree: Group) => void;
@@ -618,10 +621,18 @@
 	);
 
 	/** Opens the settings, or closes them again: the status bar's button, and
-	 * Settings… in the menu bar. Not over a pane that has to stay. */
+	 * Settings… in the menu bar. Not over a pane that has to stay, and not away
+	 * from something in the settings that is still on its way - a new master
+	 * password, whose answer is the one place that says which password now
+	 * opens the vault. */
 	function toggleSettings() {
-		if (settings || !held()) onSettings();
+		if (!held()) onSettings();
 	}
+
+	/** A new master password goes through the same writing of the file a save
+	 * does, so a file somebody else wrote raises the conflict over the
+	 * settings, and a change that went through clears "Not saved". */
+	const rekey: Rekey = (current, next) => file.rekey(current, next);
 
 	/** Puts the reader in the search field, with what is in it selected, the
 	 * way the key the field advertises does on every Mac. */
@@ -1094,7 +1105,7 @@
 		// unless a control inside them has already answered it. A chip whose list
 		// was open took its own Escape and the whole screen closed behind it.
 		if (settings) {
-			if (cancels(event) && !event.defaultPrevented) onSettings();
+			if (cancels(event) && !event.defaultPrevented) toggleSettings();
 			return;
 		}
 
@@ -1694,7 +1705,7 @@
 		<!-- Over the panes and not over the status bar, which is where the button
 		     that opened this is and where it stays. -->
 		<div class="absolute inset-0 z-20 flex animate-fade flex-col overflow-hidden bg-surface">
-			{@render settings()}
+			{@render settings(readOnly ? {} : { rekey })}
 		</div>
 	{/if}
 

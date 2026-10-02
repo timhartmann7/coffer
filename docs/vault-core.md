@@ -217,7 +217,8 @@ than failed; it is left to CI, which has enough.
 "zeroed right after key derivation". KeePass derives a fresh key on every save,
 so a vault that can save is a vault that still has the password. It sits in a
 `Zeroizing<Vec<u8>>` inside `Vault` and is wiped when the vault is dropped,
-which is what locking has to mean.
+which is what locking has to mean. Changing it replaces it there, and the old
+one is wiped as soon as the file holds the new key.
 
 **KeePassXC 2.7.12 writes no per-database lock file.** `SPEC.md` says it does
 and asks Coffer to follow the convention. The claim no longer holds: the
@@ -895,7 +896,8 @@ snapshot's would open like any other database and then refuse every save, for
 good, and a rescue copy's would be written over by the next lock that had
 something to keep. `storage::reserved` is the one rule for both, and the window
 asks it too, so that neither is ever remembered or offered as the vault. A master
-password with nothing in it is refused outright as well.
+password with nothing in it is refused outright as well, and so is a change to
+one.
 
 So is a name with a rescue copy beside it, as `CopyBeside`. The copy is what is
 left of a vault whose file went while it was open, and it is put back from that
@@ -911,3 +913,129 @@ and therefore compares two substitutions. The same reasoning covers the expiry
 date the library omits when nothing expires: the format allows it and no other
 client does, so a reader that finds none puts its own there, and two readings of
 the same file disagree. Everything Coffer makes carries its own dates.
+
+## Changing the master password
+
+**The key changes in place, and only the password in it.**
+`Vault::change_master_password` replaces the password inside the `MasterKey` the
+vault holds and nothing else. A key file the vault was opened with stays part of
+the key. A vault whose owner opened it with a key file alone gets the password
+beside that key file: before, there was no password in the composite at all,
+the second composition `unlock` tries. Taking a password or a key file away is
+not offered. A key with no password is refused as a creation's is, and key files
+are read and never made (`SPEC.md`, section 3). A new password that is not text,
+or that is the one the vault already has, is refused as well: the first could
+never be typed again, and the second would rotate a snapshot and change nothing.
+
+**A lock's copy is given no new password until it is the vault.** The copy a
+lock left opens as `Source::Writable` - its name is not a slot's and its lock is
+taken - so `writable` alone would let a change through. It would be the copy's
+alone: the vault and every snapshot of it would go on opening with the old
+password, the count would be the copy's own chain, and after `promote` the
+vault's chain - every slot of it under the old key - would be remembered
+nowhere, since `retire` has taken the copy's chain away. So
+`change_master_password` refuses a path `unsaved::taken_from` names, as
+`PasswordOfACopy`, before the current password is asked about. Made the vault,
+the copy has the vault's path and the change counts the vault's whole chain.
+
+**Nor is a vault with such a copy beside it.** The copy opens with the password
+the vault has now, and every sentence the unlock screen says about it - the card
+about work that never reached the vault, the banner inside the copy, the copy of
+a vault whose file has gone - says it opens with the same password. A change
+beside it would make each of those false, and "Make this my vault" or putting
+the copy back would then write the copy, under its own key, over a vault the
+reader had just given a new password: the old password back, with nothing on the
+screen to say so. So while `unsaved::found` finds a copy beside the vault, a
+change is refused as `PasswordBesideACopy`, before the current password is asked
+about, until the copy is made the vault or removed. A copy a lock writes after a
+change is under the new key, like everything else written then, and the
+sentences stay true.
+
+**The current password is asked of the key, not of the file.** Both are hashed
+with SHA-256 and the digests compared with `constant_time_eq_32`, so the time
+taken says nothing about how close a guess came, whatever its length: the
+crate's own comparison is constant only between two values of one length. A
+SHA-256 of the password is itself one of the elements KeePass derives the key
+from (`key/mod.rs:203`), so both digests are `Zeroizing` and gone when the
+comparison returns. The library builds the same digest into a plain `Vec` every
+time it derives a key, which only the allocator in `scrub` wipes; the wipe suite
+looks for both digests, as well as both passwords, once a vault given two new
+passwords has gone. `constant_time_eq` is the crate `rust-argon2` already brings
+in for the same job; naming it adds an edge to the graph and no crate. The check
+costs no key derivation, which makes it a far cheaper test of a guess than an
+unlock; the window's session makes a wrong one cost what an unlock does
+(`docs/ipc.md`, "The current password is checked against the key the vault
+holds").
+
+**The write is an ordinary save.** `dump_kdbx4` writes `db.config.kdf_config`
+as it stands and draws a fresh master seed, outer IV, inner stream key and key
+derivation salt on every save (`format/kdbx4/dump.rs`,
+`KdfConfig::get_kdf_and_seed` in `config.rs`). So a change keeps the database's
+own key derivation - Argon2id at its calibrated cost, or whatever another client
+chose - and is as fresh as any save. `Meta/MasterKeyChanged` is set to now, and
+it is the one field the round trip sees move.
+
+**A write that does not go through puts the old key back.** The old password is
+held, as `key::Former`, until the write answers. It goes back into the key, with
+the old `MasterKeyChanged`, when the write's guard refused it before anything
+was written (`ExternalChange`, `DatabaseGone`), or when the file at the vault's
+name is still the one the vault last agreed with. The guard's refusal goes
+straight back, and is never asked whether the file opens with the new key: a
+file another client wrote is somebody else's whatever key opens it, and one that
+gave the vault the very password the reader then asks Coffer for opens with it.
+Taken for the change's own write, its stamp would be recorded, no conflict would
+be raised, and the next save would go over the other client's work. A test
+writes exactly that file - another client's, under the new password, with other
+content - and asks that the conflict stands, the next save is still refused, and
+the file is theirs byte for byte.
+
+The one subtle failure comes after the guard has let the write through and the
+rename has happened: a directory that will not flush, or a file that cannot be
+read back. The file at the name is then the new one, under the new key. Putting
+the old key back would encrypt the next save under a password the reader was
+told did not take, while the file opened only with the one they were told it
+did. So a failed write that has moved the file is opened with the new key
+(`Vault::written_anyway`, decided in `Vault::settle_failed_change`). Past the
+guard the file was the vault's own a moment before, so a file that opens with
+the new key now is this write's: the change stands and the vault records the
+file as the one it agrees with, so the next save is not refused as somebody
+else's write. A file that does not open is somebody else's, and the old key goes
+back for the conflict that follows. Another client that wrote the file under the
+very same new password in the moment between the guard and the failure would be
+taken for this write; telling the two apart there would mean carrying the digest
+of the bytes this write staged out of a failed write, through the path every
+save takes. No fault from outside lands in that window, so both arms of
+`settle_failed_change` are covered by unit tests in `vault/rekey.rs` that leave
+such a file by hand, and that save afterwards.
+
+**Snapshots are old by what they are, not where they are.**
+`snapshot::Superseded` records every snapshot beside the vault as the change
+leaves them, by `snapshot::Taken::seen`: inode, device, length and modification
+time. Every later save renames each one a slot down, which keeps all four, and
+puts a snapshot written under the new key in slot 1, which is another file.
+`Vault::remove_old_snapshots` removes the slots that hold one of those files,
+wherever they are now, and only slot paths. A second change records the whole
+chain again, because all of it then predates the newest key. The time and the
+length are in the identity because a filesystem that reuses inode numbers (ext4
+does) could otherwise hand a removed snapshot's number to a new one. A slot is
+known by the name's own entry, not by what it leads to: Coffer never puts a link
+at a slot, and one somebody else put there may lead to the vault itself, whose
+identity every later save hands to the snapshot it pushes into slot 1. Such a
+link is counted as the link and removed as a link.
+
+**One slot nobody can read hides nothing.** `snapshot::taken` asks about each
+slot on its own and passes over one the filesystem will not answer about - a
+link that leads round in a circle, a disk that answers with an error - the way
+it passes over a hole. The count after a change and the removal both cover every
+slot that can be reached. A listing that failed whole for one such slot would
+have the change answer that nothing is left under the old password, and every
+removal fail for good. A removal that could not take every file answers with
+`snapshot::Removal` rather than an error: how many went, how many are left and
+remembered for the next press, and why the first of those would not go.
+
+**What a change cannot reach.** Every copy the reader made elsewhere goes on
+opening with the password it was written under. The copy a lock left beside the
+vault (`<vault>.unsaved.kdbx`) is the one copy of work the vault has not got and
+is never removed on Coffer's initiative, which is why a change waits for the
+reader to make it the vault or remove it rather than leave it behind under the
+old password.

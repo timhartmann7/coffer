@@ -32,6 +32,7 @@
 		copy = null,
 		typed = false,
 		typedBeside = false,
+		rekeyed = false,
 		onChoose,
 		onKeyFile,
 		onCreate,
@@ -91,6 +92,14 @@
 		 * Named no more than `typed` is.
 		 */
 		typedBeside?: boolean;
+		/**
+		 * Whether the vault the last lock closed was given a new master
+		 * password while it was open. The settings said so, and they went with
+		 * the window; a change pressed as the lid closed may never have been
+		 * said at all, and the reader would not know which of two passwords to
+		 * type.
+		 */
+		rekeyed?: boolean;
 		onChoose: (database: Database) => void;
 		onKeyFile: (chosen: Database | null) => void;
 		/** Offered on the first run, where there is nothing to open yet. */
@@ -427,6 +436,14 @@
 					A new value you had not saved yet was kept in a field of its own, beside the old one,
 					which is unchanged.
 				{/if}
+			</p>
+		{/if}
+
+		<!-- The answer to the one question this screen cannot help with otherwise:
+		     which of two passwords to type. -->
+		{#if rekeyed}
+			<p class="mx-auto mt-6 max-w-[38ch] text-center text-small leading-relaxed text-txt2">
+				The master password was changed before locking, and the vault opens with the new one.
 			</p>
 		{/if}
 

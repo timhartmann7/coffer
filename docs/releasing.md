@@ -99,13 +99,14 @@ list is in the spec.
   part, the whole password, and the part stays selected. A clipboard history
   keeps none of them. This is the check that WebKit selects the word before the
   page hears of the menu, which the guard is built on.
-- The search field, a value being written, a folder's name being typed and the
-  new password's field still get WebKit's menu, with Cut, Copy and Paste. With
-  part of a revealed password selected, a right-click in the search field never
-  draws Look Up, Translate, Search or Share over it: no menu at all while the
-  part stays selected, or the field's own menu if the press took the selection
-  into the field. Write down which of the two WebKit does; the guard is built
-  for both.
+- The search field, a value being written, a folder's name being typed, the
+  new password's field and the three master password fields in Settings still
+  get WebKit's menu, with Cut, Copy and Paste; the last three get none while
+  "Changing it…" is up. With part of a revealed password selected, a
+  right-click in the search field never draws Look Up, Translate, Search or
+  Share over it: no menu at all while the part stays selected, or the field's
+  own menu if the press took the selection into the field. Write down which of
+  the two WebKit does; the guard is built for both.
 - Folders named `R&D`, `a[~~]b`, one whose name holds a right-to-left override
   (U+202E) before `xyz`, and one 200 characters long each read correctly in Move
   to, the last cut with an ellipsis, and the items after them read left to
@@ -218,6 +219,25 @@ list is in the spec.
   and the window that comes back asks for the password.
 - Help keeps its search field, and Keyboard Shortcuts opens the sheet; Edit still
   ends with the items macOS adds (Start Dictation, Emoji & Symbols).
+- A master password changed in Settings, on a vault with snapshots and on one
+  that needs a key file. After a lock, the new password opens it and the old one
+  is refused. KeePassXC opens the vault with the new password (and the key
+  file), and `vault.kdbx.1.bak` with the old one. With one more save in between,
+  "Remove old backups" takes exactly the `.bak` files that were there when the
+  password changed. The eye shows a password only while its field has the
+  focus. WebKit offers neither AutoFill nor to save the password on any of the
+  three fields. Escape and the Settings button do nothing while "Changing it…"
+  is up. With VoiceOver on, "Master password changed.", "Removed 4 old
+  backups." and a refusal are read out without moving the focus, and the eye is
+  read as "Show the password, button" with nothing about being selected. Inside
+  a lock's copy the settings have no Master password row until "Make this my
+  vault"; with such a copy beside the vault the row offers no "Change…" and
+  says what to do with the copy, and once the copy is removed or made the vault
+  it offers the change again. A wrong current password takes about a second to
+  be refused, and Lock Vault answers at once while it waits. Press "Change the
+  password" and close the lid straight away: after waking, the unlock screen
+  says the master password was changed before locking, the new password opens
+  the vault, and the sentence is gone once it is open.
 - Both disk images mount, and the application inside each launches on a Mac of
   that architecture. `file Coffer.app/Contents/MacOS/Coffer` says the
   architecture you expect. Run the Intel image on an Intel Mac, not under

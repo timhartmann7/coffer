@@ -780,3 +780,37 @@ it('opens another vault from the menu, and not while one is being made', async (
 		unmount(component);
 	}
 });
+
+/** The two fields are the master password's one field, as the change in the
+ * settings draws it: the wrong-password border on both when they differ, and
+ * an input method's Return in the first left to the input method rather than
+ * taken for a move to the second. The screen draws neither the eye nor the
+ * check the mockup puts on these two fields, and both stay masked. */
+it('takes both passwords in the master password field, masked and without the eye', async () => {
+	const component = await ready();
+	const [first, second] = fields();
+	expect(host.querySelector('button[aria-label="Show the password"]')).toBeNull();
+	expect([first.type, second.type]).toEqual(['password', 'password']);
+
+	first.focus();
+	const composing = new KeyboardEvent('keydown', {
+		key: 'Enter',
+		keyCode: 229,
+		bubbles: true,
+		cancelable: true
+	});
+	first.dispatchEvent(composing);
+	expect(composing.defaultPrevented).toBe(true);
+	expect(document.activeElement, 'a conversion moved on to the second field').toBe(first);
+
+	first.value = 'one';
+	second.value = 'two';
+	submit();
+	flushSync();
+	for (const each of [first, second]) {
+		expect(each.getAttribute('aria-invalid')).toBe('true');
+		expect(each.parentElement?.className).toContain('border-danger/60');
+	}
+
+	unmount(component);
+});

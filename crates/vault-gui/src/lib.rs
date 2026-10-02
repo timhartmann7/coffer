@@ -184,6 +184,8 @@ pub fn run() {
             commands::save_copy,
             commands::reload,
             commands::rival,
+            commands::change_master_password,
+            commands::remove_old_snapshots,
         ])
         .build(tauri::generate_context!());
 

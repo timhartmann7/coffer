@@ -28,6 +28,7 @@ const locked: Status = {
 	copy: null,
 	typed: false,
 	typedBeside: false,
+	rekeyed: false,
 	lockedBy: null,
 	locksIn: null
 };
@@ -264,4 +265,101 @@ it('counts a key pressed while the sheet of keys is up as the reader being there
 
 	expect(ipc.stirred).toHaveBeenCalledTimes(asked + 2);
 	expect(host.querySelector('[role="dialog"]'), 'a key put the sheet away').not.toBeNull();
+});
+
+/** Opens the settings the way Settings… in the menu bar does, and answers
+ * whether they offer to change the master password. */
+async function offersRekey(heard: (action: Action) => void): Promise<boolean> {
+	heard({ action: 'command', command: 'settings' });
+	flushSync();
+	await vi.waitFor(() => expect(host.textContent).toContain('Snapshots before a write'));
+	return [...host.querySelectorAll('button')].some(
+		(each) => each.textContent?.trim() === 'Change…'
+	);
+}
+
+/**
+ * The row is the vault screen's to hand and the settings' to draw, and the
+ * page is what joins the two: a page that stopped passing on what the vault
+ * screen handed would leave the settings with no row and every other test
+ * green.
+ */
+it('offers to change the master password in the settings of a vault it can write', async () => {
+	const heard = await unlocked();
+
+	expect(await offersRekey(heard), 'the row did not reach the settings').toBe(true);
+	expect(host.textContent).toContain('Master password');
+});
+
+it('offers no new master password for a vault Coffer does not write', async () => {
+	ipc.status.mockResolvedValue({ ...locked, unlocked: true, entries: 1, readOnly: true });
+	ipc.tree.mockResolvedValue(root);
+	const heard = await boot();
+	await vi.waitFor(() => expect(host.textContent).toContain('node-3'));
+
+	expect(await offersRekey(heard)).toBe(false);
+	expect(host.textContent).not.toContain('Master password');
+});
+
+it('offers no new master password with no vault open', async () => {
+	const heard = await boot();
+
+	expect(await offersRekey(heard)).toBe(false);
+	expect(host.textContent).not.toContain('Master password');
+});
+
+/** The copy a lock left beside the vault opens with the vault's password, and
+ * would bring it back if it were made the vault after a change. Rust says it
+ * is there, and the row says what to do with it instead of offering a change
+ * Rust would refuse. */
+it('says why a new master password waits while a lock’s copy sits beside the vault', async () => {
+	ipc.status.mockResolvedValue({
+		...locked,
+		unlocked: true,
+		entries: 1,
+		rescue: { name: 'personal.kdbx.unsaved.kdbx', written: null }
+	});
+	ipc.tree.mockResolvedValue(root);
+	const heard = await boot();
+	await vi.waitFor(() => expect(host.textContent).toContain('node-3'));
+
+	expect(await offersRekey(heard)).toBe(false);
+	expect(host.textContent).toContain('Master password');
+	expect(host.textContent).toContain('Not while the copy a lock left sits beside this vault');
+});
+
+/** The settings that said the password changed went with the lock, and the
+ * window the lock builds again knows nothing of it. What Rust kept reaches the
+ * unlock screen through the page. */
+it('tells the unlock screen the master password changed before the lock', async () => {
+	ipc.status.mockResolvedValue({ ...locked, rekeyed: true });
+	await boot();
+
+	await vi.waitFor(() =>
+		expect(host.textContent).toContain('The master password was changed before locking')
+	);
+});
+
+/** A lock's copy can be written, and is not the vault: a new password there
+ * would leave the vault and its snapshots opening with the old one. The banner
+ * that says it is the copy is up, and is the way to make it the vault. */
+it('offers no new master password inside a lock’s copy', async () => {
+	ipc.status.mockResolvedValue({
+		...locked,
+		unlocked: true,
+		entries: 1,
+		copy: {
+			vault: 'personal.kdbx',
+			saved: null,
+			keptAs: 'personal.kdbx.1.bak',
+			vaultFile: { there: true, written: null }
+		}
+	});
+	ipc.tree.mockResolvedValue(root);
+	const heard = await boot();
+	await vi.waitFor(() => expect(host.textContent).toContain('Make this my vault'));
+
+	expect(await offersRekey(heard)).toBe(false);
+	expect(host.textContent).not.toContain('Master password');
+	expect(host.textContent, 'the way to make it the vault went').toContain('Make this my vault');
 });

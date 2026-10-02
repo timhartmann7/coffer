@@ -2,7 +2,7 @@
 	import { tick } from 'svelte';
 	import Create from '$lib/components/Create.svelte';
 	import InCopy from '$lib/components/InCopy.svelte';
-	import Settings from '$lib/components/Settings.svelte';
+	import Settings, { type Handed } from '$lib/components/Settings.svelte';
 	import Shortcuts from '$lib/components/Shortcuts.svelte';
 	import Titlebar from '$lib/components/Titlebar.svelte';
 	import Unlock from '$lib/components/Unlock.svelte';
@@ -61,6 +61,9 @@
 	let typed = $state(false);
 	/** Whether some of it was a new value kept beside the old one. */
 	let typedBeside = $state(false);
+	/** Whether the vault the last lock closed was given a new master password
+	 * while it was open. */
+	let rekeyed = $state(false);
 	/** The chosen file as the disk has it, which is what the sentences about
 	 * a lock's copy and about lost work are measured against. */
 	let file = $state<OnDisk | null>(null);
@@ -146,6 +149,7 @@
 		lost = now?.lost ?? false;
 		typed = now?.typed ?? false;
 		typedBeside = now?.typedBeside ?? false;
+		rekeyed = now?.rekeyed ?? false;
 		file = now?.file ?? null;
 		copy = now?.copy ?? null;
 	}
@@ -283,13 +287,22 @@
 	onfocusout={focused}
 />
 
-{#snippet settingsScreen()}
+<!-- A lock's copy is handed no way to a new master password. It would be the
+     copy's alone: the vault and every snapshot of it would go on opening with
+     the old one, and the count of old snapshots could only be the copy's.
+     Made the vault, it is offered; Rust refuses it in the copy as well. A
+     vault with such a copy beside it is told why it has to wait: the copy
+     opens with the vault's password, and would bring it back as the vault. -->
+{#snippet settingsScreen(handed: Handed)}
 	{#if chosen}
 		<Settings
 			settings={chosen}
 			{database}
 			onSettings={(settled) => (chosen = settled)}
 			onChoose={choose}
+			{...handed}
+			rekey={copy ? undefined : handed.rekey}
+			copyBeside={rescue !== null}
 		/>
 	{/if}
 {/snippet}
@@ -342,7 +355,7 @@
 			{:else if showing === 'settings' && chosen}
 				<!-- Nothing is open, so there is nothing to lay them over: the way in was
 				     the title bar, and that is where it stays. -->
-				{@render settingsScreen()}
+				{@render settingsScreen({})}
 			{:else if ready}
 				<Unlock
 					{database}
@@ -355,6 +368,7 @@
 					{copy}
 					{typed}
 					{typedBeside}
+					{rekeyed}
 					onChoose={(picked) => {
 						database = picked;
 						void chosen_elsewhere();

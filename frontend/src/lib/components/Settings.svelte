@@ -1,3 +1,23 @@
+<script module lang="ts">
+	import type { Rekey } from '$lib/saving.svelte';
+
+	/**
+	 * What the screen the settings are drawn over hands them: the rows that act
+	 * on an open vault, each present only where it can. One object, so that a
+	 * row added later is one more field here and not one more argument every
+	 * screen in between passes along.
+	 */
+	export interface Handed {
+		/** Gives the vault a new master password. Handed only while a vault
+		 * Coffer can write is open: with nothing open, or a snapshot or a file
+		 * Coffer reads and does not write, there is no password to change from
+		 * here. Nor in the copy a lock left, until it is made the vault: a
+		 * password given to the copy alone would leave the vault and its
+		 * snapshots opening with the old one. */
+		rekey?: Rekey;
+	}
+</script>
+
 <script lang="ts">
 	import { asFailure, setSettings } from '$lib/ipc';
 	import { named } from '$lib/duration';
@@ -6,6 +26,7 @@
 	import type { Database, Settings } from '$lib/model';
 	import Choice from './Choice.svelte';
 	import Icon from './Icon.svelte';
+	import MasterPassword from './MasterPassword.svelte';
 	import Segmented from './Segmented.svelte';
 	import Toggle from './Toggle.svelte';
 
@@ -22,11 +43,20 @@
 		settings,
 		database,
 		onSettings,
-		onChoose
-	}: {
+		onChoose,
+		rekey,
+		copyBeside = false
+	}: Handed & {
 		settings: Settings;
 		database: Database | null;
 		onSettings: (settings: Settings) => void;
+		/**
+		 * Whether the copy a lock left sits beside the open vault. It opens with
+		 * the password the vault has now, so a new one waits until the copy is
+		 * made the vault or removed, and the row says so rather than offering a
+		 * change Rust would refuse.
+		 */
+		copyBeside?: boolean;
 		/**
 		 * Asks for another vault. It rejects while one is open, and the refusal
 		 * says what to do about it, so it is shown rather than swallowed: a
@@ -139,6 +169,10 @@
 				Open another
 			</button>
 		</div>
+
+		{#if rekey}
+			<MasterPassword {rekey} {copyBeside} />
+		{/if}
 
 		<div class="flex items-center justify-between gap-6 px-8 py-5">
 			<div>

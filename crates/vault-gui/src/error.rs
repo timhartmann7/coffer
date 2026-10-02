@@ -22,6 +22,8 @@ pub struct Failure {
 #[serde(rename_all = "camelCase")]
 enum Code {
     /// The password, the key file, or both. One code, one message, no detail.
+    /// From `change_master_password`, the current password typed wrong, and
+    /// never the key file: the vault already holds that.
     WrongCredentials,
     NotADatabase,
     UnsupportedFormat,
@@ -160,7 +162,9 @@ impl Failure {
 impl From<VaultError> for Failure {
     fn from(error: VaultError) -> Failure {
         let code = match error {
-            VaultError::WrongCredentials => Code::WrongCredentials,
+            VaultError::WrongCredentials | VaultError::NotTheCurrentPassword => {
+                Code::WrongCredentials
+            }
             VaultError::NotADatabase => Code::NotADatabase,
             VaultError::UnsupportedFormat => Code::UnsupportedFormat,
             VaultError::DamagedHeader | VaultError::DamagedPayload | VaultError::DamagedContent => {
@@ -188,6 +192,9 @@ impl From<VaultError> for Failure {
             | VaultError::FieldNameTaken
             | VaultError::UnnamedField
             | VaultError::EmptyMasterPassword
+            | VaultError::SamePassword
+            | VaultError::PasswordOfACopy
+            | VaultError::PasswordBesideACopy
             | VaultError::ReservedName
             | VaultError::PasswordNotUtf8
             | VaultError::AbsurdKeyDerivation
@@ -255,6 +262,10 @@ mod tests {
             (VaultError::FieldNameTaken, "refused"),
             (VaultError::UnnamedField, "refused"),
             (VaultError::EmptyMasterPassword, "refused"),
+            (VaultError::NotTheCurrentPassword, "wrongCredentials"),
+            (VaultError::SamePassword, "refused"),
+            (VaultError::PasswordOfACopy, "refused"),
+            (VaultError::PasswordBesideACopy, "refused"),
             (VaultError::DatabaseExists, "taken"),
             (VaultError::CopyBeside, "taken"),
             (VaultError::ReservedName, "refused"),

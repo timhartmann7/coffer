@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
-use vault_core::kdf::Work;
+use vault_core::kdf::{self, Work};
 use vault_core::model::{Entry, EntryId, Project};
 use vault_core::storage::{OnDisk, Seen, unsaved};
 use vault_core::{
@@ -39,6 +39,10 @@ pub struct Session {
     /// Where the vault that opened is written down for the next launch, when
     /// this Mac gave Coffer a configuration directory to write it in.
     remembering: Option<PathBuf>,
+    /// Taken for the whole of a change of the master password, the wait a
+    /// wrong current password costs included: see
+    /// [`Session::change_master_password`].
+    guessing: Mutex<()>,
 }
 
 struct Held {
@@ -58,6 +62,12 @@ struct Held {
     /// one. Where and nothing more: after a lock nothing of the vault may be
     /// left to name the entry it went into. Cleared with `locked_by`.
     typed: Written,
+    /// Whether the vault the last lock closed was given a new master password
+    /// while it was open. The window that said so goes with the lock, and a
+    /// change pressed in the second before a lid closed may never have been
+    /// said at all; the reader at the unlock screen would not know which of two
+    /// passwords to type. Cleared with `locked_by`.
+    rekeyed: bool,
     /// The key file the next unlock will use alongside the password, when the
     /// database asks for one.
     ///
@@ -178,6 +188,9 @@ struct Open {
     vault: Vault,
     offered: Waiting,
     drafts: Drafts,
+    /// Whether the vault was given a new master password since it opened,
+    /// for the lock that ends it to say: see [`Held::rekeyed`].
+    rekeyed: bool,
 }
 
 impl Open {
@@ -186,6 +199,7 @@ impl Open {
             vault,
             offered: Waiting::default(),
             drafts: Drafts::default(),
+            rekeyed: false,
         }
     }
 
@@ -267,6 +281,7 @@ impl Session {
                 locked_by: None,
                 lost: false,
                 typed: Written::Nothing,
+                rekeyed: false,
                 key_file: None,
                 making: None,
                 found: None,
@@ -280,6 +295,7 @@ impl Session {
             }),
             unlocked,
             remembering,
+            guessing: Mutex::new(()),
         }
     }
 
@@ -319,6 +335,7 @@ impl Session {
         // chosen, for the same reason the key file does not carry over.
         held.lost = false;
         held.typed = Written::Nothing;
+        held.rekeyed = false;
         held.shown = None;
         held.returning = false;
         held.found = None;
@@ -478,6 +495,7 @@ impl Session {
             held.locked_by = None;
             held.lost = false;
             held.typed = Written::Nothing;
+            held.rekeyed = false;
             held.returning = false;
             opened
         };
@@ -543,17 +561,18 @@ impl Session {
         // take it.
         let ended = held.open.get_mut().map(|open| {
             let typed = open.finish_typing();
-            (typed, open.vault.rescue())
+            (typed, open.vault.rescue(), open.rekeyed)
         });
         held.open.put(None);
         held.generation += 1;
         let returning = std::mem::take(&mut held.returning);
 
-        let Some((typed, rescue)) = ended else {
+        let Some((typed, rescue, rekeyed)) = ended else {
             return false;
         };
         held.locked_by = Some(reason);
         held.lost = rescue == Rescue::Lost;
+        held.rekeyed = rekeyed;
         held.typed = if rescue == Rescue::Saved {
             typed
         } else {
@@ -592,6 +611,12 @@ impl Session {
     /// beside the value it was typed for, which is still the field's.
     pub fn typed_beside(&self) -> bool {
         self.held().typed == Written::Beside
+    }
+
+    /// Whether the vault the last lock in this run closed had been given a new
+    /// master password while it was open.
+    pub fn rekeyed(&self) -> bool {
+        self.held().rekeyed
     }
 
     /// Why the window is asking for a password again, when there is something
@@ -762,6 +787,45 @@ impl Session {
         let changed = change(&mut open.vault);
         open.offered.settle(&open.vault);
         Ok(changed)
+    }
+
+    /// Gives the open vault a new master password, and answers with how many
+    /// snapshots beside it still open with the old one: see
+    /// [`Vault::change_master_password`].
+    ///
+    /// The current password is checked against the key the vault holds, which
+    /// spends no key derivation, so a wrong one would answer a guess in a
+    /// millisecond where the unlock screen takes a second - and the answer
+    /// would be the master password itself, which opens every snapshot and
+    /// every copy ever made of the vault. So a wrong one is made to cost what
+    /// a wrong one costs there, [`kdf::TARGET`], waited out with the session
+    /// let go so that no save and no lock waits behind it. One change at a
+    /// time, the wait included: guesses sent side by side still cost a wait
+    /// each, and a guess sent while a wrong one waits is not answered until
+    /// that wait is over.
+    ///
+    /// A change that lands is remembered with the vault, for the lock that
+    /// ends it to say: see [`Session::rekeyed`].
+    pub fn change_master_password(
+        &self,
+        current: &[u8],
+        new: Zeroizing<Vec<u8>>,
+    ) -> Result<usize, Failure> {
+        let _turn = self
+            .guessing
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let changed = {
+            let mut held = self.held();
+            let open = held.changing()?;
+            let changed = open.vault.change_master_password(current, new);
+            open.rekeyed |= changed.is_ok();
+            changed
+        };
+        if matches!(changed, Err(VaultError::NotTheCurrentPassword)) {
+            std::thread::sleep(kdf::TARGET);
+        }
+        Ok(changed?)
     }
 
     /// Borrows the open vault to change it, the way [`Session::with_mut`]
@@ -4183,5 +4247,294 @@ mod tests {
             .expect("told again, the copy becomes the vault");
         let first = vault_core::storage::snapshot::slot(&database, 1).expect("a slot has a name");
         assert_eq!(std::fs::read(first).expect("the snapshot reads"), written);
+    }
+
+    /// Changes the open vault's master password, the way the command does.
+    fn changed(session: &Session, current: &[u8], new: &[u8]) -> Result<usize, Failure> {
+        session.change_master_password(current, password(new))
+    }
+
+    const CHANGED: &[u8] = b"a password nobody saw typed";
+
+    /// The window the next unlock builds asks for the password the change
+    /// gave, and the one the reader had stops opening anything.
+    #[test]
+    fn a_changed_password_is_the_one_the_next_unlock_needs() {
+        let (_scratch, session) = unlocked(RICH);
+        changed(&session, SECRET, CHANGED).expect("the password is changed");
+
+        assert!(session.lock(Reason::ByHand));
+        assert!(!session.lost(), "the lock after a change lost something");
+        assert!(!session.typed());
+        assert!(session.rekeyed(), "the unlock screen is not told");
+        let refused = session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect_err("the old password opened the vault");
+        assert_eq!(code_of(&refused), "wrongCredentials");
+        assert!(session.rekeyed(), "a wrong password took the news away");
+        session
+            .unlock(password(CHANGED), LockPolicy::Respect)
+            .expect("the new password opens it");
+        assert!(
+            !session.rekeyed(),
+            "the news outlived the unlock it was for"
+        );
+    }
+
+    /// The unlock screen says a password was changed only after a lock that
+    /// closed a vault whose password changed while it was open: never after a
+    /// change that was refused, never about a vault opened since, never about
+    /// one the session was pointed away from, and a second lock with nothing
+    /// open leaves what the first one said.
+    #[test]
+    fn a_lock_tells_of_a_new_password_only_after_a_change_that_landed() {
+        let (_scratch, session) = unlocked(RICH);
+        changed(&session, SECRET, b"").expect_err("an empty password was taken");
+        changed(&session, SECRET, SECRET).expect_err("the same password was taken");
+        assert!(session.lock(Reason::ByHand));
+        assert!(
+            !session.rekeyed(),
+            "a refused change was said to have landed"
+        );
+
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the vault opens");
+        changed(&session, SECRET, CHANGED).expect("the password is changed");
+        assert!(
+            !session.rekeyed(),
+            "said while the window that says it is open"
+        );
+        assert!(session.lock(Reason::Sleeping));
+        assert!(session.rekeyed());
+        assert!(!session.lock(Reason::Idle));
+        assert!(
+            session.rekeyed(),
+            "a lock with nothing open took the news away"
+        );
+
+        let database = session.database().expect("a vault is chosen");
+        session.choose(database.with_file_name("another.kdbx"));
+        assert!(
+            !session.rekeyed(),
+            "the news followed the reader to another file"
+        );
+    }
+
+    /// The current password is checked without a key derivation, so a wrong
+    /// one is made to cost what a wrong one costs at the unlock screen. The
+    /// wait holds nothing else up: the session answers while the guess is
+    /// still waiting for its own answer.
+    #[test]
+    fn a_wrong_current_password_costs_what_an_unlock_does_and_holds_nothing_up() {
+        let (_scratch, session) = unlocked(RICH);
+        let session = Arc::new(session);
+        let started = std::time::Instant::now();
+        let guess = {
+            let session = Arc::clone(&session);
+            std::thread::spawn(move || changed(&session, b"a guess", CHANGED))
+        };
+
+        std::thread::sleep(kdf::TARGET / 4);
+        let asked = std::time::Instant::now();
+        session.tree().expect("the session answers");
+        assert!(
+            asked.elapsed() < kdf::TARGET / 2,
+            "the session was held for the wait a wrong guess costs"
+        );
+        assert!(!guess.is_finished(), "the guess was answered early");
+
+        let refused = guess
+            .join()
+            .expect("the guess answers")
+            .expect_err("a guess changed the password");
+        assert_eq!(code_of(&refused), "wrongCredentials");
+        assert!(started.elapsed() >= kdf::TARGET);
+    }
+
+    /// Guesses sent side by side wait their turn, each wait included, so that
+    /// sending many at once is no faster than sending them one after another.
+    #[test]
+    fn guesses_sent_side_by_side_cost_a_wait_each() {
+        let (_scratch, session) = unlocked(RICH);
+        let session = Arc::new(session);
+        let started = std::time::Instant::now();
+
+        let guesses: Vec<_> = ["one guess", "another guess", "a third guess"]
+            .into_iter()
+            .map(|guess| {
+                let session = Arc::clone(&session);
+                std::thread::spawn(move || changed(&session, guess.as_bytes(), CHANGED))
+            })
+            .collect();
+        for guess in guesses {
+            let refused = guess
+                .join()
+                .expect("the guess answers")
+                .expect_err("a guess changed the password");
+            assert_eq!(code_of(&refused), "wrongCredentials");
+        }
+        assert!(started.elapsed() >= kdf::TARGET * 3);
+    }
+
+    /// A vault with the copy a lock left beside it keeps its password until
+    /// the copy is out of the way, and "Make this my vault" then has no older
+    /// password to bring back. Made the vault from inside the copy, the copy's
+    /// password is the vault's, the change goes through, and the vault opens
+    /// with the new password alone.
+    #[test]
+    fn a_vault_with_a_lock_s_copy_beside_it_keeps_its_password_until_the_copy_is_its_vault() {
+        let (_directory, database, copy) = with_a_copy(RICH);
+        let session = Session::new(Some(database.clone()), None);
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the vault opens");
+
+        let refused = changed(&session, SECRET, CHANGED)
+            .expect_err("the vault was given a new password beside a lock's copy");
+        assert_eq!(code_of(&refused), "refused");
+        assert!(session.lock(Reason::ByHand));
+        assert!(!session.rekeyed());
+
+        session.choose_sibling(copy.clone());
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the copy opens with the vault's password");
+        assert!(session.telling().is_some(), "the copy is not one");
+        session.promote().expect("the copy becomes the vault");
+        changed(&session, SECRET, CHANGED).expect("the password is changed");
+        assert!(session.lock(Reason::ByHand));
+        assert!(!copy.exists(), "the copy is still beside the vault");
+
+        let refused = session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect_err("the old password opened the vault");
+        assert_eq!(code_of(&refused), "wrongCredentials");
+        session
+            .unlock(password(CHANGED), LockPolicy::Respect)
+            .expect("the new password opens it");
+    }
+
+    /// The key file the reader chose is part of the key the change writes,
+    /// and the session keeps it for the unlock after the lock as it always
+    /// does.
+    #[test]
+    fn a_key_file_chosen_for_a_vault_is_still_needed_after_its_password_changes() {
+        let (_directory, database) = scratch("keyfile-kdbx41.kdbx");
+        let session = Session::new(Some(database), None);
+        session.use_key_file(Some(fixture("keyfile.key")));
+        session
+            .unlock(password(b"coffer-keyfile"), LockPolicy::Respect)
+            .expect("both halves open it");
+
+        let refused = changed(&session, b"keyfile.key", CHANGED)
+            .expect_err("something other than the password was taken for it");
+        assert_eq!(code_of(&refused), "wrongCredentials");
+        changed(&session, b"coffer-keyfile", CHANGED).expect("the password is changed");
+        session.lock(Reason::ByHand);
+        session
+            .unlock(password(CHANGED), LockPolicy::Respect)
+            .expect("the new password and the key file open it");
+        session.lock(Reason::ByHand);
+
+        session.use_key_file(None);
+        let refused = session
+            .unlock(password(CHANGED), LockPolicy::Respect)
+            .expect_err("the new password alone opened it");
+        assert_eq!(code_of(&refused), "wrongCredentials");
+    }
+
+    /// A change refused before anything was written changed nothing, so a
+    /// list of versions the window holds is still the one to act from. One
+    /// that wrote the file pruned every history the way a save does.
+    #[test]
+    fn a_password_change_refused_before_anything_is_written_leaves_the_revision_where_it_was() {
+        let (_scratch, session) = unlocked(RICH);
+        let (listed, ()) = session.listing(|_| ()).expect("the vault is open");
+
+        for (what, current, new, code) in [
+            (
+                "a wrong current password",
+                &b"coffer-tes"[..],
+                CHANGED,
+                "wrongCredentials",
+            ),
+            ("an empty new one", SECRET, b"", "refused"),
+            ("the one it has", SECRET, SECRET, "refused"),
+        ] {
+            let refused = changed(&session, current, new).expect_err(what);
+            assert_eq!(code_of(&refused), code, "{what}");
+        }
+        let (again, ()) = session.listing(|_| ()).expect("the vault is open");
+        assert_eq!(
+            again, listed,
+            "a change that was refused moved the revision"
+        );
+
+        changed(&session, SECRET, CHANGED).expect("the password is changed");
+        let (after, ()) = session.listing(|_| ()).expect("the vault is open");
+        assert_ne!(
+            after, listed,
+            "a change that wrote the file left the revision"
+        );
+    }
+
+    /// A change is a save: what the vault held that the file had not got goes
+    /// into the file under the new key, and the lock that follows has nothing
+    /// left to write and nothing to put beside the vault.
+    ///
+    /// The file and its snapshots are read between the change and the lock and
+    /// again after it. A lock writes whatever is still owed, so notes found
+    /// after the unlock prove nothing unless the lock is shown to have written
+    /// nothing at all.
+    #[test]
+    fn a_change_writes_what_the_file_had_not_got_and_leaves_a_lock_nothing_to_write() {
+        let (_scratch, session) = unlocked(RICH);
+        let database = session
+            .database()
+            .expect("the vault is still the one chosen");
+        let basic = entry_titled(&session, "basic").id;
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    basic,
+                    fields::NOTES,
+                    vault_core::NewValue::Open("never saved on its own".to_owned()),
+                )
+            })
+            .expect("the vault is open")
+            .expect("the notes are written");
+        changed(&session, SECRET, CHANGED).expect("the password is changed");
+
+        let chain = || {
+            vault_core::storage::snapshot::taken(&database)
+                .expect("the chain reads")
+                .len()
+        };
+        let written = std::fs::read(&database).expect("the vault reads");
+        let taken = chain();
+
+        assert!(session.lock(Reason::ByHand));
+        assert!(!session.lost());
+        assert!(!session.typed());
+        assert_eq!(
+            std::fs::read(&database).expect("the vault reads"),
+            written,
+            "the lock after a change wrote the vault"
+        );
+        assert_eq!(chain(), taken, "the lock after a change took a snapshot");
+        assert!(
+            !unsaved::beside(&database).expect("a sibling path").exists(),
+            "a lock after a change wrote a copy beside the vault"
+        );
+
+        session
+            .unlock(password(CHANGED), LockPolicy::Respect)
+            .expect("the new password opens it");
+        let notes = session
+            .reveal(basic, fields::NOTES)
+            .ok()
+            .and_then(|value| value.expose_str().map(str::to_owned));
+        assert_eq!(notes.as_deref(), Some("never saved on its own"));
     }
 }

@@ -32,6 +32,7 @@ use crate::wipe;
 mod batch;
 mod making;
 mod moves;
+mod rekey;
 
 /// The largest file Coffer will read into memory to try to open.
 ///
@@ -162,6 +163,10 @@ pub struct Vault {
     /// How many times the tree has changed since the vault opened, counting
     /// what a save settles and what a reload replaces. See [`Vault::edits`].
     edits: u64,
+    /// The snapshots beside the database that open with a master password
+    /// this vault no longer has: every one there was when the password last
+    /// changed. Empty until it does.
+    superseded: snapshot::Superseded,
     /// Held for as long as the vault is open; removed when it is dropped.
     ///
     /// Absent where the place beside the database would not take the file.
@@ -316,6 +321,7 @@ impl Vault {
             content,
             changed: false,
             edits: 0,
+            superseded: snapshot::Superseded::default(),
             _lock: lock,
         })
     }
@@ -1721,6 +1727,7 @@ fn fill(path: &Path, key: MasterKey, recipe: &Recipe<'_>) -> Result<Vault, Vault
         content,
         changed: false,
         edits: 0,
+        superseded: snapshot::Superseded::default(),
         _lock: Some(lock),
     })
 }

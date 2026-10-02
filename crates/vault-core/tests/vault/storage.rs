@@ -511,6 +511,32 @@ fn a_hole_in_the_chain_does_not_hide_the_rest_of_it() {
     );
 }
 
+/// A slot the filesystem will not answer about - here a link somebody left
+/// that leads round in a circle - is passed over like a hole, and the
+/// snapshots either side of it are still offered.
+#[test]
+fn a_slot_nobody_can_read_does_not_hide_the_rest_of_the_chain() {
+    let (_scratch, database) = support::scratch(support::RICH);
+    let mut vault = open(&database, support::SECRET);
+
+    for _ in 0..3 {
+        vault.save().expect("the database saves");
+    }
+
+    let circle = snapshot::slot(&database, 2).expect("the slot has a path");
+    std::fs::remove_file(&circle).expect("the snapshot is removed");
+    std::os::unix::fs::symlink(&circle, &circle).expect("the link is made");
+
+    let taken = snapshot::taken(&database).expect("the chain reads");
+    assert_eq!(
+        taken
+            .iter()
+            .map(|snapshot| snapshot.index)
+            .collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+}
+
 /// Somebody can put anything beside a database, and a directory named like a
 /// snapshot is not one.
 #[test]

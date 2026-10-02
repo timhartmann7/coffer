@@ -1,12 +1,22 @@
-import { createRawSnippet, flushSync, mount as draw, tick, unmount as release } from 'svelte';
+import {
+	createRawSnippet,
+	flushSync,
+	mount as draw,
+	tick,
+	unmount as release,
+	type ComponentProps,
+	type Snippet
+} from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { chosen as picked, plain } from '$lib/context.svelte';
 import { drawing, entry, field, generated, group, kinds, row, version } from '$lib/fixtures';
 import { focused } from '$lib/focus.svelte';
+import { hold } from '$lib/holding';
 import { applying, run } from '$lib/menu.svelte';
 import type { Entry, EntryRow, Group, Version } from '$lib/model';
 import { reactive } from '$lib/props.svelte';
 import type { Stubbed } from '$lib/stubbed';
+import type { Handed } from './Settings.svelte';
 import Vault from './Vault.svelte';
 
 const ipc = vi.hoisted(() => ({}) as Stubbed);
@@ -90,7 +100,7 @@ const sheet = createRawSnippet(() => ({ render: () => '<p>The settings</p>' }));
 function open(
 	over: {
 		readOnly?: boolean;
-		settings?: typeof sheet;
+		settings?: Snippet<[Handed]>;
 		onSettings?: () => void;
 		onTree?: (tree: typeof root) => void;
 	} = {}
@@ -8199,4 +8209,216 @@ it('asks nothing at the foot of an entry put back while its bin card was asking'
 		await unmount(component);
 		vi.useRealTimers();
 	}
+});
+
+/** The settings as the window above draws them, keeping what this screen
+ * hands them so that a test can use it the way the settings would. */
+function handing() {
+	const handed: { now: Handed | null } = { now: null };
+	const settings = createRawSnippet<[Handed]>((given) => ({
+		render: () => {
+			handed.now = given();
+			return `<p>${handed.now.rekey ? 'A password can be changed' : 'No password to change'}</p>`;
+		}
+	}));
+	return { handed, settings };
+}
+
+/** A snapshot, or a file Coffer reads and does not write, has no password to
+ * change from here: the row is drawn only with the way to do it. */
+it('hands the settings a way to change the password only when the vault can be written', () => {
+	const writable = handing();
+	const component = open({ settings: writable.settings });
+	flushSync();
+	expect(reads()).toContain('A password can be changed');
+	expect(writable.handed.now?.rekey).toBeTypeOf('function');
+	unmount(component);
+
+	const readOnly = handing();
+	const other = open({ readOnly: true, settings: readOnly.settings });
+	flushSync();
+	expect(reads()).toContain('No password to change');
+	expect(readOnly.handed.now).toEqual({});
+	unmount(other);
+});
+
+/** A new master password on its way holds the settings: the answer is the one
+ * place that says which password now opens the vault, and neither Escape nor
+ * the status bar's button may close it away in the second before it comes. */
+it('keeps the settings open while something in them is on its way', () => {
+	const onSettings = vi.fn();
+	const component = open({ onSettings, settings: sheet });
+	flushSync();
+
+	// Let go however the assertions go: the hold is the whole window's, and
+	// left in place it would hold the pane for every test after this one.
+	const letGo = hold({ holds: () => true, ask: () => false });
+	try {
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+		host.querySelector<HTMLButtonElement>('button[aria-label="Back to the vault"]')?.click();
+		flushSync();
+		expect(onSettings, 'the settings went with a change on its way').not.toHaveBeenCalled();
+	} finally {
+		letGo();
+	}
+
+	window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+	flushSync();
+	expect(onSettings).toHaveBeenCalledTimes(1);
+	host.querySelector<HTMLButtonElement>('button[aria-label="Back to the vault"]')?.click();
+	expect(onSettings).toHaveBeenCalledTimes(2);
+
+	unmount(component);
+});
+
+/** A change writes the file the way a save does, and a file somebody else
+ * wrote stops it the way it stops a save: with the question, over the
+ * settings, before anything was written. */
+it('raises the conflict over the settings when a password change meets a file somebody else wrote', async () => {
+	ipc.changeMasterPassword.mockRejectedValue({
+		code: 'externalChange',
+		message: 'the database changed on disk after Coffer opened it'
+	});
+	ipc.rival.mockResolvedValue({ modified: '2026-08-29T18:47:00Z', entries: 49 });
+	const { handed, settings } = handing();
+	const component = open({ settings });
+	flushSync();
+
+	const changing = handed.now?.rekey?.(new Uint8Array([1]), new Uint8Array([2]));
+	await expect(changing).rejects.toMatchObject({ code: 'externalChange' });
+	flushSync();
+
+	expect(host.textContent).toContain('The file changed while you were working');
+	expect(host.textContent).toContain('49 entries');
+
+	unmount(component);
+});
+
+/** The write a change makes is the save the vault was waiting for, so a
+ * "Not saved" standing from an earlier failure goes with it - and it prunes
+ * histories the way a save does, so the versions in the pane are read again. */
+it('clears "Not saved" once a password change has written the file, and reads the versions again', async () => {
+	ipc.entry.mockResolvedValue(
+		entry({
+			id: kept.id,
+			group: root.id,
+			fields: [field({ name: 'Title', kind: 'title', value: 'node-3', empty: false })]
+		})
+	);
+	ipc.setField.mockResolvedValue(entry({ id: kept.id, group: root.id }));
+	ipc.save.mockRejectedValue({ code: 'other', message: 'No space left on device' });
+	ipc.changeMasterPassword.mockResolvedValue(3);
+	const { handed, settings } = handing();
+	const props = reactive<ComponentProps<typeof Vault>>({
+		database,
+		root,
+		kinds: kinds(),
+		readOnly: false,
+		settings: undefined,
+		onSettings: vi.fn(),
+		onTree: vi.fn()
+	});
+	const component = mount(Vault, { target: host, props });
+	flushSync();
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('node-3'))
+		?.click();
+	await vi.waitFor(() => expect(ipc.entry).toHaveBeenCalled());
+	flushSync();
+	write(host.querySelector('h1 input') as HTMLInputElement, 'node-4');
+	await vi.waitFor(() => expect(host.textContent).toContain('Not saved'));
+
+	props.settings = settings;
+	flushSync();
+	const listed = ipc.versions.mock.calls.length;
+
+	await expect(handed.now?.rekey?.(new Uint8Array([1]), new Uint8Array([2]))).resolves.toBe(3);
+	flushSync();
+
+	// The current password first and the new one second, all the way through:
+	// two swapped would have every change refused as the wrong current one.
+	expect(ipc.changeMasterPassword).toHaveBeenCalledExactlyOnceWith(
+		new Uint8Array([1]),
+		new Uint8Array([2])
+	);
+	expect(host.textContent).not.toContain('Not saved');
+	expect(ipc.versions.mock.calls.length, 'the versions were not read again').toBeGreaterThan(
+		listed
+	);
+	expect(ipc.versions).toHaveBeenLastCalledWith(kept.id);
+
+	unmount(component);
+});
+
+/** A file that went is asked about the way a save asks about it, with the
+ * settings still under the question. */
+it('asks what to do when a password change finds the vault file gone', async () => {
+	ipc.changeMasterPassword.mockRejectedValue({
+		code: 'gone',
+		message: 'the database file is gone'
+	});
+	ipc.rival.mockResolvedValue({ modified: null, entries: null });
+	const { handed, settings } = handing();
+	const component = open({ settings });
+	flushSync();
+
+	await expect(handed.now?.rekey?.(new Uint8Array([1]), new Uint8Array([2]))).rejects.toMatchObject(
+		{ code: 'gone' }
+	);
+	flushSync();
+
+	expect(host.textContent).toContain('The vault file is not there any more');
+
+	unmount(component);
+});
+
+/** Any other refusal is the row's to say, under its form: no notice rises
+ * over it, and "Not saved", standing from a save that failed before, still
+ * stands, because nothing was written. */
+it('raises no notice and leaves "Not saved" standing when a password change fails', async () => {
+	ipc.entry.mockResolvedValue(
+		entry({
+			id: kept.id,
+			group: root.id,
+			fields: [field({ name: 'Title', kind: 'title', value: 'node-3', empty: false })]
+		})
+	);
+	ipc.setField.mockResolvedValue(entry({ id: kept.id, group: root.id }));
+	ipc.save.mockRejectedValue({ code: 'other', message: 'No space left on device' });
+	ipc.changeMasterPassword.mockRejectedValue({ code: 'io', message: 'the disk is full' });
+	const { handed, settings } = handing();
+	const props = reactive<ComponentProps<typeof Vault>>({
+		database,
+		root,
+		kinds: kinds(),
+		readOnly: false,
+		settings: undefined,
+		onSettings: vi.fn(),
+		onTree: vi.fn()
+	});
+	const component = mount(Vault, { target: host, props });
+	flushSync();
+
+	[...host.querySelectorAll('button')]
+		.find((each) => each.textContent?.includes('node-3'))
+		?.click();
+	await vi.waitFor(() => expect(ipc.entry).toHaveBeenCalled());
+	flushSync();
+	write(host.querySelector('h1 input') as HTMLInputElement, 'node-4');
+	await vi.waitFor(() => expect(host.textContent).toContain('Not saved'));
+
+	props.settings = settings;
+	flushSync();
+	await expect(handed.now?.rekey?.(new Uint8Array([1]), new Uint8Array([2]))).rejects.toMatchObject(
+		{ code: 'io' }
+	);
+	flushSync();
+
+	expect(host.textContent, 'a notice rose over the row').not.toContain('the disk is full');
+	expect(host.textContent).toContain('Not saved');
+	expect(host.textContent).not.toContain('The file changed while you were working');
+	expect(ipc.rival).not.toHaveBeenCalled();
+
+	unmount(component);
 });

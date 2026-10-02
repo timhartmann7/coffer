@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import { asFailure, clearHistory, deleteVersion, listen, unlock, versions } from './ipc';
+import {
+	asFailure,
+	changeMasterPassword,
+	clearHistory,
+	deleteVersion,
+	listen,
+	unlock,
+	versions
+} from './ipc';
 import type { Action } from './model';
 
 describe('the master password on its way to Rust', () => {
@@ -36,6 +44,88 @@ describe('the master password on its way to Rust', () => {
 		const bytes = new TextEncoder().encode('hunter2');
 		await expect(unlock(bytes)).rejects.toBeDefined();
 		expect([...bytes]).toEqual([0, 0, 0, 0, 0, 0, 0]);
+	});
+});
+
+describe('two master passwords on their way to Rust', () => {
+	const encode = (text: string) => new TextEncoder().encode(text);
+
+	/** Tauri's invoke, answering with `answer`, and what it was handed: the
+	 * frame itself, and a copy of it as it was while the call ran. */
+	function sending(answer: () => Promise<unknown>) {
+		const frames: Uint8Array[] = [];
+		const read: number[][] = [];
+		vi.stubGlobal('window', {
+			__TAURI_INTERNALS__: {
+				invoke: async (command: string, payload: Uint8Array) => {
+					expect(command).toBe('change_master_password');
+					frames.push(payload);
+					read.push([...payload]);
+					return answer();
+				}
+			}
+		});
+		return { frames, read };
+	}
+
+	/** The frame Rust cuts the two apart by. The same bytes are pinned on the
+	 * Rust side, so a change to either half fails a test. */
+	it("are framed as the current one's length, the current one, then the new one", async () => {
+		const { read } = sending(async () => 0);
+
+		await changeMasterPassword(encode('é'), encode('x\0y'));
+		await changeMasterPassword(new Uint8Array(), encode('new'));
+
+		expect(read).toEqual([
+			[0, 0, 0, 2, 0xc3, 0xa9, 0x78, 0x00, 0x79],
+			[0, 0, 0, 0, 0x6e, 0x65, 0x77]
+		]);
+	});
+
+	it('answers with how many backups still open with the old password', async () => {
+		sending(async () => 7);
+		expect(await changeMasterPassword(encode('old'), encode('new'))).toBe(7);
+	});
+
+	it('wipes both passwords and the frame once the call is over', async () => {
+		const { frames } = sending(async () => 0);
+		const current = encode('the one it had');
+		const next = encode('the one it has');
+
+		await changeMasterPassword(current, next);
+
+		for (const wiped of [current, next, frames[0]]) {
+			expect(wiped.every((byte) => byte === 0)).toBe(true);
+		}
+	});
+
+	/** A refusal is the common answer - a current password typed wrong - and
+	 * its two passwords are as secret as an accepted pair. */
+	it('wipes them when the command rejects as well', async () => {
+		const { frames } = sending(async () => {
+			throw { code: 'wrongCredentials', message: "that is not the vault's current password" };
+		});
+		const current = encode('typed wrong');
+		const next = encode('wanted');
+
+		await expect(changeMasterPassword(current, next)).rejects.toMatchObject({
+			code: 'wrongCredentials'
+		});
+
+		for (const wiped of [current, next, frames[0]]) {
+			expect(wiped.every((byte) => byte === 0)).toBe(true);
+		}
+	});
+
+	it('frames a password longer than two bytes of length could count', async () => {
+		const { read } = sending(async () => 0);
+		const current = new Uint8Array(70_000).fill(0x61);
+
+		await changeMasterPassword(current, encode('new'));
+
+		expect(read[0].slice(0, 4)).toEqual([0, 1, 0x11, 0x70]);
+		expect(read[0]).toHaveLength(4 + 70_000 + 3);
+		expect(read[0].slice(-3)).toEqual([0x6e, 0x65, 0x77]);
 	});
 });
 

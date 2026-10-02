@@ -4239,6 +4239,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
+ "constant_time_eq",
  "keepass",
  "libc",
  "proptest",

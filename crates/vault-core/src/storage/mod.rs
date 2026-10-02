@@ -92,6 +92,15 @@ impl Seen {
             stamp: watch::Stamp::of(path).ok(),
         }
     }
+
+    /// A file as this was read about it: something there, written when it
+    /// says, of its length at its inode.
+    pub(crate) fn of_metadata(metadata: &std::fs::Metadata) -> Seen {
+        Seen {
+            on_disk: OnDisk::Written(metadata.modified().ok()),
+            stamp: Some(watch::Stamp::of_metadata(metadata)),
+        }
+    }
 }
 
 /// Flushes the directory entry itself, so that a rename survives a power cut.

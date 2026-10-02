@@ -19,6 +19,7 @@ mod making;
 mod moves;
 mod normalise;
 mod open;
+mod password;
 mod portable;
 mod property;
 mod rescue;

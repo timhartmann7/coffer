@@ -36,12 +36,16 @@ pub struct Stamp {
 impl Stamp {
     /// Reads the current state of `path`.
     pub fn of(path: &Path) -> Result<Stamp, io::Error> {
-        let metadata = std::fs::metadata(path)?;
-        Ok(Stamp {
+        Ok(Stamp::of_metadata(&std::fs::metadata(path)?))
+    }
+
+    /// The state a file was in when this was read about it.
+    pub(crate) fn of_metadata(metadata: &std::fs::Metadata) -> Stamp {
+        Stamp {
             len: metadata.len(),
             inode: metadata.ino(),
             device: metadata.dev(),
-        })
+        }
     }
 }
 

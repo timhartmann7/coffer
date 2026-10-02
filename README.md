@@ -86,6 +86,10 @@ an hour after the refusal, so the command is the reliable one.
   to.
 - **A forgotten master password.** It is not kept anywhere and it is not sent
   anywhere. There is no recovery, from us or from anybody.
+- **A copy made before the password changed.** It still opens with the old
+  one: a backup on another disk, and the snapshots you chose to keep. A copy a
+  lock left beside the vault has to be made the vault or removed before the
+  password can be changed.
 - **Universal Clipboard.** A password you copy reaches your other Apple devices
   if Universal Clipboard is on. macOS offers no documented way for an
   application to keep an item out of it. Turn it off under **System Settings →
@@ -100,6 +104,10 @@ an hour after the refusal, so the command is the reliable one.
   halfway leaves the old database whole.
 - Ten rotating snapshots, `vault.kdbx.1.bak` through `vault.kdbx.10.bak`, beside
   the database. The database and every snapshot are `0600`.
+- The master password can be changed in Settings. The file is written again
+  under the new one, with its key derivation unchanged. The snapshots beside it
+  were written under the old one and still open with it until later saves push
+  them out; Coffer says how many there are and offers to remove them at once.
 - An advisory `vault.kdbx.lock` while the vault is open, in the shape other
   clients of the format write, and a dialog rather than a silent overwrite when
   the file changed underneath.

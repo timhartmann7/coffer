@@ -363,3 +363,29 @@ it('opens another vault from the menu, and says why when Rust refuses', async ()
 
 	unmount(component);
 });
+
+/** With nothing open, or a vault Coffer reads and does not write, there is no
+ * password to change from here, and no row offering to. */
+it('offers to change the master password only with a vault it can write', () => {
+	const without = show();
+	flushSync();
+	expect(host.textContent).not.toContain('Master password');
+	unmount(without);
+
+	const component = show({ rekey: vi.fn() });
+	flushSync();
+	expect(host.textContent).toContain('Master password');
+	expect(
+		[...host.querySelectorAll('button')].some((each) => each.textContent?.trim() === 'Change…')
+	).toBe(true);
+	unmount(component);
+});
+
+it('puts the master password beside the vault it opens', () => {
+	const component = show({ rekey: vi.fn() });
+	flushSync();
+
+	const rows = [...host.querySelectorAll('.text-row')].map((each) => each.textContent?.trim());
+	expect(rows.indexOf('Master password')).toBe(rows.indexOf('Vault') + 1);
+	unmount(component);
+});

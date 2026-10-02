@@ -30,7 +30,8 @@ const FOLDER_ICON: usize = 48;
 const MAINTENANCE_DAYS: usize = 365;
 
 /// Neither recommended nor forced. Written as the format's "never" rather than
-/// left absent, so that no client nags about a password Coffer cannot change.
+/// left absent, so that no client nags the reader to change the password on a
+/// schedule. They change it in Coffer's settings when they choose to.
 const NEVER: isize = -1;
 
 /// A database with nothing in it, named and described the way a real one is.

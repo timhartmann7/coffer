@@ -23,6 +23,7 @@
 //! key pressed after a Mac slept through the deadline - locks the vault, and a
 //! lock runs on the thread that asked for it.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -41,8 +42,8 @@ use crate::autolock::timer::Timer;
 use crate::autolock::{Event, Reason};
 use crate::drafts::{Over, Typed};
 use crate::dto::{
-    self, Action, Database, Entry, Group, Made, Moved, Revealed, Rival, Snapshot, Status, Target,
-    Versions,
+    self, Action, Database, Entry, Group, Made, Moved, Removed, Revealed, Rival, Snapshot, Status,
+    Target, Versions,
 };
 use crate::error::Failure;
 use crate::home::Standing;
@@ -100,6 +101,7 @@ pub fn status(app: AppHandle, session: Held<'_>) -> Status {
         }),
         typed: session.typed(),
         typed_beside: session.typed_beside(),
+        rekeyed: session.rekeyed(),
         database: database.as_deref().map(Database::of),
         key_file: session.key_file().as_deref().map(Database::of),
         unlocked: session.is_unlocked(),
@@ -336,20 +338,63 @@ fn opened(app: &AppHandle) {
     }
 }
 
-/// The master password out of a message, and only out of a message that
-/// carried it as bytes.
+/// The bytes of a message that carried its body as bytes, and only of one that
+/// did.
 ///
 /// A JSON body means the webview's IPC fell back to `postMessage`, where the
 /// password would have travelled through a JavaScript string and a JSON
 /// document. Refusing is the only safe answer: accepting it would make a broken
 /// Content-Security-Policy invisible, and a broken one is silent.
-fn password_of(body: &InvokeBody) -> Result<Zeroizing<Vec<u8>>, Failure> {
+fn raw_of(body: &InvokeBody) -> Result<&[u8], Failure> {
     match body {
-        InvokeBody::Raw(password) => Ok(Zeroizing::new(password.clone())),
+        InvokeBody::Raw(bytes) => Ok(bytes),
         InvokeBody::Json(_) => Err(Failure::refused(
             "the master password must be sent as bytes",
         )),
     }
+}
+
+/// The master password out of a message, and only out of a message that
+/// carried it as bytes.
+fn password_of(body: &InvokeBody) -> Result<Zeroizing<Vec<u8>>, Failure> {
+    Ok(Zeroizing::new(raw_of(body)?.to_vec()))
+}
+
+/// The two passwords a change of the master password carries. Wiped when they
+/// go.
+struct Rekeying {
+    current: Zeroizing<Vec<u8>>,
+    new: Zeroizing<Vec<u8>>,
+}
+
+impl fmt::Debug for Rekeying {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Rekeying")
+            .field("current", &"[redacted]")
+            .field("new", &"[redacted]")
+            .finish()
+    }
+}
+
+/// The current and the new master password out of one body, framed the way
+/// `ipc.ts` frames them: the current one's length in four bytes, big-endian,
+/// then the current one, then the new one to the end. A raw body cannot sit
+/// beside named arguments, so both travel in it.
+///
+/// A length the body does not hold is refused rather than read as far as it
+/// goes: a password cut short is not one the reader typed.
+fn passwords_of(body: &InvokeBody) -> Result<Rekeying, Failure> {
+    let malformed =
+        || Failure::refused("the two passwords did not arrive the way a change sends them");
+    let (length, rest) = raw_of(body)?
+        .split_first_chunk::<4>()
+        .ok_or_else(malformed)?;
+    let length = usize::try_from(u32::from_be_bytes(*length)).map_err(|_| malformed())?;
+    let (current, new) = rest.split_at_checked(length).ok_or_else(malformed)?;
+    Ok(Rekeying {
+        current: Zeroizing::new(current.to_vec()),
+        new: Zeroizing::new(new.to_vec()),
+    })
 }
 
 /// Where a first vault goes when nobody has said otherwise: see [`home`].
@@ -1615,6 +1660,44 @@ pub async fn reload(sequence: u64, session: Held<'_>) -> Result<Group, Failure> 
     tree_of(&session)
 }
 
+/// Gives the open vault a new master password, and answers with how many
+/// snapshots beside it still open with the old one.
+///
+/// Both passwords are the whole body, framed by `passwords_of`, for the reason
+/// an unlock's is. The change is a save under another key - a key derivation
+/// and the whole file encrypted - so it happens on a thread that is allowed to
+/// block, holding the session as a save does, and the stack it ran on is
+/// written over afterwards. A wrong current password is answered only after
+/// the wait an unlock costs, on the same thread. See
+/// [`Session::change_master_password`].
+#[tauri::command]
+pub async fn change_master_password(
+    request: Request<'_>,
+    session: Held<'_>,
+) -> Result<usize, Failure> {
+    let Rekeying { current, new } = passwords_of(request.body())?;
+    let session = Arc::clone(&session);
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let changed = session.change_master_password(&current, new);
+        vault_core::scrub::stack();
+        changed
+    })
+    .await
+    .map_err(|_| Failure::internal("the password could not be changed"))?
+}
+
+/// Removes the snapshots that open with the password the vault had before its
+/// last change: see [`Vault::remove_old_snapshots`]. Nothing is sent - the
+/// files are the ones Rust recorded - and it is only ever the reader's answer
+/// to the question that change put. Answers with how many went, and with how
+/// many would not go and why, rather than failing, so that the question the
+/// window goes on asking is about the ones that are left.
+#[tauri::command(async)]
+pub fn remove_old_snapshots(session: Held<'_>) -> Result<Removed, Failure> {
+    Ok(Removed::of(session.with_mut(Vault::remove_old_snapshots)?))
+}
+
 /// What the file on disk holds, for the dialog that asks which version to keep.
 ///
 /// Reading it means opening it, which is another second of key derivation, so
@@ -2172,6 +2255,95 @@ mod tests {
         session.making(at("gone.kdbx"));
         assert!(existing_chosen(&session).is_ok());
         assert_eq!(session.database(), Some(at("gone.kdbx")));
+    }
+
+    /// The two passwords of a change travel the way one does, and a body that
+    /// fell back to JSON is refused before anything is read out of it - in
+    /// whatever shape a page that went wrong might send them.
+    #[test]
+    fn two_passwords_that_did_not_arrive_as_bytes_are_refused() {
+        for body in [
+            serde_json::json!([0, 0, 0, 3, 111, 108, 100, 110, 101, 119]),
+            serde_json::json!("old password\u{0}new password"),
+            serde_json::json!({ "current": "old password", "new": "new password" }),
+        ] {
+            let failure =
+                passwords_of(&InvokeBody::Json(body)).expect_err("a JSON body is refused");
+            let printed = format!("{failure:?}");
+            assert!(printed.contains("must be sent as bytes"), "{printed}");
+            assert!(!printed.contains("old password") && !printed.contains("new password"));
+            assert_eq!(code_of(failure), "refused");
+        }
+    }
+
+    fn frame(current: &[u8], new: &[u8]) -> Vec<u8> {
+        let length = u32::try_from(current.len()).expect("a length four bytes can hold");
+        [&length.to_be_bytes()[..], current, new].concat()
+    }
+
+    /// A frame cut short, or one whose length says more than it holds, is
+    /// not read as far as it goes: the password it would give is one nobody
+    /// typed, and the vault would be given it.
+    #[test]
+    fn a_frame_that_does_not_hold_what_its_length_says_is_refused() {
+        for (what, body) in [
+            ("nothing at all", Vec::new()),
+            ("three bytes", vec![0, 0, 0]),
+            (
+                "a length of five and four bytes",
+                vec![0, 0, 0, 5, 1, 2, 3, 4],
+            ),
+            (
+                "the largest length and two bytes",
+                vec![0xff, 0xff, 0xff, 0xff, 1, 2],
+            ),
+            ("a length of one and nothing", vec![0, 0, 0, 1]),
+        ] {
+            let failure = passwords_of(&InvokeBody::Raw(body)).expect_err(what);
+            assert_eq!(code_of(failure), "refused", "{what}");
+        }
+    }
+
+    #[test]
+    fn two_passwords_are_cut_exactly_where_the_frame_says() {
+        let cut = |body: Vec<u8>| {
+            let taken = passwords_of(&InvokeBody::Raw(body)).expect("the frame is taken");
+            (taken.current.to_vec(), taken.new.to_vec())
+        };
+
+        // The frame `ipc.test.ts` builds for "é" and "x\0y", byte for byte.
+        assert_eq!(
+            cut(vec![0, 0, 0, 2, 0xc3, 0xa9, 0x78, 0x00, 0x79]),
+            ("é".as_bytes().to_vec(), b"x\0y".to_vec())
+        );
+
+        let long = vec![b'n'; 10 * 1024 * 1024];
+        for (current, new) in [
+            (&b""[..], &b""[..]),
+            (b"", b"new"),
+            (b"old", b""),
+            (&[0xff, 0x00, 0xff], &[0x00, 0xff, 0x00]),
+            // A current password whose bytes read as another frame's length.
+            (&[0, 0, 0, 9], b"new"),
+            (b"old", &long),
+        ] {
+            assert_eq!(
+                cut(frame(current, new)),
+                (current.to_vec(), new.to_vec()),
+                "a frame of {} and {} bytes",
+                current.len(),
+                new.len()
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_a_change_carries_prints_its_passwords() {
+        let taken = passwords_of(&InvokeBody::Raw(frame(b"the old one", b"the new one")))
+            .expect("the frame is taken");
+        let printed = format!("{taken:?}");
+        assert!(printed.contains("[redacted]"), "{printed}");
+        assert!(!printed.contains("the old one") && !printed.contains("the new one"));
     }
 
     #[test]

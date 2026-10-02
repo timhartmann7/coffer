@@ -8,9 +8,12 @@
 		defaultNewDatabase,
 		target
 	} from '$lib/ipc';
+	import { EMPTY, MISMATCH, same } from '$lib/master';
 	import { answer } from '$lib/menu.svelte';
 	import type { Calibration, Database, Target } from '$lib/model';
 	import Icon from './Icon.svelte';
+	import MasterInput from './MasterInput.svelte';
+	import Unrecoverable from './Unrecoverable.svelte';
 
 	/**
 	 * Making a vault, which is the one screen where a mistake cannot be undone.
@@ -163,19 +166,16 @@
 		const place = where;
 		if (blocked || !place || !first || !second) return;
 
-		// Compared as bytes rather than as strings. Two different passwords can
-		// look the same after a lossy conversion, and a vault opened by neither
-		// of them is not something anybody would find out until later.
 		const wanted = new TextEncoder().encode(first.value);
 		const again = new TextEncoder().encode(second.value);
 		first.value = '';
 		second.value = '';
 
-		mismatch = wanted.length !== again.length || wanted.some((byte, at) => byte !== again[at]);
+		mismatch = !same(wanted, again);
 		again.fill(0);
 
 		if (mismatch || wanted.length === 0) {
-			if (wanted.length === 0) failure = 'A vault needs a master password.';
+			if (wanted.length === 0) failure = EMPTY;
 			wanted.fill(0);
 			first.focus();
 			return;
@@ -285,63 +285,30 @@
 		</div>
 
 		<div class="mt-5 grid grid-cols-2 gap-5">
-			<label class="block">
-				<span class="mb-2 block font-mono text-label tracking-label text-txt3 uppercase">
-					Vault password
-				</span>
-				<span
-					class="flex items-center gap-2 rounded-sm border bg-surface2 px-3 py-2.5 {mismatch
-						? 'border-danger/60'
-						: 'border-hairline focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/15'} transition"
-				>
-					<input
-						bind:this={first}
-						type="password"
-						autocomplete="new-password"
-						spellcheck="false"
-						oninput={() => (mismatch = false)}
-						onkeydown={onward}
-						class="min-w-0 flex-1 bg-transparent tracking-mask text-txt outline-none"
-					/>
-				</span>
-			</label>
-			<label class="block">
-				<span class="mb-2 block font-mono text-label tracking-label text-txt3 uppercase">
-					Once more
-				</span>
-				<span
-					class="flex items-center gap-2 rounded-sm border bg-surface2 px-3 py-2.5 {mismatch
-						? 'border-danger/60'
-						: 'border-hairline focus-within:border-accent focus-within:ring-4 focus-within:ring-accent/15'} transition"
-				>
-					<input
-						bind:this={second}
-						type="password"
-						autocomplete="new-password"
-						spellcheck="false"
-						oninput={() => (mismatch = false)}
-						class="min-w-0 flex-1 bg-transparent tracking-mask text-txt outline-none"
-					/>
-				</span>
-			</label>
+			<MasterInput
+				bind:input={first}
+				label="Vault password"
+				autocomplete="new-password"
+				eye={false}
+				wrong={mismatch}
+				oninput={() => (mismatch = false)}
+				onkeydown={onward}
+			/>
+			<MasterInput
+				bind:input={second}
+				label="Once more"
+				autocomplete="new-password"
+				eye={false}
+				wrong={mismatch}
+				oninput={() => (mismatch = false)}
+			/>
 		</div>
 
 		{#if mismatch}
-			<p class="mt-3 animate-rise text-small text-danger">Those two are not the same.</p>
+			<p class="mt-3 animate-rise text-small text-danger">{MISMATCH}</p>
 		{/if}
 
-		<div class="mt-6 rounded-sm border border-warn/35 bg-warnwash p-5">
-			<div class="flex gap-3">
-				<Icon name="warn" class="mt-0.5 h-5 w-5 shrink-0 text-warn" />
-				<div>
-					<p class="text-lead font-medium text-txt">The password cannot be recovered.</p>
-					<p class="mt-2 max-w-[52ch] text-body leading-relaxed text-txt2">
-						It is not kept anywhere and it is not sent anywhere. If it is forgotten the vault
-						becomes a file of random bytes, and nobody can get the data back - not us, not anybody.
-					</p>
-				</div>
-			</div>
-		</div>
+		<Unrecoverable class="mt-6" />
 
 		{#if !measured}
 			<div class="mt-6 border-t border-line pt-5">

@@ -86,6 +86,10 @@ export interface Status {
 	 * kept in a field of its own beside the value it was for, which the field
 	 * still holds. Which field is not said either. */
 	typedBeside: boolean;
+	/** Whether the vault the last lock closed was given a new master password
+	 * while it was open. The window that said so went with the lock, and a
+	 * change that finished as the vault locked may never have been said. */
+	rekeyed: boolean;
 	/** Why the vault that was open is not open any more, when it is worth
 	 * saying. A lock the reader asked for has nothing to explain. */
 	lockedBy: 'idle' | 'sleeping' | 'screenLocked' | 'sessionSwitched' | null;
@@ -419,6 +423,17 @@ export interface Rival {
 	 * whoever wrote it may have changed that too.
 	 */
 	entries: number | null;
+}
+
+/** What removing the automatic backups that open with an old master password
+ * came to. */
+export interface Removed {
+	gone: number;
+	/** How many would not go. Each still opens with the old password, so the
+	 * question about them stays. */
+	left: number;
+	/** Why the first of those would not go. Nothing when none is left. */
+	refused: Failure | null;
 }
 
 /** What key derivation a new vault will ask for, measured on this machine. */

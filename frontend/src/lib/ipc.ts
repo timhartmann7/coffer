@@ -29,6 +29,7 @@ import type {
 	Position,
 	Purpose,
 	Recipe,
+	Removed,
 	Rival,
 	Settings,
 	Snapshot,
@@ -147,6 +148,40 @@ export async function createDatabase(password: Uint8Array): Promise<void> {
 	} finally {
 		password.fill(0);
 	}
+}
+
+/**
+ * Gives the open vault a new master password.
+ *
+ * Both passwords are the whole body of the message, as bytes, for the reason an
+ * unlock's is. A body cannot carry named arguments beside it, so the two are
+ * framed in it: the current password's length in four bytes, big-endian, then
+ * the current password, then the new one. The two buffers handed in are wiped as
+ * soon as the frame holds them, and the frame once the call has finished with
+ * it, whatever it answered. Answers with how many automatic backups beside the
+ * vault still open with the old password.
+ */
+export async function changeMasterPassword(current: Uint8Array, next: Uint8Array): Promise<number> {
+	const body = new Uint8Array(4 + current.length + next.length);
+	new DataView(body.buffer).setUint32(0, current.length);
+	body.set(current, 4);
+	body.set(next, 4 + current.length);
+	current.fill(0);
+	next.fill(0);
+	try {
+		return await invoke('change_master_password', body);
+	} finally {
+		body.fill(0);
+	}
+}
+
+/** Removes the automatic backups that open with the password the vault had
+ * before its last change, and answers with how many went - and, when some would
+ * not go, how many are left and why. Nothing is sent: Rust removes the files it
+ * counted when the password changed, wherever later saves have moved them, and
+ * no others. */
+export function removeOldSnapshots(): Promise<Removed> {
+	return invoke('remove_old_snapshots');
 }
 
 export function lock(): Promise<void> {
