@@ -10,10 +10,12 @@
 //! and a file dialog there deadlocks, because the panel needs the run loop that
 //! the call is blocking.
 //!
-//! The two that are not are the two that reach neither the session nor the
-//! lock: the one that reads what the reader chose, and the one that makes a
-//! password out of the machine's randomness. Neither can wait on anything, and
-//! a hop onto another thread for them would be latency bought with nothing.
+//! The two that are not are the two that reach neither the session, the lock
+//! nor the disk: the one that reads what the reader chose, and the one that
+//! reads what the generator was last asked for. Neither can wait on anything,
+//! and a hop onto another thread for them would be latency bought with
+//! nothing. Making a password is not one of them any more: it writes down the
+//! recipe it was made from.
 //!
 //! The message the window sends to say somebody is there is not one of them,
 //! however often it comes. A stir that finds the time already spent - the first
@@ -29,7 +31,7 @@ use tauri_plugin_dialog::DialogExt;
 use vault_core::storage::{self, snapshot, unsaved};
 use zeroize::Zeroizing;
 
-use vault_core::generate::{Alphabet, Recipe};
+use vault_core::generate::Recipe;
 use vault_core::kdf;
 use vault_core::{LockPolicy, NewValue, Typing, Vault};
 
@@ -42,7 +44,7 @@ use crate::dto::{
 use crate::error::Failure;
 use crate::home::Standing;
 use crate::session::Session;
-use crate::{clipboard, home, lock, opener, settings, window};
+use crate::{clipboard, generator, home, lock, opener, settings, window};
 
 /// The session is behind an `Arc` so that a command can take it onto a blocking
 /// thread, which is where key derivation belongs.
@@ -879,9 +881,11 @@ pub fn empty_recycle_bin(session: Held<'_>) -> Result<Group, Failure> {
 
 /// Writes one field of one entry.
 ///
-/// `protect` is what the screen read off the field it is editing, so a value
-/// the database keeps protected goes back protected. Getting that wrong would
-/// write a password into the file as plain text inside the encrypted body.
+/// `protect` is how a field the entry does not have yet is made. One it has
+/// keeps the protection it has, whatever the screen read before the value was
+/// sent: [`set_protection`] is the one way to change it, and a value written on
+/// the way out of a field the reader had just hidden would otherwise put it
+/// back into the file as plain text.
 ///
 /// `sequence` is the window's number for the write, from the count its drafts
 /// carry (see [`draft`]). A draft of this field said before it is finished by
@@ -966,6 +970,37 @@ pub fn remove_field(
 ) -> Result<Entry, Failure> {
     let id = dto::entry_id(&entry)?;
     session.with_mut(|vault| vault.remove_field(id, &field, forever))??;
+    entry_of(&session, &entry)
+}
+
+/// Hides a field of the reader's own, or stops hiding it.
+///
+/// Nothing of the value crosses: the window sends the field's name and what it
+/// should be, and the value moves from one kind of storage to the other inside
+/// the vault. See [`vault_core::Vault::set_protection`].
+#[tauri::command(async)]
+pub fn set_protection(
+    entry: String,
+    field: String,
+    protect: bool,
+    session: Held<'_>,
+) -> Result<Entry, Failure> {
+    let id = dto::entry_id(&entry)?;
+    session.with_mut(|vault| vault.set_protection(id, &field, protect))??;
+    entry_of(&session, &entry)
+}
+
+/// Gives a field of the reader's own another name, its value and protection
+/// going with it inside the vault. See [`vault_core::Vault::rename_field`].
+#[tauri::command(async)]
+pub fn rename_field(
+    entry: String,
+    from: String,
+    to: String,
+    session: Held<'_>,
+) -> Result<Entry, Failure> {
+    let id = dto::entry_id(&entry)?;
+    session.with_mut(|vault| vault.rename_field(id, &from, &to))??;
     entry_of(&session, &entry)
 }
 
@@ -1225,34 +1260,47 @@ pub fn clear_history(entry: String, session: Held<'_>) -> Result<Versions, Failu
     versions(entry, session)
 }
 
-/// Makes a password.
+/// The recipe a generator opens with - the last one it made a password from -
+/// and what the window draws around it.
+#[tauri::command]
+pub fn generator(purpose: dto::Purpose, app: AppHandle) -> dto::Generator {
+    dto::Generator::of(&remembered(&app, purpose))
+}
+
+/// Makes a password, and remembers what it was made from for the generator
+/// that asked.
 ///
 /// It comes back the way a revealed value does, because that is what it is: the
 /// screen shows it, the reader looks at it, and it goes into a field or it goes
-/// nowhere.
-#[tauri::command]
+/// nowhere. With it come the kinds of character it was asked for and happens to
+/// lack, and the generator as the recipe now stands: the recipe is settled
+/// first, so a length the slider cannot show is never the one used.
+///
+/// Off the drawing thread, because remembering the recipe is a write to disk.
+#[tauri::command(async)]
 pub fn generate_password(
-    length: usize,
-    alphabets: Vec<String>,
-    similar: bool,
-) -> Result<Revealed, Failure> {
-    let chosen: Vec<Alphabet> = alphabets
-        .iter()
-        .filter_map(|name| match name.as_str() {
-            "lower" => Some(Alphabet::Lower),
-            "upper" => Some(Alphabet::Upper),
-            "digits" => Some(Alphabet::Digits),
-            "symbols" => Some(Alphabet::Symbols),
-            _ => None,
-        })
-        .collect();
+    recipe: dto::Recipe,
+    purpose: dto::Purpose,
+    app: AppHandle,
+) -> Result<dto::Generated, Failure> {
+    let recipe = recipe.recipe().settled();
+    let made = vault_core::generate::password(&recipe)?;
 
-    let made = vault_core::generate::password(&Recipe {
-        length,
-        alphabets: chosen,
-        similar,
-    })?;
-    Ok(Revealed::new(&made))
+    if let Some(held) = app.try_state::<Arc<generator::Remembered>>() {
+        // A recipe that could not be written down is still held for as long as
+        // Coffer runs. A password nobody can have because a settings file
+        // would not write is a worse answer than one the next launch forgets
+        // how it was made.
+        let _ = held.keep(purpose, &recipe);
+    }
+    Ok(dto::Generated::of(&made, &recipe))
+}
+
+/// The recipe a generator last made a password from, as Rust holds it.
+fn remembered(app: &AppHandle, purpose: dto::Purpose) -> Recipe {
+    app.try_state::<Arc<generator::Remembered>>()
+        .map(|held| held.recipe(purpose))
+        .unwrap_or_default()
 }
 
 /// Writes the database back.

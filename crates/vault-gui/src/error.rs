@@ -182,6 +182,9 @@ impl From<VaultError> for Failure {
             | VaultError::NoSuchAttachment
             | VaultError::NoSuchVersion => Code::NoSuchEntry,
             VaultError::UnwritableText
+            | VaultError::StandardField
+            | VaultError::FieldNameTaken
+            | VaultError::UnnamedField
             | VaultError::EmptyMasterPassword
             | VaultError::ReservedName
             | VaultError::PasswordNotUtf8
@@ -242,6 +245,9 @@ mod tests {
             (VaultError::TooLarge, "tooLarge"),
             (VaultError::NoSuchEntry, "noSuchEntry"),
             (VaultError::UnwritableText, "refused"),
+            (VaultError::StandardField, "refused"),
+            (VaultError::FieldNameTaken, "refused"),
+            (VaultError::UnnamedField, "refused"),
             (VaultError::EmptyMasterPassword, "refused"),
             (VaultError::DatabaseExists, "taken"),
             (VaultError::CopyBeside, "taken"),

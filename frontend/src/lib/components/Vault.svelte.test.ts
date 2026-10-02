@@ -1,6 +1,6 @@
 import { createRawSnippet, flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { entry, field, group, row, version } from '$lib/fixtures';
+import { drawing, entry, field, generated, group, row, version } from '$lib/fixtures';
 import type { EntryRow, Version } from '$lib/model';
 import Vault from './Vault.svelte';
 
@@ -33,6 +33,7 @@ const ipc = vi.hoisted(() => ({
 	addAttachment: vi.fn(),
 	exportAttachment: vi.fn(),
 	removeAttachment: vi.fn(),
+	generator: vi.fn(),
 	generatePassword: vi.fn(),
 	save: vi.fn(),
 	saveOver: vi.fn(),
@@ -247,12 +248,17 @@ it('copies the open entry through Rust on the keyboard', async () => {
 
 	window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', metaKey: true }));
 	await vi.waitFor(() => expect(ipc.copy).toHaveBeenCalledWith(kept.id, 'Password', null));
+	await tick();
+	expect(reads()).toContain('Password copied. The clipboard clears in 1 minute.');
 
+	// The two shortcuts are a key apart, and the notice of one must not read as
+	// the notice of the other: a login pasted into a password box was the result.
 	window.dispatchEvent(new KeyboardEvent('keydown', { key: 'b', metaKey: true }));
 	await vi.waitFor(() => expect(ipc.copy).toHaveBeenCalledWith(kept.id, 'UserName', null));
 
 	await tick();
-	expect(reads()).toContain('Copied. The clipboard clears in 1 minute.');
+	expect(reads()).toContain('Login copied. The clipboard clears in 1 minute.');
+	expect(reads()).not.toContain('Password copied.');
 
 	return unmount(component);
 });
@@ -330,7 +336,7 @@ it('copies the value on the row the focus is on, not the password', async () => 
 	await vi.waitFor(() => expect(ipc.copy).toHaveBeenCalledWith(kept.id, 'API token', null));
 	expect(ipc.copy).toHaveBeenCalledTimes(1);
 	await tick();
-	expect(reads()).toContain('Copied. The clipboard clears in 1 minute.');
+	expect(reads()).toContain('“\u2068API token\u2069” copied. The clipboard clears in 1 minute.');
 
 	return unmount(component);
 });
@@ -374,7 +380,7 @@ it('hands the part of a revealed value the reader selected to Rust, and says so'
 	);
 	expect(ipc.copy).toHaveBeenCalledTimes(1);
 	await tick();
-	expect(reads()).toContain('Copied. The clipboard clears in 1 minute.');
+	expect(reads()).toContain('Part of the password copied. The clipboard clears in 1 minute.');
 
 	return unmount(component);
 });
@@ -450,7 +456,7 @@ it('copies a value out of a previous version through Rust', async () => {
 	);
 	expect(ipc.copy).not.toHaveBeenCalled();
 	await tick();
-	expect(reads()).toContain('Copied. The clipboard clears in 1 minute.');
+	expect(reads()).toContain('Password copied. The clipboard clears in 1 minute.');
 
 	return unmount(component);
 });
@@ -494,12 +500,12 @@ it('says a copy failed without dressing it as one that worked', async () => {
 		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', metaKey: true }));
 		await vi.advanceTimersByTimeAsync(0);
 		flushSync();
-		expect(toast()?.textContent).toContain('Copied. The clipboard clears in 1 minute.');
+		expect(toast()?.textContent).toContain('Password copied. The clipboard clears in 1 minute.');
 		expect(toast()?.querySelector('use[href="#i-copy"]')).not.toBeNull();
 
 		await vi.advanceTimersByTimeAsync(4_000);
 		flushSync();
-		expect(toast()?.textContent).toContain('Copied. The clipboard clears in 1 minute.');
+		expect(toast()?.textContent).toContain('Password copied. The clipboard clears in 1 minute.');
 
 		// And then it goes, rather than sitting in the corner for the whole
 		// minute it is talking about.
@@ -510,6 +516,172 @@ it('says a copy failed without dressing it as one that worked', async () => {
 		await unmount(component);
 	} finally {
 		vi.useRealTimers();
+	}
+});
+
+/** The sentence in the corner, as the reader reads it. */
+const notice = () =>
+	(host.querySelector('[data-notice]')?.textContent ?? '').replace(/\s+/g, ' ').trim();
+
+/** The button whose name is exactly this, matched as text rather than through
+ * a selector a name with quotes or an override in it would break. */
+function named(label: string, within: ParentNode = host): HTMLButtonElement {
+	const found = [...within.querySelectorAll('button')].find(
+		(each) => each.getAttribute('aria-label') === label
+	);
+	if (!found) throw new Error(`no button named ${JSON.stringify(label)}`);
+	return found;
+}
+
+/**
+ * A copy says which field it took. "Copied." read the same after a login and
+ * after a password a key apart, and the reader pasted their email address into
+ * a password box. A row of the list, a field of the open entry, a field as a
+ * previous version held it and the part of a value the reader selected each
+ * reach Rust a different way, and every one of them has to arrive at the
+ * notice with the name of the field it copied, not the name of the last one.
+ */
+it('names the field a copy took, from a row, the open entry, a version or a selection', async () => {
+	const mail = row({ title: 'Mail', username: 'me@example.com', hasPassword: true });
+	const tree = group({ name: 'Root', entries: [mail] });
+	ipc.tree.mockResolvedValue(tree);
+	ipc.entry.mockResolvedValue(
+		entry({
+			id: mail.id,
+			group: tree.id,
+			fields: [
+				field({ name: 'Title', kind: 'title', value: 'Mail', empty: false }),
+				field({ name: 'UserName', kind: 'username', value: 'me@example.com', empty: false }),
+				field({ name: 'Password', kind: 'password', value: null, empty: false, protected: true }),
+				field({ name: 'URL', kind: 'url', value: 'https://mail.example.com', empty: false }),
+				field({ name: 'Notes', kind: 'notes', value: 'codes in the safe', empty: false }),
+				field({ name: 'PIN', kind: 'custom', value: null, empty: false, protected: true })
+			]
+		})
+	);
+	ipc.reveal.mockResolvedValue('4921');
+	ipc.versions.mockImplementation(listing([version({ index: 0 })]));
+	ipc.version.mockResolvedValue(
+		entry({
+			fields: [
+				field({ name: 'Password', kind: 'password', value: null, empty: false, protected: true }),
+				field({ name: 'PIN', kind: 'custom', value: null, empty: false, protected: true })
+			]
+		})
+	);
+	ipc.copyVersion.mockResolvedValue(60);
+	const clears = ' The clipboard clears in 1 minute.';
+
+	const component = mount(Vault, {
+		target: host,
+		props: { database, root: tree, readOnly: false, onSettings: vi.fn(), onTree: vi.fn() }
+	});
+	try {
+		flushSync();
+
+		named('Copy password').click();
+		await vi.waitFor(() => expect(notice()).toBe(`Password copied.${clears}`));
+		expect(ipc.copy).toHaveBeenLastCalledWith(mail.id, 'Password', null);
+		named('Copy login').click();
+		await vi.waitFor(() => expect(notice()).toBe(`Login copied.${clears}`));
+		expect(ipc.copy).toHaveBeenLastCalledWith(mail.id, 'UserName', null);
+
+		[...host.querySelectorAll('button')]
+			.find((each) => each.textContent?.includes('Mail'))
+			?.click();
+		await vi.waitFor(() =>
+			expect(host.querySelector('[aria-label="Copy address"]')).not.toBeNull()
+		);
+
+		for (const [label, name, said] of [
+			['Copy address', 'URL', 'Address copied.'],
+			['Copy notes', 'Notes', 'Notes copied.'],
+			['Copy PIN', 'PIN', '“\u2068PIN\u2069” copied.'],
+			['Copy login', 'UserName', 'Login copied.']
+		]) {
+			named(label).click();
+			await vi.waitFor(() => expect(notice(), label).toBe(`${said}${clears}`));
+			expect(ipc.copy).toHaveBeenLastCalledWith(mail.id, name, null);
+		}
+
+		named('Show PIN').click();
+		const pin = await vi.waitFor(() => {
+			const found = [...host.querySelectorAll<HTMLElement>('[data-value]')].find(
+				(each) => each.textContent === '4921'
+			);
+			if (!found) throw new Error('the PIN was not revealed');
+			return found;
+		});
+		const range = document.createRange();
+		range.setStart(pin.firstChild as Text, 1);
+		range.setEnd(pin.firstChild as Text, 3);
+		document.getSelection()?.removeAllRanges();
+		document.getSelection()?.addRange(range);
+		pin.dispatchEvent(new ClipboardEvent('copy', { bubbles: true, cancelable: true }));
+		await vi.waitFor(() => expect(notice()).toBe(`Part of “\u2068PIN\u2069” copied.${clears}`));
+		expect(ipc.copy).toHaveBeenLastCalledWith(mail.id, 'PIN', { from: 1, to: 3 });
+		document.getSelection()?.removeAllRanges();
+
+		[...host.querySelectorAll('button')]
+			.find((each) => each.textContent?.includes('Versions'))
+			?.click();
+		flushSync();
+		[...host.querySelectorAll('button')]
+			.find((each) => each.textContent?.trim() === 'View')
+			?.click();
+		await vi.waitFor(() =>
+			expect(host.querySelector('[aria-label="Copy PIN as it was"]')).not.toBeNull()
+		);
+		named('Copy PIN as it was').click();
+		await vi.waitFor(() => expect(notice()).toBe(`“\u2068PIN\u2069” copied.${clears}`));
+		expect(ipc.copyVersion).toHaveBeenLastCalledWith(
+			mail.id,
+			{ index: 0, revision: REVISION },
+			'PIN',
+			null
+		);
+		named('Copy Password as it was').click();
+		await vi.waitFor(() => expect(notice()).toBe(`Password copied.${clears}`));
+		expect(ipc.copyVersion).toHaveBeenLastCalledWith(
+			mail.id,
+			{ index: 0, revision: REVISION },
+			'Password',
+			null
+		);
+	} finally {
+		await unmount(component);
+	}
+});
+
+/**
+ * A field of the reader's own is theirs to name, and a name that happens to be
+ * spelled like a standard field's, or like a property every object has, is
+ * still theirs. A notice that said "Password copied." for a field called
+ * "password" told the reader the entry's password was on the pasteboard when
+ * it was not; one that looked the name up among an object's own properties
+ * would say something else entirely for "constructor". A name with a
+ * right-to-left override in it is kept off the rest of the sentence.
+ */
+it('quotes a field of the reader’s own in the notice, whatever its name is spelled like', async () => {
+	const names = ['password', 'url', 'Notes ', '__proto__', 'constructor', 'toString', 'a\u202Ebc'];
+	const component = await showing([
+		field({ name: 'Password', kind: 'password', value: null, empty: false, protected: true }),
+		...names.map((name) =>
+			field({ name, kind: 'custom', value: `the value of ${name}`, empty: false })
+		)
+	]);
+	try {
+		for (const name of names) {
+			named(`Copy ${name}`).click();
+			await vi.waitFor(() =>
+				expect(notice(), JSON.stringify(name)).toBe(
+					`“\u2068${name}\u2069” copied. The clipboard clears in 1 minute.`
+				)
+			);
+			expect(ipc.copy).toHaveBeenLastCalledWith(kept.id, name, null);
+		}
+	} finally {
+		await unmount(component);
 	}
 });
 
@@ -1545,7 +1717,7 @@ it('withdraws the offer when a newer notice takes its place', async () => {
 
 		press('c');
 		await settled();
-		expect(toast()?.textContent).toContain('Copied.');
+		expect(toast()?.textContent).toContain('Password copied.');
 		expect(undo()).toBeNull();
 
 		press('z');
@@ -3864,7 +4036,8 @@ it('takes a revealed value off the screen when a new one lands, however it arriv
 	ipc.reveal.mockResolvedValue('the old one');
 	ipc.setField.mockReset();
 	ipc.setField.mockImplementation((id: string) => Promise.resolve(read(id)));
-	ipc.generatePassword.mockResolvedValue('Made-Password-123');
+	ipc.generator.mockResolvedValue(drawing());
+	ipc.generatePassword.mockResolvedValue(generated('Made-Password-123'));
 	ipc.versions.mockImplementation(listing([version({ index: 0 })]));
 	ipc.restoreVersion.mockImplementation((id: string) => Promise.resolve(read(id)));
 	const shown = () => pane()?.querySelector('[data-value]')?.textContent ?? '';

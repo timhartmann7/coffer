@@ -1,9 +1,9 @@
 //! What the reader chose, and where it is kept.
 //!
-//! Five values, in one file, in the application's own configuration directory.
-//! None of them is a secret and none of them is the user's data, but they say
-//! how long a vault stays open and how long a password stays on the clipboard,
-//! so the file is written owner-only like everything else Coffer writes.
+//! Five values, in one file, in the application's own configuration directory
+//! (`kept.rs`). None of them is a secret and none of them is the user's data,
+//! but they say how long a vault stays open and how long a password stays on
+//! the clipboard.
 //!
 //! The lists of what may be chosen live here rather than on the screen. A
 //! number the screen cannot show is a number the reader cannot change back, so
@@ -17,10 +17,11 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+use crate::kept::{self, Kept};
 
 const FILE: &str = "settings.json";
 
@@ -144,78 +145,37 @@ fn nearest(wanted: u64, offered: &[u64]) -> u64 {
         .unwrap_or(wanted)
 }
 
-/// Reads the settings, and never fails.
-///
-/// A file that will not parse is a file somebody broke, and the answer to that
-/// is the defaults rather than a window that will not open. The broken file is
-/// left where it is: it is the only copy of whatever they were trying to say.
+/// Reads the settings, and never fails: a file that is missing or broken is
+/// the defaults (see `kept.rs`).
 pub fn read(directory: &Path) -> Settings {
-    std::fs::read(directory.join(FILE))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Settings>(&bytes).ok())
+    kept::read::<Settings>(directory, FILE)
         .unwrap_or_default()
         .settled()
 }
 
-pub fn write(directory: &Path, settings: Settings) -> Result<(), io::Error> {
-    use std::io::Write;
+/// The settings this process is running on, and the file they are kept in.
+pub type Preferences = Kept<Settings>;
 
-    std::fs::create_dir_all(directory)?;
-    let payload = serde_json::to_vec_pretty(&settings)?;
-
-    // The same staged write the database itself gets, which creates the file
-    // owner-only. A file killed halfway through would hold half a document, and
-    // half a document is the defaults on the next launch.
-    vault_core::storage::atomic::write_atomic::<io::Error, _>(
-        &directory.join(FILE),
-        |writer: &mut dyn Write| writer.write_all(&payload),
-    )
+pub fn preferences(directory: Option<PathBuf>) -> Preferences {
+    let found = directory.as_deref().map(read).unwrap_or_default();
+    Kept::new(directory, FILE, found)
 }
 
-/// The settings this process is running on.
-///
-/// Held rather than read on every question: the clipboard asks on every copy
-/// and the timer asks on every reset, and neither of those is a reason to touch
-/// the disk.
-pub struct Preferences {
-    held: Mutex<Settings>,
-    /// Where they are kept, or nothing when this Mac has no configuration
-    /// directory Coffer can reach. A window that cannot remember what was
-    /// chosen still works; it just forgets on the way out.
-    directory: Option<PathBuf>,
-}
-
-impl Preferences {
-    pub fn load(directory: Option<PathBuf>) -> Preferences {
-        let held = directory.as_deref().map(read).unwrap_or_default();
-        Preferences {
-            held: Mutex::new(held),
-            directory,
-        }
-    }
-
-    fn state(&self) -> MutexGuard<'_, Settings> {
-        self.held
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    pub fn get(&self) -> Settings {
-        *self.state()
-    }
-
+impl Kept<Settings> {
     /// Puts a choice into effect and writes it down.
     ///
     /// Answers with what was actually stored, which is not always what was
     /// asked for: a value the screen does not offer is settled onto one it
     /// does, and the screen draws what came back rather than what it sent.
+    /// Written even when it is what was held, because a write that failed
+    /// before was said to have failed, and choosing the same again is how the
+    /// reader asks for it to be written.
     pub fn set(&self, wanted: Settings) -> Result<Settings, io::Error> {
         let settled = wanted.settled();
-        *self.state() = settled;
-
-        if let Some(directory) = self.directory.as_deref() {
-            write(directory, settled)?;
-        }
+        self.update(|held| {
+            *held = settled;
+            true
+        })?;
         Ok(settled)
     }
 }
@@ -226,6 +186,36 @@ mod tests {
 
     fn scratch() -> tempfile::TempDir {
         tempfile::tempdir().expect("a scratch directory")
+    }
+
+    /// Two choices made at once both go through, one after the other, and the
+    /// file is left holding the one in effect. Written one at a time they took
+    /// each other's staging file away, and the next launch read the defaults.
+    #[test]
+    fn choices_made_at_once_leave_on_disk_the_one_in_effect() {
+        let directory = scratch();
+        let steps = IDLE_CHOICES.len() * CLIPBOARD_CHOICES.len();
+        for round in 0..5 {
+            let preferences = preferences(Some(directory.path().to_owned()));
+            let start = std::sync::Barrier::new(steps);
+            std::thread::scope(|scope| {
+                for step in 0..steps {
+                    let (preferences, start) = (&preferences, &start);
+                    scope.spawn(move || {
+                        let wanted = Settings {
+                            idle_seconds: IDLE_CHOICES[step % IDLE_CHOICES.len()],
+                            clipboard_seconds: CLIPBOARD_CHOICES[step / IDLE_CHOICES.len()],
+                            lock_on_sleep: round % 2 == 0,
+                            ..Settings::default()
+                        };
+                        start.wait();
+                        preferences.set(wanted).expect("the choice is written");
+                    });
+                }
+            });
+
+            assert_eq!(read(directory.path()), preferences.get(), "round {round}");
+        }
     }
 
     #[test]
@@ -341,7 +331,7 @@ mod tests {
         // And the same number arriving from the window rather than from a file.
         // What comes back is what was stored, which is what the settings screen
         // draws.
-        let held = Preferences::load(Some(directory.path().to_path_buf()));
+        let held = preferences(Some(directory.path().to_path_buf()));
         let stored = held
             .set(Settings {
                 idle_seconds: 86400,
@@ -380,7 +370,7 @@ mod tests {
                             lock_on_screen_lock: !machine,
                             theme,
                         };
-                        write(directory.path(), wanted).expect("it is written");
+                        kept::write(directory.path(), FILE, &wanted).expect("it is written");
                         assert_eq!(read(directory.path()), wanted);
                     }
                 }
@@ -465,7 +455,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
 
         let directory = scratch();
-        write(directory.path(), Settings::default()).expect("it is written");
+        kept::write(directory.path(), FILE, &Settings::default()).expect("it is written");
 
         let mode = std::fs::metadata(directory.path().join(FILE))
             .expect("it is there")
@@ -479,7 +469,7 @@ mod tests {
         let directory = scratch();
         let nested = directory.path().join("Application Support/Coffer");
 
-        write(&nested, Settings::default()).expect("it is written");
+        kept::write(&nested, FILE, &Settings::default()).expect("it is written");
         assert_eq!(read(&nested), Settings::default());
     }
 
@@ -491,7 +481,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
 
         let directory = scratch();
-        let held = Preferences::load(Some(directory.path().to_path_buf()));
+        let held = preferences(Some(directory.path().to_path_buf()));
         assert_eq!(held.get(), Settings::default());
 
         let wanted = Settings {
@@ -524,7 +514,7 @@ mod tests {
     /// Nowhere to keep them is not a reason to refuse to run.
     #[test]
     fn a_mac_with_nowhere_to_keep_them_still_runs_on_them() {
-        let held = Preferences::load(None);
+        let held = preferences(None);
         let wanted = Settings {
             clipboard_seconds: 15,
             ..Settings::default()

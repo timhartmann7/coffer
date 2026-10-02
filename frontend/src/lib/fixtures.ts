@@ -6,7 +6,16 @@
  * not follow shows up as a test that no longer describes reality.
  */
 
-import type { Attachment, Entry, EntryRow, Field, Group, Version } from './model';
+import type {
+	Attachment,
+	Entry,
+	EntryRow,
+	Field,
+	Generated,
+	Generator,
+	Group,
+	Version
+} from './model';
 
 let next = 0;
 
@@ -88,4 +97,23 @@ export function entry(over: Partial<Entry> = {}): Entry {
 		deletion: 'bin',
 		...over
 	};
+}
+
+/** The generator as Rust draws it for the recipe it opens with when nothing
+ * has been remembered: twenty-four letters and digits, no look-alikes. */
+export function drawing(over: Partial<Generator> = {}): Generator {
+	return {
+		recipe: { length: 24, alphabets: ['lower', 'upper', 'digits'], similar: false, avoid: '' },
+		shortest: 8,
+		longest: 64,
+		pin: false,
+		symbols: '!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~',
+		lookAlikes: '0O1lI|',
+		...over
+	};
+}
+
+/** A password Rust made, lacking nothing it was asked for. */
+export function generated(value: string, over: Partial<Generated> = {}): Generated {
+	return { value, missing: [], generator: drawing(), ...over };
 }

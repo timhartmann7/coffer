@@ -25,7 +25,9 @@ travels the other way, as bytes.
 | Open an address | nothing; Rust hands the URL to the system |
 | Add a file | nothing; Rust opens the panel and reads the file |
 | Write a file out | nothing; Rust opens the panel and writes it |
-| Make a password | the password, once, the way a reveal answers |
+| Make a password | the password, once, the way a reveal answers, and which of the kinds of character asked for it happens to lack |
+| Hide a field, or rename it | nothing new; the value moves inside Rust, and a hidden field comes back with no value |
+| Show a field | its value, in the entry that comes back: it is an open field from then on, and crosses as every open value does |
 
 A field's `value` is `null` exactly when it does not cross: the database
 protects it, or it is the password. **A password never crosses, protected or
@@ -75,6 +77,8 @@ Everything slice 3 added:
 | `empty_recycle_bin` | | the tree |
 | `set_field` | `entry`, `field`, `value`, `protect`, `sequence` | the entry |
 | `remove_field` | `entry`, `field`, `forever` | the entry |
+| `set_protection` | `entry`, `field`, `protect` | the entry |
+| `rename_field` | `entry`, `from`, `to` | the entry |
 | `undo_removal` | `entry`, `field` | the entry |
 | `set_tags` | `entry`, `tags` | the entry |
 | `add_attachment` | `entry` | the entry, or what already has the file's name, or nothing if the panel was closed |
@@ -91,12 +95,33 @@ Everything slice 3 added:
 | `restore_version` | `entry`, `index`, `revision` | the entry |
 | `delete_version` | `entry`, `index`, `revision` | the versions that are left, and their revision |
 | `clear_history` | `entry` | the versions that are left, which is none, and their revision |
-| `generate_password` | `length`, `alphabets`, `similar` | a password |
+| `generator` | `purpose` | the recipe that generator opens with, the lengths its slider runs between, whether that is a PIN's, and the characters "Symbols" and "Avoid look-alikes" stand for |
+| `generate_password` | `recipe`, `purpose` | a password, the kinds asked for that it lacks, and the generator as that recipe settles it |
 | `save` | | nothing |
 | `save_over` | | nothing |
 | `save_copy` | | the file it wrote, or nothing if the panel was closed |
 | `reload` | `sequence` | the tree |
 | `rival` | | when the file on disk was written and how many entries it holds |
+
+**The generator's recipe and its limits are Rust's.** `generator` answers with
+the last recipe that generator made a password from - kept in `generator.json`
+beside the settings, owner-only, never in the vault - so a lock, which destroys
+the window, does not cost the reader the generator they set up for their bank's
+rules, and neither does a launch. `purpose` says which generator is asking: the
+password's (`password`) or one under a field of the reader's own (`field`), and
+each remembers its own, so a PIN made for a card's field is not what the
+password's generator opens with next. With the recipe come the lengths the
+slider may take, four to sixty-four for digits alone (a PIN) and eight to
+sixty-four for anything else, and the characters "Symbols" and "Avoid
+look-alikes" stand for - none for a PIN, which keeps 0 and 1 because there is no
+letter in it to take them for - so the screen holds no copy of any of them. `generate_password` settles the recipe it is sent
+before it uses it - each kind once, a length inside the range, only characters
+some kind holds kept in `avoid` - and answers with the generator as that settled
+recipe stands, so a slider left on a PIN's four when a letter is added moves to
+eight. The password is drawn evenly from what is left; Rust says which of the
+kinds asked for it happens to lack, and the screen says so beside the button
+that puts it in. It does not draw again until every kind turns up: that is a
+rule of its own and a narrower set of passwords than the one the reader chose.
 
 Everything slice 4 added:
 
@@ -603,9 +628,19 @@ only command that gets it.
 What the boundary is for still holds in both directions: a value the database
 protects **leaves** the vault only through `reveal`, `reveal_version` or
 `generate_password`, one value at a time and only when the screen asked.
-`set_field` carries `protect`, which the screen read off the field it is
-editing, so a value the database keeps protected goes back protected rather than
-being written into the file as plain text.
+`set_field` carries `protect`, which says how a field the entry does not have
+yet is made. A field it has keeps its own protection whatever `protect` says:
+the screen sends what it read before the reader pressed anything, and a value
+written on the way out of a field the reader had just hidden would otherwise
+land after the hiding and put the value back into the file as plain text.
+`set_protection` is the one way a field's protection changes, and it moves the
+value between the two kinds of storage inside Rust, so a value the screen does
+not hold is never asked of it. Showing a field is the reader choosing to stop
+protecting it: from then on it is an open field, and its value is in every
+entry the screen is sent, starting with the answer to that command. `rename_field` does the same for a name: the
+value goes with it, protected as it was. Neither works on the five fields every
+entry has, whose names are what KeePass clients know them by and whose
+protection is the database's.
 
 ## A value selected on the screen
 
@@ -750,11 +785,6 @@ Two things follow from that, and both are traps:
 - **The policy is not enforced in `tauri dev`.** With `devUrl` set, the window
   loads the Vite server directly and Tauri's asset handler, which is what adds
   the header, never runs. A policy bug only appears in a real build.
-- **The generator's slider and the length the engine accepts are written
-  twice.** `LENGTHS` in `generate.rs` is the eight to sixty-four the slider
-  offers. The engine brings anything outside it back inside rather than trusting
-  it, because a length the screen could not have asked for came from something
-  that is not the screen. Change one and change the other.
 - **Every bar that drains is a CSS animation of a fixed length, and the lengths
   are written twice.** `--animate-drain-reveal` in `app.css` is the thirty
   seconds of `SECONDS` in `reveal.svelte.ts`. The clipboard's is one animation

@@ -135,9 +135,10 @@ export interface Field {
 	/** The name the file holds, and the name a reveal asks for. */
 	name: string;
 	/**
-	 * Whether the database keeps this value protected. It goes back with an
-	 * edit: rewriting a protected field as an open one would put a password
-	 * into the file as plain text.
+	 * Whether the database keeps this value protected: the field's lock. An
+	 * edit sends it back as `protect`, which decides only how a field the entry
+	 * does not have yet is made; a field it has keeps its own protection, and
+	 * only `setProtection` changes it.
 	 */
 	protected: boolean;
 	/** Which of an entry's fields this is. Everything the format does not name
@@ -158,6 +159,16 @@ export interface Field {
 	 * rather than saving the first over all ten.
 	 */
 	lines: boolean;
+}
+
+/**
+ * Whether a value is drawn as the mask: the database protects it and there is
+ * something to reveal. One rule for every row, because the title once drew a
+ * protected empty title as the mask forever, there being nothing to reveal and
+ * no field to type one into.
+ */
+export function masked(field: Field | undefined): field is Field & { value: null } {
+	return field !== undefined && field.value === null && !field.empty;
 }
 
 /**
@@ -370,6 +381,48 @@ export interface Settings {
 
 /** The kinds of character the generator draws from. */
 export type Alphabet = 'lower' | 'upper' | 'digits' | 'symbols';
+
+/** Which generator is asking: the password's, or one under a field of the
+ * reader's own. Each remembers its own recipe, so a PIN made for a card is not
+ * what the password's generator opens with next. */
+export type Purpose = 'password' | 'field';
+
+/** What the generator is asked to make: its slider and its switches. */
+export interface Recipe {
+	length: number;
+	alphabets: Alphabet[];
+	/** Whether look-alike characters may appear. The switch says the opposite,
+	 * "Avoid look-alikes", and is on while this is off. */
+	similar: boolean;
+	/** Characters to leave out, whichever kind they are. */
+	avoid: string;
+}
+
+/**
+ * The generator as Rust draws it for a recipe: the recipe as Rust settled it,
+ * the lengths the slider runs between, and the characters two switches stand
+ * for. Sent rather than written down here, so the screen never offers a length
+ * or names a character the engine does not mean.
+ */
+export interface Generator {
+	recipe: Recipe;
+	shortest: number;
+	longest: number;
+	/** Digits and nothing else: the slider is a PIN's. */
+	pin: boolean;
+	symbols: string;
+	lookAlikes: string;
+}
+
+/**
+ * A password made. `value` goes into the node that shows it and nowhere else;
+ * `missing` is the kinds that were asked for and happen not to be in it.
+ */
+export interface Generated {
+	value: string;
+	missing: Alphabet[];
+	generator: Generator;
+}
 
 /** Everything a command can fail with. The message is already the sentence the
  * screen shows; the code is what the screen branches on. */

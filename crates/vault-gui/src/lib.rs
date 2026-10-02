@@ -29,7 +29,9 @@ mod commands;
 mod drafts;
 mod dto;
 mod error;
+mod generator;
 mod home;
+mod kept;
 mod lock;
 mod menu;
 mod offered;
@@ -63,7 +65,8 @@ pub fn run() {
             // Managed before anything that locks is started: the timer and the
             // notification blocks both find the session and the settings by
             // type, and neither may run before they are there.
-            let preferences = Arc::new(settings::Preferences::load(directory.clone()));
+            let preferences = Arc::new(settings::preferences(directory.clone()));
+            app.manage(Arc::new(generator::remembered(directory.clone())));
             app.manage(Arc::new(Session::new(remembered, directory)));
             app.manage(Arc::clone(&preferences));
 
@@ -134,6 +137,8 @@ pub fn run() {
             commands::set_field,
             commands::draft,
             commands::remove_field,
+            commands::set_protection,
+            commands::rename_field,
             commands::undo_removal,
             commands::set_tags,
             commands::add_attachment,
@@ -150,6 +155,7 @@ pub fn run() {
             commands::restore_version,
             commands::delete_version,
             commands::clear_history,
+            commands::generator,
             commands::generate_password,
             commands::save,
             commands::save_over,

@@ -4,7 +4,10 @@
 //! `OsRng`, and every character of the chosen alphabet is equally likely. There
 //! is no word list, no pronounceable scheme and no rule that a password must
 //! contain one of each kind: each of those narrows the set of passwords the
-//! generator can produce, and none of them is ours to invent.
+//! generator can produce, and none of them is ours to invent. What the
+//! generator does instead is say which kind a password it made happens to lack
+//! ([`Recipe::lacking`]), so that the reader, who knows what the website asks
+//! for, can draw another.
 
 use std::ops::RangeInclusive;
 
@@ -13,13 +16,15 @@ use zeroize::Zeroizing;
 
 use crate::error::VaultError;
 
-/// The lengths the generator will produce.
-///
-/// The slider on the generator screen offers exactly this range, so a length
-/// outside it came from something that is not the screen and is brought back
-/// inside rather than trusted. The two are written down twice, in
-/// `docs/ipc.md`, along with the other pairs that have to move together.
-const LENGTHS: RangeInclusive<usize> = 8..=64;
+/// The longest password the generator makes.
+const LONGEST: usize = 64;
+
+/// The shortest password the generator makes out of anything but digits.
+const SHORTEST: usize = 8;
+
+/// The shortest it makes out of digits alone. Four or six digits is what a
+/// card, a phone or a door asks for, and a PIN of eight is one nobody can use.
+const SHORTEST_PIN: usize = 4;
 
 /// The kinds of character a password can be made of.
 ///
@@ -43,7 +48,10 @@ impl Alphabet {
         Alphabet::Symbols,
     ];
 
-    fn characters(self) -> &'static str {
+    /// Every character of the alphabet, in order. The screen writes the
+    /// symbols out from here rather than from a list of its own, so what it
+    /// says the generator draws from is what it draws from.
+    pub fn characters(self) -> &'static str {
         match self {
             Alphabet::Lower => "abcdefghijklmnopqrstuvwxyz",
             Alphabet::Upper => "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
@@ -54,7 +62,12 @@ impl Alphabet {
 }
 
 /// The characters that are hard to tell apart in the fonts a password is read
-/// in, left out unless they are asked for.
+/// in, left out unless they are asked for. The screen names them from what
+/// [`Recipe::look_alikes`] answers.
+///
+/// Not out of a PIN. Digits alone have no letter or bar to be taken for, and
+/// leaving 0 and 1 out of four digits would only leave 4,096 PINs where there
+/// are 10,000.
 const SIMILAR: &str = "0O1lI|";
 
 /// What to make.
@@ -65,23 +78,135 @@ pub struct Recipe {
     pub alphabets: Vec<Alphabet>,
     /// Whether characters that look like one another may appear.
     pub similar: bool,
+    /// Characters the reader asked to leave out, whichever alphabet they are
+    /// in: the quote and the backslash a bank turns away. Leaving characters
+    /// out is choosing the set to draw from, which is the reader's to do; what
+    /// is left is still drawn from evenly.
+    pub avoid: String,
+}
+
+impl Default for Recipe {
+    /// What the generator opens with before the reader has chosen anything:
+    /// twenty-four letters and digits, no look-alikes.
+    fn default() -> Recipe {
+        Recipe {
+            length: 24,
+            alphabets: vec![Alphabet::Lower, Alphabet::Upper, Alphabet::Digits],
+            similar: false,
+            avoid: String::new(),
+        }
+    }
 }
 
 impl Recipe {
+    /// Whether this makes a PIN: digits and nothing else.
+    pub fn is_pin(&self) -> bool {
+        !self.alphabets.is_empty()
+            && self
+                .alphabets
+                .iter()
+                .all(|alphabet| *alphabet == Alphabet::Digits)
+    }
+
+    /// The lengths a password from this recipe may have.
+    ///
+    /// The slider on the generator screen offers exactly this range, because
+    /// the screen is told it rather than keeping a copy. A length outside it
+    /// came from something that is not the screen and is brought back inside
+    /// rather than trusted.
+    pub fn lengths(&self) -> RangeInclusive<usize> {
+        if self.is_pin() {
+            SHORTEST_PIN..=LONGEST
+        } else {
+            SHORTEST..=LONGEST
+        }
+    }
+
+    /// The same recipe, put in terms the generator keeps: each alphabet once,
+    /// a length it makes, and only the characters to avoid that some alphabet
+    /// holds, each once, in the order they were given.
+    ///
+    /// What is remembered between one opening of the generator and the next is
+    /// a settled recipe, so a file somebody edited by hand comes back as
+    /// something the screen can show.
+    pub fn settled(self) -> Recipe {
+        let alphabets: Vec<Alphabet> = Alphabet::ALL
+            .into_iter()
+            .filter(|alphabet| self.alphabets.contains(alphabet))
+            .collect();
+
+        let mut avoid = String::new();
+        for character in self.avoid.chars() {
+            let drawn = Alphabet::ALL
+                .iter()
+                .any(|alphabet| alphabet.characters().contains(character));
+            if drawn && !avoid.contains(character) {
+                avoid.push(character);
+            }
+        }
+
+        let mut settled = Recipe {
+            length: self.length,
+            alphabets,
+            similar: self.similar,
+            avoid,
+        };
+        let lengths = settled.lengths();
+        settled.length = settled.length.clamp(*lengths.start(), *lengths.end());
+        settled
+    }
+
+    /// Whether a character may appear in a password from this recipe, given
+    /// that its alphabet was chosen.
+    fn allows(&self, character: char) -> bool {
+        let thinned = !self.similar && !self.is_pin() && SIMILAR.contains(character);
+        !thinned && !self.avoid.contains(character)
+    }
+
+    /// The characters the look-alike rule takes out of this recipe: none for a
+    /// PIN, which it does not apply to.
+    pub fn look_alikes(&self) -> &'static str {
+        if self.is_pin() { "" } else { SIMILAR }
+    }
+
     /// The characters a password from this recipe can be made of.
     fn characters(&self) -> Vec<char> {
         let mut found: Vec<char> = Vec::new();
         for alphabet in &self.alphabets {
             for character in alphabet.characters().chars() {
-                if !self.similar && SIMILAR.contains(character) {
-                    continue;
-                }
-                if !found.contains(&character) {
+                if self.allows(character) && !found.contains(&character) {
                     found.push(character);
                 }
             }
         }
         found
+    }
+
+    /// The kinds of character this recipe asked for that a password from it
+    /// happens not to hold.
+    ///
+    /// Drawing evenly means a password of twelve out of eighty-eight
+    /// characters goes without a digit about one time in three, and a website
+    /// that wants one turns it away. Saying so is all the generator does about
+    /// it: drawing again until every kind turned up would be a rule of its
+    /// own, and a narrower set of passwords than the one the reader chose. A
+    /// kind the recipe leaves nothing of - every digit avoided - is not one the
+    /// password could have held, and is not said to be missing.
+    pub fn lacking(&self, password: &str) -> Vec<Alphabet> {
+        Alphabet::ALL
+            .into_iter()
+            .filter(|alphabet| self.alphabets.contains(alphabet))
+            .filter(|alphabet| {
+                let possible = alphabet
+                    .characters()
+                    .chars()
+                    .any(|character| self.allows(character));
+                let held = password
+                    .chars()
+                    .any(|character| alphabet.characters().contains(character));
+                possible && !held
+            })
+            .collect()
     }
 }
 
@@ -95,7 +220,8 @@ pub fn password(recipe: &Recipe) -> Result<Zeroizing<String>, VaultError> {
         return Err(VaultError::NothingToGenerateFrom);
     }
 
-    let length = recipe.length.clamp(*LENGTHS.start(), *LENGTHS.end());
+    let lengths = recipe.lengths();
+    let length = recipe.length.clamp(*lengths.start(), *lengths.end());
     let mut password = Zeroizing::new(String::with_capacity(length * 4));
 
     for _ in 0..length {

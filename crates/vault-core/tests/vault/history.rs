@@ -96,22 +96,21 @@ fn changing_a_field_from_open_to_protected_counts_as_a_change() {
     let (_scratch, database) = support::scratch(RICH);
     let mut vault = open(&database, SECRET);
     let id = entry_titled(&vault, "basic").id;
+    vault
+        .set_field(id, "Account", NewValue::Open("alice".to_owned()))
+        .expect("the field is written");
     let before = vault.versions(id).len();
 
     vault
-        .set_field(
-            id,
-            fields::USERNAME,
-            NewValue::Protected(zeroize::Zeroizing::new("alice".to_owned())),
-        )
-        .expect("the field is written");
+        .set_protection(id, "Account", true)
+        .expect("the field is hidden");
 
     assert_eq!(vault.versions(id).len(), before + 1);
     assert_eq!(
         vault
             .entry(id)
             .expect("the entry is there")
-            .field(fields::USERNAME)
+            .field("Account")
             .map(|field| field.value.clone()),
         Some(FieldValue::Protected {
             empty: false,

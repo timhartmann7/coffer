@@ -333,8 +333,9 @@ so it refuses what a commit would take: a field the entry no longer has, unless
 it is one of the five standard ones every entry is drawn with, is not made
 again, because a field of the reader's own removed while its text was on the
 way would otherwise come back under their feet. And text that is what the field
-already holds, under the same protection, writes nothing and marks nothing to
-save, so a lock that found only that saves nothing and says nothing. What was
+already holds writes nothing and marks nothing to save, whatever protection the
+draft names, since a field keeps its own; a lock that found only that saves
+nothing and says nothing. What was
 typed, and in which order it arrived, is the window's business and is kept in
 `vault-gui`; this is the one rule for what a draft may do to the database.
 
@@ -356,6 +357,28 @@ so that the unlock screen can say a new value was kept beside the old one
 without anything having to name the field. The field is an ordinary KDBX string field of the
 kind a reader makes with "+", which every client shows and edits; nothing is
 added to the format.
+
+**A field keeps its protection until it is asked to change it.**
+[`Vault::set_field`](../crates/vault-core/src/vault.rs) decides protection only
+for a field it makes. A field the entry has is written under the protection it
+has, whatever [`NewValue`](../crates/vault-core/src/vault.rs) says: the window
+says how a field is protected with every value it writes, and what it says is
+what it read before the reader pressed anything. With a way to hide a field and
+a way to write one travelling side by side, the value written on the way out
+of a field could land after the press that hid it and put it back into the file
+as plain text. [`Vault::set_protection`](../crates/vault-core/src/vault.rs) is
+the one door: it moves a field of the reader's own between the two kinds of
+storage inside the vault, with no copy left behind and a version kept, and
+writes nothing when the field is already stored that way.
+[`Vault::rename_field`](../crates/vault-core/src/vault.rs) moves a value to a
+new name the same way, protection and all, in one version, and refuses a name
+the entry already uses or one of the five standard names whether or not the
+entry has that field yet: a field renamed `Password` would be the password. The
+five standard fields can be neither renamed nor hidden nor shown from here:
+their names are what every client knows them by, and their protection is the
+database's, set for every entry at once. A field renamed or hidden keeps its
+earlier state in the version the edit wrote, which is where KeePassXC's
+history shows the old name.
 
 **Whether a protected value is in lines is known without revealing it.**
 `FieldValue::Protected` carries `lines` beside `empty`: whether the value has a

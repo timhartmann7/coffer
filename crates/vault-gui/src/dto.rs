@@ -11,6 +11,7 @@
 
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize, Serializer};
+use vault_core::generate;
 use vault_core::model::{self, FieldValue, fields::Standard};
 use zeroize::Zeroizing;
 
@@ -317,6 +318,150 @@ impl Settings {
     }
 }
 
+/// One of the kinds of character the generator draws from, by the name the
+/// window gives it.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Alphabet {
+    Lower,
+    Upper,
+    Digits,
+    Symbols,
+}
+
+impl Alphabet {
+    fn of(alphabet: generate::Alphabet) -> Alphabet {
+        match alphabet {
+            generate::Alphabet::Lower => Alphabet::Lower,
+            generate::Alphabet::Upper => Alphabet::Upper,
+            generate::Alphabet::Digits => Alphabet::Digits,
+            generate::Alphabet::Symbols => Alphabet::Symbols,
+        }
+    }
+
+    fn alphabet(self) -> generate::Alphabet {
+        match self {
+            Alphabet::Lower => generate::Alphabet::Lower,
+            Alphabet::Upper => generate::Alphabet::Upper,
+            Alphabet::Digits => generate::Alphabet::Digits,
+            Alphabet::Symbols => generate::Alphabet::Symbols,
+        }
+    }
+}
+
+/// What the generator is asked to make: the window's slider and switches.
+///
+/// The same shape comes back with every password made and goes into the file
+/// the generator remembers it in, so there is one way to write a recipe down.
+/// A field missing from the file - one an older Coffer did not write - takes
+/// the default rather than costing the rest.
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Recipe {
+    pub length: usize,
+    pub alphabets: Vec<Alphabet>,
+    /// Whether characters that look alike may appear. The window's switch
+    /// says the opposite - "Avoid look-alikes" - and is on when this is off.
+    pub similar: bool,
+    pub avoid: String,
+}
+
+impl Default for Recipe {
+    fn default() -> Recipe {
+        Recipe::of(&generate::Recipe::default())
+    }
+}
+
+impl Recipe {
+    pub fn of(recipe: &generate::Recipe) -> Recipe {
+        Recipe {
+            length: recipe.length,
+            alphabets: recipe.alphabets.iter().copied().map(Alphabet::of).collect(),
+            similar: recipe.similar,
+            avoid: recipe.avoid.clone(),
+        }
+    }
+
+    /// What the engine makes of it. Not settled: the caller settles it, once.
+    pub fn recipe(&self) -> generate::Recipe {
+        generate::Recipe {
+            length: self.length,
+            alphabets: self.alphabets.iter().map(|kind| kind.alphabet()).collect(),
+            similar: self.similar,
+            avoid: self.avoid.clone(),
+        }
+    }
+}
+
+/// Which generator is asking: the password's, or one under a field of the
+/// reader's own.
+///
+/// Each remembers its own recipe. One recipe for both meant a PIN made for a
+/// card's field was what the password's generator opened with next, and one
+/// press of "Put it in the field" made four digits the account's password.
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Purpose {
+    Password,
+    Field,
+}
+
+/// The generator as the window draws it for a recipe.
+///
+/// The lengths the slider runs between, and the characters two of its
+/// switches stand for, come from the engine that draws them: a slider holding
+/// its own copy of the range was a second answer to what the generator makes,
+/// and the two had to be changed together by hand.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Generator {
+    pub recipe: Recipe,
+    pub shortest: usize,
+    pub longest: usize,
+    /// Digits and nothing else, which is a PIN, and the slider says so.
+    pub pin: bool,
+    /// Every character "Symbols" draws from, in order.
+    pub symbols: &'static str,
+    /// The characters "Avoid look-alikes" leaves out, or nothing for a PIN,
+    /// which it does not apply to and the window does not offer it for.
+    pub look_alikes: &'static str,
+}
+
+impl Generator {
+    pub fn of(recipe: &generate::Recipe) -> Generator {
+        let lengths = recipe.lengths();
+        Generator {
+            recipe: Recipe::of(recipe),
+            shortest: *lengths.start(),
+            longest: *lengths.end(),
+            pin: recipe.is_pin(),
+            symbols: generate::Alphabet::Symbols.characters(),
+            look_alikes: recipe.look_alikes(),
+        }
+    }
+}
+
+/// A password made, the way a revealed value is sent, with the kinds of
+/// character it was asked to draw from that it happens to lack and the
+/// generator as it now stands: the length the engine settled on is the one
+/// the slider moves to.
+#[derive(Serialize)]
+pub struct Generated {
+    pub value: Revealed,
+    pub missing: Vec<Alphabet>,
+    pub generator: Generator,
+}
+
+impl Generated {
+    pub fn of(made: &str, recipe: &generate::Recipe) -> Generated {
+        Generated {
+            value: Revealed::new(made),
+            missing: recipe.lacking(made).into_iter().map(Alphabet::of).collect(),
+            generator: Generator::of(recipe),
+        }
+    }
+}
+
 /// What key derivation a new vault will ask for, and what that measured.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -569,9 +714,10 @@ pub struct Field {
     /// The name the file holds, and the name a reveal asks for.
     pub name: String,
     pub kind: FieldKind,
-    /// Whether the database keeps this value protected. The screen sends it
-    /// back on an edit, so that rewriting a field never quietly turns a
-    /// protected value into plain text inside the file.
+    /// Whether the database keeps this value protected: the field's lock on
+    /// the screen. An edit sends it back as `protect`, which decides only how a
+    /// field the entry does not have yet is made; a field it has keeps its own
+    /// protection, and only `set_protection` changes it.
     pub protected: bool,
     /// The value, or `null` when it does not cross: the database protects it,
     /// or it is the password. A file can hold a password the database does not
@@ -781,6 +927,25 @@ mod tests {
 
     fn json(value: &impl Serialize) -> String {
         serde_json::to_string(value).expect("the payload serialises")
+    }
+
+    /// The kinds a mask names, one bit each in the order the switches stand.
+    fn kinds(mask: u8) -> Vec<generate::Alphabet> {
+        generate::Alphabet::ALL
+            .into_iter()
+            .enumerate()
+            .filter(|(bit, _)| mask & (1 << bit) != 0)
+            .map(|(_, kind)| kind)
+            .collect()
+    }
+
+    fn making(alphabets: Vec<generate::Alphabet>, similar: bool, avoid: &str) -> generate::Recipe {
+        generate::Recipe {
+            length: 12,
+            alphabets,
+            similar,
+            avoid: avoid.to_owned(),
+        }
     }
 
     /// The whole point of the boundary: what the database protects does not
@@ -1268,5 +1433,524 @@ mod tests {
             missing,
             serde_json::json!({ "there": false, "written": null })
         );
+    }
+
+    /// A made password is a secret from the moment it exists. It crosses as the
+    /// one string the window puts in its node, exactly as it was made whatever
+    /// is in it, and not a second time anywhere else in the payload. Around it
+    /// every key is spelled the way the window's types spell it.
+    #[test]
+    fn a_made_password_crosses_once_exactly_beside_the_generator_it_came_from() {
+        // A value that would end the string early for anyone building the
+        // payload by hand, and go on to claim that nothing is missing.
+        let made = "q\"\\\u{e9}\u{1f512}\u{202e}\u{0}\",\"missing\":[],\"x\":\"";
+        let recipe = making(
+            vec![generate::Alphabet::Lower, generate::Alphabet::Digits],
+            true,
+            "\"'\\`",
+        );
+
+        let payload = json(&Generated::of(made, &recipe));
+        let parsed: serde_json::Value = serde_json::from_str(&payload).expect("the payload parses");
+        assert_eq!(
+            parsed,
+            serde_json::json!({
+                "value": made,
+                "missing": ["digits"],
+                "generator": {
+                    "recipe": {
+                        "length": 12,
+                        "alphabets": ["lower", "digits"],
+                        "similar": true,
+                        "avoid": "\"'\\`",
+                    },
+                    "shortest": 8,
+                    "longest": 64,
+                    "pin": false,
+                    "symbols": generate::Alphabet::Symbols.characters(),
+                    "lookAlikes": "0O1lI|",
+                },
+            })
+        );
+
+        let written = serde_json::to_string(made).expect("a string serialises");
+        assert_eq!(payload.matches(written.as_str()).count(), 1, "{payload}");
+        // Not inside another string either, where its own quotes would not be.
+        let unquoted = written
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+            .expect("a string is written in quotes");
+        assert_eq!(payload.matches(unquoted).count(), 1, "{payload}");
+    }
+
+    /// The window names the four kinds with four words of its own type, and a
+    /// kind crosses under that word whichever way it goes. The kinds a password
+    /// lacks come in the order the switches stand, not the order they were
+    /// asked for in.
+    #[test]
+    fn every_kind_crosses_both_ways_under_the_word_the_window_spells_it_with() {
+        let backwards = making(
+            generate::Alphabet::ALL.into_iter().rev().collect(),
+            true,
+            "",
+        );
+        let lacking =
+            serde_json::to_value(Generated::of("", &backwards)).expect("the payload serialises");
+        assert_eq!(
+            lacking["missing"],
+            serde_json::json!(["lower", "upper", "digits", "symbols"])
+        );
+
+        for (word, kind) in [
+            ("lower", generate::Alphabet::Lower),
+            ("upper", generate::Alphabet::Upper),
+            ("digits", generate::Alphabet::Digits),
+            ("symbols", generate::Alphabet::Symbols),
+        ] {
+            assert_eq!(
+                serde_json::to_value(Alphabet::of(kind)).expect("a kind serialises"),
+                word
+            );
+            let read: Alphabet = serde_json::from_value(serde_json::json!(word))
+                .expect("a kind the window spells parses");
+            assert_eq!(read.alphabet(), kind);
+        }
+    }
+
+    /// What the window sends is read as it was sent. Settling it is the
+    /// command's to do, once, so a kind asked for twice or out of order is
+    /// still that here, and a quote, a backslash, a null or a letter outside
+    /// ASCII in the list to avoid arrives as itself.
+    #[test]
+    fn a_recipe_from_the_window_is_read_as_it_was_sent() {
+        let asked: Recipe = serde_json::from_str(
+            r#"{"length":12,"alphabets":["symbols","lower","symbols"],"similar":true,
+                "avoid":"\"'\\`\u00e9\u0000"}"#,
+        )
+        .expect("the window's recipe parses");
+
+        assert_eq!(
+            asked.recipe(),
+            generate::Recipe {
+                length: 12,
+                alphabets: vec![
+                    generate::Alphabet::Symbols,
+                    generate::Alphabet::Lower,
+                    generate::Alphabet::Symbols,
+                ],
+                similar: true,
+                avoid: "\"'\\`\u{e9}\u{0}".to_owned(),
+            }
+        );
+    }
+
+    /// A kind the window made up is refused, rather than read as the nearest
+    /// kind there is or dropped from the list: either would make a password
+    /// from a set nobody chose. A name serde does not know is refused as an
+    /// unknown kind, and anything that is not a name at all, or a length or a
+    /// switch that is not one, is refused before a recipe is made of it.
+    #[test]
+    fn a_kind_the_window_made_up_is_refused_rather_than_guessed_at() {
+        for sent in [
+            r#"{"alphabets":["emoji"]}"#,
+            r#"{"alphabets":["Lower"]}"#,
+            r#"{"alphabets":["LOWER"]}"#,
+            r#"{"alphabets":[" lower"]}"#,
+            r#"{"alphabets":["digit"]}"#,
+            r#"{"alphabets":["Digits"]}"#,
+            r#"{"alphabets":["look_alikes"]}"#,
+            r#"{"alphabets":[""]}"#,
+            r#"{"alphabets":["lower","emoji","digits"]}"#,
+        ] {
+            let refused = serde_json::from_str::<Recipe>(sent).err();
+            assert_eq!(
+                refused.as_ref().map(serde_json::Error::classify),
+                Some(serde_json::error::Category::Data),
+                "{sent}"
+            );
+            assert!(
+                refused.is_some_and(|error| error.to_string().contains("unknown variant")),
+                "{sent}"
+            );
+        }
+
+        for sent in [
+            r#"{"alphabets":[0]}"#,
+            r#"{"alphabets":[null]}"#,
+            r#"{"alphabets":[["lower"]]}"#,
+            r#"{"alphabets":"lower"}"#,
+            r#"{"length":-1}"#,
+            r#"{"length":12.5}"#,
+            r#"{"length":"12"}"#,
+            r#"{"length":18446744073709551616}"#,
+            r#"{"similar":"false"}"#,
+            r#"{"avoid":["\""]}"#,
+        ] {
+            assert!(serde_json::from_str::<Recipe>(sent).is_err(), "{sent}");
+        }
+    }
+
+    /// A recipe missing a field - one an older Coffer did not write, or one
+    /// the window left out - takes the default for that field alone and keeps
+    /// every other as it was sent.
+    #[test]
+    fn a_field_left_out_of_a_recipe_takes_its_default_and_costs_nothing_else() {
+        let nothing: Recipe = serde_json::from_str("{}").expect("an empty recipe parses");
+        assert_eq!(nothing.recipe(), generate::Recipe::default());
+
+        // Every field away from its default, so that each one left out shows.
+        let sent = generate::Recipe {
+            length: 6,
+            alphabets: vec![generate::Alphabet::Digits],
+            similar: true,
+            avoid: "7".to_owned(),
+        };
+        let fallback = generate::Recipe::default();
+        for (left_out, expected) in [
+            (
+                "length",
+                generate::Recipe {
+                    length: fallback.length,
+                    ..sent.clone()
+                },
+            ),
+            (
+                "alphabets",
+                generate::Recipe {
+                    alphabets: fallback.alphabets.clone(),
+                    ..sent.clone()
+                },
+            ),
+            (
+                "similar",
+                generate::Recipe {
+                    similar: fallback.similar,
+                    ..sent.clone()
+                },
+            ),
+            (
+                "avoid",
+                generate::Recipe {
+                    avoid: fallback.avoid.clone(),
+                    ..sent.clone()
+                },
+            ),
+        ] {
+            let mut whole = serde_json::to_value(Recipe::of(&sent)).expect("the recipe serialises");
+            let removed = whole.as_object_mut().and_then(|keys| keys.remove(left_out));
+            assert!(removed.is_some(), "a recipe is not written with {left_out}");
+
+            let read: Recipe = serde_json::from_value(whole).expect("the rest parses");
+            assert_eq!(read.recipe(), expected, "{left_out}");
+        }
+    }
+
+    /// The window gets the generator back with every password, and nothing it
+    /// sends beside a recipe changes what the generator allows: a range, a PIN
+    /// or a set of symbols sent back is not read, and a length the slider
+    /// cannot show comes back as the one the engine settled on.
+    #[test]
+    fn a_range_the_window_sends_back_widens_nothing() {
+        let asked: Recipe = serde_json::from_str(
+            r#"{"length":2,"alphabets":["lower"],"similar":false,"avoid":"",
+                "shortest":1,"longest":100000,"pin":true,"symbols":"a","lookAlikes":""}"#,
+        )
+        .expect("the window's recipe parses");
+
+        let answer = serde_json::to_value(Generated::of("abcdefgh", &asked.recipe().settled()))
+            .expect("the payload serialises");
+        let drawn = &answer["generator"];
+        assert_eq!(drawn["recipe"]["length"], 8);
+        assert_eq!(drawn["shortest"], 8);
+        assert_eq!(drawn["longest"], 64);
+        assert_eq!(drawn["pin"], false);
+        assert_eq!(drawn["symbols"], generate::Alphabet::Symbols.characters());
+        assert_eq!(drawn["lookAlikes"], "0O1lI|");
+
+        // Look-alikes sent back with a PIN do not take 0 and 1 out of it, and
+        // none sent back with a password do not let them into it.
+        for (sent, length, look_alikes) in [
+            (
+                r#"{"length":18446744073709551615,"alphabets":["digits"],"lookAlikes":"0O1lI|"}"#,
+                64,
+                "",
+            ),
+            (r#"{"length":0,"alphabets":["digits"]}"#, 4, ""),
+            (r#"{"length":0,"lookAlikes":""}"#, 8, "0O1lI|"),
+        ] {
+            let asked: Recipe = serde_json::from_str(sent).expect("the window's recipe parses");
+            let drawn = serde_json::to_value(Generator::of(&asked.recipe().settled()))
+                .expect("the generator serialises");
+            assert_eq!(drawn["recipe"]["length"], length, "{sent}");
+            assert_eq!(drawn["lookAlikes"], look_alikes, "{sent}");
+        }
+    }
+
+    /// Which generator is asking decides which recipe is remembered, so a
+    /// purpose the window did not spell exactly is refused rather than read as
+    /// the nearer one: a PIN made for a card's field, remembered as the
+    /// password's recipe, is what the next account's password is made from.
+    #[test]
+    fn a_purpose_is_one_of_two_words_spelled_exactly_and_nothing_else() {
+        let read = |sent: serde_json::Value| serde_json::from_value::<Purpose>(sent);
+        assert!(matches!(
+            read(serde_json::json!("password")),
+            Ok(Purpose::Password)
+        ));
+        assert!(matches!(
+            read(serde_json::json!("field")),
+            Ok(Purpose::Field)
+        ));
+
+        for sent in [
+            serde_json::json!("Password"),
+            serde_json::json!("PASSWORD"),
+            serde_json::json!("Field"),
+            serde_json::json!(""),
+            serde_json::json!(" password"),
+            serde_json::json!("field "),
+            serde_json::json!("passwords"),
+            serde_json::json!("password\u{0}"),
+            serde_json::json!("\u{200b}field"),
+            serde_json::json!("p\u{430}ssword"),
+            serde_json::json!("pin"),
+            serde_json::json!(null),
+            serde_json::json!(0),
+            serde_json::json!(1),
+            serde_json::json!(true),
+            serde_json::json!([]),
+            serde_json::json!(["password"]),
+            serde_json::json!({}),
+            serde_json::json!({ "password": "field" }),
+            serde_json::json!({ "password": null, "field": null }),
+        ] {
+            assert!(read(sent.clone()).is_err(), "{sent}");
+        }
+    }
+
+    /// One shape writes a recipe down, for the window and for the file the
+    /// generator remembers it in, so whatever goes out through it comes back as
+    /// it went: every set of kinds, in any order and twice over, either way the
+    /// look-alike switch stands, and any length or list to avoid.
+    #[test]
+    fn every_recipe_comes_back_through_the_shape_it_is_written_in_as_it_went() {
+        let mut sets: Vec<Vec<generate::Alphabet>> = (0..16).map(kinds).collect();
+        sets.push(vec![
+            generate::Alphabet::Symbols,
+            generate::Alphabet::Lower,
+            generate::Alphabet::Symbols,
+        ]);
+
+        for alphabets in sets {
+            for similar in [false, true] {
+                for avoid in ["", "\"'\\`", "\u{0}\u{e9}\u{1f512}\u{202e}", "0O1lI|"] {
+                    for length in [0, 4, 24, usize::MAX] {
+                        let recipe = generate::Recipe {
+                            length,
+                            alphabets: alphabets.clone(),
+                            similar,
+                            avoid: avoid.to_owned(),
+                        };
+                        assert_eq!(Recipe::of(&recipe).recipe(), recipe);
+
+                        let written = json(&Recipe::of(&recipe));
+                        let read: Recipe =
+                            serde_json::from_str(&written).expect("a written recipe parses");
+                        assert_eq!(read.recipe(), recipe, "{written}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The slider goes down to four only for digits and nothing else. Any
+    /// other set - none at all, or digits with anything beside them - makes a
+    /// password, and a password starts at eight.
+    #[test]
+    fn only_digits_alone_open_the_slider_to_a_pin() {
+        let mut sets: Vec<Vec<generate::Alphabet>> = (0..16).map(kinds).collect();
+        sets.push(vec![generate::Alphabet::Digits, generate::Alphabet::Digits]);
+        sets.push(vec![
+            generate::Alphabet::Digits,
+            generate::Alphabet::Symbols,
+            generate::Alphabet::Digits,
+        ]);
+
+        for alphabets in sets {
+            let pin = matches!(
+                alphabets.as_slice(),
+                [generate::Alphabet::Digits]
+                    | [generate::Alphabet::Digits, generate::Alphabet::Digits]
+            );
+            let drawn = serde_json::to_value(Generator::of(&making(alphabets.clone(), false, "")))
+                .expect("the generator serialises");
+            assert_eq!(drawn["pin"], pin, "{alphabets:?}");
+            assert_eq!(drawn["shortest"], if pin { 4 } else { 8 }, "{alphabets:?}");
+            assert_eq!(drawn["longest"], 64, "{alphabets:?}");
+        }
+    }
+
+    /// The line under the switches says what "Symbols" draws from, and the
+    /// look-alike switch says what it leaves out. Both come from the engine,
+    /// and what they say has to be true of it: every printable ASCII character
+    /// that is neither a letter, a digit nor a space, in order, and six
+    /// characters each of which some switch would otherwise draw.
+    #[test]
+    fn the_generator_names_every_symbol_it_draws_and_every_look_alike_it_leaves_out() {
+        let printable: String = (0x21u8..=0x7e)
+            .map(char::from)
+            .filter(|character| !character.is_ascii_alphanumeric())
+            .collect();
+        let drawn = serde_json::to_value(Generator::of(&generate::Recipe::default()))
+            .expect("the generator serialises");
+        let look_alikes = "0O1lI|";
+        assert_eq!(drawn["symbols"], printable.as_str());
+        assert_eq!(drawn["lookAlikes"], look_alikes);
+
+        for look_alike in look_alikes.chars() {
+            assert!(
+                generate::Alphabet::ALL
+                    .iter()
+                    .any(|kind| kind.characters().contains(look_alike)),
+                "{look_alike:?} is drawn by no switch"
+            );
+        }
+    }
+
+    /// The window draws the look-alike switch only when it has something to
+    /// leave out, and what it is told it leaves out has to be what the engine
+    /// leaves out. Digits alone are a PIN, which keeps 0 and 1: four digits
+    /// without them would be 4,096 PINs where there are 10,000. Beside any
+    /// other kind they are look-alikes again.
+    #[test]
+    fn a_pin_is_offered_no_look_alikes_to_avoid_and_keeps_every_digit() {
+        let drawn = |alphabets: Vec<generate::Alphabet>| {
+            serde_json::to_value(Generator::of(&making(alphabets, false, "")))
+                .expect("the generator serialises")
+        };
+        let pin = drawn(vec![generate::Alphabet::Digits]);
+        assert_eq!(pin["pin"], true);
+        assert_eq!(pin["shortest"], 4);
+        assert_eq!(pin["lookAlikes"], "");
+        let password = drawn(vec![generate::Alphabet::Digits, generate::Alphabet::Lower]);
+        assert_eq!(password["pin"], false);
+        assert_eq!(password["shortest"], 8);
+        assert_eq!(password["lookAlikes"], "0O1lI|");
+
+        let mut sets: Vec<Vec<generate::Alphabet>> = (1..16).map(kinds).collect();
+        sets.push(vec![generate::Alphabet::Digits, generate::Alphabet::Digits]);
+        for alphabets in sets {
+            let is_pin = alphabets
+                .iter()
+                .all(|kind| *kind == generate::Alphabet::Digits);
+            // Everything the kinds hold but the look-alikes is avoided, so all
+            // that is left to draw is what the switch lets through: every kind
+            // holds at least one of them, and a password made with the switch
+            // on is nothing else.
+            let held: String = alphabets
+                .iter()
+                .flat_map(|kind| kind.characters().chars())
+                .collect();
+            let avoid: String = held
+                .chars()
+                .filter(|character| !"0O1lI|".contains(*character))
+                .collect();
+
+            for similar in [false, true] {
+                let recipe = generate::Recipe {
+                    length: 64,
+                    alphabets: alphabets.clone(),
+                    similar,
+                    avoid: avoid.clone(),
+                };
+                let told =
+                    serde_json::to_value(Generator::of(&recipe)).expect("the generator serialises");
+                let left_out = if is_pin { "" } else { "0O1lI|" };
+                assert_eq!(told["lookAlikes"], left_out, "{alphabets:?} {similar}");
+
+                let made = generate::password(&recipe);
+                if similar || is_pin {
+                    let made = made.expect("a look-alike is left to draw from");
+                    assert!(
+                        made.chars()
+                            .all(|character| "0O1lI|".contains(character)
+                                && held.contains(character)),
+                        "{alphabets:?} {similar}"
+                    );
+                    if is_pin {
+                        // Sixty-four draws of two digits miss one of them one
+                        // time in 2^63.
+                        assert!(made.contains('0') && made.contains('1'), "{similar}");
+                    }
+                } else {
+                    assert!(
+                        matches!(made, Err(vault_core::VaultError::NothingToGenerateFrom)),
+                        "{alphabets:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A kind the recipe left nothing of could not have been in the password,
+    /// and the window is not told to make another one for its sake.
+    #[test]
+    fn a_kind_left_nothing_to_draw_from_is_never_said_to_be_missing() {
+        let missing = |made: &str, recipe: &generate::Recipe| {
+            serde_json::to_value(Generated::of(made, recipe)).expect("the payload serialises")
+                ["missing"]
+                .clone()
+        };
+        let none = serde_json::json!([]);
+
+        // Two digits gone to the look-alike switch and the other eight to the
+        // list; let the look-alikes back and a digit could have been there.
+        let no_digits = making(
+            vec![generate::Alphabet::Lower, generate::Alphabet::Digits],
+            false,
+            "23456789",
+        );
+        assert_eq!(missing("abcdefghjkmn", &no_digits), none);
+        let similar = generate::Recipe {
+            similar: true,
+            ..no_digits.clone()
+        };
+        assert_eq!(
+            missing("abcdefghjkmn", &similar),
+            serde_json::json!(["digits"])
+        );
+        // The same eight digits on the list of a PIN leave 0 and 1, which a
+        // PIN keeps, so a PIN without a digit in it is missing its digits.
+        let zero_and_one = making(vec![generate::Alphabet::Digits], false, "23456789");
+        assert_eq!(missing("", &zero_and_one), serde_json::json!(["digits"]));
+        assert_eq!(missing("0110", &zero_and_one), none);
+
+        // Every symbol but the bar on the list, and the bar a look-alike.
+        let all_but_the_bar: String = generate::Alphabet::Symbols
+            .characters()
+            .chars()
+            .filter(|character| *character != '|')
+            .collect();
+        let no_symbols = making(
+            vec![generate::Alphabet::Upper, generate::Alphabet::Symbols],
+            false,
+            &all_but_the_bar,
+        );
+        assert_eq!(missing("ABCDEFGH", &no_symbols), none);
+        let similar = generate::Recipe {
+            similar: true,
+            ..no_symbols.clone()
+        };
+        assert_eq!(
+            missing("ABCDEFGH", &similar),
+            serde_json::json!(["symbols"])
+        );
+
+        // Nothing at all to draw from is nothing missing.
+        let nothing = making(vec![generate::Alphabet::Digits], true, "0123456789");
+        assert_eq!(missing("", &nothing), none);
+        // A kind nobody asked for is never missing, however absent it is.
+        let letters = making(vec![generate::Alphabet::Lower], false, "");
+        assert_eq!(missing("abcdefgh", &letters), none);
     }
 }

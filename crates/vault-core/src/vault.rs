@@ -80,11 +80,15 @@ pub struct Recipe<'a> {
     pub work: Work,
 }
 
-/// A new value for a field.
+/// A new value for a field. Which kind it is decides how a field the entry
+/// does not have yet is stored; a field it has keeps its own protection, which
+/// only [`Vault::set_protection`] changes.
 pub enum NewValue {
-    /// Stored as written. Anything that opens the database can read it.
+    /// Stored open, when it makes the field. Anything that opens the database
+    /// can read it.
     Open(String),
-    /// Stored protected, behind the database's inner cipher.
+    /// Stored protected, behind the database's inner cipher, when it makes the
+    /// field.
     Protected(Zeroizing<String>),
 }
 
@@ -482,6 +486,14 @@ impl Vault {
     ///
     /// An edit that leaves the entry the same as it was writes no version and
     /// does not move the modification time.
+    ///
+    /// Whether the value is stored protected is the field's own when the entry
+    /// already has it: [`NewValue`] decides only for a field this makes. The
+    /// screen says how a field is protected with every value it writes, and
+    /// what it says is what it read before the reader pressed anything - so a
+    /// value written on the way out of a field, landing after the press that
+    /// hid that field (see [`Vault::set_protection`]), would otherwise put the
+    /// value back into the file as plain text. Protection changes in one place.
     pub fn set_field(
         &mut self,
         id: EntryId,
@@ -495,11 +507,19 @@ impl Vault {
             NewValue::Protected(written) => text::writable(written)?,
         }
 
+        let held = self
+            .database
+            .entry(id)
+            .and_then(|entry| entry.fields.get(field).map(Value::is_protected));
+        let protect = held.unwrap_or(matches!(value, NewValue::Protected(_)));
+
         let field = field.to_owned();
-        let edited = history::edit(&mut self.database, id, move |entry| match value {
-            NewValue::Open(written) => entry.set(field, Value::unprotected(written)),
-            NewValue::Protected(written) => {
+        let edited = history::edit(&mut self.database, id, move |entry| {
+            let written = value.into_text();
+            if protect {
                 entry.set(field, Value::protected(written.to_string()));
+            } else {
+                entry.set(field, Value::unprotected(written.to_string()));
             }
         });
 
@@ -519,9 +539,10 @@ impl Vault {
     /// happens. The field has to be one the entry still has, or one of the five
     /// every entry is drawn with: a field of the reader's own that was removed
     /// while its text was on the way is not made again under their feet. And
-    /// text that is what the field already holds, under the same protection,
-    /// writes nothing at all, so a vault that heard only that has nothing to
-    /// save.
+    /// text that is what the field already holds writes nothing at all,
+    /// whatever protection the draft names - a field the entry has keeps its
+    /// own (see [`Vault::set_field`]) - so a vault that heard only that has
+    /// nothing to save.
     ///
     /// A new value typed [`Typing::Beside`] never goes over a value. The
     /// reader had not saved it, and a lock that wrote half a new password over
@@ -539,15 +560,17 @@ impl Vault {
         value: NewValue,
         typing: Typing,
     ) -> Result<Written, VaultError> {
-        let (text, protect) = match &value {
-            NewValue::Open(written) => (written.as_str(), false),
-            NewValue::Protected(written) => (written.as_str(), true),
+        let text = match &value {
+            NewValue::Open(written) => written.as_str(),
+            NewValue::Protected(written) => written.as_str(),
         };
 
         let entry = self.database.entry(id).ok_or(VaultError::NoSuchEntry)?;
         let held = entry.fields.get(field);
+        // The text alone: a field the entry has keeps its own protection
+        // whatever the draft says (see `set_field`).
         let unchanged = match held {
-            Some(held) => held.get() == text && held.is_protected() == protect,
+            Some(held) => held.get() == text,
             None if fields::Standard::of(field).is_some() => text.is_empty(),
             None => return Err(VaultError::NoSuchField),
         };
@@ -876,6 +899,90 @@ impl Vault {
         let field = field.to_owned();
         history::edit(&mut self.database, id, move |entry| {
             entry.fields.remove(&field);
+            entry.times.last_modification = Some(Times::now());
+        });
+
+        self.touched();
+        Ok(())
+    }
+
+    /// Hides a field of the reader's own behind the database's protection, or
+    /// stops hiding it.
+    ///
+    /// The value moves from one kind of storage to the other here, inside the
+    /// vault: the window holds no protected value to write back, and asking it
+    /// for one would be a reveal nobody asked for. The entry's previous state
+    /// is kept as a version, the way any edit's is. A field already stored the
+    /// way that is asked for writes nothing.
+    ///
+    /// The five fields every entry has are refused. Their protection is the
+    /// database's, set for every entry at once, and the password's is what
+    /// keeps it out of the window.
+    pub fn set_protection(
+        &mut self,
+        id: EntryId,
+        field: &str,
+        protect: bool,
+    ) -> Result<(), VaultError> {
+        self.writable()?;
+        if fields::Standard::of(field).is_some() {
+            return Err(VaultError::StandardField);
+        }
+        let entry = self.database.entry(id).ok_or(VaultError::NoSuchEntry)?;
+        let held = entry.fields.get(field).ok_or(VaultError::NoSuchField)?;
+        if held.is_protected() == protect {
+            return Ok(());
+        }
+
+        let field = field.to_owned();
+        history::edit(&mut self.database, id, move |entry| {
+            if let Some(value) = entry.fields.remove(&field) {
+                entry.fields.insert(field, rewrapped(value, protect));
+            }
+            entry.times.last_modification = Some(Times::now());
+        });
+
+        self.touched();
+        Ok(())
+    }
+
+    /// Gives a field of the reader's own another name.
+    ///
+    /// The value goes with the name, moved inside the vault under the
+    /// protection it had, so a protected value never crosses to the window to
+    /// be written again under the new one. One version keeps the entry as it
+    /// was, and putting that version back puts the old name back.
+    ///
+    /// A name the entry already gives a field is refused rather than written
+    /// over, and so is one of the five every entry keeps, whether or not this
+    /// entry has it yet: a field renamed `Password` would be the password. So
+    /// is no name at all. The same name again writes nothing.
+    pub fn rename_field(&mut self, id: EntryId, from: &str, to: &str) -> Result<(), VaultError> {
+        self.writable()?;
+        if fields::Standard::of(from).is_some() {
+            return Err(VaultError::StandardField);
+        }
+        if to.is_empty() {
+            return Err(VaultError::UnnamedField);
+        }
+        text::writable(to)?;
+
+        let entry = self.database.entry(id).ok_or(VaultError::NoSuchEntry)?;
+        if !entry.fields.contains_key(from) {
+            return Err(VaultError::NoSuchField);
+        }
+        if from == to {
+            return Ok(());
+        }
+        if fields::Standard::of(to).is_some() || entry.fields.contains_key(to) {
+            return Err(VaultError::FieldNameTaken);
+        }
+
+        let (from, to) = (from.to_owned(), to.to_owned());
+        history::edit(&mut self.database, id, move |entry| {
+            if let Some(value) = entry.fields.remove(&from) {
+                entry.fields.insert(to, value);
+            }
             entry.times.last_modification = Some(Times::now());
         });
 
@@ -1680,6 +1787,17 @@ fn fill(path: &Path, key: MasterKey, recipe: &Recipe<'_>) -> Result<Vault, Vault
 fn dated(times: &mut Times) {
     if times.expiry.is_none() {
         times.expiry = times.creation.or_else(|| Some(Times::now()));
+    }
+}
+
+/// A value moved into the other kind of storage with no copy of it left
+/// behind. The text an open value held becomes the protected value's own, and
+/// the box a protected value was held in wipes it as it goes.
+fn rewrapped(value: Value<String>, protect: bool) -> Value<String> {
+    match (protect, value) {
+        (true, Value::Unprotected(text)) => Value::protected(text),
+        (false, protected @ Value::Protected(_)) => Value::unprotected(protected.get().clone()),
+        (_, unchanged) => unchanged,
     }
 }
 

@@ -956,14 +956,7 @@ mod tests {
             LockPolicy::Respect,
         )
         .expect("the copy opens with the same password");
-        assert_eq!(
-            rescued
-                .entry(id)
-                .expect("the entry is there")
-                .field(fields::NOTES)
-                .and_then(|held| held.value.open()),
-            Some("never saved")
-        );
+        assert_eq!(notes(&rescued, id).as_deref(), Some("never saved"));
     }
 
     /// Two triggers arriving together still write once, because the write
@@ -3183,10 +3176,13 @@ mod tests {
         (directory, database, copy)
     }
 
+    /// What an entry's notes say, read the way a reveal reads them: the
+    /// fixture protects its notes, and what was typed into them kept that.
     fn notes(vault: &Vault, id: EntryId) -> Option<String> {
         vault
-            .entry(id)
-            .and_then(|entry| entry.field(fields::NOTES)?.value.open().map(str::to_owned))
+            .reveal(id, fields::NOTES)?
+            .expose_str()
+            .map(str::to_owned)
     }
 
     /// "Make this my vault" from inside a copy of a vault that wants a key
