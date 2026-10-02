@@ -32,6 +32,7 @@ import type {
 	Recipe,
 	Removed,
 	Rival,
+	SavedCopy,
 	Settings,
 	Snapshot,
 	Span,
@@ -701,6 +702,24 @@ export function saveOver(): Promise<void> {
 /** Writes what is in the window to a file of its own. */
 export function saveCopy(): Promise<Database | null> {
 	return invoke('save_copy');
+}
+
+/**
+ * Saves a copy of the open vault on another disk, in a panel Rust opens on the
+ * folder the last such copy went to, another disk this Mac has mounted, or
+ * beside the vault, and writes down when and where. Answers with whether it
+ * went to the vault's own disk and what Coffer now knows of copies, or null
+ * when the panel was closed. Rejects with `taken`, replacing nothing, for a
+ * name that holds a file.
+ */
+export function copyVault(): Promise<SavedCopy | null> {
+	return invoke('copy_vault');
+}
+
+/** Shows the chosen vault's file in the Finder, selected. Nothing is sent: it
+ * is the file Rust chose. Rejects with `gone` when nothing is at its name. */
+export function showInFinder(): Promise<void> {
+	return invoke('show_in_finder');
 }
 
 /** Throws away what is in the window and reads the file again, typing that was

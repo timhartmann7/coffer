@@ -30,6 +30,7 @@ use slot::Slot;
 pub use backups::Looking;
 
 mod backups;
+mod elsewhere;
 
 pub struct Session {
     held: Mutex<Held>,
@@ -49,6 +50,9 @@ pub struct Session {
     /// wrong current password costs included: see
     /// [`Session::change_master_password`].
     guessing: Mutex<()>,
+    /// Taken for the write of a copy, which is done with `held` let go: see
+    /// [`Session::copy_to`].
+    copying: Mutex<()>,
 }
 
 struct Held {
@@ -387,6 +391,7 @@ impl Session {
             unlocked,
             remembering,
             guessing: Mutex::new(()),
+            copying: Mutex::new(()),
         }
     }
 
@@ -5272,5 +5277,175 @@ mod tests {
             .ok()
             .and_then(|value| value.expose_str().map(str::to_owned));
         assert_eq!(notes.as_deref(), Some("never saved on its own"));
+    }
+
+    /// A copy asked for one vault is not written from another. The panel is
+    /// up for as long as the reader takes, and a lock and another unlock can
+    /// land behind it.
+    #[test]
+    fn a_copy_asked_for_one_vault_is_not_written_from_another() {
+        let (directory, _, session) = holding(RICH);
+        let asked = session.database().expect("a vault is chosen");
+        let target = directory.path().join("copy.kdbx");
+
+        assert!(session.lock(Reason::Idle));
+        let other = directory.path().join("another.kdbx");
+        std::fs::copy(fixture(RICH), &other).expect("the fixture copies");
+        session.choose(other);
+        session
+            .unlock(password(SECRET), LockPolicy::Respect)
+            .expect("the other vault opens");
+
+        assert_eq!(refusal(session.copy_to(&asked, &target)), "refused");
+        assert!(!target.exists(), "a copy of the wrong vault was written");
+
+        let open = session.database().expect("a vault is chosen");
+        session
+            .copy_to(&open, &target)
+            .expect("the vault asked about is written");
+        assert_eq!(
+            reopened(&target).count(),
+            session.with(Vault::count).expect("the vault is open")
+        );
+    }
+
+    /// The clock that locks runs behind the panel. A copy pressed into a
+    /// vault that locked meanwhile writes nothing and says there is no vault.
+    #[test]
+    fn a_copy_of_a_locked_vault_is_refused_and_writes_nothing() {
+        let (directory, _, session) = holding(RICH);
+        let database = session.database().expect("a vault is chosen");
+        assert!(session.lock(Reason::Idle));
+
+        let target = directory.path().join("copy.kdbx");
+        assert_eq!(refusal(session.copy_to(&database, &target)), "noVault");
+        assert!(!target.exists());
+    }
+
+    /// A copy settles every entry's history the way a save does, which moves
+    /// the positions of versions; a list read before it is refused afterwards,
+    /// and the window reads it again.
+    #[test]
+    fn a_copy_moves_the_revision_so_a_listed_version_is_read_again() {
+        let (directory, _, session) = holding(RICH);
+        let database = session.database().expect("a vault is chosen");
+        let basic = entry_titled(&session, "basic").id;
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    basic,
+                    fields::NOTES,
+                    vault_core::NewValue::Open("a version behind it".to_owned()),
+                )
+            })
+            .expect("the vault is open")
+            .expect("the note is written");
+        let (listed, versions) = session
+            .listing(|vault| vault.versions(basic))
+            .expect("the vault is open");
+        let index = versions.first().expect("the entry has versions").index;
+
+        session
+            .copy_to(&database, &directory.path().join("copy.kdbx"))
+            .expect("the copy is written");
+
+        assert_eq!(
+            refusal(session.at(listed, |vault| vault.version(basic, index))),
+            "versionsChanged"
+        );
+    }
+
+    /// A copy refused at the write - a name that held a file by then - was
+    /// encrypted first, and encrypting settled every history the way a save
+    /// does. The revision moved all the same, and a list read before it is
+    /// read again rather than acted on.
+    #[test]
+    fn a_copy_refused_at_a_taken_name_still_moves_the_revision() {
+        let (directory, _, session) = holding(RICH);
+        let database = session.database().expect("a vault is chosen");
+        let basic = entry_titled(&session, "basic").id;
+        session
+            .with_mut(|vault| {
+                vault.set_field(
+                    basic,
+                    fields::NOTES,
+                    vault_core::NewValue::Open("a version behind it".to_owned()),
+                )
+            })
+            .expect("the vault is open")
+            .expect("the note is written");
+        let (listed, versions) = session
+            .listing(|vault| vault.versions(basic))
+            .expect("the vault is open");
+        let index = versions.first().expect("the entry has versions").index;
+
+        let taken = directory.path().join("copy.kdbx");
+        std::fs::write(&taken, b"somebody's file").expect("the name is taken");
+        assert_eq!(refusal(session.copy_to(&database, &taken)), "taken");
+        assert_eq!(
+            std::fs::read(&taken).expect("the file is there"),
+            b"somebody's file"
+        );
+
+        assert_eq!(
+            refusal(session.at(listed, |vault| vault.version(basic, index))),
+            "versionsChanged"
+        );
+    }
+
+    /// Every copy goes through [`Session::copy_to`], which refuses a vault
+    /// that was swapped while the panel was up and writes with the session let
+    /// go. Read from the source: a command that encrypted a copy for itself
+    /// would work, and skip both without a word.
+    #[test]
+    fn every_copy_goes_through_copy_to() {
+        use crate::source::{every_file, shipped};
+
+        let encrypting: Vec<String> = every_file()
+            .into_iter()
+            .filter(|(_, file)| shipped(file).contains(".encrypt_copy("))
+            .map(|(path, _)| path.display().to_string())
+            .collect();
+        assert_eq!(
+            encrypting.len(),
+            1,
+            "a copy is encrypted in more than one place: {encrypting:?}"
+        );
+        assert!(
+            encrypting
+                .iter()
+                .all(|path| path.ends_with("session/elsewhere.rs")),
+            "a copy is encrypted somewhere other than the session's door: {encrypting:?}"
+        );
+    }
+
+    /// What is being typed is not in the copy: the reader has not left the
+    /// field. It stays a draft, and the next lock writes it into the vault,
+    /// where it was typed.
+    #[test]
+    fn a_copy_leaves_what_is_being_typed_for_the_lock() {
+        let (directory, _, session) = holding(RICH);
+        let database = session.database().expect("a vault is chosen");
+        let basic = entry_titled(&session, "basic").id;
+        session
+            .draft(basic, fields::URL, words("https://typed.example", false), 1)
+            .expect("the draft is heard");
+
+        let target = directory.path().join("copy.kdbx");
+        session
+            .copy_to(&database, &target)
+            .expect("the copy is written");
+        assert_ne!(
+            value_of(&reopened(&target), basic, fields::URL).as_deref(),
+            Some("https://typed.example"),
+            "the copy took a value nobody had left"
+        );
+
+        assert!(session.lock(Reason::ByHand));
+        assert!(session.typed());
+        assert_eq!(
+            value_of(&reopened(&database), basic, fields::URL).as_deref(),
+            Some("https://typed.example")
+        );
     }
 }

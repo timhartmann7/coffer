@@ -134,13 +134,15 @@ list is in the spec.
 - Cmd+Backspace in Notes and in the search field deletes to the start of the line
   and moves nothing to the bin; with the focus on a row or a button it moves the
   open entry to the bin and offers it back. The menu draws the item with ⌫.
-- Greying: on the unlock screen only Settings…, Open Vault… and Keyboard
-  Shortcuts can be chosen, and on the creation screen only Open Vault… and
-  Keyboard Shortcuts - Open Vault… not while the vault is being made; Lock Vault
-  only with a vault open, and Open Vault… never then; Move to Recycle Bin grey
-  in the bin, in a read-only vault, for a vault with no bin, and while a field
-  has the focus, and offered again as soon as the vault has opened. A grey
-  item's key does nothing.
+- Greying: on the unlock screen only Settings…, Open Vault…, Show in Finder
+  (while the file is there) and Keyboard Shortcuts can be chosen, and on the
+  creation screen only Open Vault… and Keyboard Shortcuts - Open Vault… not while
+  the vault is being made; Lock Vault and Save a Copy… only with a vault open,
+  and Open Vault… never then; Save a Copy… grey in a backup, in a lock's copy,
+  and in a KDB vault or a KDBX 3 one holding files; Move to Recycle Bin grey in
+  the bin, in a read-only vault, for a vault with no bin, and while a field has
+  the focus, and offered again as soon as the vault has opened. A grey item's
+  key does nothing.
 - A title typed into an entry and not yet left, then Cmd+N: the title is saved
   before the new entry opens, and reopening the first entry shows it with no
   Unsaved mark. The same with Cmd+, and with Cmd+B while a saved login is being
@@ -281,6 +283,51 @@ list is in the spec.
   writes a copy that opens. A KDBX 3 vault holding files says so and offers no
   copy. With VoiceOver on, the Read only button is read as collapsed and
   expanded, and a backup's row button names the file.
+- File ▸ Show in Finder (⌥⌘R), from the vault, from its settings and from the
+  unlock screen, selects the vault's file in a Finder window and brings the
+  Finder forward; Settings › Vault's "Show in Finder" does the same. A vault
+  opened through a link selects the file it leads to. With the file moved away
+  while the unlock screen is up, the item is grey once the screen is drawn
+  again, and pressed before that it says the file is gone and lists the backups.
+- File ▸ Save a Copy… (⇧⌘S) with a stick in and no copy made yet: the panel
+  opens on the stick, offers `vault YYYY-MM-DD.kdbx`, the notice names the stick,
+  the status bar's "No copy on another disk for N days" goes, and Settings says
+  "Last made: today, on “Stick”". Save again the same day: the panel offers
+  `vault YYYY-MM-DD 2.kdbx`. Pick the first name and answer "Replace": it is
+  refused with "A file by that name is already there, so nothing was replaced",
+  and the first copy is unchanged. Take the stick out and save again: the panel
+  opens beside the vault, and the notice and Settings say that copy is on the
+  same disk as the vault. Put the stick back: the panel opens in the folder on
+  the stick used last. Every copy opens in Coffer and in KeePassXC with the
+  vault's password.
+- Only a copy on another disk resets the reminder. Quit Coffer, move the stick
+  copy's `at` in `copies.json` back 31 days (86400 seconds a day), and launch:
+  the status bar says "No copy on another disk for 31 days". Save a copy beside
+  the vault: the line does not go, and Settings says that copy is on the same
+  disk as the vault. Save one to the stick: the line goes.
+- Coffer's own disk image mounted and a Time Machine disk connected: neither is
+  where the panel opens.
+- A writable disk image kept on the Mac's own disk (`hdiutil create -size 50m
+  -fs APFS -volname Private -type SPARSEBUNDLE`, then open it), and a second
+  APFS container or partition on the internal disk where the Mac has one:
+  neither is where the panel opens, and a copy saved into either is said to be
+  on the same disk as the vault.
+- Save a Copy… to a stick that is pulled out, or a share whose server is
+  switched off, while "Saving a copy…" is up (a vault holding a few hundred
+  megabytes of files gives the time): Lock Vault and Cmd+L lock at once, and
+  Quit quits, without waiting for the disk. The copy is refused or written
+  whole, never left half written under its name.
+- A share mounted from another Mac, which is then switched off: Save a Copy…
+  still opens its panel. When the last copy went to that share, write down how
+  long the panel takes to appear.
+- A vault with entries made more than thirty days ago (one from another client
+  does): the unlocked status bar says "No copy on another disk for N days · Save
+  a copy" in its own capitals, the path gives way first at the window's smallest
+  width and the bar stays one line, the unlock screen says nothing, and the line
+  goes after a copy to a stick. With a lock while the panel is up, the window
+  that comes back is the unlock screen and nothing is written.
+- Neither ⇧⌘S nor ⌥⌘R is taken by the page while the focus is in a field, and
+  each happens once.
 - Both disk images mount, and the application inside each launches on a Mac of
   that architecture. `file Coffer.app/Contents/MacOS/Coffer` says the
   architecture you expect. Run the Intel image on an Intel Mac, not under
@@ -290,7 +337,7 @@ list is in the spec.
   says why. This is the one check that catches `mainBinaryName` going missing:
   without it the process is called `vault-gui` and the guard is a silent no-op.
 - `install.sh` again with Coffer quit. It replaces cleanly, and `settings.json`,
-  `last-database` and `generator.json` in
+  `last-database`, `generator.json` and `copies.json` in
   `~/Library/Application Support/app.coffer.vault/` survive.
 - A hand-edited digit in `checksums.txt`. The script prints both hashes, deletes
   the download, exits non-zero, and never reaches `hdiutil`. `/Applications` is

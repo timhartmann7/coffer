@@ -1,4 +1,5 @@
-//! Open vaults for the suites that need one: the session's, and the menus'.
+//! Open vaults for the suites that need one: the session's, the menus' and
+//! the copies'.
 //!
 //! They open the databases `vault-core` generates with `keepassxc-cli`,
 //! because the only interesting session is one holding a database somebody

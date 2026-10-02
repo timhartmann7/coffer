@@ -25,6 +25,8 @@ travels the other way, as bytes.
 | Open an address | nothing; Rust hands the URL to the system |
 | Add a file | nothing; Rust opens the panel and reads the file |
 | Write a file out | nothing; Rust opens the panel and writes it |
+| Save a copy of the vault on another disk | nothing of the vault; Rust opens the panel and writes it, and dates and a disk's name come back |
+| Show the vault in the Finder | nothing; Rust hands the file the session chose to the Finder |
 | Make a password | the password, once, the way a reveal answers, and which of the kinds of character asked for it happens to lack |
 | Hide a field, or rename it | nothing new; the value moves inside Rust, and a hidden field comes back with no value |
 | Show a field | its value, in the entry that comes back: it is an open field from then on, and crosses as every open value does |
@@ -47,7 +49,7 @@ the first over all ten. Rust reads it off the value in
 
 | Command | Takes | Answers |
 |---|---|---|
-| `status` | | the chosen database, whether it is open, how many entries, whether it can be written and why not, whether what is open can be written to a file somewhere else, why it locked, whether that lock saved something being typed and whether some of it was kept beside the value it was for, whether the vault it closed had been given a new master password, what became of the vault's file when that vault had just been made from a backup, whether the backup asked for on the way was pushed out by that lock's save, the unsaved copy sitting beside it, the chosen file as it stands on disk, the vault it was copied from when it is a lock's copy, the vault it was taken beside, why it is open and the vault's file as it stands when it is one of that vault's backups, and - when nothing is remembered - a vault found in Coffer's own folder |
+| `status` | | the chosen database, whether it is open, how many entries, whether it can be written and why not, whether what is open can be written to a file somewhere else, why it locked, whether that lock saved something being typed and whether some of it was kept beside the value it was for, whether the vault it closed had been given a new master password, what became of the vault's file when that vault had just been made from a backup, whether the backup asked for on the way was pushed out by that lock's save, the unsaved copy sitting beside it, the chosen file as it stands on disk, the vault it was copied from when it is a lock's copy, the vault it was taken beside, why it is open and the vault's file as it stands when it is one of that vault's backups, what is known of copies of the open vault kept on another disk, and - when nothing is remembered - a vault found in Coffer's own folder |
 | `choose_database` | | the database the user picked, or nothing if they closed the dialog |
 | `choose_found` | | the vault the last `status` found in Coffer's own folder, now chosen |
 | `unlock` | the master password, as the raw body | nothing |
@@ -258,6 +260,77 @@ there before it does, and a stir that restarted the clock would hand a fresh
 timeout to whoever sat down. The lock runs on the thread that posted the stir, so
 `stirred` is answered off the thread the window is drawn on, like every command
 that can reach the lock.
+
+Keeping a copy on another disk:
+
+| Command | Takes | Answers |
+|---|---|---|
+| `copy_vault` | | whether the copy went to the vault's own disk, the disk's name, and what is known of copies of the open vault now; or nothing if the panel was closed; `taken` for a name that holds a file |
+| `show_in_finder` | | nothing; `gone` when nothing is at the chosen file's name |
+
+**A copy on another disk is a file the reader picks and a line Coffer keeps.**
+`copy_vault` refuses before any panel what has no copy of its own to keep: a
+format Coffer will not write anywhere (`readOnly`), and a snapshot or the copy a
+lock left (`refused`), which hold an older state of a vault. Then Rust opens a
+save panel on the folder the last copy on another disk went to while that is
+still a folder; otherwise on the first other disk mounted in `/Volumes` that the
+Finder shows and that takes writes; otherwise on the folder the last copy on the
+vault's own disk went to, and otherwise beside the vault. It offers
+`<vault> YYYY-MM-DD.kdbx`, numbered past any name that folder holds, and writes
+the conflict dialog's copy: the same credentials, every field, owner-only,
+staged and renamed, never over a file that is there - `taken`, after the
+panel's own "Replace", and nothing replaced - and never at a name Coffer keeps
+beside a vault. Then Rust writes down when, the folder, the
+disk's name and whether it is the vault's own disk, in `copies.json` beside the
+settings (`copies.rs`), keyed by the vault's path. Never in the vault: the format
+has no field for it, and `SPEC.md` section 12 forbids one of Coffer's own. A
+record that will not write costs the next launch the date, not the copy. Both
+copy commands go through one door, `Session::copy_to` (a test reads the source
+for any other): the panel is a sheet, the clock that locks keeps running behind
+it, and the vault asked about before it opened is the only one written - a
+vault that locked meanwhile answers `noVault`, and another opened after that
+lock is refused. The door holds the session only to encrypt the copy, its key
+derivation included (`Vault::encrypt_copy`), as a save does, and lets it go to
+write the bytes (`EncryptedCopy::write`): the write goes to the disk the reader
+picked, and a stick pulled out half way or a share whose server went to sleep
+holds it until the system gives up on that disk, which no lock, sleep or Quit
+waits for. Copies are written one at a time. Encrypting settles every entry's
+history the way a save does, so the revision moves and the window reads its
+versions again whether or not the write then goes through; what is still being
+typed is not in the copy and stays for the next lock to write into the vault.
+
+**What crosses is `status.elsewhere`, and the answer to a copy.** `otherDisk` is
+the newest copy on another disk: when, and the disk's name (`volume`, only for a
+disk mounted in `/Volumes`). `sameDiskAt` is when the newest copy was made, while
+that one went to the vault's own disk. `overdue` is the whole days without a
+copy on another disk once that reaches thirty and the vault holds entries,
+counted from the last such copy or, when there was none, from the date the
+vault's top group was made (`Vault::made`). Only a copy on another disk resets
+it: one on the vault's disk is made, written down and said to be where it is,
+and the count goes on, because it fails with the vault. A copy dated more than a
+day ahead of the clock is not believed, and a vault that does not say when it
+was made is not counted. `elsewhere` is null while nothing is open, and for a
+snapshot, a lock's copy and a format Coffer will not write anywhere. It is read
+when the vault opens and comes back with every copy, whose answer also says
+whether that copy went to the vault's own disk and what the disk is called, for
+the notice. No path crosses, not even the folder. Which disk is "the same" is
+the one IOKit stores the volume on (`disks.rs`): the topmost `IOMedia` above
+the BSD device the mount table names, so every volume, container and partition
+of the Mac's own SSD is one disk, and a stick is another. A share is a disk of
+its own, by its address. A disk image is a file on a disk Coffer does not
+follow it to, and is never called another disk or offered as one - a sparse
+bundle kept on the Mac's SSD would otherwise be a "copy on another disk" that
+dies with the SSD - and neither is a folder that cannot be asked about or a
+device IOKit will not place. Copies made through `save_copy` are not written
+down: they are ways out of a question, not backups.
+
+**`show_in_finder` takes nothing.** It selects the file the session chose in a
+Finder window. Whether something is at the name is decided off the thread the
+window is drawn on, and answered `gone` when nothing is; only the Finder is asked
+on the main thread, posted there and not waited for. File ▸ Show in Finder
+answers it on the unlock screen too, where nothing is drawn for it: the
+encrypted file is what a reader carries to a stick by hand, and it needs no
+password.
 
 **A command that changes something answers with what it changed.** A change to
 one entry answers with that entry; a change to the shape of the vault answers
@@ -714,8 +787,9 @@ Nothing that names a file comes from the webview. `choose_database` opens the
 system's own dialog and keeps the answer; `choose_snapshot` takes a slot number
 from the list Rust last sent and opens the file that list named; `choose_found`
 takes the vault the session is holding from the last `status`, and
-`choose_existing` the place it is holding for a new vault. There is no command
-that opens a path the frontend sends.
+`choose_existing` the place it is holding for a new vault. `copy_vault` opens
+its own panel on a folder Rust remembers, and `show_in_finder` shows the file
+the session chose. There is no command that opens a path the frontend sends.
 
 `open_url` reads the address out of the entry rather than accepting one, so the
 only thing the webview can ask Coffer to open is an address it can already see -
@@ -737,8 +811,11 @@ Where the right words depend on what the screen showed, the window writes the
 sentence and the message is only a description of the refusal, kept out of
 sight: `needsOpening` from `put_back_rescue` (the unlock screen's card), and
 `externalChange` from `promote_rescue` and `adopt_snapshot` (the strip over a
-copy or a backup, which share the sentence in `replacing.ts`). One sentence
-lives in one place.
+copy or a backup, which share the sentence in `replacing.ts`), and `taken` from
+`copy_vault` (the status bar's notice and the settings' row, which share the
+sentence in `copies.ts`: a file by that name is already there, nothing was
+replaced, and the copy goes under another name). One sentence lives in one
+place.
 
 `versionsChanged` is a position read at a revision the vault has moved on from
 (see above). Nothing was done, so it is not shown as a failure: the window
@@ -771,7 +848,8 @@ submit: this is the one refusal that says nothing about them. It is also
 `put_back_rescue` finding something at the vault's name by the time the copy
 would go there, and the unlock screen says so in a sentence about the move (see
 below); and `save_copy` aimed at a name that holds a file, which is said in
-Rust's words where the copy was pressed for.
+Rust's words where the copy was pressed for, and `copy_vault`, said in the
+window's (see above).
 
 `wrongCredentials` from `change_master_password` is the current password typed
 wrong, and is said under the form, never on the unlock screen.
@@ -923,9 +1001,10 @@ selected and copied was cut out of the new value.
 
 Coffer's own items sit in the bar among AppKit's: Settings… (Cmd+,) and Lock
 Vault (Cmd+L) in the application menu; New Entry (Cmd+N), New Folder
-(Shift+Cmd+N), Duplicate (Cmd+D) and Open Vault… (Cmd+O) in File; Find… (Cmd+F), Copy Login
-(Cmd+B), Copy Password (Shift+Cmd+C) and Move to Recycle Bin (Cmd+Backspace) in
-Edit, under the system's own; Keyboard Shortcuts in Help. `menu.rs` names each
+(Shift+Cmd+N), Duplicate (Cmd+D), Open Vault… (Cmd+O), Save a Copy… (Shift+Cmd+S)
+and Show in Finder (Alt+Cmd+R) in File; Find… (Cmd+F), Copy Login (Cmd+B), Copy
+Password (Shift+Cmd+C) and Move to Recycle Bin (Cmd+Backspace) in Edit, under
+the system's own; Keyboard Shortcuts in Help. `menu.rs` names each
 and gives it its key, and the window knows each by the same word (`COMMANDS` in
 `model.ts`) and draws the same key (`KEYS` in `shortcuts.ts`).
 `shortcuts.test.ts` reads `menu.rs` and fails when the two disagree.
@@ -949,10 +1028,15 @@ next hands over its own, which replaces it, and Rust lets go of it in the
 something the last page sent that lands after the next one is listening is not
 taken for the new page's, and a window's `Destroyed` handled after the next
 page listened leaves that page and its bar alone. Each screen says what it
-answers (`answer` in `menu.svelte.ts`). No two screens answer the same item at
-once yet - the title bar's Settings… is offered only where the vault's status
-bar is not drawn - and when two do, the newest that can is the one that does,
-because a screen drawn over another was drawn after it.
+answers (`answer` in `menu.svelte.ts`), and where two answer the same item at
+once, the newest that can is the one that does, because a screen drawn over
+another was drawn after it. Two items are answered twice: with the settings
+drawn over an open vault, Show in Finder and Save a Copy… are answered by the
+vault's screen and by the settings, and the settings, being newer, take them -
+Show in Finder refused is said in the settings' failure line rather than in a
+notice, and the vault's own Save a Copy… is greyed while the settings are up.
+The title bar's Settings… is offered only where the vault's status bar is not
+drawn, so it is answered once.
 
 A choice runs the way a press on its button would. A sheet over the window goes
 first. Then the field being written in is left: a press on a button takes the
@@ -972,16 +1056,16 @@ front: Move to Recycle Bin would otherwise run out of sight, and its offer to
 undo run out unread. Lock Vault alone is left where it is, because it takes the
 window down and the one it builds comes forward asking for the password.
 
-**The page says what applies; the session has the last word on two.** Whenever
+**The page says what applies; the session has the last word on three.** Whenever
 the items its screens can do change - each on the condition its button is drawn
 on - the page sends `menu_state` with the list (`greying.ts`). One message at a
 time: Rust answers two side by side and in either order, so the bar would
 otherwise be left as whichever finished last said. Rust filters the list through
-the session - Lock Vault only with a vault open, Open Vault… never then, because
-it refuses to point the session at another file while one is - reading whether
-one is open without waiting for the session, which a save holds for seconds: a
-report stuck behind it left an item grey that applied, and AppKit drops the key
-of a grey item. It greys the rest out on the main thread, by a message posted
+the session - Lock Vault and Save a Copy… only with a vault open, Open Vault…
+never then, because it refuses to point the session at another file while one
+is - reading whether one is open without waiting for the session, which a save
+holds for seconds: a report stuck behind it left an item grey that applied, and
+AppKit drops the key of a grey item. It greys the rest out on the main thread, by a message posted
 there rather than waited for. A choice that crossed with a change on its way is
 asked again when it arrives, and one nothing can do any more does nothing - it
 does not even put a sheet away. Open Vault… applies wherever no vault is open:
@@ -1691,6 +1775,14 @@ name:
   password); beside such a copy it says what to do with the copy first.
   Section 3 rules out recovering one and says nothing against changing one, and
   a reader whose password was seen had nowhere to change it but another client.
+- Show in Finder beside the database path, which section 8 does name: a path a
+  reader cannot find in the Finder is a file they cannot carry anywhere.
+- Copy on another disk: when the last copy on another disk was made and on
+  which disk, with the way to save one (see Keeping a copy on another disk).
+  Section 11 calls a monthly copy on external media the only defence against a
+  dead disk, and Coffer never offered one. The unlocked window's status bar
+  says so once a month has gone by, and the unlock screen says nothing of it:
+  section 8 ends that screen with "Nothing else".
 
 **The unlock screen offers every backup, not only the most recent.** `SPEC.md`
 section 8 offers the most recent `.bak` for a corrupt file. When that one is

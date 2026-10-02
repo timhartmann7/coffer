@@ -24,6 +24,7 @@ const locked: Status = {
 	readOnly: false,
 	readOnlyBecause: null,
 	copyable: false,
+	elsewhere: null,
 	rescue: null,
 	lost: false,
 	file: { there: true, written: null },
@@ -89,7 +90,8 @@ function told(): Command[] {
 
 /** The bar is told what applies only once Rust can deliver a choice to the
  * page: before that, an item it enabled would be a choice that waits. And on
- * the unlock screen there is nothing to lock. */
+ * the unlock screen there is nothing to lock, and nothing open to copy; its
+ * file can still be shown, to be carried somewhere by hand. */
 it('tells the menu bar what the unlock screen offers once it listens, and never Lock Vault', async () => {
 	await boot();
 
@@ -97,7 +99,7 @@ it('tells the menu bar what the unlock screen offers once it listens, and never 
 	expect(ipc.listen.mock.invocationCallOrder[0]).toBeLessThan(
 		ipc.menuState.mock.invocationCallOrder[0]
 	);
-	expect(told()).toEqual(['settings', 'openVault', 'shortcuts']);
+	expect(told()).toEqual(['settings', 'openVault', 'showInFinder', 'shortcuts']);
 	expect(told()).not.toContain('lock');
 });
 
@@ -521,4 +523,101 @@ it('opens a backup from the settings after what is typed, and shows its unlock s
 	);
 	await vi.waitFor(() => expect(host.textContent).toContain('A backup, not your vault'));
 	expect(host.textContent).not.toContain('node-3');
+});
+
+/**
+ * What Rust knows of copies on another disk reaches the vault's status bar and
+ * the settings through the page, and a copy saved from either is what both say
+ * next: the reminder goes, and the row says when and where. The page is what
+ * joins the three, and a page that dropped Rust's answer would leave the
+ * reminder up after the copy it asked for.
+ */
+it('carries what is known of copies between the status bar and the settings', async () => {
+	const due = { otherDisk: null, sameDiskAt: null, overdue: 34 };
+	ipc.status.mockResolvedValue({ ...locked, unlocked: true, entries: 1, elsewhere: due });
+	ipc.tree.mockResolvedValue(root);
+	ipc.copyVault.mockResolvedValue({
+		sameDisk: false,
+		volume: 'Stick',
+		elsewhere: {
+			otherDisk: { at: new Date().toISOString(), volume: 'Stick' },
+			sameDiskAt: null,
+			overdue: null
+		}
+	});
+	const heard = await boot();
+	await vi.waitFor(() => expect(host.textContent).toContain('node-3'));
+	expect(host.textContent).toContain('No copy on another disk for 34 days');
+
+	heard({ action: 'command', command: 'settings' });
+	flushSync();
+	await vi.waitFor(() => expect(host.textContent).toContain('Copy on another disk'));
+	expect(host.textContent).toContain('Last made: never');
+
+	heard({ action: 'command', command: 'saveCopy' });
+	await vi.waitFor(() =>
+		expect(host.textContent).toContain('Last made: today, on “\u2068Stick\u2069”')
+	);
+	expect(ipc.copyVault).toHaveBeenCalledTimes(1);
+	expect(host.textContent).not.toContain('No copy on another disk');
+});
+
+/** A copy asked for from the vault's screen before the settings opened is
+ * still on its way when they are drawn over it. The page hands the settings
+ * the vault screen's answer, so their button says so and takes no press, and
+ * the menu bar's item is grey, rather than both offering a copy that would do
+ * nothing. */
+it('tells the settings a copy asked for before they opened is on its way', async () => {
+	const due = { otherDisk: null, sameDiskAt: null, overdue: 34 };
+	ipc.status.mockResolvedValue({ ...locked, unlocked: true, entries: 1, elsewhere: due });
+	ipc.tree.mockResolvedValue(root);
+	let finish: (made: null) => void = () => {};
+	ipc.copyVault.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+	const heard = await boot();
+	await vi.waitFor(() => expect(host.textContent).toContain('node-3'));
+
+	heard({ action: 'command', command: 'saveCopy' });
+	await vi.waitFor(() => expect(ipc.copyVault).toHaveBeenCalledTimes(1));
+	heard({ action: 'command', command: 'settings' });
+	flushSync();
+	await vi.waitFor(() => expect(host.textContent).toContain('Copy on another disk'));
+
+	const button = () =>
+		[...host.querySelectorAll('button')].find((each) => each.textContent?.includes('a copy'));
+	expect(button()?.textContent?.trim()).toBe('Saving a copy…');
+	expect(button()?.disabled).toBe(true);
+	await vi.waitFor(() => expect(told()).not.toContain('saveCopy'));
+
+	finish(null);
+	await vi.waitFor(() => expect(button()?.textContent?.trim()).toBe('Save a copy…'));
+	await vi.waitFor(() => expect(told()).toContain('saveCopy'));
+	expect(ipc.copyVault).toHaveBeenCalledTimes(1);
+});
+
+/** The unlock screen says nothing of copies: `SPEC.md` section 8 ends it with
+ * "Nothing else". Whatever Rust says of them while the vault is locked - an
+ * older Rust, a status that crossed a lock - draws no reminder there, no row
+ * in the settings opened over it, and no Save a Copy… in the menu bar. */
+it('says nothing of copies on the unlock screen, whatever the status says', async () => {
+	ipc.status.mockResolvedValue({
+		...locked,
+		unlocked: false,
+		elsewhere: { otherDisk: null, sameDiskAt: '2026-09-01T00:00:00Z', overdue: 400 }
+	});
+	const heard = await boot();
+	await vi.waitFor(() => expect(host.querySelector('form')).not.toBeNull());
+	await vi.waitFor(() => expect(ipc.menuState).toHaveBeenCalled());
+
+	expect(host.textContent).not.toContain('No copy on another disk');
+	expect(host.textContent).not.toContain('Copy on another disk');
+	expect(host.textContent).not.toContain('Show in Finder');
+	expect(told()).not.toContain('saveCopy');
+
+	heard({ action: 'command', command: 'settings' });
+	flushSync();
+	await vi.waitFor(() => expect(host.textContent).toContain('Open another'));
+	expect(host.textContent).not.toContain('Copy on another disk');
+	expect(host.textContent).not.toContain('same disk as the vault');
+	expect(told()).not.toContain('saveCopy');
+	expect(ipc.copyVault).not.toHaveBeenCalled();
 });

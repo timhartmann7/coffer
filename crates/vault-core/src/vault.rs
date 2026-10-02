@@ -31,12 +31,15 @@ use crate::wipe;
 
 mod adopt;
 mod batch;
+mod began;
+mod copy;
 mod making;
 mod moves;
 mod read_only;
 mod rekey;
 
 pub use adopt::Adopted;
+pub use copy::EncryptedCopy;
 pub use read_only::ReadOnly;
 
 /// The largest file Coffer will read into memory to try to open.
@@ -1308,63 +1311,16 @@ impl Vault {
         self.write(Guard::Ignore)
     }
 
-    /// Writes the database somewhere else, leaving the file it came from alone.
-    ///
-    /// No snapshot is rotated and nothing about this vault changes: the copy is
-    /// a copy, and the database is still the one this vault has open.
-    ///
-    /// Only at a name that holds nothing. A copy takes no snapshot of what it
-    /// would replace, and the panel it is aimed from opens in the vault's own
-    /// folder, where every file that must not go ends in `.kdbx`: the vault a
-    /// backup was taken of, the copy a lock left, a file a backup made the
-    /// vault kept aside, anybody's vault. Written over, any of them would be
-    /// gone with nothing behind it, so a name that is taken is refused with
-    /// [`VaultError::DatabaseExists`] rather than confirmed in the panel, as a
-    /// creation's is. The name is taken only once the copy is whole beside
-    /// it, so what is at it is never part of one. Nor is a copy written at one
-    /// of the names Coffer keeps beside a vault ([`storage::reserved`]), where
-    /// it would be taken for that vault's snapshot or its unsaved work.
-    pub fn save_copy(&mut self, path: &Path) -> Result<(), VaultError> {
-        // A snapshot and a read-only place are both about where the database
-        // is, and a copy is written somewhere else. That is the whole point of
-        // the offer: it is how the reader gets their work off a medium that
-        // will not take it.
-        if let Some(why) = self.source.filter(|why| !why.copyable()) {
-            return Err(why.into());
-        }
-        if path.canonicalize().is_ok_and(|target| target == self.path) {
-            return Err(VaultError::CopyOntoItself);
-        }
-        if storage::reserved(path) {
-            return Err(VaultError::ReservedName);
-        }
-
-        let staged = self.staged_copy(path)?;
-        atomic::reserve(path).map_err(|error| match error.kind() {
-            std::io::ErrorKind::AlreadyExists => VaultError::DatabaseExists,
-            _ => VaultError::Io(error),
-        })?;
-        // The name holds Coffer's own empty file from here, and the rename puts
-        // the whole copy over it. One that did not go through takes it back.
-        staged.commit().map_err(|error| {
-            let _ = std::fs::remove_file(path);
-            VaultError::Io(error)
-        })
-    }
-
-    /// The database encrypted into a temporary file beside `path`, whole and
-    /// flushed, for a write that is not a save of this vault's own file.
-    fn staged_copy(&mut self, path: &Path) -> Result<atomic::Staged, VaultError> {
+    /// Settles the database and encrypts the whole of it into `writer`, for a
+    /// write that is not a save of this vault's own file: a copy elsewhere, or
+    /// the one a lock leaves beside the vault. One past the ceiling is refused,
+    /// because nobody could open it again.
+    fn encrypt_whole(&mut self, writer: &mut dyn Write) -> Result<(), VaultError> {
         self.prepare()?;
-
-        let mut written = 0;
-        atomic::stage::<VaultError, _>(path, |writer: &mut dyn Write| {
-            written = encrypt(&self.database, &self.key, writer)?;
-            if written > MAX_DATABASE_BYTES {
-                return Err(VaultError::TooLarge);
-            }
-            Ok(())
-        })
+        if encrypt(&self.database, &self.key, writer)? > MAX_DATABASE_BYTES {
+            return Err(VaultError::TooLarge);
+        }
+        Ok(())
     }
 
     /// Writes out whatever the file has not got, on the way to being wiped.
@@ -1398,9 +1354,9 @@ impl Vault {
 
         // Over the copy an earlier lock with the same trouble left, which is
         // the one name a copy is written over: there is one copy, the newest.
-        let kept = self
-            .staged_copy(&beside)
-            .and_then(|staged| Ok(staged.commit()?));
+        let kept = atomic::write_atomic::<VaultError, _>(&beside, |writer: &mut dyn Write| {
+            self.encrypt_whole(writer)
+        });
         match kept {
             Ok(()) => Rescue::Kept,
             Err(_) => Rescue::Lost,

@@ -1360,3 +1360,151 @@ it('draws a found name that holds markup as the characters it is', () => {
 
 	unmount(component);
 });
+
+/**
+ * File ▸ Show in Finder is the one way to the vault's file from here, for a
+ * reader carrying it to a stick by hand, and nothing on the screen offers it.
+ * It is offered only while the file is there; one that went since the screen
+ * was drawn is said the way an unlock that found it gone says it, with the
+ * backups beside it offered.
+ */
+it('shows the vault in the Finder from the menu bar, and only while its file is there', async () => {
+	ipc.showInFinder
+		.mockResolvedValueOnce(undefined)
+		.mockRejectedValueOnce({ code: 'gone', message: 'the database file is gone' });
+	ipc.snapshots.mockResolvedValue([
+		{ name: 'personal.kdbx.1.bak', index: 1, taken: '2026-09-01T14:07:00Z' }
+	]);
+	const props = {
+		database,
+		onChoose: vi.fn(),
+		onKeyFile: vi.fn(),
+		onCreate: vi.fn(),
+		onGone: vi.fn(),
+		onUnlocked: vi.fn()
+	};
+
+	const missing = mount(Unlock, {
+		target: host,
+		props: { ...props, file: { there: false, written: null } }
+	});
+	flushSync();
+	expect(applying()).not.toContain('showInFinder');
+	unmount(missing);
+
+	const component = mount(Unlock, {
+		target: host,
+		props: { ...props, file: { there: true, written: null } }
+	});
+	flushSync();
+	expect(buttons()).not.toContain('Show in Finder');
+	expect(applying()).toContain('showInFinder');
+
+	run('showInFinder');
+	await vi.waitFor(() => expect(ipc.showInFinder).toHaveBeenCalledTimes(1));
+	await tick();
+	expect(reads()).not.toContain('gone');
+
+	run('showInFinder');
+	await vi.waitFor(() => expect(reads()).toContain('the database file is gone'));
+	await vi.waitFor(() => expect(reads()).toContain('personal.kdbx.1.bak'));
+	expect(host.innerHTML, 'the password was marked wrong').not.toContain('border-danger/60');
+
+	unmount(component);
+});
+
+/**
+ * A look at the file in the Finder changes nothing about the vault, so it
+ * changes nothing the screen says about it. A vault that would not open keeps
+ * its message and the backups that are the way to its data; a lock somebody
+ * holds keeps its explanation, and a take-over already pressed keeps the line
+ * that says the next password takes the lock.
+ */
+it('leaves a refusal and its way out on the screen when the Finder shows the file', async () => {
+	ipc.showInFinder.mockResolvedValue(undefined);
+	ipc.snapshots.mockResolvedValue([
+		{ name: 'personal.kdbx.1.bak', index: 1, taken: '2026-09-01T14:07:00Z' }
+	]);
+	const props = {
+		database,
+		file: { there: true, written: null },
+		onChoose: vi.fn(),
+		onKeyFile: vi.fn(),
+		onCreate: vi.fn(),
+		onGone: vi.fn(),
+		onUnlocked: vi.fn()
+	};
+
+	ipc.unlock.mockRejectedValue({ code: 'damaged', message: 'the database body is damaged' });
+	const damaged = mount(Unlock, { target: host, props });
+	flushSync();
+	submit('correct horse battery staple');
+	await vi.waitFor(() => expect(reads()).toContain('personal.kdbx.1.bak'));
+
+	run('showInFinder');
+	await vi.waitFor(() => expect(ipc.showInFinder).toHaveBeenCalledTimes(1));
+	await tick();
+	flushSync();
+	expect(reads()).toContain('the database body is damaged');
+	expect(reads()).toContain('personal.kdbx.1.bak');
+	unmount(damaged);
+
+	ipc.unlock.mockRejectedValue({
+		code: 'heldByAnother',
+		message: 'someone has it open on another-mac'
+	});
+	const held = mount(Unlock, { target: host, props });
+	flushSync();
+	submit('correct horse battery staple');
+	await vi.waitFor(() => expect(reads()).toContain('another-mac'));
+	flushSync();
+	button('Open it anyway').click();
+	flushSync();
+	expect(reads()).toContain('Type the password again');
+
+	run('showInFinder');
+	await vi.waitFor(() => expect(ipc.showInFinder).toHaveBeenCalledTimes(2));
+	await tick();
+	flushSync();
+	expect(reads()).toContain('another-mac');
+	expect(reads()).toContain('Type the password again');
+	expect(button('Open anyway')).toBeDefined();
+	unmount(held);
+});
+
+/** A show refused while a take-over was pressed says why, and lets the
+ * take-over go: the screen no longer explains it, so the next password is an
+ * ordinary unlock. */
+it('lets a take-over go when the Finder could not show the file', async () => {
+	ipc.showInFinder.mockRejectedValue({ code: 'gone', message: 'the database file is gone' });
+	ipc.unlock.mockRejectedValue({
+		code: 'heldByAnother',
+		message: 'someone has it open on another-mac'
+	});
+	const component = mount(Unlock, {
+		target: host,
+		props: {
+			database,
+			file: { there: true, written: null },
+			onChoose: vi.fn(),
+			onKeyFile: vi.fn(),
+			onCreate: vi.fn(),
+			onGone: vi.fn(),
+			onUnlocked: vi.fn()
+		}
+	});
+	flushSync();
+	submit('correct horse battery staple');
+	await vi.waitFor(() => expect(reads()).toContain('another-mac'));
+	flushSync();
+	button('Open it anyway').click();
+	flushSync();
+
+	run('showInFinder');
+	await vi.waitFor(() => expect(reads()).toContain('the database file is gone'));
+	expect(reads()).not.toContain('Type the password again');
+	expect(buttons()).toContain('Unlock');
+	expect(buttons()).not.toContain('Open anyway');
+
+	unmount(component);
+});

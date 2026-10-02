@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { untrack, type Snippet } from 'svelte';
+	import { tick, untrack, type Snippet } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import {
 		asFailure,
@@ -9,12 +9,14 @@
 		entry as loadEntry,
 		openUrl,
 		renameGroup,
+		showInFinder,
 		tree as loadTree,
 		undoRemoval,
 		versions as loadVersions
 	} from '$lib/ipc';
 	import { deleted as deletedLine, eraseQuestion } from '$lib/bin';
 	import { forget, marked as inMenu, offer } from '$lib/context.svelte';
+	import { overdue, refused, saved } from '$lib/copies';
 	import { Dragging, LANDING } from '$lib/dragging.svelte';
 	import { flush } from '$lib/drafts';
 	import { named as howLong } from '$lib/duration';
@@ -38,6 +40,7 @@
 		type Chosen,
 		type Database,
 		type Deleting,
+		type Elsewhere,
 		type Entry,
 		type EntryRow,
 		type Field,
@@ -47,6 +50,7 @@
 		type Offer,
 		type Position,
 		type ReadOnlyBecause,
+		type SavedCopy,
 		type Span
 	} from '$lib/model';
 	import { index, search } from '$lib/search';
@@ -91,10 +95,12 @@
 		readOnly,
 		readOnlyBecause = null,
 		copyable = false,
+		elsewhere = null,
 		news = null,
 		settings,
 		onSettings,
-		onTree
+		onTree,
+		onElsewhere
 	}: {
 		database: Database;
 		root: Group;
@@ -109,6 +115,10 @@
 		/** Whether what is open can be written to a file somewhere else, which
 		 * the status bar's note offers where it can. */
 		copyable?: boolean;
+		/** What Rust knows of copies of this vault kept on another disk, or
+		 * null for anything Coffer does not keep copies of. The window's,
+		 * because the settings read it too. */
+		elsewhere?: Elsewhere | null;
 		/** Something that happened to the vault on the way to this screen, for
 		 * its notice to say: what became of the file a backup replaced. A new
 		 * object each time, so that the same words twice are said twice. */
@@ -128,6 +138,8 @@
 		/** Opens the settings screen, and closes it again. */
 		onSettings: () => void;
 		onTree: (tree: Group) => void;
+		/** A copy was saved, and this is what Rust knows of copies now. */
+		onElsewhere: (now: Elsewhere) => void;
 	} = $props();
 
 	/** No rows at all, drawn chosen. */
@@ -1064,6 +1076,65 @@
 		}
 	}
 
+	/** The status bar's offer to save a copy, and the Settings button beside
+	 * it, which is where the focus goes once the offer has gone. */
+	let copyOffer = $state<HTMLButtonElement>();
+	let settingsButton = $state<HTMLButtonElement>();
+
+	/** Saves a copy on another disk, hands on what Rust then knows, and says in
+	 * a notice where the copy went: what the settings' button, the status
+	 * bar's offer and File ▸ Save a Copy… all run. The notice draws over the
+	 * settings, whose row would otherwise read the same after a second copy
+	 * on one day. A panel closed says nothing, and a refusal is thrown back
+	 * to be said where the copy was asked for. */
+	async function copyElsewhere(): Promise<SavedCopy | null> {
+		const made = await file.copyElsewhere();
+		if (made) {
+			onElsewhere(made.elsewhere);
+			notices.tell({ message: saved(made), kind: 'copied' });
+		}
+		return made;
+	}
+
+	/** The same, from the status bar or the menu bar, which say why there is
+	 * no copy in a warning. The offer pressed from the keyboard is taken off
+	 * the bar while the copy is on its way, and the focus with it; once it
+	 * has an answer the focus goes back to the offer, or to Settings beside
+	 * it when a copy on another disk took the offer away - unless the reader
+	 * has put it somewhere since. */
+	async function copyAndSay() {
+		const pressed = copyOffer !== undefined && document.activeElement === copyOffer;
+		try {
+			await copyElsewhere();
+		} catch (thrown) {
+			notices.warn(refused(thrown));
+		}
+		if (!pressed) return;
+		await tick();
+		const now = document.activeElement;
+		if (now === null || now === document.body) (copyOffer ?? settingsButton)?.focus();
+	}
+
+	/** Shows the vault's file in the Finder, and says why when it cannot. */
+	function showVault() {
+		showInFinder().catch(failed);
+	}
+
+	// File ▸ Save a Copy… and Show in Finder. Neither takes the pane away, so
+	// neither waits for one that has to stay. A copy is this screen's to make
+	// while the list and the pane are the reader's: over them, the settings
+	// have a button of their own, and the conflict dialog asks its question
+	// first.
+	$effect(() =>
+		answer({
+			saveCopy: {
+				run: () => void copyAndSay(),
+				when: () => free && elsewhere !== null && !file.copying
+			},
+			showInFinder: { run: showVault }
+		})
+	);
+
 	// What the menu bar's items do on this screen: each runs what its button
 	// runs, on the condition its button is drawn on.
 	$effect(() =>
@@ -1741,7 +1812,11 @@
 		<!-- Over the panes and not over the status bar, which is where the button
 		     that opened this is and where it stays. -->
 		<div class="absolute inset-0 z-20 flex animate-fade flex-col overflow-hidden bg-surface">
-			{@render settings(readOnly ? {} : { rekey })}
+			{@render settings({
+				rekey: readOnly ? undefined : rekey,
+				onCopy: elsewhere ? copyElsewhere : undefined,
+				copying: file.copying
+			})}
 		</div>
 	{/if}
 
@@ -1797,7 +1872,9 @@
 	<!-- One group, because two `ml-auto` siblings in a flex row do not both push
 	     right. -->
 	<span class="ml-auto flex shrink-0 items-center gap-4">
-		{#if file.saving}
+		{#if file.copying}
+			<span class="text-txt3">Saving a copy…</span>
+		{:else if file.saving}
 			<span class="text-txt3">Saving…</span>
 		{:else if file.unsaved}
 			<!-- A state design.html does not draw, built from its own tokens: the
@@ -1806,10 +1883,26 @@
 			<span class="text-warn">Not saved</span>
 		{:else if readOnlyBecause}
 			<ReadOnly because={readOnlyBecause} {copyable} onCopy={keepACopy} />
+		{:else if elsewhere?.overdue}
+			<!-- A state design.html does not draw (docs/design.md, "A copy on
+			     another disk"): the mockup's countdown corner, in its txt3, and
+			     last in line, so that a save and a refusal are said first. -->
+			<span class="flex items-center gap-2 text-txt3">
+				{overdue(elsewhere.overdue)} ·
+				<button
+					bind:this={copyOffer}
+					type="button"
+					onclick={() => void copyAndSay()}
+					class="tracking-label uppercase transition-colors hover:text-txt2 active:text-txt4"
+				>
+					Save a copy
+				</button>
+			</span>
 		{/if}
 		<!-- The settings go over the pane, which is the pane gone from where the
 		     reader can answer a question in it. -->
 		<button
+			bind:this={settingsButton}
 			type="button"
 			onclick={toggleSettings}
 			aria-label={settings ? 'Back to the vault' : 'Settings'}

@@ -22,6 +22,8 @@
 		newFolder: 'Make a new folder',
 		duplicate: 'Make a copy of the open entry beside it',
 		openVault: 'Open another vault, while this one is locked',
+		saveCopy: 'Save a copy of the vault on another disk',
+		showInFinder: 'Show the vault’s file in the Finder',
 		find: 'Search the list',
 		copyLogin: 'Copy the open entry’s login',
 		copyPassword: 'Copy the open entry’s password',

@@ -44,6 +44,6 @@ pub use crate::error::VaultError;
 pub use crate::key::MasterKey;
 pub use crate::secret::SecretValue;
 pub use crate::vault::{
-    Adopted, Attached, LockPolicy, MAX_ATTACHMENT_BYTES, NewValue, ReadOnly, Recipe, Rescue, Rival,
-    Typing, Vault, Written,
+    Adopted, Attached, EncryptedCopy, LockPolicy, MAX_ATTACHMENT_BYTES, NewValue, ReadOnly, Recipe,
+    Rescue, Rival, Typing, Vault, Written,
 };

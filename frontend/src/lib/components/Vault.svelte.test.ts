@@ -13,7 +13,7 @@ import { drawing, entry, field, generated, group, kinds, row, version } from '$l
 import { focused } from '$lib/focus.svelte';
 import { hold } from '$lib/holding';
 import { applying, run } from '$lib/menu.svelte';
-import type { Entry, EntryRow, Group, ReadOnlyBecause, Version } from '$lib/model';
+import type { Elsewhere, Entry, EntryRow, Group, ReadOnlyBecause, Version } from '$lib/model';
 import { reactive } from '$lib/props.svelte';
 import type { Stubbed } from '$lib/stubbed';
 import type { Handed } from './Settings.svelte';
@@ -102,10 +102,12 @@ function open(
 		readOnly?: boolean;
 		readOnlyBecause?: ReadOnlyBecause | null;
 		copyable?: boolean;
+		elsewhere?: Elsewhere | null;
 		news?: { message: string } | null;
 		settings?: Snippet<[Handed]>;
 		onSettings?: () => void;
 		onTree?: (tree: typeof root) => void;
+		onElsewhere?: (now: Elsewhere) => void;
 	} = {}
 ) {
 	return mount(Vault, {
@@ -117,6 +119,7 @@ function open(
 			readOnly: false,
 			onSettings: vi.fn(),
 			onTree: vi.fn(),
+			onElsewhere: vi.fn(),
 			...over
 		}
 	});
@@ -603,7 +606,8 @@ it('names the field a copy took, from a row, the open entry, a version or a sele
 			kinds: kinds(),
 			readOnly: false,
 			onSettings: vi.fn(),
-			onTree: vi.fn()
+			onTree: vi.fn(),
+			onElsewhere: vi.fn()
 		}
 	});
 	try {
@@ -2213,7 +2217,15 @@ function mounted(tree: typeof root, readOnly = false) {
 	const onSettings = vi.fn();
 	const component = mount(Vault, {
 		target: host,
-		props: { database, root: tree, kinds: kinds(), readOnly, onSettings, onTree }
+		props: {
+			database,
+			root: tree,
+			kinds: kinds(),
+			readOnly,
+			onSettings,
+			onTree,
+			onElsewhere: vi.fn()
+		}
 	});
 	flushSync();
 	return { component, onTree, onSettings };
@@ -4840,7 +4852,8 @@ function following(tree: Group, readOnly = false) {
 		onSettings: vi.fn(),
 		onTree: (next: Group) => {
 			props.root = next;
-		}
+		},
+		onElsewhere: vi.fn()
 	});
 	const component = mount(Vault, { target: host, props });
 	flushSync();
@@ -8382,11 +8395,17 @@ it('asks nothing at the foot of an entry put back while its bin card was asking'
 /** The settings as the window above draws them, keeping what this screen
  * hands them so that a test can use it the way the settings would. */
 function handing() {
-	const handed: { now: Handed | null } = { now: null };
-	const settings = createRawSnippet<[Handed]>((given) => ({
+	let given: (() => Handed) | null = null;
+	const handed = {
+		/** What the screen hands the settings now, read again on every look. */
+		get now(): Handed | null {
+			return given?.() ?? null;
+		}
+	};
+	const settings = createRawSnippet<[Handed]>((handing) => ({
 		render: () => {
-			handed.now = given();
-			return `<p>${handed.now.rekey ? 'A password can be changed' : 'No password to change'}</p>`;
+			given = handing;
+			return `<p>${handing().rekey ? 'A password can be changed' : 'No password to change'}</p>`;
 		}
 	}));
 	return { handed, settings };
@@ -8406,7 +8425,7 @@ it('hands the settings a way to change the password only when the vault can be w
 	const other = open({ readOnly: true, settings: readOnly.settings });
 	flushSync();
 	expect(reads()).toContain('No password to change');
-	expect(readOnly.handed.now).toEqual({});
+	expect(readOnly.handed.now).toEqual({ copying: false });
 	unmount(other);
 });
 
@@ -8484,7 +8503,8 @@ it('clears "Not saved" once a password change has written the file, and reads th
 		readOnly: false,
 		settings: undefined,
 		onSettings: vi.fn(),
-		onTree: vi.fn()
+		onTree: vi.fn(),
+		onElsewhere: vi.fn()
 	});
 	const component = mount(Vault, { target: host, props });
 	flushSync();
@@ -8563,7 +8583,8 @@ it('raises no notice and leaves "Not saved" standing when a password change fail
 		readOnly: false,
 		settings: undefined,
 		onSettings: vi.fn(),
-		onTree: vi.fn()
+		onTree: vi.fn(),
+		onElsewhere: vi.fn()
 	});
 	const component = mount(Vault, { target: host, props });
 	flushSync();
@@ -8587,6 +8608,428 @@ it('raises no notice and leaves "Not saved" standing when a password change fail
 	expect(host.textContent).toContain('Not saved');
 	expect(host.textContent).not.toContain('The file changed while you were working');
 	expect(ipc.rival).not.toHaveBeenCalled();
+
+	unmount(component);
+});
+
+/** Nothing known of copies yet, a month or more after the vault was made. */
+const DUE: Elsewhere = { otherDisk: null, sameDiskAt: null, overdue: 34 };
+
+/** What `copyVault` answers once a copy has gone to a stick: it is the copy on
+ * another disk now, and nothing is due. */
+function savedOn(volume: string | null, sameDisk = false) {
+	return {
+		sameDisk,
+		volume,
+		elsewhere: {
+			otherDisk: sameDisk ? null : { at: '2026-10-02T09:00:00Z', volume },
+			sameDiskAt: sameDisk ? '2026-10-02T09:00:00Z' : null,
+			overdue: sameDisk ? 34 : null
+		}
+	};
+}
+
+/** The status bar's offer to save a copy, as the reader presses it. */
+function saveACopy() {
+	const found = [...host.querySelectorAll('.ml-auto button')].find(
+		(each) => each.textContent?.trim() === 'Save a copy'
+	);
+	if (!found) throw new Error('the status bar offers no copy');
+	(found as HTMLButtonElement).click();
+}
+
+/** A month and more without a copy on another disk is said in the status
+ * bar, quietly, in the one group on the right, with the way to make one. */
+it('says in the status bar when a month has gone by without a copy on another disk', () => {
+	const component = open({ elsewhere: DUE });
+	flushSync();
+
+	const pushed = [...host.querySelectorAll('.ml-auto')];
+	expect(pushed).toHaveLength(1);
+	expect(pushed[0].textContent?.replace(/\s+/g, ' ')).toContain(
+		'No copy on another disk for 34 days · Save a copy'
+	);
+
+	unmount(component);
+});
+
+/** Before a month is up, in a vault with no entries - which Rust answers
+ * with no count - and for anything Coffer keeps no copies of, nothing. */
+it('says nothing about copies before a month is up, or with nothing to keep copies of', () => {
+	for (const elsewhere of [{ ...DUE, overdue: null }, null]) {
+		const component = open({ elsewhere });
+		flushSync();
+		expect(reads(), JSON.stringify(elsewhere)).not.toContain('No copy on another disk');
+		unmount(component);
+	}
+});
+
+it('says over a year rather than counting thousands of days', () => {
+	const component = open({ elsewhere: { ...DUE, overdue: 20_587 } });
+	flushSync();
+	expect(reads()).toContain('No copy on another disk for over a year');
+	expect(reads()).not.toContain('20587');
+	unmount(component);
+});
+
+/** The status bar says one thing at a time, and a save, a failed save and
+ * the read-only note each come before the reminder: they are about the file
+ * as it is now. */
+it('says a failed save or a read-only vault before it reminds about a copy', async () => {
+	ipc.save.mockRejectedValue({ code: 'io', message: 'the disk is full' });
+	ipc.entry.mockResolvedValue(entry({ id: kept.id, group: root.id }));
+	ipc.setField.mockResolvedValue(entry({ id: kept.id, group: root.id }));
+	const component = open({ elsewhere: DUE });
+	flushSync();
+	pressed('node-3');
+	await vi.waitFor(() => expect(ipc.entry).toHaveBeenCalled());
+	flushSync();
+	write(host.querySelector('h1 input') as HTMLInputElement, 'node-4');
+	await vi.waitFor(() => expect(host.textContent).toContain('Not saved'));
+	expect(reads()).not.toContain('No copy on another disk');
+	unmount(component);
+
+	const readOnly = open({
+		elsewhere: DUE,
+		readOnly: true,
+		readOnlyBecause: 'place',
+		copyable: true
+	});
+	flushSync();
+	expect(reads()).toContain('Read only');
+	expect(reads()).not.toContain('No copy on another disk');
+	unmount(readOnly);
+});
+
+/** The copy is Rust's, through its own panel. Where it went is said in the
+ * notice, the window above is handed what Rust now knows, and the versions in
+ * the pane are read again, because the copy settled them the way a save does. */
+it('saves a copy from the status bar, says where it went, and reads the versions again', async () => {
+	ipc.copyVault.mockResolvedValue(savedOn('Stick'));
+	const onElsewhere = vi.fn();
+	const component = open({ elsewhere: DUE, onElsewhere });
+	flushSync();
+	await reading();
+	const listed = ipc.versions.mock.calls.length;
+
+	saveACopy();
+	await vi.waitFor(() => expect(notice()).toBe('Copy saved on “\u2068Stick\u2069”.'));
+	expect(ipc.copyVault).toHaveBeenCalledTimes(1);
+	expect(onElsewhere).toHaveBeenCalledWith(savedOn('Stick').elsewhere);
+	expect(ipc.versions.mock.calls.length).toBeGreaterThan(listed);
+	expect(ipc.versions.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+		ipc.copyVault.mock.invocationCallOrder[0]
+	);
+
+	unmount(component);
+});
+
+/** A copy on the vault's own disk is made, and the notice says what it is: it
+ * goes with the vault the day that disk fails. */
+it('says a copy on the vault’s own disk could go with it', async () => {
+	ipc.copyVault.mockResolvedValue(savedOn('Stick', true));
+	const component = open({ elsewhere: DUE });
+	flushSync();
+
+	run('saveCopy');
+	await vi.waitFor(() =>
+		expect(notice()).toBe(
+			'Copy saved on the same disk as the vault, where it would not survive that disk failing.'
+		)
+	);
+
+	unmount(component);
+});
+
+/** A panel closed is the reader changing their mind: nothing is said, and
+ * nothing the window above holds is replaced. */
+it('leaves everything as it was when the panel is closed', async () => {
+	ipc.copyVault.mockResolvedValue(null);
+	const onElsewhere = vi.fn();
+	const component = open({ elsewhere: DUE, onElsewhere });
+	flushSync();
+
+	saveACopy();
+	await vi.waitFor(() => expect(ipc.copyVault).toHaveBeenCalledTimes(1));
+	await tick();
+	flushSync();
+
+	expect(host.querySelector('[data-notice]')).toBeNull();
+	expect(onElsewhere).not.toHaveBeenCalled();
+	expect(reads()).toContain('No copy on another disk for 34 days');
+
+	unmount(component);
+});
+
+/** A copy aimed at a name that holds a file is refused and replaces nothing,
+ * and the warning says so in words about the copy. Any other refusal is
+ * Rust's sentence. The status bar goes back to what it said. */
+it('says why a copy was not saved, and that nothing was replaced', async () => {
+	ipc.copyVault
+		.mockRejectedValueOnce({ code: 'taken', message: 'there is already a file with that name' })
+		.mockRejectedValueOnce({ code: 'io', message: 'the disk is full' });
+	const component = open({ elsewhere: DUE });
+	flushSync();
+	await reading();
+	const listed = ipc.versions.mock.calls.length;
+
+	saveACopy();
+	await vi.waitFor(() =>
+		expect(notice()).toBe(
+			'A file by that name is already there, so nothing was replaced. Save the copy under another name.'
+		)
+	);
+	// Refused at the write, the copy had already settled the histories: the
+	// versions in the pane are read again, or the next press on one is refused.
+	expect(ipc.versions.mock.calls.length).toBeGreaterThan(listed);
+	expect(ipc.versions.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+		ipc.copyVault.mock.invocationCallOrder[0]
+	);
+	expect(host.querySelector('[data-notice] use[href="#i-warn"]')).not.toBeNull();
+	expect(reads()).not.toContain('Saving a copy…');
+	expect(reads()).toContain('No copy on another disk for 34 days');
+
+	saveACopy();
+	await vi.waitFor(() => expect(notice()).toBe('the disk is full'));
+
+	unmount(component);
+});
+
+/** One copy, however many ways it is asked for while it is on its way: the
+ * status bar says it is on its way instead of offering another, and the menu
+ * bar's item goes grey. */
+it('asks Rust for one copy however many ways it is asked', async () => {
+	let finish: (made: ReturnType<typeof savedOn>) => void = () => {};
+	ipc.copyVault.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+	const component = open({ elsewhere: DUE });
+	flushSync();
+
+	saveACopy();
+	await tick();
+	flushSync();
+	expect(reads()).toContain('Saving a copy…');
+	expect(reads()).not.toContain('No copy on another disk');
+	expect(applying()).not.toContain('saveCopy');
+	run('saveCopy');
+	await tick();
+	expect(ipc.copyVault).toHaveBeenCalledTimes(1);
+
+	finish(savedOn(null));
+	await vi.waitFor(() => expect(notice()).toBe('Copy saved on another disk.'));
+	expect(reads()).not.toContain('Saving a copy…');
+	expect(ipc.copyVault).toHaveBeenCalledTimes(1);
+
+	unmount(component);
+});
+
+/** File ▸ Save a Copy… from a field: the field is left, which writes what was
+ * typed, and the copy is asked for only once that has landed, so the copy
+ * holds it. */
+it('copies only after the value being written has landed', async () => {
+	let written: (value: unknown) => void = () => {};
+	ipc.setField.mockReturnValue(new Promise((resolve) => (written = resolve)));
+	ipc.copyVault.mockResolvedValue(savedOn('Stick'));
+	const component = open({ elsewhere: DUE });
+	flushSync();
+	await reading();
+
+	const title = host.querySelector<HTMLInputElement>('h1 input');
+	title?.focus();
+	if (title) title.value = 'node-4';
+	title?.dispatchEvent(new Event('input', { bubbles: true }));
+
+	run('saveCopy');
+	expect(ipc.setField).toHaveBeenCalledWith(kept.id, 'Title', 'node-4', false, expect.any(Number));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(
+		ipc.copyVault,
+		'the copy was asked for before the title was written'
+	).not.toHaveBeenCalled();
+
+	written(entry({ id: kept.id, group: root.id }));
+	await vi.waitFor(() => expect(ipc.copyVault).toHaveBeenCalledTimes(1));
+	expect(ipc.setField.mock.invocationCallOrder[0]).toBeLessThan(
+		ipc.copyVault.mock.invocationCallOrder[0]
+	);
+
+	unmount(component);
+});
+
+/** Show in Finder is offered over any vault; Save a Copy… only where there is
+ * a vault to keep copies of, and not under the settings or the conflict
+ * dialog, which have the window. */
+it('answers Show in Finder and Save a Copy…, and greys Save a Copy… with nothing to copy', async () => {
+	ipc.showInFinder.mockRejectedValueOnce({ code: 'gone', message: 'the database file is gone' });
+	const component = open({ elsewhere: DUE });
+	flushSync();
+
+	expect(applying()).toEqual(expect.arrayContaining(['saveCopy', 'showInFinder']));
+	run('showInFinder');
+	await vi.waitFor(() => expect(notice()).toBe('the database file is gone'));
+	unmount(component);
+
+	const nothing = open({ elsewhere: null });
+	flushSync();
+	expect(applying()).toContain('showInFinder');
+	expect(applying()).not.toContain('saveCopy');
+	unmount(nothing);
+
+	const covered = open({ elsewhere: DUE, settings: sheet });
+	flushSync();
+	expect(applying(), 'offered under the settings').not.toContain('saveCopy');
+	unmount(covered);
+});
+
+/** The settings are handed the way to save a copy only where there is a vault
+ * to keep copies of, and it is the status bar's: what Rust then knows reaches
+ * the window above, and the notice says where the copy went, over the
+ * settings, whose row reads the same after a second copy on one day. */
+it('hands the settings a way to save a copy only where there are copies to keep', async () => {
+	ipc.copyVault.mockResolvedValue(savedOn('Stick'));
+	const onElsewhere = vi.fn();
+	const copying = handing();
+	const component = open({ elsewhere: DUE, onElsewhere, settings: copying.settings });
+	flushSync();
+
+	await expect(copying.handed.now?.onCopy?.()).resolves.toEqual(savedOn('Stick'));
+	expect(onElsewhere).toHaveBeenCalledWith(savedOn('Stick').elsewhere);
+	flushSync();
+	expect(notice(), 'a second copy on one day would change nothing in the row').toBe(
+		'Copy saved on “\u2068Stick\u2069”.'
+	);
+	unmount(component);
+
+	const none = handing();
+	const other = open({ elsewhere: null, settings: none.settings });
+	flushSync();
+	expect(none.handed.now?.onCopy).toBeUndefined();
+	unmount(other);
+});
+
+/** The settings are handed whether a copy is on its way, however it was asked
+ * for: one started from the status bar before they opened greys their button
+ * and the menu bar's item, rather than leaving a press that does nothing. */
+it('tells the settings a copy started from the status bar is on its way', async () => {
+	let finish: (made: ReturnType<typeof savedOn>) => void = () => {};
+	ipc.copyVault.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+	const copying = handing();
+	const props = reactive({
+		database,
+		root,
+		kinds: kinds(),
+		readOnly: false,
+		elsewhere: DUE,
+		settings: undefined as Snippet<[Handed]> | undefined,
+		onSettings: vi.fn(),
+		onTree: vi.fn(),
+		onElsewhere: vi.fn()
+	});
+	const component = mount(Vault, { target: host, props });
+	flushSync();
+
+	saveACopy();
+	await tick();
+	props.settings = copying.settings;
+	flushSync();
+	expect(copying.handed.now?.copying).toBe(true);
+	expect(applying()).not.toContain('saveCopy');
+
+	finish(savedOn('Stick'));
+	await vi.waitFor(() => expect(copying.handed.now?.copying).toBe(false));
+
+	unmount(component);
+});
+
+/** The conflict dialog asks its question before anything else happens to the
+ * vault, and a copy is something happening to it: File ▸ Save a Copy… is grey
+ * under the dialog, and its key does nothing there. */
+it('saves no copy from the menu bar while the conflict dialog asks its question', async () => {
+	ipc.save.mockRejectedValue({ code: 'externalChange', message: 'the database changed on disk' });
+	ipc.rival.mockResolvedValue({ modified: null, entries: 3 });
+	ipc.createEntry.mockResolvedValue({ tree: root, entry: kept.id });
+	ipc.entry.mockResolvedValue(entry({ id: kept.id, group: root.id }));
+	const component = open({ elsewhere: DUE });
+	flushSync();
+	expect(applying()).toContain('saveCopy');
+
+	run('newEntry');
+	flushSync();
+	inPicker('Enter');
+	await vi.waitFor(() => expect(host.textContent).toContain('The file changed'));
+	flushSync();
+
+	expect(applying()).not.toContain('saveCopy');
+	run('saveCopy');
+	await tick();
+	expect(ipc.copyVault).not.toHaveBeenCalled();
+
+	return unmount(component);
+});
+
+/** The status bar's offer pressed from the keyboard is taken off the bar while
+ * the copy is on its way. Once there is an answer the focus goes back to it -
+ * a panel closed, a copy refused, a copy on the vault's own disk all leave the
+ * offer standing - or to Settings beside it, when a copy on another disk took
+ * the offer away. */
+it('gives the focus back to the offer, or to Settings once the offer has gone', async () => {
+	ipc.copyVault
+		.mockResolvedValueOnce(null)
+		.mockRejectedValueOnce({ code: 'taken', message: 'there is already a file with that name' })
+		.mockResolvedValueOnce(savedOn('Stick'));
+	const props = reactive({
+		database,
+		root,
+		kinds: kinds(),
+		readOnly: false,
+		elsewhere: DUE as Elsewhere | null,
+		onSettings: vi.fn(),
+		onTree: vi.fn(),
+		onElsewhere: vi.fn((now: Elsewhere) => (props.elsewhere = now))
+	});
+	const component = mount(Vault, { target: host, props });
+	flushSync();
+
+	const offer = () =>
+		[...host.querySelectorAll<HTMLButtonElement>('.ml-auto button')].find(
+			(each) => each.textContent?.trim() === 'Save a copy'
+		);
+	for (const call of [1, 2]) {
+		offer()?.focus();
+		offer()?.click();
+		await vi.waitFor(() => expect(ipc.copyVault).toHaveBeenCalledTimes(call));
+		await vi.waitFor(() => expect(document.activeElement).toBe(offer()));
+	}
+
+	offer()?.focus();
+	offer()?.click();
+	await vi.waitFor(() => expect(notice()).toBe('Copy saved on “\u2068Stick\u2069”.'));
+	await vi.waitFor(() =>
+		expect(document.activeElement?.getAttribute('aria-label')).toBe('Settings')
+	);
+	expect(offer()).toBeUndefined();
+
+	unmount(component);
+});
+
+/** Whatever the reader did with the focus while the copy was on its way is
+ * theirs: it is given back only from nowhere. */
+it('leaves the focus where the reader put it while the copy was on its way', async () => {
+	let finish: (made: null) => void = () => {};
+	ipc.copyVault.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+	const component = open({ elsewhere: DUE });
+	flushSync();
+
+	const offer = [...host.querySelectorAll<HTMLButtonElement>('.ml-auto button')].find(
+		(each) => each.textContent?.trim() === 'Save a copy'
+	);
+	offer?.focus();
+	offer?.click();
+	await tick();
+	search().focus();
+	finish(null);
+	await vi.waitFor(() => expect(reads()).toContain('No copy on another disk for 34 days'));
+	await tick();
+	expect(document.activeElement).toBe(search());
 
 	unmount(component);
 });

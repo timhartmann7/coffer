@@ -33,6 +33,7 @@
 		Adopted,
 		CopyOf,
 		Database,
+		Elsewhere,
 		Found,
 		Group,
 		Kinds,
@@ -92,6 +93,11 @@
 	/** What the vault screen is to say when it is next drawn: what became of
 	 * the file a backup replaced. */
 	let news = $state<{ message: string } | null>(null);
+	/** What Rust knows of copies of the open vault kept on another disk: the
+	 * last ones, and whether a month has gone by without one. Null while
+	 * nothing Coffer keeps copies of is open, which is every moment the unlock
+	 * screen is up. */
+	let elsewhere = $state<Elsewhere | null>(null);
 
 	/** The throttle on telling Rust that somebody is at the machine. */
 	const presence = new Presence();
@@ -170,6 +176,7 @@
 		readOnly = now?.readOnly ?? false;
 		readOnlyBecause = now?.readOnlyBecause ?? null;
 		copyable = now?.copyable ?? false;
+		elsewhere = now?.elsewhere ?? null;
 		snapshot = now?.snapshot ?? null;
 		rescue = now?.rescue ?? null;
 		lost = now?.lost ?? false;
@@ -361,6 +368,7 @@
 			onChoose={choose}
 			{...handed}
 			rekey={copy ? undefined : handed.rekey}
+			{elsewhere}
 			copyBeside={rescue !== null}
 			onLook={look}
 		/>
@@ -412,10 +420,12 @@
 					{readOnly}
 					{readOnlyBecause}
 					{copyable}
+					{elsewhere}
 					{news}
 					settings={showing === 'settings' ? settingsScreen : undefined}
 					onSettings={toggleSettings}
 					onTree={(tree) => (root = tree)}
+					onElsewhere={(now) => (elsewhere = now)}
 				/>
 			{:else if showing === 'settings' && chosen}
 				<!-- Nothing is open, so there is nothing to lay them over: the way in was

@@ -1,5 +1,5 @@
 <script module lang="ts">
-	import type { Rekey } from '$lib/saving.svelte';
+	import type { CopyElsewhere, Rekey } from '$lib/saving.svelte';
 
 	/**
 	 * What the screen the settings are drawn over hands them: the rows that act
@@ -15,15 +15,27 @@
 		 * password given to the copy alone would leave the vault and its
 		 * snapshots opening with the old one. */
 		rekey?: Rekey;
+		/** Saves a copy of the vault on another disk. Handed only while a vault
+		 * Coffer keeps copies of is open: not a backup or the copy a lock left,
+		 * whose copies would not be the vault's, and not a format Coffer will
+		 * not write anywhere. It says in a notice where the copy went, and
+		 * throws a refusal back to be said here. */
+		onCopy?: CopyElsewhere;
+		/** Whether a copy of the vault is on its way, however it was asked for:
+		 * from here, the status bar or the menu bar. The screen this is drawn
+		 * over holds the one answer, so a copy started there before the
+		 * settings opened greys the button here too. */
+		copying?: boolean;
 	}
 </script>
 
 <script lang="ts">
-	import { asFailure, setSettings, snapshots } from '$lib/ipc';
+	import { lastMade, nearby, refused } from '$lib/copies';
+	import { asFailure, setSettings, showInFinder, snapshots } from '$lib/ipc';
 	import { named } from '$lib/duration';
 	import { answer } from '$lib/menu.svelte';
 	import { LOOKS } from '$lib/theme';
-	import type { Database, Settings, Snapshot } from '$lib/model';
+	import type { Database, Elsewhere, Settings, Snapshot } from '$lib/model';
 	import Backups from './Backups.svelte';
 	import Choice from './Choice.svelte';
 	import Icon from './Icon.svelte';
@@ -47,10 +59,17 @@
 		onChoose,
 		onLook,
 		rekey,
+		onCopy,
+		copying = false,
+		elsewhere = null,
 		copyBeside = false
 	}: Handed & {
 		settings: Settings;
 		database: Database | null;
+		/** What Rust knows of copies of the open vault kept on another disk.
+		 * Null while nothing Coffer keeps copies of is open, and then no row
+		 * is drawn for them. */
+		elsewhere?: Elsewhere | null;
 		onSettings: (settings: Settings) => void;
 		/**
 		 * Whether the copy a lock left sits beside the open vault. It opens with
@@ -119,6 +138,48 @@
 	// Open Vault… in the menu bar is "Open another", refusal and all. Rust greys
 	// the item out while a vault is open, which is when it would be refused.
 	$effect(() => answer({ openVault: { run: () => void pick() } }));
+
+	/** What the row about copies says, written against the moment Rust last
+	 * answered about them, so that a copy just saved is "today". */
+	const made = $derived(elsewhere ? lastMade(elsewhere, new Date()) : '');
+	const near = $derived(elsewhere ? nearby(elsewhere, new Date()) : null);
+
+	/** Shows the chosen vault's file in the Finder. A file that is not there
+	 * any more is said where every other refusal here is. */
+	async function show() {
+		failure = null;
+		try {
+			await showInFinder();
+		} catch (thrown) {
+			failure = asFailure(thrown).message;
+		}
+	}
+
+	/** Saves a copy on another disk, once however quickly the button is
+	 * pressed again. What Rust then knows reaches the row through the screen
+	 * this is drawn over, which also says in a notice where the copy went; a
+	 * refusal is said here. */
+	async function copy() {
+		if (!onCopy || copying) return;
+		failure = null;
+		try {
+			await onCopy();
+		} catch (thrown) {
+			failure = refused(thrown);
+		}
+	}
+
+	// File ▸ Show in Finder and Save a Copy… are the two buttons here while the
+	// settings are open, on the condition each is drawn on.
+	$effect(() =>
+		answer({
+			showInFinder: { run: () => void show(), when: () => database !== null },
+			saveCopy: {
+				run: () => void copy(),
+				when: () => elsewhere !== null && onCopy !== undefined && !copying
+			}
+		})
+	);
 
 	async function change(wanted: Settings) {
 		failure = null;
@@ -200,13 +261,24 @@
 					{database ? database.path : 'None chosen yet'}
 				</div>
 			</div>
-			<button
-				type="button"
-				onclick={pick}
-				class="h-9 shrink-0 rounded-full border border-hairline px-4 text-small text-txt2 transition-colors hover:border-txt4 hover:text-txt active:bg-raised"
-			>
-				Open another
-			</button>
+			<div class="flex shrink-0 gap-3">
+				{#if database}
+					<button
+						type="button"
+						onclick={show}
+						class="h-9 shrink-0 rounded-full border border-hairline px-4 text-small text-txt2 transition-colors hover:border-txt4 hover:text-txt active:bg-raised"
+					>
+						Show in Finder
+					</button>
+				{/if}
+				<button
+					type="button"
+					onclick={pick}
+					class="h-9 shrink-0 rounded-full border border-hairline px-4 text-small text-txt2 transition-colors hover:border-txt4 hover:text-txt active:bg-raised"
+				>
+					Open another
+				</button>
+			</div>
 		</div>
 
 		<!-- The password row writes the vault, which moves the backups: a new
@@ -214,6 +286,29 @@
 		     read again after either, so the count and the rows are the disk's. -->
 		{#if rekey}
 			<MasterPassword {rekey} {copyBeside} onBackups={listBackups} />
+		{/if}
+
+		<!-- Above the automatic backups, so that the two kinds of copy are read
+		     together: those sit beside the vault, and this one is on another
+		     disk. -->
+		{#if elsewhere && onCopy}
+			<div class="flex items-center justify-between gap-6 px-8 py-5">
+				<div class="min-w-0">
+					<div class="text-row text-txt">Copy on another disk</div>
+					<div class="mt-1 text-fine text-txt3">{made}</div>
+					{#if near}
+						<div class="mt-1 text-fine text-txt3">{near}</div>
+					{/if}
+				</div>
+				<button
+					type="button"
+					onclick={copy}
+					disabled={copying}
+					class="h-9 shrink-0 rounded-full border border-hairline px-4 text-small text-txt2 transition-colors hover:border-txt4 hover:text-txt active:bg-raised disabled:cursor-not-allowed disabled:text-txt4 disabled:hover:border-hairline"
+				>
+					{copying ? 'Saving a copy…' : 'Save a copy…'}
+				</button>
+			</div>
 		{/if}
 
 		<div class="flex items-center justify-between gap-6 px-8 py-5">

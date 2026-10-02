@@ -4,7 +4,7 @@
 use keepass::db::fields;
 use vault_core::kind::Kind;
 use vault_core::model::{Deletion, EntryId, Field, FieldValue, GroupId};
-use vault_core::{NewValue, Vault, VaultError};
+use vault_core::{EncryptedCopy, NewValue, Vault, VaultError};
 use zeroize::Zeroizing;
 
 use crate::support::{
@@ -1358,7 +1358,9 @@ fn a_file_written_before_the_edit_stops_the_save_just_the_same() {
     // Keeping both is the way out that loses nothing: this version goes beside
     // the database, and the database keeps theirs.
     let beside = database.with_extension("mine.kdbx");
-    ours.save_copy(&beside).expect("the copy is written");
+    ours.encrypt_copy(&beside)
+        .and_then(EncryptedCopy::write)
+        .expect("the copy is written");
     ours.reload().expect("the file reads again");
     drop(ours);
 
@@ -1659,7 +1661,10 @@ fn a_copy_is_a_database_of_its_own_and_the_original_is_untouched() {
             NewValue::Open("only in the copy".to_owned()),
         )
         .expect("the note is written");
-    vault.save_copy(&beside).expect("the copy is written");
+    vault
+        .encrypt_copy(&beside)
+        .and_then(EncryptedCopy::write)
+        .expect("the copy is written");
     drop(vault);
 
     let copy = open(&beside, SECRET);
@@ -1676,7 +1681,7 @@ fn a_copy_is_a_database_of_its_own_and_the_original_is_untouched() {
 
     let mut vault = open(&database, SECRET);
     assert!(matches!(
-        vault.save_copy(&database),
+        vault.encrypt_copy(&database).and_then(EncryptedCopy::write),
         Err(VaultError::CopyOntoItself)
     ));
 }
@@ -1734,7 +1739,10 @@ fn a_snapshot_is_opened_to_read_and_never_written_back() {
 
     // A copy is the way out, and it is a database like any other.
     let beside = database.with_extension("recovered.kdbx");
-    vault.save_copy(&beside).expect("the copy is written");
+    vault
+        .encrypt_copy(&beside)
+        .and_then(EncryptedCopy::write)
+        .expect("the copy is written");
     assert_eq!(open(&beside, SECRET).read_only(), None);
 }
 

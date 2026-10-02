@@ -4,9 +4,18 @@
  * not there any more.
  */
 
-import { release } from './drafts';
-import { asFailure, changeMasterPassword, reload, rival, save, saveCopy, saveOver } from './ipc';
-import type { Group, Rival } from './model';
+import { flush, release } from './drafts';
+import {
+	asFailure,
+	changeMasterPassword,
+	copyVault,
+	reload,
+	rival,
+	save,
+	saveCopy,
+	saveOver
+} from './ipc';
+import type { Group, Rival, SavedCopy } from './model';
 import type { Notices } from './notices.svelte';
 import { quoted } from './format';
 
@@ -25,6 +34,11 @@ export interface Screen {
 /** The vault screen's way to give the vault a new master password, handed to
  * the settings drawn over it. Absent where no vault Coffer can write is open. */
 export type Rekey = (current: Uint8Array, next: Uint8Array) => Promise<number>;
+
+/** The vault screen's way to save a copy of the vault on another disk, handed
+ * to the settings drawn over it. Absent where nothing Coffer keeps copies of is
+ * open. */
+export type CopyElsewhere = () => Promise<SavedCopy | null>;
 
 /**
  * Writes what is in the window to a file of its own, wherever the reader says
@@ -58,6 +72,8 @@ export class Saving {
 	/** When the reader last changed the vault, which the dialog sets against
 	 * when the file was written. */
 	changedAt = $state<Date | null>(null);
+	/** Whether a copy of the vault is on its way to another disk. */
+	copying = $state(false);
 
 	readonly #screen: Screen;
 
@@ -121,6 +137,28 @@ export class Saving {
 			throw thrown;
 		} finally {
 			this.saving = false;
+			await this.#screen.reread();
+		}
+	}
+
+	/**
+	 * Saves a copy of the vault on another disk, where the reader says in the
+	 * panel Rust opens. Every value already on its way to Rust lands first, so
+	 * the copy holds every field the reader has left; what is still being typed
+	 * is not in it, and the next lock writes that into the vault. The copy
+	 * settles every entry's history the way a save does, so the versions in the
+	 * pane are read again afterwards, whatever came of it. Null when the panel
+	 * was closed, or when a copy is already on its way, which a second press
+	 * must not start again.
+	 */
+	async copyElsewhere(): Promise<SavedCopy | null> {
+		if (this.copying) return null;
+		this.copying = true;
+		try {
+			await flush();
+			return await copyVault();
+		} finally {
+			this.copying = false;
 			await this.#screen.reread();
 		}
 	}

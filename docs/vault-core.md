@@ -236,7 +236,7 @@ a Time Machine snapshot, on a stick macOS mounted read-only or on a share the
 reader may only read. Reading a database needs no write, so a vault Coffer
 refused to open over a note it could not leave was refusing a file that reads
 perfectly well. It opens, `read_only()` is `Some(ReadOnly::Place)`, every change answers
-`ReadOnlyPlace`, and `save_copy` to somewhere writable is the way off the
+`ReadOnlyPlace`, and a copy to somewhere writable is the way off the
 medium. A lock somebody is holding still wins: the medium is only consulted
 where the file could not be created at all.
 
@@ -863,14 +863,14 @@ snapshot or beside it records whose it is.
 `Vault::read_only` answers `ReadOnly::Snapshot`, `Place`, `Kdb` or
 `Kdbx3Attachments`, decided once by `classify` from the format and the place and
 held where the vault keeps it; `writable` refuses with the matching error.
-`Vault::copyable` is whether `save_copy` would write what is open somewhere
+`Vault::copyable` is whether `encrypt_copy` would take what is open somewhere
 else: a snapshot and a place are about where the file is, and a copy goes
 somewhere else, while the two formats are why the bytes cannot be trusted, and a
-copy would carry them. `save_copy` asks the same question, so the screen's offer
-and the write never disagree. `Vault::files_readable` is the same for a file's
-bytes: everything but `Kdbx3Attachments`, whose names lead to another entry's
-bytes (see above). `attachment` refuses on it, and a menu under the pointer
-greys its Save to… on it, so those two never disagree either.
+copy would carry them. `encrypt_copy` asks the same question, so the screen's
+offer and the write never disagree. `Vault::files_readable` is the same for a
+file's bytes: everything but `Kdbx3Attachments`, whose names lead to another
+entry's bytes (see above). `attachment` refuses on it, and a menu under the
+pointer greys its Save to… on it, so those two never disagree either.
 
 **Making a backup the vault is the ordinary write aimed at the vault's name.**
 `Vault::adopt` and `Vault::promote` share `take_over`: the vault is pointed at the
@@ -947,11 +947,25 @@ snapshot.
 
 ## A copy somewhere else
 
-**`save_copy` never replaces a file.** It takes no snapshot of what is at the
-name it is given, and the panel it is aimed from opens in the vault's own
+**A copy is encrypted under the vault and written without it.**
+[`Vault::encrypt_copy`](../crates/vault-core/src/vault/copy.rs) settles every
+history the way a save does, derives the key and encrypts the whole database
+into memory, refusing a copy past the ceiling as a save would; then
+`EncryptedCopy::write` puts those bytes at the name. The first needs the tree
+and is done by whoever holds the vault. The second needs nothing of it, and it
+is aimed at a disk that is not the vault's - a stick pulled out half way, a
+share whose server went to sleep - so vault-gui writes it with the session let
+go, and a lock, a sleep or Quit never waits on that disk. A lock that lands
+between the two takes the vault and leaves the bytes, which are the vault under
+its own credentials as it was when they were encrypted
+(`elsewhere::a_copy_encrypted_before_the_vault_closed_is_written_whole_after`).
+
+**A copy never replaces a file.** It takes no snapshot of what is at the
+name it is given, and the panel it is aimed from may open in the vault's own
 folder, where the vault a backup was taken of, the copy a lock left and a file
-kept aside all end in `.kdbx`. So it refuses a name that holds anything, a link
-that leads nowhere included, with `DatabaseExists`, and a name
+kept aside all end in `.kdbx`. So the write refuses a name that holds anything,
+a link that leads nowhere included, with `DatabaseExists` - a name taken while
+the copy was being encrypted as well - and `encrypt_copy` refuses a name
 `storage::reserved` reads as a snapshot's or a lock's copy's with
 `ReservedName`, as `create` does. The copy is staged beside the name first, the
 name is taken with an exclusive create only once the copy is whole, and the
@@ -960,7 +974,28 @@ reservation back. That works on a disk without links as well, where a publish
 by hard link would not, and the name never holds part of a copy. The lock's
 rescue is the one write of a copy that goes over a file: it writes the same
 name every time, the copy an earlier lock with the same trouble left, through
-the same staged write.
+the same staged write and the same encryption.
+
+**A copy aimed at a link to the vault leaves the vault whole.** A save panel
+asks before it replaces a file, and a reader who points it at a link to their
+vault and agrees is refused before anything is written: a symbolic link is
+followed to the vault and refused as `CopyOntoItself`, and a second name for the
+vault's file is a name that holds a file, `DatabaseExists`. The vault's bytes,
+its inode, the link and the backups are as they were
+(`elsewhere::a_copy_aimed_at_a_link_to_the_vault_leaves_the_vault_whole`). A
+copy settles every history as a save does, carries a change the vault has not
+saved without saving it, and leaves the vault's file, its lock and its backups
+untouched however many are made.
+
+**When a vault was made is what its top group says.**
+[`Vault::made`](../crates/vault-core/src/vault/began.rs) is the top group's
+creation time, which KeePass, KeePassXC and Coffer write when they make a
+database - the library dates every group it builds - and which no client moves
+later; a save and a copy keep it. It is `None` when the file has none, and handed
+back whatever year it is. The window counts how long a vault has gone without a
+copy on another disk from it when none was ever made, and decides there what
+1600 and 3000 mean. It is read and never written: nothing Coffer keeps about
+copies goes into the file.
 
 ## Making a vault, and what a second of work costs
 

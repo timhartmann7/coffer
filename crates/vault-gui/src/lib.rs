@@ -28,6 +28,8 @@ mod clipboard;
 mod closing;
 mod commands;
 mod context;
+mod copies;
+mod disks;
 mod drafts;
 mod dto;
 mod error;
@@ -74,6 +76,7 @@ pub fn run() {
             // type, and neither may run before they are there.
             let preferences = Arc::new(settings::preferences(directory.clone()));
             app.manage(Arc::new(generator::remembered(directory.clone())));
+            app.manage(Arc::new(copies::record(directory.clone())));
             app.manage(Arc::new(Session::new(remembered, directory)));
             app.manage(Arc::clone(&preferences));
             app.manage(route::Route::default());
@@ -183,6 +186,8 @@ pub fn run() {
             commands::save,
             commands::save_over,
             commands::save_copy,
+            commands::copy_vault,
+            commands::show_in_finder,
             commands::reload,
             commands::rival,
             commands::change_master_password,

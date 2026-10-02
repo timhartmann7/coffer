@@ -10,6 +10,7 @@
 		discardRescue,
 		forgetKeyFile,
 		putBackRescue,
+		showInFinder,
 		snapshots,
 		unlock,
 		unlockTakingOver
@@ -464,6 +465,40 @@
 
 	// Open Vault… in the menu bar is the link on every face of this screen.
 	$effect(() => answer({ openVault: { run: () => void choose(), when: () => !busy } }));
+
+	/**
+	 * Shows the vault's file in the Finder, for a reader carrying it to a
+	 * stick by hand: the encrypted file is what goes, and it needs no password.
+	 * File ▸ Show in Finder is the one way in from here, and nothing is drawn
+	 * for it, because `SPEC.md` section 8 ends this screen with "Nothing
+	 * else". A file that went since the screen was drawn is said the way an
+	 * unlock that found it gone says it, backups and all.
+	 *
+	 * A show that goes through leaves the screen as it was. What it says below
+	 * the form - a file that will not open and the backups to open instead, a
+	 * lock somebody holds and the offer to take it over - is about the vault,
+	 * and a look at its file in the Finder changes none of it. A refusal does
+	 * replace it, and a take-over pressed for a lock the screen no longer
+	 * explains is let go.
+	 */
+	async function showFile() {
+		try {
+			await showInFinder();
+		} catch (thrown) {
+			failure = asFailure(thrown);
+			takingOver = false;
+			if (offersBackups) await listBackups();
+		}
+	}
+
+	$effect(() =>
+		answer({
+			showInFinder: {
+				run: () => void showFile(),
+				when: () => database !== null && file?.there === true
+			}
+		})
+	);
 </script>
 
 <div class="flex flex-1 items-center justify-center overflow-y-auto px-10 py-10">

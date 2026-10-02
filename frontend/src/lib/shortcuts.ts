@@ -23,6 +23,8 @@ export const KEYS = {
 	newFolder: '⇧⌘N',
 	duplicate: '⌘D',
 	openVault: '⌘O',
+	saveCopy: '⇧⌘S',
+	showInFinder: '⌥⌘R',
 	find: '⌘F',
 	copyLogin: '⌘B',
 	copyPassword: '⇧⌘C',

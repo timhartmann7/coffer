@@ -68,6 +68,11 @@ export interface Status {
 	/** Whether what is open can be written to a file somewhere else with
 	 * `saveCopy`: anything but a format Coffer will not write. */
 	copyable: boolean;
+	/** What is known of copies of the open vault kept on another disk. Null
+	 * while no vault is open - the unlock screen says nothing of copies - and
+	 * for a backup, the copy a lock left, or a format Coffer will not write
+	 * anywhere. */
+	elsewhere: Elsewhere | null;
 	/** The unsaved copy sitting beside the database Coffer will open next, when
 	 * a lock had to write one. Read off the disk rather than remembered, so a
 	 * copy left by a run that has since quit is still offered. */
@@ -171,6 +176,38 @@ export interface SnapshotOf {
 	/** Why the backup is open: the vault's file would not open or was not
 	 * there, or the reader asked to look. */
 	because: 'unopened' | 'asked';
+}
+
+/** What Coffer knows of copies of the open vault kept on another disk: dates
+ * and a disk's name. No path crosses, not even the folder a copy went to. */
+export interface Elsewhere {
+	/** The newest copy saved through Coffer on a disk other than the vault's,
+	 * or null when none was. */
+	otherDisk: OtherDisk | null;
+	/** When the newest copy was saved, while that one went to the vault's own
+	 * disk: it goes with the vault the day that disk fails. */
+	sameDiskAt: string | null;
+	/** Whole days the vault has gone without a copy on another disk, once that
+	 * is thirty or more and it holds entries. Rust's rule, so the window holds
+	 * no copy of it. */
+	overdue: number | null;
+}
+
+/** A copy on another disk: when, and what the disk is called. */
+interface OtherDisk {
+	at: string;
+	/** The name the Finder shows for the disk, when it is mounted in
+	 * `/Volumes`. */
+	volume: string | null;
+}
+
+/** A copy `copyVault` has just saved: whether it went to the vault's own disk
+ * and what that disk is called, for the notice to say, and what is known of
+ * copies of the vault now, for everything else. */
+export interface SavedCopy {
+	sameDisk: boolean;
+	volume: string | null;
+	elsewhere: Elsewhere;
 }
 
 /** A backup made the vault: the vault, which is what is open now, and what
@@ -610,6 +647,8 @@ export const COMMANDS = [
 	'newFolder',
 	'duplicate',
 	'openVault',
+	'saveCopy',
+	'showInFinder',
 	'find',
 	'copyLogin',
 	'copyPassword',

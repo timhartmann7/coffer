@@ -11,6 +11,7 @@ import {
 	isolated,
 	minute,
 	quoted,
+	recently,
 	size,
 	when
 } from './format';
@@ -121,6 +122,24 @@ describe('a day as a sentence says it', () => {
 		expect(ago('3000-12-31T23:59:59Z', now)).toBe('on 31 Dec 3000');
 		expect(ago('1600-01-01T00:00:00Z', now)).toBe('on 1 Jan 1600');
 		expect(ago('0050-06-01T00:00:00Z', now)).toBe('on 1 Jun 50');
+	});
+});
+
+describe('how recently, while that is the way to say it', () => {
+	/** The week behind in words, and nothing for anything else: a date older
+	 * than that, one after today, and one that is not a date are each said
+	 * their own way by the sentence that asked. */
+	it('says how recently, and nothing past a week or after today', () => {
+		expect(recently('2026-08-29T01:00:00Z', now)).toBe('today');
+		expect(recently('2026-08-28T23:59:00Z', now)).toBe('yesterday');
+		expect(recently('2026-08-27T12:00:00Z', now)).toBe('2 days ago');
+		expect(recently('2026-08-23T12:00:00Z', now)).toBe('6 days ago');
+		expect(recently('2026-08-22T23:59:00Z', now)).toBeNull();
+		expect(recently('2026-08-30T00:00:00Z', now)).toBeNull();
+		expect(recently('3000-12-31T23:59:59Z', now)).toBeNull();
+		expect(recently('1600-01-01T00:00:00Z', now)).toBeNull();
+		expect(recently(null, now)).toBeNull();
+		expect(recently('not a date', now)).toBeNull();
 	});
 });
 

@@ -59,7 +59,7 @@ impl Vault {
     }
 
     /// Whether what is open can be written to a file somewhere else: anything
-    /// but a format Coffer will not write. See [`Vault::save_copy`].
+    /// but a format Coffer will not write. See [`Vault::encrypt_copy`].
     pub fn copyable(&self) -> bool {
         self.source.is_none_or(ReadOnly::copyable)
     }

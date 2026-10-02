@@ -37,6 +37,8 @@ pub enum Command {
     NewFolder,
     Duplicate,
     OpenVault,
+    SaveCopy,
+    ShowInFinder,
     Find,
     CopyLogin,
     CopyPassword,
@@ -46,13 +48,15 @@ pub enum Command {
 
 impl Command {
     /// Every item, in the order the bar draws them.
-    pub const ALL: [Command; 11] = [
+    pub const ALL: [Command; 13] = [
         Command::Settings,
         Command::Lock,
         Command::NewEntry,
         Command::NewFolder,
         Command::Duplicate,
         Command::OpenVault,
+        Command::SaveCopy,
+        Command::ShowInFinder,
         Command::Find,
         Command::CopyLogin,
         Command::CopyPassword,
@@ -69,6 +73,8 @@ impl Command {
             Command::NewFolder => "newFolder",
             Command::Duplicate => "duplicate",
             Command::OpenVault => "openVault",
+            Command::SaveCopy => "saveCopy",
+            Command::ShowInFinder => "showInFinder",
             Command::Find => "find",
             Command::CopyLogin => "copyLogin",
             Command::CopyPassword => "copyPassword",
@@ -92,6 +98,8 @@ impl Command {
             Command::NewFolder => "New Folder",
             Command::Duplicate => "Duplicate",
             Command::OpenVault => "Open Vault…",
+            Command::SaveCopy => "Save a Copy…",
+            Command::ShowInFinder => "Show in Finder",
             Command::Find => "Find…",
             Command::CopyLogin => "Copy Login",
             Command::CopyPassword => "Copy Password",
@@ -117,6 +125,8 @@ impl Command {
             Command::NewFolder => Some("Shift+CmdOrCtrl+N"),
             Command::Duplicate => Some("CmdOrCtrl+D"),
             Command::OpenVault => Some("CmdOrCtrl+O"),
+            Command::SaveCopy => Some("Shift+CmdOrCtrl+S"),
+            Command::ShowInFinder => Some("Alt+CmdOrCtrl+R"),
             Command::Find => Some("CmdOrCtrl+F"),
             Command::CopyLogin => Some("CmdOrCtrl+B"),
             Command::CopyPassword => Some("Shift+CmdOrCtrl+C"),
@@ -126,11 +136,11 @@ impl Command {
     }
 
     /// Whether the session lets the item be chosen at all, whatever the page
-    /// says: there is nothing to lock with no vault open, and Rust refuses to
-    /// point the session at another file while one is.
+    /// says: there is nothing to lock or copy with no vault open, and Rust
+    /// refuses to point the session at another file while one is.
     pub fn allowed(self, unlocked: bool) -> bool {
         match self {
-            Command::Lock => unlocked,
+            Command::Lock | Command::SaveCopy => unlocked,
             Command::OpenVault => !unlocked,
             _ => true,
         }
@@ -207,6 +217,9 @@ const BAR: &[Column] = &[
             Item::Coffer(Command::Duplicate),
             Item::Separator,
             Item::Coffer(Command::OpenVault),
+            Item::Separator,
+            Item::Coffer(Command::SaveCopy),
+            Item::Coffer(Command::ShowInFinder),
             Item::Separator,
             Item::Native(Native::CloseWindow),
         ],
@@ -664,7 +677,8 @@ mod tests {
     }
 
     /// The page says what its screens can do, and the session has the last
-    /// word on the two items that are about the session.
+    /// word on the items that are about the session: there is nothing to lock
+    /// or copy with no vault open, and another vault is not opened over one.
     #[test]
     fn locking_and_opening_another_follow_the_session() {
         for command in Command::ALL {
@@ -672,6 +686,10 @@ mod tests {
                 Command::Lock => {
                     assert!(command.allowed(true));
                     assert!(!command.allowed(false), "a lock with nothing open");
+                }
+                Command::SaveCopy => {
+                    assert!(command.allowed(true));
+                    assert!(!command.allowed(false), "a copy with nothing open");
                 }
                 Command::OpenVault => {
                     assert!(!command.allowed(true), "another vault over an open one");

@@ -110,6 +110,16 @@ an hour after the refusal, so the command is the reliable one.
   password. A backup opens with the password the vault had when it was taken,
   and so does the vault made from it. A copy saved from one is never written
   over a file that is there. The database and every snapshot are `0600`.
+- Settings › **Save a copy…** writes the vault, under the same password, to a
+  disk you pick - a stick, another drive - and never over a file that is there;
+  **Show in Finder** shows where the vault lives. Thirty days after the last copy
+  on another disk, or after the vault was made if there has been none, the
+  status bar says so, quietly. A copy on the disk the vault is on is made and
+  said to be there, and does not count: it fails with that disk. Coffer asks
+  macOS which physical disk a folder is on, so a second partition of the Mac's
+  own disk is that disk and a stick or a share is another. A disk image is never
+  counted as another disk, wherever its file is kept, and Coffer cannot tell
+  whether two disks are in the same bag.
 - The master password can be changed in Settings. The file is written again
   under the new one, with its key derivation unchanged. The snapshots beside it
   were written under the old one and still open with it until later saves push
@@ -140,11 +150,13 @@ an hour after the refusal, so the command is the reliable one.
 - A copied password is written as a concealed, transient item, which keeps it
   out of clipboard history tools, and cleared after a minute.
 
-Coffer keeps three things of its own, all in
+Coffer keeps four things of its own, all in
 `~/Library/Application Support/app.coffer.vault/`: `settings.json`,
-`last-database`, and `generator.json`, the length and kinds of character the
-password generator last made a password from (never a password). Nothing else,
-and nothing anywhere else.
+`last-database`, `generator.json`, the length and kinds of character the
+password generator last made a password from (never a password), and
+`copies.json`, when and where you last saved a copy of each vault (dates,
+folders and the names of disks, never the vault). Nothing else, and nothing
+anywhere else.
 
 ## Building it
 

@@ -117,6 +117,12 @@ impl Failure {
         Failure::refused("lock the vault before opening another")
     }
 
+    /// A save panel answered with a place that has no path: one sentence for
+    /// every panel that writes a file.
+    pub fn no_path_to_write() -> Failure {
+        Failure::refused("that place has no path Coffer can write")
+    }
+
     /// A new vault was asked for before anywhere had been settled for it. One
     /// sentence, because making one and opening what is at the place both ask.
     pub fn nowhere_chosen() -> Failure {

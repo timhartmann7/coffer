@@ -754,6 +754,64 @@ when it opens, and its copy button keeps the focus where it is on a press:
 otherwise a note opened by a pointer would hear neither Escape nor a press
 elsewhere, and Escape would close the entry under it.
 
+## A copy on another disk
+
+The mockup's settings end at the vault's path and its snapshots, and its status
+bar holds a count, the path and the countdown. What is below is built from those
+rows and that bar, and nothing else.
+
+**The vault row shows the file.** "Show in Finder" is the "Open another" pill,
+class for class, drawn before it with `gap-3` between the two; both stay whole,
+and the path truncates. It is drawn whenever a vault is chosen, open or not. A
+file that is not there any more is said in the settings' own failure line.
+
+**"Copy on another disk" is a row like the vault's,** directly above "Automatic
+backups", so that the two kinds of copy are read together: those sit beside the
+vault, and this one is on another disk. The title is in `text-row text-txt`.
+Under it, in `text-fine text-txt3`, is "Last made: never" or when and where:
+"Last made: 3 days ago, on “Stick”", "Last made: 12 Sep, on another disk". The
+disk's name is quoted and isolated like any name in a sentence. While the newest
+copy is one on the vault's own disk, a second line in the same type says so:
+"The copy made today is on the same disk as the vault, and would not survive
+that disk failing." "Save a copy…" is the same pill. From the press until Rust
+answers - the panel up, then the write - it reads "Saving a copy…" and takes the
+disabled look of the entry pane's small pills and the backups' rows
+(`disabled:cursor-not-allowed disabled:text-txt4
+disabled:hover:border-hairline`), and so it does for a copy asked for from the
+status bar or the menu bar before the settings opened: the vault's screen holds
+whether one is on its way and hands it to the settings. A refusal is said in the
+settings' failure line - a name that holds a file as "A file by that name is already there, so
+nothing was replaced. Save the copy under another name." - and a panel closed
+says nothing. The row is drawn only while a vault Coffer keeps copies of is
+open: not a backup, not the copy a lock left, not a format Coffer will not write.
+
+**The status bar says when a month has gone by.** In the right-hand group, in the
+mockup countdown's `text-txt3`, in the bar's own mono capitals: "No copy on
+another disk for 34 days · Save a copy". "Save a copy" is a button that takes
+`txt2` under the pointer like the Settings button beside it. From a year on it
+says "over a year" rather than counting. The group says one thing at a time, and
+this is the last of them: "Saving a copy…" from the press until Rust answers,
+then "Saving…", "Not saved" and the read-only note each come first, because they
+are about the file as it is now. That also keeps the group short enough at the
+window's smallest width, where the path gives way first. It is drawn only in the
+unlocked window; the unlock screen draws nothing of it, because `SPEC.md`
+section 8 ends that screen with "Nothing else". "Save a copy" pressed from the
+keyboard goes from the bar with the focus on it while "Saving a copy…" is said
+there; once Rust answers, the focus goes back to it - a panel closed, a refusal
+and a copy on the vault's own disk all leave it standing - or to the Settings
+button beside it when a copy on another disk took the line away. A reader who
+put the focus somewhere meanwhile keeps it there.
+
+**The notice after a copy says where it went,** wherever the copy was asked for:
+the status bar, the menu bar or the settings' row. The `copied` toast: "Copy
+saved on “Stick”.", "Copy saved on another disk.", or "Copy saved on the same
+disk as the vault, where it would not survive that disk failing." Over the
+settings it draws above them, as every toast does: a second copy on one day
+leaves their row reading exactly as it did, and the toast is the one thing that
+says, to the eye and to VoiceOver, that it was written. A refusal from the
+status bar or the menu bar is the warning toast, in the same words as the
+settings' line; one from the settings' row is said in that line.
+
 ## The settings, and the way in and out of them
 
 The mockup draws the settings as a whole window with a title bar of their own and

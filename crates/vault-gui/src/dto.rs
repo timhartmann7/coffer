@@ -300,6 +300,79 @@ impl Adopted {
     }
 }
 
+/// What Coffer knows of copies of the open vault kept on another disk: dates
+/// and a disk's name. No path crosses, not even the folder a copy went to.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Elsewhere {
+    /// The newest copy saved through Coffer on a disk other than the vault's,
+    /// or nothing when none was.
+    pub other_disk: Option<OtherDisk>,
+    /// When the newest copy was saved, while that one went to the vault's own
+    /// disk: it goes with the vault the day that disk fails.
+    pub same_disk_at: Option<String>,
+    /// Whole days the vault has gone without a copy on another disk, once that
+    /// is thirty or more and it holds entries; nothing otherwise. Rust's rule
+    /// (`copies::overdue`), so the window holds no copy of it.
+    pub overdue: Option<u64>,
+}
+
+impl Elsewhere {
+    pub fn of(told: crate::copies::Told) -> Elsewhere {
+        Elsewhere {
+            other_disk: told.other_disk.as_ref().and_then(OtherDisk::of),
+            same_disk_at: told.same_disk.and_then(|near| at(near.at)),
+            overdue: told.overdue,
+        }
+    }
+}
+
+/// A copy on another disk: when, and what the disk is called.
+#[derive(Serialize)]
+pub struct OtherDisk {
+    pub at: String,
+    /// The name the Finder shows for the disk, when it is mounted in
+    /// `/Volumes`.
+    pub volume: Option<String>,
+}
+
+impl OtherDisk {
+    /// Nothing for a time no calendar can hold, which is no copy the window
+    /// could say anything true about.
+    fn of(away: &crate::copies::Last) -> Option<OtherDisk> {
+        Some(OtherDisk {
+            at: at(away.at)?,
+            volume: away.volume.clone(),
+        })
+    }
+}
+
+/// A copy `copy_vault` has just saved: whether it went to the vault's own disk
+/// and what that disk is called, for the notice to say, and what is known of
+/// copies of the vault now, for everything else.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedCopy {
+    pub same_disk: bool,
+    pub volume: Option<String>,
+    pub elsewhere: Elsewhere,
+}
+
+impl SavedCopy {
+    pub fn of(landed: &crate::copies::Landed, told: crate::copies::Told) -> SavedCopy {
+        SavedCopy {
+            same_disk: landed.same_disk,
+            volume: landed.last.volume.clone(),
+            elsewhere: Elsewhere::of(told),
+        }
+    }
+}
+
+/// A time written down in seconds since 1970, the way every date crosses.
+fn at(seconds: u64) -> Option<String> {
+    moment(std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(seconds))?)
+}
+
 /// The name a vault's file is kept under as the newest snapshot, for the
 /// sentences that promise it before a copy or a backup goes over it.
 fn newest(vault: &std::path::Path) -> String {
@@ -363,6 +436,11 @@ pub struct Status {
     /// Whether what is open can be written to a file somewhere else with
     /// `save_copy`: anything but a format Coffer will not write.
     pub copyable: bool,
+    /// What is known of copies of the open vault kept on another disk.
+    /// Nothing while no vault is open - the unlock screen says nothing of
+    /// copies (`SPEC.md` section 8) - and nothing for a snapshot, the copy a
+    /// lock left, or a format Coffer will not write anywhere.
+    pub elsewhere: Option<Elsewhere>,
     /// The unsaved copy sitting beside the database Coffer will open next, when
     /// a lock had to write one. Read off the disk rather than remembered, so a
     /// copy left by a run that has since quit is still offered.
@@ -2324,6 +2402,69 @@ mod tests {
                 word
             );
         }
+    }
+
+    /// A copy on another disk crosses as times, a disk's name and a count of
+    /// days: the folder the copy went to is written down in Rust and never
+    /// sent, and a time no calendar holds is not a copy the window is told of.
+    #[test]
+    fn a_copy_elsewhere_crosses_as_times_and_a_disk_name_only() {
+        use crate::copies::{Landed, Last, Told};
+
+        let away = Last {
+            at: 1_790_000_000,
+            folder: "/Users/someone/Secret Folder".to_owned(),
+            volume: Some("Stick <b>".to_owned()),
+        };
+        let near = Last {
+            at: 1_790_086_400,
+            folder: "/Users/someone/Secret Folder".to_owned(),
+            volume: None,
+        };
+        let told = || Told {
+            other_disk: Some(away.clone()),
+            same_disk: Some(near.clone()),
+            overdue: Some(34),
+        };
+
+        let said = serde_json::to_value(SavedCopy::of(
+            &Landed {
+                last: near.clone(),
+                same_disk: true,
+            },
+            told(),
+        ))
+        .expect("the copy serialises");
+        assert_eq!(
+            said,
+            serde_json::json!({
+                "sameDisk": true,
+                "volume": null,
+                "elsewhere": {
+                    "otherDisk": { "at": "2026-09-21T14:13:20Z", "volume": "Stick <b>" },
+                    "sameDiskAt": "2026-09-22T14:13:20Z",
+                    "overdue": 34
+                }
+            })
+        );
+        assert!(!said.to_string().contains('/'), "{said}");
+
+        let never = serde_json::to_value(Elsewhere::of(Told {
+            other_disk: Some(Last {
+                at: u64::MAX,
+                ..away.clone()
+            }),
+            same_disk: Some(Last {
+                at: u64::MAX,
+                ..near.clone()
+            }),
+            overdue: None,
+        }))
+        .expect("the copies serialise");
+        assert_eq!(
+            never,
+            serde_json::json!({ "otherDisk": null, "sameDiskAt": null, "overdue": null })
+        );
     }
 
     /// A removal that could not take everything says how many are left and

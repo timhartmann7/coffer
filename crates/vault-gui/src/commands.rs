@@ -50,7 +50,7 @@ use crate::home::Standing;
 use crate::menu::{self, Command};
 use crate::route::Route;
 use crate::session::{Looking, Session};
-use crate::{clipboard, closing, context, generator, home, lock, opener, settings, window};
+use crate::{clipboard, closing, context, copies, generator, home, lock, opener, settings, window};
 
 /// The session is behind an `Arc` so that a command can take it onto a blocking
 /// thread, which is where key derivation belongs.
@@ -69,9 +69,19 @@ const KDBX: &str = "KDBX database";
 
 #[tauri::command(async)]
 pub fn status(app: AppHandle, session: Held<'_>) -> Status {
-    let (entries, read_only, copyable) = session
-        .with(|vault| (vault.count(), vault.read_only(), vault.copyable()))
-        .unwrap_or((0, None, false));
+    let record = app.try_state::<Arc<copies::Record>>();
+    let (entries, read_only, copyable, elsewhere) = session
+        .with(|vault| {
+            (
+                vault.count(),
+                vault.read_only(),
+                vault.copyable(),
+                record
+                    .as_ref()
+                    .and_then(|record| record.told(vault, copies::now())),
+            )
+        })
+        .unwrap_or((0, None, false, None));
     let database = session.database();
     let (copy, snapshot) = beside(&session);
 
@@ -111,6 +121,7 @@ pub fn status(app: AppHandle, session: Held<'_>) -> Status {
         read_only: read_only.is_some(),
         read_only_because: read_only.map(dto::ReadOnly::of),
         copyable,
+        elsewhere: elsewhere.map(dto::Elsewhere::of),
         locked_by: session.locked_by().and_then(Reason::explained),
         locks_in: app
             .try_state::<Arc<Timer>>()
@@ -495,7 +506,7 @@ pub async fn choose_new_database(
     };
     let path = chosen
         .into_path()
-        .map_err(|_| Failure::refused("that place has no path Coffer can write"))?;
+        .map_err(|_| Failure::no_path_to_write())?;
 
     // The panel asks whether to replace a file that is there, and a reader who
     // says yes is still refused: a creation takes no snapshot, so what was
@@ -1477,7 +1488,7 @@ pub async fn export_attachment(
     };
     let path = chosen
         .into_path()
-        .map_err(|_| Failure::refused("that place has no path Coffer can write"))?;
+        .map_err(|_| Failure::no_path_to_write())?;
 
     vault_core::storage::atomic::write_atomic::<std::io::Error, _>(
         &path,
@@ -1658,7 +1669,9 @@ pub async fn save_over(session: Held<'_>) -> Result<(), Failure> {
 ///
 /// Never over a file that is there, whatever the panel was answered: the
 /// panel opens beside the vault, and the files there that must not go are
-/// the ones its filter shows (see [`Vault::save_copy`]).
+/// the ones its filter shows (see [`vault_core::EncryptedCopy::write`]). And
+/// only from the file that was open when it was pressed (see
+/// [`Session::copy_to`]).
 #[tauri::command]
 pub async fn save_copy(app: AppHandle, session: Held<'_>) -> Result<Option<Database>, Failure> {
     let database = session.database().ok_or_else(Failure::no_vault)?;
@@ -1682,18 +1695,103 @@ pub async fn save_copy(app: AppHandle, session: Held<'_>) -> Result<Option<Datab
     };
     let path = chosen
         .into_path()
-        .map_err(|_| Failure::refused("that place has no path Coffer can write"))?;
+        .map_err(|_| Failure::no_path_to_write())?;
 
-    let writing = Arc::clone(&session);
-    let target = path.clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), Failure> {
-        writing.with_mut(|vault| vault.save_copy(&target))??;
-        Ok(())
-    })
-    .await
-    .map_err(|_| Failure::internal("the copy could not be written"))??;
-
+    write_copy(&session, database, path.clone()).await?;
     Ok(Some(Database::of(&path)))
+}
+
+/// Saves a copy of the open vault on another disk, where the reader says, for
+/// the day the disk the vault is on fails, and writes down when and where (see
+/// `copies.rs`). Answers with which disk it went to and what is known of copies
+/// now, or nothing when the panel was closed.
+///
+/// What is open is asked about before the panel, so that a refusal is said
+/// before a place is picked: a format Coffer will not write anywhere, and a
+/// snapshot or the copy a lock left, whose copy would not be one of the vault.
+/// The panel opens on the folder the last copy on another disk went to while
+/// that is a folder, on another disk this Mac has mounted when it is not, then
+/// on the folder the last copy on the vault's own disk went to, and beside the
+/// vault when there is none. It offers the vault's name and the day, numbered
+/// past any name that folder holds.
+///
+/// The write is the one every copy makes (see [`Session::copy_to`]): the same
+/// credentials, every field, owner-only, staged and renamed, and never over a
+/// file that is there, whatever the panel was answered - `taken` for a name
+/// that holds one, and nothing replaced. A copy that was written and could not
+/// be written down costs the next launch its date, and nothing else.
+#[tauri::command]
+pub async fn copy_vault(
+    app: AppHandle,
+    session: Held<'_>,
+) -> Result<Option<dto::SavedCopy>, Failure> {
+    let vault = session.with(|open| copies::source(open).map(Path::to_path_buf))??;
+    let record = app
+        .try_state::<Arc<copies::Record>>()
+        .map(|held| Arc::clone(held.inner()))
+        .ok_or_else(|| Failure::internal("Coffer has nowhere to write down its copies"))?;
+
+    let opening = copies::offer::starting_in(&record.of(&vault, copies::now()), &vault);
+    let today = chrono::Local::now().date_naive();
+    let mut panel = app
+        .dialog()
+        .file()
+        .set_title("Save a copy of your vault on another disk")
+        .add_filter(KDBX, &["kdbx"])
+        .set_file_name(copies::offer::name(&vault, today, opening.as_deref()));
+    if let Some(folder) = opening {
+        panel = panel.set_directory(folder);
+    }
+
+    let Some(chosen) = panel.blocking_save_file() else {
+        return Ok(None);
+    };
+    let path = chosen
+        .into_path()
+        .map_err(|_| Failure::no_path_to_write())?;
+
+    write_copy(&session, vault.clone(), path.clone()).await?;
+
+    let now = copies::now();
+    let landed = copies::Landed::at(&vault, path.parent().unwrap_or(&path), now);
+    let _ = record.note(&vault, &landed);
+    let told = session
+        .with(|open| record.told(open, now))?
+        .ok_or_else(Failure::no_vault)?;
+    Ok(Some(dto::SavedCopy::of(&landed, told)))
+}
+
+/// Writes the open vault to `target`, while it is the vault at `vault`, on a
+/// thread that may block: a copy derives the key and encrypts the whole file,
+/// as a save does.
+async fn write_copy(
+    session: &Arc<Session>,
+    vault: PathBuf,
+    target: PathBuf,
+) -> Result<(), Failure> {
+    let session = Arc::clone(session);
+    tauri::async_runtime::spawn_blocking(move || session.copy_to(&vault, &target))
+        .await
+        .map_err(|_| Failure::internal("the copy could not be written"))?
+}
+
+/// Shows the chosen vault's file in the Finder, selected.
+///
+/// Nothing is sent: the file is the one the session chose, so the window
+/// cannot point the Finder anywhere else. Whether there is a file to show is
+/// decided here, off the thread the window is drawn on, and only the Finder is
+/// asked on that thread, posted there and not waited for. The encrypted file is
+/// what a reader carries to a stick by hand, so this answers on the unlock
+/// screen as well.
+#[tauri::command(async)]
+pub fn show_in_finder(app: AppHandle, session: Held<'_>) -> Result<(), Failure> {
+    let file = session.database().ok_or_else(Failure::no_vault)?;
+    opener::showable(&file).map_err(|unshown| match unshown {
+        opener::Unshown::Gone => Failure::gone(),
+        opener::Unshown::Unusable => Failure::refused("that file has no path the Finder can show"),
+    })?;
+    app.run_on_main_thread(move || opener::show(&file))
+        .map_err(|_| Failure::internal("the Finder could not be asked"))
 }
 
 /// Throws away what is in the window and reads the file again, typing that

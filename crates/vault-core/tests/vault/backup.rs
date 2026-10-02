@@ -15,7 +15,7 @@ use keepass::{Database, DatabaseKey};
 use vault_core::kind::Kind;
 use vault_core::storage::lock::{self, Lock, Outcome};
 use vault_core::storage::{snapshot, unsaved};
-use vault_core::{Adopted, NewValue, ReadOnly, VaultError};
+use vault_core::{Adopted, EncryptedCopy, NewValue, ReadOnly, VaultError};
 
 use crate::normalise::{canonical, differences};
 use crate::support::{
@@ -215,7 +215,9 @@ fn read_only_says_why_and_only_a_format_refuses_a_copy() {
     assert_eq!(format.read_only(), Some(ReadOnly::Kdbx3Attachments));
     assert!(!format.copyable());
     assert!(matches!(
-        format.save_copy(&elsewhere.path().join("copy.kdbx")),
+        format
+            .encrypt_copy(&elsewhere.path().join("copy.kdbx"))
+            .and_then(EncryptedCopy::write),
         Err(VaultError::ReadOnlyKdbx3Attachments)
     ));
     assert!(!elsewhere.path().join("copy.kdbx").exists());
@@ -871,7 +873,7 @@ fn a_copy_is_never_written_over_a_file_that_is_there() {
         ),
         ("a snapshot's name", &unheld, VaultError::ReservedName),
     ] {
-        let answer = backup.save_copy(target);
+        let answer = backup.encrypt_copy(target).and_then(EncryptedCopy::write);
         assert!(
             matches!(&answer, Err(error) if std::mem::discriminant(error) == std::mem::discriminant(&wanted)),
             "{what}: {answer:?}"
@@ -898,7 +900,8 @@ fn a_copy_is_never_written_over_a_file_that_is_there() {
 
     let elsewhere = scratch.path().join("the backup.kdbx");
     backup
-        .save_copy(&elsewhere)
+        .encrypt_copy(&elsewhere)
+        .and_then(EncryptedCopy::write)
         .expect("a name nothing holds takes the copy");
     drop(backup);
     assert_eq!(leftovers(scratch.path()), Vec::<String>::new());

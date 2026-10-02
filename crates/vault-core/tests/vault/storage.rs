@@ -5,6 +5,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use vault_core::EncryptedCopy;
 use vault_core::storage::atomic::write_atomic;
 use vault_core::storage::lock::{Lock, Outcome};
 use vault_core::storage::watch::{Change, Stamp};
@@ -606,7 +607,10 @@ fn a_vault_that_cannot_be_locked_still_writes_a_copy_somewhere_it_can() {
 
     let mut vault = open(&database, BUILT_PASSWORD);
     let copy = elsewhere.path().join("rescued.kdbx");
-    vault.save_copy(&copy).expect("the copy is written");
+    vault
+        .encrypt_copy(&copy)
+        .and_then(EncryptedCopy::write)
+        .expect("the copy is written");
     drop(vault);
 
     let again = open(&copy, BUILT_PASSWORD);

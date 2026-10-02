@@ -59,21 +59,31 @@ export function minute(stamp: string | null, now: Date): string {
 }
 
 /**
- * How long ago, the way a row in the recycle bin says it: "today",
- * "yesterday", a count of days for the week behind, and the day itself before
- * that. A date after today is a clock somebody else set, and it is written as
- * the day rather than counted backwards into nonsense.
+ * How recently, while that is the way to say it: "today", "yesterday", or a
+ * count of days for the week behind. Nothing for anything older, for a date
+ * after today - a clock somebody else set, which is not counted backwards into
+ * nonsense - and for a date that is not one: each sentence says those its own
+ * way.
  */
-export function ago(stamp: string | null, now: Date): string {
+export function recently(stamp: string | null, now: Date): string | null {
 	const moment = parse(stamp);
-	if (!moment) return '';
+	if (!moment) return null;
 	// Counted between midnights rather than in hours, so that yesterday evening
 	// is yesterday this morning, and a clock change is not a day.
 	const days = Math.round((midnight(now) - midnight(moment)) / 86_400_000);
 	if (days === 0) return 'today';
 	if (days === 1) return 'yesterday';
 	if (days > 1 && days < 7) return `${days} days ago`;
-	return `on ${day(stamp, now)}`;
+	return null;
+}
+
+/**
+ * How long ago, the way a row in the recycle bin says it: `recently`, and the
+ * day itself before that - and for a date after today.
+ */
+export function ago(stamp: string | null, now: Date): string {
+	if (!parse(stamp)) return '';
+	return recently(stamp, now) ?? `on ${day(stamp, now)}`;
 }
 
 /**
