@@ -1,6 +1,7 @@
 /** Walking the group tree the way the two panes read it. */
 
 import type { EntryRow, Group } from './model';
+import { byName } from './order';
 
 /** Every entry in this group and in every group under it, in tree order. */
 export function entriesOf(group: Group): EntryRow[] {
@@ -117,6 +118,25 @@ export function pathTo(root: Group, id: string): Group[] | null {
 		if (below) return [root, ...below];
 	}
 	return null;
+}
+
+/**
+ * The vault's templates: the entries its templates group holds itself, by
+ * title as a reader looks for them. What sits in a folder inside that group is
+ * not one. A title the database protects sorts as an empty one: it is not
+ * here to sort by.
+ */
+export function templatesOf(root: Group): EntryRow[] {
+	const pending = [root];
+	for (let here = pending.pop(); here !== undefined; here = pending.pop()) {
+		if (here.isTemplates) {
+			return here.entries.toSorted((a, b) =>
+				byName({ name: a.title ?? '' }, { name: b.title ?? '' })
+			);
+		}
+		pending.push(...here.sections);
+	}
+	return [];
 }
 
 /** The projects of a vault: the groups the root holds, without the recycle

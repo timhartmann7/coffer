@@ -178,6 +178,43 @@ pub(crate) fn detach_entries(
     drop_names(database, &names, entries)
 }
 
+/// Puts a copy of every file `from` carries on `to`, each a file of its own at
+/// the end of the pool.
+///
+/// Never a second name for the same file. A file two entries name is the one
+/// shape this module can only refuse to move (`Refusal::Shared`), so a copy
+/// that shared its files would pin the original's in place for good: neither
+/// entry could lose one without the other, and nothing in the window could say
+/// why. A source that names one file twice, which another client can write,
+/// gives the copy two files.
+///
+/// Each goes in through [`put`], so the copy is the one entry the library's
+/// own bookkeeping knows about for it, which is what [`lift`] relies on. In the
+/// order of their names, so that two copies of one entry take their slots the
+/// same way.
+pub(crate) fn copy(database: &mut Database, from: EntryId, to: EntryId) {
+    let Some(source) = database.entry(from) else {
+        return;
+    };
+    let mut carried: Vec<(Named, Value<Vec<u8>>)> = source
+        .attachments_named()
+        .map(|(name, file)| {
+            (
+                Named {
+                    entry: to,
+                    name: name.to_owned(),
+                },
+                file.data.clone(),
+            )
+        })
+        .collect();
+    carried.sort_by(|one, two| one.0.name.cmp(&two.0.name));
+
+    for (holder, data) in carried {
+        put(database, &holder, data);
+    }
+}
+
 /// A file on its way back into the pool: which one it is, which slot it belongs
 /// in now, the name it comes back under, and its bytes.
 struct Carried {

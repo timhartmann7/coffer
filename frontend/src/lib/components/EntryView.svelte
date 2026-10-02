@@ -1,6 +1,8 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
+	import { SvelteSet } from 'svelte/reactivity';
 	import { eraseQuestion } from '$lib/bin';
-	import { settle, type Place } from '$lib/drafts';
+	import { settle, track, type Place } from '$lib/drafts';
 	import { called, fully, NO_LOGIN, quoted, size, UNTITLED } from '$lib/format';
 	import {
 		addAttachment,
@@ -28,7 +30,8 @@
 		type Group,
 		type History,
 		type Position,
-		type Span
+		type Span,
+		type Suggestion
 	} from '$lib/model';
 	import { byName } from '$lib/order';
 	import Changer from './Changer.svelte';
@@ -59,10 +62,14 @@
 		history,
 		now,
 		readOnly,
+		made = false,
+		lined = [],
+		suggested,
 		onCopy,
 		onChanged,
 		onVersions,
 		onClose,
+		onDuplicate,
 		onDelete,
 		onPutBack,
 		onMove,
@@ -83,6 +90,14 @@
 		/** A database Coffer will not write back. Nothing here offers a change
 		 * that would only be refused. */
 		readOnly: boolean;
+		/** The entry was just made - of a kind, from a template, or as a copy -
+		 * and its name takes the focus, selected, to be typed. */
+		made?: boolean;
+		/** The fields its kind writes in lines, drawn as text areas before
+		 * anything is in them. */
+		lined?: readonly string[];
+		/** Names offered for a field of the reader's own. */
+		suggested: Suggestion[];
 		/** Copies a value in Rust: a field of the entry, or of one of its
 		 * versions, whole or the part of it the reader selected. */
 		onCopy: (entry: string, field: string, range?: Span | null, version?: Position) => void;
@@ -91,6 +106,8 @@
 		/** Puts the pane away. Escape does the same, and so does a press on the
 		 * empty part of either pane to the left of this one. */
 		onClose: () => void;
+		/** Makes a copy of the entry beside it, which takes the pane. */
+		onDuplicate: () => void;
 		/** Deletes the entry: to the recycle bin, or for good once the reader has
 		 * said so, which is `entry.deletion`'s to decide and the pane's to ask. */
 		onDelete: () => void;
@@ -136,8 +153,22 @@
 	/** Whether the field being named is to be hidden. The format's own flag:
 	 * the value is kept protected, and shown only on request. */
 	let hidden = $state(true);
-	/** The field just made to be written in lines, until another entry is shown. */
-	let longhand = $state<string | null>(null);
+	/** The fields to be written in lines while they are empty: those the
+	 * entry's kind writes in lines, and one the reader made so, until another
+	 * entry is shown. */
+	const longhand = new SvelteSet<string>();
+	/** The name typed so far for a new field, which narrows what is
+	 * suggested. */
+	let typedName = $state('');
+	/** The names suggested for a new field: those the entry does not have yet
+	 * that start with what is typed, in either case. */
+	const offers = $derived(
+		suggested.filter(
+			(offer) =>
+				!entry.fields.some((field) => field.name === offer.name) &&
+				offer.name.toLowerCase().startsWith(typedName.trim().toLowerCase())
+		)
+	);
 	/** The field just named with Return, whose value takes the focus as it is
 	 * drawn, until another entry is shown. */
 	let fresh = $state<string | null>(null);
@@ -218,6 +249,9 @@
 	$effect(() => {
 		const id = showing;
 		standing = id;
+		untrack(() => {
+			for (const name of lined) longhand.add(name);
+		});
 		// Cleared on the way out rather than on the way in: a write inside the
 		// body of an effect is a read of what was there, and an effect that
 		// reads what it writes runs again the moment anything sets it.
@@ -234,7 +268,8 @@
 			naming = false;
 			inLines = false;
 			hidden = true;
-			longhand = null;
+			typedName = '';
+			longhand.clear();
 			fresh = null;
 			retitled = null;
 			asking = null;
@@ -243,10 +278,13 @@
 		};
 	});
 
-	/** Runs a change and says whether it was taken. */
+	/** Runs a change and says whether it was taken. Tracked from the moment
+	 * it is sent, like a value being written (`track`): leaving a tag or a
+	 * field's name is what sends it, and a copy asked for by the same press
+	 * waits for it. */
 	async function change(run: () => Promise<Entry>): Promise<boolean> {
 		try {
-			await onChanged(await run());
+			await onChanged(await track(run()));
 			return true;
 		} catch (thrown) {
 			onFailure(thrown);
@@ -454,7 +492,7 @@
 		if (typed) retitled = to;
 		const taken = await change(() => renameField(id, from, to));
 		if (retitled === to) retitled = null;
-		if (taken && standing === id && longhand === from) longhand = to;
+		if (taken && standing === id && longhand.delete(from)) longhand.add(to);
 		return taken;
 	}
 
@@ -495,6 +533,7 @@
 		naming = false;
 		inLines = false;
 		hidden = true;
+		typedName = '';
 	}
 
 	/** The focus left the name and the options beside it, which is where the
@@ -504,6 +543,16 @@
 		const group = event.currentTarget;
 		if (into instanceof Node && group instanceof Node && group.contains(into)) return;
 		makeField(false);
+	}
+
+	/** Makes a suggested field: the name, and whether it is hidden, are the
+	 * suggestion's, and it is written on one line. */
+	function suggest(offer: Suggestion) {
+		if (!named) return;
+		named.value = offer.name;
+		hidden = offer.protect;
+		inLines = false;
+		makeField(true);
 	}
 
 	/**
@@ -538,7 +587,7 @@
 		// otherwise when they named it: a field somebody adds to a password
 		// entry is far more often a secret than not. A card's expiry date is
 		// not, and the lock beside the field changes it later either way.
-		if (lined) longhand = name;
+		if (lined) longhand.add(name);
 		if (typing) fresh = name;
 		void write(name, '', protect).then(() => {
 			// The value took the focus when it was drawn. Cleared once the
@@ -576,7 +625,14 @@
 {/snippet}
 
 <section class="flex h-full flex-col overflow-hidden bg-surface">
-	<Heading {path} place={locked ? undefined : where} masked={masked(title)} {onClose}>
+	<Heading
+		{path}
+		place={locked ? undefined : where}
+		masked={masked(title)}
+		duplicable={!locked}
+		{onDuplicate}
+		{onClose}
+	>
 		{@const at = place(title, 'Title')}
 		<Editable
 			value={title?.value ?? ''}
@@ -585,6 +641,7 @@
 			classes="text-txt"
 			readonly={locked}
 			bare
+			focused={made}
 			draft={at}
 			onCommit={(value) => write(at.field, value, at.protect)}
 		/>
@@ -820,7 +877,7 @@
 						entry={entry.id}
 						{field}
 						draft={place(field, field.name)}
-						multiline={field.name === longhand}
+						multiline={longhand.has(field.name)}
 						fresh={field.name === fresh}
 						renamed={field.name === retitled}
 						readOnly={locked}
@@ -839,55 +896,79 @@
 
 			{#if naming}
 				<!-- The name, whether the value is hidden, and whether it is written
-				     in lines. Leaving them finishes the name; the options do not
-				     take the focus from it, so pressing one is not leaving. Hidden
-				     is on to begin with, the way every field of the reader's own
-				     used to be with no say in it. -->
-				<div class="mt-3 flex animate-rise items-center gap-2" onfocusout={leaving}>
-					<input
-						bind:this={named}
-						type="text"
-						autocomplete="off"
-						spellcheck="false"
-						aria-label="The name of the new field"
-						placeholder="What is it called?"
-						onkeydown={(event) => {
-							if (cancels(event)) putAway();
-							if (event.key === 'Enter' && !composing(event)) {
-								event.preventDefault();
-								makeField(true);
-							}
-						}}
-						class="min-w-0 flex-1 rounded-sm border border-accent bg-surface2 px-3 py-2 text-small text-txt ring-4 ring-accent/15 outline-none placeholder:text-txt4"
-					/>
-					<button
-						type="button"
-						onmousedown={(event) => event.preventDefault()}
-						onclick={() => (hidden = !hidden)}
-						aria-pressed={hidden}
-						class="flex shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 py-1.5 font-mono text-meta transition-colors {hidden
-							? 'bg-surface2 text-txt'
-							: 'text-txt4 hover:text-txt3'}"
-					>
-						{#if hidden}
-							<Icon name="check" class="h-3.5 w-3.5 text-txt2" />
-						{/if}
-						Hidden
-					</button>
-					<button
-						type="button"
-						onmousedown={(event) => event.preventDefault()}
-						onclick={() => (inLines = !inLines)}
-						aria-pressed={inLines}
-						class="flex shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 py-1.5 font-mono text-meta transition-colors {inLines
-							? 'bg-surface2 text-txt'
-							: 'text-txt4 hover:text-txt3'}"
-					>
-						{#if inLines}
-							<Icon name="check" class="h-3.5 w-3.5 text-txt2" />
-						{/if}
-						Multi-line
-					</button>
+				     in lines, with the names a reader adds most often under them.
+				     Leaving them finishes the name; the options do not take the
+				     focus from it, so pressing one is not leaving. Hidden is on to
+				     begin with, the way every field of the reader's own used to be
+				     with no say in it. -->
+				<div class="mt-3 animate-rise" onfocusout={leaving}>
+					<div class="flex items-center gap-2">
+						<input
+							bind:this={named}
+							type="text"
+							autocomplete="off"
+							spellcheck="false"
+							aria-label="The name of the new field"
+							placeholder="What is it called?"
+							oninput={(event) => (typedName = event.currentTarget.value)}
+							onkeydown={(event) => {
+								if (cancels(event)) putAway();
+								if (event.key === 'Enter' && !composing(event)) {
+									event.preventDefault();
+									makeField(true);
+								}
+							}}
+							class="min-w-0 flex-1 rounded-sm border border-accent bg-surface2 px-3 py-2 text-small text-txt ring-4 ring-accent/15 outline-none placeholder:text-txt4"
+						/>
+						<button
+							type="button"
+							onmousedown={(event) => event.preventDefault()}
+							onclick={() => (hidden = !hidden)}
+							aria-pressed={hidden}
+							class="flex shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 py-1.5 font-mono text-meta transition-colors {hidden
+								? 'bg-surface2 text-txt'
+								: 'text-txt4 hover:text-txt3'}"
+						>
+							{#if hidden}
+								<Icon name="check" class="h-3.5 w-3.5 text-txt2" />
+							{/if}
+							Hidden
+						</button>
+						<button
+							type="button"
+							onmousedown={(event) => event.preventDefault()}
+							onclick={() => (inLines = !inLines)}
+							aria-pressed={inLines}
+							class="flex shrink-0 items-center gap-1.5 rounded-full border border-hairline px-3 py-1.5 font-mono text-meta transition-colors {inLines
+								? 'bg-surface2 text-txt'
+								: 'text-txt4 hover:text-txt3'}"
+						>
+							{#if inLines}
+								<Icon name="check" class="h-3.5 w-3.5 text-txt2" />
+							{/if}
+							Multi-line
+						</button>
+					</div>
+					{#if offers.length > 0}
+						<!-- A press makes the field there and then, hidden or not as
+						     the name says, with its value taking the focus: the name
+						     is chosen, and there is nothing left to finish. -->
+						<div class="mt-2 flex flex-wrap items-center gap-1.5">
+							<span class="font-mono text-label tracking-label text-txt4 uppercase">Suggested</span>
+							{#each offers as offer (offer.name)}
+								<button
+									type="button"
+									onmousedown={(event) => event.preventDefault()}
+									onclick={() => suggest(offer)}
+									aria-label="Add the field {offer.name}"
+									class="flex items-center gap-1.5 rounded-full border border-hairline px-3 py-1.5 font-mono text-meta text-txt3 transition-colors hover:text-txt"
+								>
+									<Icon name="plus" class="h-3.5 w-3.5 text-txt4" />
+									{offer.name}
+								</button>
+							{/each}
+						</div>
+					{/if}
 				</div>
 			{/if}
 		</div>

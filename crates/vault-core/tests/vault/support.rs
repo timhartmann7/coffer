@@ -7,9 +7,14 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use keepass::db::{
+    AutoType, AutoTypeAssociation, Color, CustomDataItem, CustomDataValue, DataTransferObfuscation,
+    Icon, Value,
+};
 use keepass::{Database, DatabaseKey};
 use zeroize::Zeroizing;
 
+use vault_core::kind::Kind;
 use vault_core::model::{EntryId, GroupId, Project, fields};
 use vault_core::{Attached, LockPolicy, MasterKey, NewValue, Vault};
 
@@ -45,6 +50,15 @@ pub fn scratch(name: &str) -> (tempfile::TempDir, PathBuf) {
 
 pub fn open(path: &Path, secret: &str) -> Vault {
     Vault::open(path, password(secret), LockPolicy::Respect).expect("the database opens")
+}
+
+/// The vault saved, let go of, and opened again from the file: what the next
+/// launch would find.
+pub fn reopened(mut vault: Vault, secret: &str) -> Vault {
+    vault.save().expect("the database saves");
+    let path = vault.path().to_owned();
+    drop(vault);
+    open(&path, secret)
 }
 
 /// Puts a file on an entry under a name the entry does not use yet.
@@ -146,11 +160,80 @@ pub fn library(path: &Path, secret: &str) -> Database {
 
 /// An entry with a title, made where it is asked for.
 pub fn made(vault: &mut Vault, group: GroupId, title: &str) -> EntryId {
-    let id = vault.create_entry(group).expect("the entry is made");
+    let id = vault
+        .create_entry(group, Kind::Login)
+        .expect("the entry is made");
     vault
         .set_field(id, fields::TITLE, NewValue::Open(title.to_owned()))
         .expect("the title is written");
     id
+}
+
+/// Everything an entry holds but its files, its place and its dates, as the
+/// library reads it: what a restore brings back and a copy carries. Built from
+/// the library's own types, so a value compares with its protection.
+#[derive(Debug, PartialEq)]
+pub struct Holding {
+    pub fields: std::collections::HashMap<String, Value<String>>,
+    pub tags: Vec<String>,
+    pub custom_data: std::collections::HashMap<String, CustomDataItem>,
+    pub autotype: Option<AutoType>,
+    pub foreground_color: Option<Color>,
+    pub background_color: Option<Color>,
+    pub override_url: Option<String>,
+    pub quality_check: bool,
+    pub expires: Option<bool>,
+    pub expiry: Option<chrono::NaiveDateTime>,
+    pub icon: Option<Icon>,
+}
+
+pub fn holding(entry: &keepass::db::Entry) -> Holding {
+    Holding {
+        fields: entry.fields.clone(),
+        tags: entry.tags.clone(),
+        custom_data: entry.custom_data.clone(),
+        autotype: entry.autotype.clone(),
+        foreground_color: entry.foreground_color.clone(),
+        background_color: entry.background_color.clone(),
+        override_url: entry.override_url.clone(),
+        quality_check: entry.quality_check,
+        expires: entry.times.expires,
+        expiry: entry.times.expiry,
+        icon: entry.icon().cloned(),
+    }
+}
+
+/// Gives an entry one of everything it can hold beside its fields and files,
+/// each set away from the library's default, so that one left behind on the
+/// way somewhere is missed: custom data, an auto-type association, both
+/// colours, an override URL, the quality check off, an expiry, a tag and a
+/// custom icon.
+pub fn furnish(entry: &mut keepass::db::EntryMut<'_>, word: &str) {
+    entry.tags = vec![word.to_owned()];
+    entry.custom_data.insert(
+        "Coffer.Test".to_owned(),
+        CustomDataItem {
+            value: Some(CustomDataValue::String(word.to_owned())),
+            last_modification_time: None,
+        },
+    );
+    entry.autotype = Some(AutoType {
+        enabled: true,
+        default_sequence: Some("{USERNAME}{TAB}{PASSWORD}".to_owned()),
+        data_transfer_obfuscation: DataTransferObfuscation::UseClipboard,
+        associations: vec![AutoTypeAssociation {
+            window: format!("{word} - Browser"),
+            sequence: "{PASSWORD}".to_owned(),
+        }],
+    });
+    entry.foreground_color = Some("#FF0000".parse().expect("a colour"));
+    entry.background_color = Some("#00FF00".parse().expect("a colour"));
+    entry.override_url = Some(format!("cmd://open {word}"));
+    entry.quality_check = false;
+    entry.times.expires = Some(true);
+    entry.times.expiry =
+        chrono::NaiveDate::from_ymd_opt(2030, 1, 2).and_then(|day| day.and_hms_opt(3, 4, 5));
+    entry.set_icon_custom_new(word.as_bytes().to_vec());
 }
 
 /// An empty vault of [`built`]'s, in a scratch directory of its own.
@@ -460,6 +543,37 @@ pub fn export(tool: &Path, database: &Path, secret: &str, key_file: Option<&Path
     )
     .unwrap_or_else(|error| panic!("keepassxc-cli could not export {database}: {error}"));
     String::from_utf8(bytes).expect("the export is UTF-8")
+}
+
+/// The `<Entry>` an export holds for the entry with this title, from its start
+/// to the first `</Entry>` after it. That is the entry's own end when it has no
+/// versions, and the end of its first version when it has: either way the
+/// fields before any `<History>` are the entry as it stands, and a `<History>`
+/// in it is a version KeePassXC read.
+pub fn exported_entry<'a>(xml: &'a str, title: &str) -> Option<&'a str> {
+    let at = xml.find(&format!("<Value>{title}</Value>"))?;
+    let start = xml.get(..at)?.rfind("<Entry>")?;
+    let rest = xml.get(start..)?;
+    rest.get(..rest.find("</Entry>")?)
+}
+
+/// The value an export gives a field, and whether it marks it to be kept
+/// protected: the first field of that name in `xml`, which in an entry is the
+/// entry's own before any of its versions'. Read off the text rather than
+/// parsed: the export is the other implementation's own words, and this asks
+/// it two things. An empty value is written as an element with nothing in it.
+pub fn exported_field(xml: &str, name: &str) -> Option<(String, bool)> {
+    let key = format!("<Key>{name}</Key>");
+    let after = xml.get(xml.find(&key)? + key.len()..)?;
+    let opens = after.find("<Value")?;
+    let tag = after.get(opens..opens + after.get(opens..)?.find('>')? + 1)?;
+    let hidden = tag.contains("ProtectInMemory=\"True\"");
+    if tag.ends_with("/>") {
+        return Some((String::new(), hidden));
+    }
+    let rest = after.get(opens + tag.len()..)?;
+    let value = rest.get(..rest.find("</Value>")?)?;
+    Some((value.to_owned(), hidden))
 }
 
 /// Every entry path in the database, in the order keepassxc-cli lists them.

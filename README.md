@@ -75,7 +75,9 @@ an hour after the refusal, so the command is the reliable one.
   Nothing that can open a socket is in the dependency graph, and the build fails
   if one appears.
 - **No fields of our own.** The moment Coffer wrote something the specification
-  does not have, the first promise would stop being true.
+  does not have, the first promise would stop being true. A card, a Wi-Fi
+  network or a passport made in Coffer is ordinary string fields, a tag and one
+  of the icons every KeePass client draws.
 
 ## What Coffer does not protect against
 
@@ -109,6 +111,9 @@ an hour after the refusal, so the command is the reliable one.
 - Whatever is done to several entries at once, moving, deleting, putting back
   or tagging them, is one write, and happens to all of them or none. A tag
   writes a version on each entry it went on and on no other.
+- A copy of an entry is made inside the vault: every value under the protection
+  it has, a file of its own for every file, and no versions. The entry it was
+  copied from is not changed.
 - The vault locks itself after five minutes idle, on sleep, on screen lock, and
   when you close its window. After a close, Coffer waits in the Dock until you
   click it; after the others, the window comes back asking for the password.

@@ -2,6 +2,7 @@
 //! underneath it.
 
 use keepass::db::fields;
+use vault_core::kind::Kind;
 use vault_core::model::{Deletion, EntryId, Field, FieldValue, GroupId};
 use vault_core::{NewValue, Vault, VaultError};
 use zeroize::Zeroizing;
@@ -65,7 +66,9 @@ fn a_new_entry_carries_the_fields_the_database_asks_to_protect() {
     let mut vault = open(&path, BUILT_PASSWORD);
 
     let root = root_of(&vault);
-    let id = vault.create_entry(root).expect("the entry is made");
+    let id = vault
+        .create_entry(root, Kind::Login)
+        .expect("the entry is made");
     let entry = vault.entry(id).expect("the entry is there");
 
     let named: Vec<&str> = entry
@@ -101,7 +104,9 @@ fn an_entry_made_in_coffer_is_there_after_the_file_is_opened_again() {
     let id = {
         let mut vault = open(&path, BUILT_PASSWORD);
         let root = root_of(&vault);
-        let id = vault.create_entry(root).expect("the entry is made");
+        let id = vault
+            .create_entry(root, Kind::Login)
+            .expect("the entry is made");
         vault
             .set_field(id, fields::TITLE, NewValue::Open("a new login".to_owned()))
             .expect("the title is written");
@@ -148,7 +153,9 @@ fn a_folder_can_be_made_renamed_and_filled() {
     let section = vault
         .create_group(project, "Servers")
         .expect("the folder is made");
-    let id = vault.create_entry(section).expect("the entry is made");
+    let id = vault
+        .create_entry(section, Kind::Login)
+        .expect("the entry is made");
 
     vault
         .rename_group(section, "Machines")
@@ -235,7 +242,9 @@ fn an_entry_at_the_top_of_the_vault_goes_to_the_recycle_bin_like_any_other() {
     let mut vault = open(&database, SECRET);
 
     let root = vault.tree().id;
-    let id = vault.create_entry(root).expect("the entry is made");
+    let id = vault
+        .create_entry(root, Kind::Login)
+        .expect("the entry is made");
     vault
         .set_field(id, fields::TITLE, NewValue::Open("at the top".to_owned()))
         .expect("the title is written");
@@ -368,7 +377,9 @@ fn deleting_a_folder_takes_everything_in_it() {
     let section = vault
         .create_group(project, "Servers")
         .expect("the folder is made");
-    let inside = vault.create_entry(section).expect("the entry is made");
+    let inside = vault
+        .create_entry(section, Kind::Login)
+        .expect("the entry is made");
 
     vault
         .delete_group(project, Deletion::Forever)
@@ -446,7 +457,9 @@ fn a_value_a_keepass_file_cannot_hold_is_refused_wherever_it_is_offered() {
     let mut vault = open(&path, BUILT_PASSWORD);
 
     let root = root_of(&vault);
-    let id = vault.create_entry(root).expect("the entry is made");
+    let id = vault
+        .create_entry(root, Kind::Login)
+        .expect("the entry is made");
 
     // A vertical tab is not one of the three control characters XML 1.0 allows,
     // so a file carrying one is a file no conformant reader opens again.
@@ -485,7 +498,9 @@ fn a_tag_that_would_come_back_as_two_is_refused() {
     let mut vault = open(&path, BUILT_PASSWORD);
 
     let root = root_of(&vault);
-    let id = vault.create_entry(root).expect("the entry is made");
+    let id = vault
+        .create_entry(root, Kind::Login)
+        .expect("the entry is made");
 
     // The format keeps tags as one string and reads three characters as the
     // separator between them. A tag holding one comes back as two tags, and a
@@ -610,7 +625,9 @@ fn a_removal_never_renumbers_a_file_a_version_points_at() {
         let root = root_of(&vault);
         let mut ids = Vec::new();
         for (round, size) in sizes.iter().enumerate() {
-            let id = vault.create_entry(root).expect("the entry is made");
+            let id = vault
+                .create_entry(root, Kind::Login)
+                .expect("the entry is made");
             support::attach(
                 &mut vault,
                 id,
@@ -695,7 +712,9 @@ fn documents_can_still_be_taken_out_of_a_vault_that_has_been_used() {
         let root = root_of(&vault);
         let mut ids = Vec::new();
         for round in 0..COUNT {
-            let id = vault.create_entry(root).expect("the entry is made");
+            let id = vault
+                .create_entry(root, Kind::Login)
+                .expect("the entry is made");
             vault
                 .set_field(id, fields::TITLE, NewValue::Open(format!("doc {round}")))
                 .expect("the title is written");
@@ -787,7 +806,9 @@ fn the_recycle_bin_empties_once_the_versions_holding_a_file_have_gone() {
         let root = root_of(&vault);
         let mut ids = Vec::new();
         for round in 0..3u8 {
-            let id = vault.create_entry(root).expect("the entry is made");
+            let id = vault
+                .create_entry(root, Kind::Login)
+                .expect("the entry is made");
             support::attach(&mut vault, id, &format!("file-{round}.bin"), &[round; 64]);
             vault
                 .set_field(id, fields::NOTES, NewValue::Open(format!("note {round}")))
@@ -851,7 +872,9 @@ fn a_file_an_earlier_version_still_holds_is_not_taken_away_from_it() {
     let id = {
         let mut vault = open(&path, BUILT_PASSWORD);
         let root = root_of(&vault);
-        let id = vault.create_entry(root).expect("the entry is made");
+        let id = vault
+            .create_entry(root, Kind::Login)
+            .expect("the entry is made");
         support::attach(&mut vault, id, "key.pem", b"a private key");
         // A change to the files writes no version. A change to a field does,
         // and that version holds the file the entry had at the time.
@@ -976,7 +999,9 @@ fn a_file_larger_than_a_vault_holds_is_refused_before_it_is_read_in() {
     let mut vault = open(&path, BUILT_PASSWORD);
 
     let root = root_of(&vault);
-    let id = vault.create_entry(root).expect("the entry is made");
+    let id = vault
+        .create_entry(root, Kind::Login)
+        .expect("the entry is made");
 
     // The inner header keeps a file's length in four bytes, so a file past four
     // gigabytes is written truncated and the database cannot be opened again.
@@ -1019,7 +1044,9 @@ fn a_name_the_file_can_hold_is_stored_exactly_as_it_was_given() {
     let id = {
         let mut vault = open(&path, BUILT_PASSWORD);
         let root = root_of(&vault);
-        let id = vault.create_entry(root).expect("the entry is made");
+        let id = vault
+            .create_entry(root, Kind::Login)
+            .expect("the entry is made");
         for (round, name) in awkward.iter().enumerate() {
             support::attach(&mut vault, id, name, &[round as u8; 8]);
         }
@@ -1774,7 +1801,9 @@ fn a_file_with_no_bytes_in_it_survives_being_added_and_taken_away() {
     let id = {
         let mut vault = open(&path, BUILT_PASSWORD);
         let root = root_of(&vault);
-        let id = vault.create_entry(root).expect("the entry is made");
+        let id = vault
+            .create_entry(root, Kind::Login)
+            .expect("the entry is made");
         support::attach(&mut vault, id, "nothing.txt", &[]);
         support::attach(&mut vault, id, "something.txt", b"a byte or two");
         vault.save().expect("the database saves");
@@ -2204,7 +2233,9 @@ fn a_database_that_would_be_too_large_to_open_again_is_not_written() {
 
     let mut vault = open(&path, BUILT_PASSWORD);
     let root = root_of(&vault);
-    let id = vault.create_entry(root).expect("the entry is made");
+    let id = vault
+        .create_entry(root, Kind::Login)
+        .expect("the entry is made");
 
     // Five files of a quarter of a gigabyte: each one is inside the limit on a
     // single file, and together they are past the limit on the database.
@@ -2302,7 +2333,9 @@ fn only_the_versions_that_hold_a_file_go_with_it() {
 
     let mut vault = open(&path, BUILT_PASSWORD);
     let root = root_of(&vault);
-    let id = vault.create_entry(root).expect("the entry is made");
+    let id = vault
+        .create_entry(root, Kind::Login)
+        .expect("the entry is made");
 
     // Two edits before the file, so their versions name nothing.
     for round in 0..2 {

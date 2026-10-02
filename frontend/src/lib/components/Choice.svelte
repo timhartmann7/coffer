@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { leaves } from '$lib/popup';
+	import { leaves, step } from '$lib/popup';
 	import Icon from './Icon.svelte';
 
 	/**
@@ -57,12 +57,7 @@
 			open = true;
 			return;
 		}
-
-		const buttons = [...(wrapper?.querySelectorAll('[role="option"]') ?? [])];
-		const at = buttons.indexOf(document.activeElement as Element);
-		const step = event.key === 'ArrowDown' ? 1 : -1;
-		const next = buttons[(at + step + buttons.length) % buttons.length] ?? buttons[0];
-		if (next instanceof HTMLElement) next.focus();
+		step(wrapper, 'option', event.key);
 	}
 </script>
 

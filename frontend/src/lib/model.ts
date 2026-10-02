@@ -219,6 +219,10 @@ export interface Group {
 	id: string;
 	name: string;
 	isRecycleBin: boolean;
+	/** The group the vault keeps its entry templates in, while anything can be
+	 * made from what it holds. One at most in a tree, and none in a vault that
+	 * names none. */
+	isTemplates: boolean;
 	/** When the folder is in the recycle bin, when it went in and where it goes
 	 * back to. `null` for the bin itself and for everything outside it. */
 	binned: Binned | null;
@@ -350,6 +354,32 @@ export interface Span {
 export interface Made {
 	tree: Group;
 	entry: string;
+}
+
+/**
+ * One kind of entry "+ Entry" offers, as Rust offers it: the word to send back
+ * to make one, what to call it, and the fields it writes in lines, which are
+ * drawn as text areas before anything is in them. The word is Rust's and only
+ * ever sent back as it came.
+ */
+export interface Offer {
+	kind: string;
+	name: string;
+	lined: string[];
+}
+
+/** A name offered for a field of the reader's own, and whether a field made
+ * under it is hidden. */
+export interface Suggestion {
+	name: string;
+	protect: boolean;
+}
+
+/** What a new entry can start as, a login first, and the names offered for a
+ * field of the reader's own. Rust's, and the same for every vault. */
+export interface Kinds {
+	offered: Offer[];
+	suggested: Suggestion[];
 }
 
 /** One entry a move between folders took somewhere else, and the folder it
@@ -505,6 +535,7 @@ export const COMMANDS = [
 	'lock',
 	'newEntry',
 	'newFolder',
+	'duplicate',
 	'openVault',
 	'find',
 	'copyLogin',

@@ -360,7 +360,7 @@ proptest! {
         // that a version is holding a file before anything else happens.
         let root = vault.tree().id;
         for round in 0..4u8 {
-            let id = vault.create_entry(root).expect("the entry is made");
+            let id = vault.create_entry(root, vault_core::kind::Kind::Login).expect("the entry is made");
             vault
                 .set_field(id, "Title", vault_core::NewValue::Open(format!("entry {round}")))
                 .expect("the title is written");

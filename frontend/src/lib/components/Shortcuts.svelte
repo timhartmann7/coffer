@@ -20,6 +20,7 @@
 		lock: 'Lock the vault',
 		newEntry: 'Make a new entry',
 		newFolder: 'Make a new folder',
+		duplicate: 'Make a copy of the open entry beside it',
 		openVault: 'Open another vault, while this one is locked',
 		find: 'Search the list',
 		copyLogin: 'Copy the open entry’s login',

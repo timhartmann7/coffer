@@ -24,6 +24,10 @@ pub struct Project {
     /// True for the group the database nominates as its recycle bin. Deleted
     /// entries live there, and the tree shows it apart from the rest.
     pub is_recycle_bin: bool,
+    /// True for the group the database keeps its entry templates in, while
+    /// anything can be made from what it holds (see `templates.rs`). Nowhere,
+    /// for a database that names none.
+    pub is_templates: bool,
     /// When the group is in the recycle bin, what is known about how it got
     /// there. Nothing for the bin itself and for everything outside it.
     pub binned: Option<Binned>,

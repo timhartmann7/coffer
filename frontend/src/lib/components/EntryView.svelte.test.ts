@@ -1,6 +1,6 @@
 import { flushSync, mount, unmount, type ComponentProps } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { attachment, drawing, entry, field, generated, group } from '$lib/fixtures';
+import { attachment, drawing, entry, field, generated, group, kinds } from '$lib/fixtures';
 import { typing } from '$lib/keys';
 import type { Attached, Clash, Entry, Generated, Purpose, Recipe } from '$lib/model';
 import { reactive } from '$lib/props.svelte';
@@ -48,10 +48,12 @@ function props<Over extends Partial<ComponentProps<typeof EntryView>>>(over: Ove
 		history: null,
 		now: new Date('2026-08-29T14:30:00Z'),
 		readOnly: false,
+		suggested: kinds().suggested,
 		onCopy: vi.fn(),
 		onChanged: vi.fn(),
 		onVersions: vi.fn(),
 		onClose: vi.fn(),
+		onDuplicate: vi.fn(),
 		onDelete: vi.fn(),
 		onPutBack: vi.fn(),
 		onMove: vi.fn(),
@@ -1325,28 +1327,38 @@ it('keeps the password field the same box whether or not it is revealed', async 
  * the way out and nothing else; deleting is a labelled action at the foot of
  * the pane, after everything else in it.
  */
-it('offers a way out of the entry, and it is not the way to delete one', () => {
+it('offers a way out of the entry and a copy of it, and neither is the way to delete one', () => {
 	const onClose = vi.fn();
 	const onDelete = vi.fn();
+	const onDuplicate = vi.fn();
 	const component = mount(EntryView, {
 		target: host,
 		props: props({
 			entry: entry({ fields: [field({ name: 'Title', kind: 'title', value: 'node-3' })] }),
 			onClose,
-			onDelete
+			onDelete,
+			onDuplicate
 		})
 	});
 	flushSync();
 
 	const header = host.querySelector('header');
 	// The line above the title opens a list of folders, which moves the entry
-	// and loses nothing.
-	const buttons = [...(header?.querySelectorAll('button:not([aria-haspopup])') ?? [])].map((each) =>
-		each.getAttribute('aria-label')
+	// and loses nothing; Duplicate makes another, which loses nothing either.
+	const buttons = [...(header?.querySelectorAll('button:not([aria-haspopup])') ?? [])].map(
+		(each) => each.getAttribute('aria-label') ?? each.textContent?.trim()
 	);
 	expect(buttons, 'something that loses the entry is back beside the close').toEqual([
+		'Duplicate',
 		'Close this entry'
 	]);
+	const copy = button('Duplicate');
+	expect(copy.title).toBe('Duplicate · ⌘D');
+	expect(copy.getAttribute('aria-keyshortcuts')).toBe('Meta+D');
+	copy.click();
+	flushSync();
+	expect(onDuplicate).toHaveBeenCalledTimes(1);
+	expect(onDelete, 'the copy deleted the entry').not.toHaveBeenCalled();
 
 	// The last button in the pane, in words.
 	const all = [...host.querySelectorAll('button')];
@@ -4996,5 +5008,155 @@ it('a folder list open over one entry is not open over the next', () => {
 	flushSync();
 	expect(onMove).not.toHaveBeenCalled();
 
+	return unmount(component);
+});
+
+/** The suggestions under the name of a new field, by name. */
+function suggestions(): string[] {
+	return [...host.querySelectorAll<HTMLButtonElement>('button[aria-label^="Add the field "]')].map(
+		(each) => each.textContent?.trim() ?? ''
+	);
+}
+
+/** The names a reader adds most often are offered under the name of a new
+ * field: only those the entry does not have yet, and only those that start
+ * with what is typed, in either case. With none left, the line goes. */
+it('suggests names for a new field, narrowed by what is typed and by what is there', async () => {
+	const { component } = landing({
+		fields: [PASSWORD, field({ name: 'PIN', kind: 'custom', value: '', empty: true })]
+	});
+	icon('Add a field').click();
+	flushSync();
+	await Promise.resolve();
+	expect(host.textContent).toContain('Suggested');
+	expect(suggestions(), 'a name the entry has was suggested').toEqual([
+		'Account number',
+		'Security answer'
+	]);
+
+	for (const [typed, offered] of [
+		['acc', ['Account number']],
+		['  SEC', ['Security answer']],
+		['pin', []],
+		['', ['Account number', 'Security answer']]
+	] as const) {
+		named().value = typed;
+		named().dispatchEvent(new Event('input', { bubbles: true }));
+		flushSync();
+		expect(suggestions(), typed).toEqual(offered);
+		expect(host.textContent?.includes('Suggested'), typed).toBe(offered.length > 0);
+	}
+
+	// Put away and opened again, nothing typed is remembered.
+	named().value = 'acc';
+	named().dispatchEvent(new Event('input', { bubbles: true }));
+	icon('Never mind the new field').click();
+	flushSync();
+	icon('Add a field').click();
+	flushSync();
+	expect(suggestions()).toEqual(['Account number', 'Security answer']);
+
+	return unmount(component);
+});
+
+/** A suggestion is a name already chosen: the field is made at once, hidden
+ * or not as the suggestion says whatever the pill beside the name says, and
+ * its value takes the focus. The typed half of a name is not made first. */
+it('makes a suggested field the way it is suggested, and puts the reader in its value', async () => {
+	ipc.setField.mockReset();
+	const { component, props } = landing({ fields: [PASSWORD] });
+	const made: Entry = {
+		...props.entry,
+		fields: [PASSWORD, field({ name: 'Account number', kind: 'custom', value: '', empty: true })]
+	};
+	ipc.setField.mockResolvedValue(made);
+
+	icon('Add a field').click();
+	flushSync();
+	await Promise.resolve();
+	named().value = 'Acc';
+	named().dispatchEvent(new Event('input', { bubbles: true }));
+	flushSync();
+	const offer = icon('Add the field Account number');
+	const press = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+	offer.dispatchEvent(press);
+	expect(press.defaultPrevented, 'the suggestion took the focus off the name').toBe(true);
+	offer.click();
+	flushSync();
+
+	expect(ipc.setField).toHaveBeenCalledTimes(1);
+	expect(ipc.setField).toHaveBeenCalledWith(
+		made.id,
+		'Account number',
+		'',
+		false,
+		expect.any(Number)
+	);
+	await vi.waitFor(() =>
+		expect(document.activeElement).toBe(host.querySelector('textarea[aria-label="Account number"]'))
+	);
+	expect(host.querySelector('[aria-label="The name of the new field"]')).toBeNull();
+	return unmount(component);
+});
+
+/** An entry just made opens with its name selected, to be typed over; one
+ * opened any other way leaves the focus alone. A name the database protects
+ * is drawn as the mask and takes nothing. */
+it('puts the reader in the name of an entry just made, and only then', async () => {
+	const named = [field({ name: 'Title', kind: 'title', value: 'Gmail copy', empty: false })];
+	for (const [made, takes] of [
+		[true, true],
+		[false, false]
+	] as const) {
+		const component = mount(EntryView, {
+			target: host,
+			props: props({ entry: entry({ fields: named }), made })
+		});
+		flushSync();
+		const title = host.querySelector<HTMLInputElement>('h1 input');
+		expect(document.activeElement === title, String(made)).toBe(takes);
+		if (takes) {
+			expect(title?.selectionStart).toBe(0);
+			expect(title?.selectionEnd).toBe('Gmail copy'.length);
+		}
+		title?.blur();
+		await unmount(component);
+	}
+
+	const masked = mount(EntryView, {
+		target: host,
+		props: props({ entry: entry({ fields: titled(null) }), made: true })
+	});
+	flushSync();
+	expect(document.activeElement, 'a protected name took the focus').toBe(document.body);
+	return unmount(masked);
+});
+
+/** The fields an entry's kind writes in lines are written in lines from the
+ * start, four lines tall, where Return starts a line: ten recovery codes are
+ * not pasted into one. The rest of its fields of the reader's own are not. */
+it('writes the fields its kind names in lines in lines while they are empty', () => {
+	const component = mount(EntryView, {
+		target: host,
+		props: props({
+			entry: entry({
+				fields: [
+					field({ name: 'Recovery codes', kind: 'custom', value: null, protected: true }),
+					field({ name: 'Account', kind: 'custom', value: '' })
+				]
+			}),
+			lined: ['Recovery codes']
+		})
+	});
+	flushSync();
+	const codes = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Recovery codes"]');
+	expect(codes?.getAttribute('rows')).toBe('4');
+	const returned_ = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+	codes?.dispatchEvent(returned_);
+	expect(returned_.defaultPrevented, 'Return finished the codes').toBe(false);
+	expect(
+		host.querySelector('textarea[aria-label="Account"]')?.getAttribute('rows'),
+		'a field the kind does not write in lines was'
+	).toBe('1');
 	return unmount(component);
 });

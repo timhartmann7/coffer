@@ -10,12 +10,13 @@
 //! and a file dialog there deadlocks, because the panel needs the run loop that
 //! the call is blocking.
 //!
-//! The two that are not are the two that reach neither the session, the lock
-//! nor the disk: the one that reads what the reader chose, and the one that
-//! reads what the generator was last asked for. Neither can wait on anything,
-//! and a hop onto another thread for them would be latency bought with
-//! nothing. Making a password is not one of them any more: it writes down the
-//! recipe it was made from.
+//! The three that are not are the three that reach neither the session, the
+//! lock nor the disk: the one that reads what the reader chose, the one that
+//! reads what the generator was last asked for, and the one that lists the
+//! kinds of entry Coffer makes. None of them can wait on anything, and a hop
+//! onto another thread for them would be latency bought with nothing. Making a
+//! password is not one of them any more: it writes down the recipe it was made
+//! from.
 //!
 //! The message the window sends to say somebody is there is not one of them,
 //! however often it comes. A stir that finds the time already spent - the first
@@ -33,6 +34,7 @@ use zeroize::Zeroizing;
 
 use vault_core::generate::Recipe;
 use vault_core::kdf;
+use vault_core::model::EntryId;
 use vault_core::{LockPolicy, NewValue, Typing, Vault};
 
 use crate::autolock::timer::Timer;
@@ -852,15 +854,57 @@ fn entry_of(session: &Session, id: &str) -> Result<Entry, Failure> {
     Ok(Entry::of(&session.entry(dto::entry_id(id)?)?))
 }
 
-#[tauri::command(async)]
-pub fn create_entry(group: String, session: Held<'_>) -> Result<Made, Failure> {
-    let group = dto::group_id(&group)?;
-    let made = session.with_mut(|vault| vault.create_entry(group))??;
-
+/// The tree after an entry was made, and the entry: what every way of making
+/// one answers with.
+fn made(session: &Session, entry: EntryId) -> Result<Made, Failure> {
     Ok(Made {
-        tree: tree_of(&session)?,
-        entry: made.to_string(),
+        tree: tree_of(session)?,
+        entry: entry.to_string(),
     })
+}
+
+/// What a new entry can start as, a login first, and the names offered for a
+/// field of the reader's own. The same answer every time; see [`dto::Kinds`].
+#[tauri::command]
+pub fn kinds() -> dto::Kinds {
+    dto::Kinds::of()
+}
+
+/// Makes an entry of a kind in a folder. See
+/// [`vault_core::Vault::create_entry`].
+#[tauri::command(async)]
+pub fn create_entry(group: String, kind: dto::Kind, session: Held<'_>) -> Result<Made, Failure> {
+    let group = dto::group_id(&group)?;
+    let entry = session.with_mut(|vault| vault.create_entry(group, kind.wanted()))??;
+    made(&session, entry)
+}
+
+/// Makes an entry in a folder from one of the vault's templates, refused for
+/// an entry that is not one. See [`vault_core::Vault::create_from_template`].
+#[tauri::command(async)]
+pub fn create_from_template(
+    group: String,
+    template: String,
+    session: Held<'_>,
+) -> Result<Made, Failure> {
+    let group = dto::group_id(&group)?;
+    let template = dto::entry_id(&template)?;
+    let entry = session.with_mut(|vault| vault.create_from_template(template, group))??;
+    made(&session, entry)
+}
+
+/// Makes a copy of an entry beside it. See
+/// [`vault_core::Vault::duplicate_entry`].
+///
+/// Every value and file is copied inside Rust, and the copy is a new entry:
+/// nothing typed into the original and not yet written goes with it, and
+/// neither does a file waiting on the original's answer. The window writes
+/// what was typed before it asks.
+#[tauri::command(async)]
+pub fn duplicate_entry(entry: String, session: Held<'_>) -> Result<Made, Failure> {
+    let entry = dto::entry_id(&entry)?;
+    let copy = session.with_mut(|vault| vault.duplicate_entry(entry))??;
+    made(&session, copy)
 }
 
 /// Deletes entries, every one of them or none, and lets go of anything typed

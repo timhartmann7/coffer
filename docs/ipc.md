@@ -28,6 +28,7 @@ travels the other way, as bytes.
 | Make a password | the password, once, the way a reveal answers, and which of the kinds of character asked for it happens to lack |
 | Hide a field, or rename it | nothing new; the value moves inside Rust, and a hidden field comes back with no value |
 | Show a field | its value, in the entry that comes back: it is an open field from then on, and crosses as every open value does |
+| Make an entry of a kind, from a template, or as a copy | the tree and the new entry's id; every value and file is copied inside Rust |
 
 A field's `value` is `null` exactly when it does not cross: the database
 protects it, or it is the password. **A password never crosses, protected or
@@ -67,7 +68,7 @@ Everything slice 3 added:
 
 | Command | Takes | Answers |
 |---|---|---|
-| `create_entry` | `group` | the tree, and the entry it made |
+| `create_entry` | `group`, `kind` | the tree, and the entry it made |
 | `delete_entries` | `entries` (each an `entry` and the `deletion` the window showed), `sequence` | the tree |
 | `create_group` | `parent`, `name` | the tree |
 | `rename_group` | `group`, `name` | the tree |
@@ -590,6 +591,68 @@ no longer go to the bin. Any of those did nothing, and the window says that
 something has changed since, so that can no longer be undone, and reads the tree
 again (`overtaken.ts`). Any other refusal is shown as Rust wrote it.
 
+Making an entry of a kind, from one of the vault's templates, or as a copy of
+another:
+
+| Command | Takes | Answers |
+|---|---|---|
+| `kinds` | | the kinds of entry Coffer makes, a login first, each with the word that names it, what to call it and the fields it writes in lines, and the names suggested for a field of the reader's own |
+| `create_from_template` | `group`, `template` | the tree, and the entry it made |
+| `duplicate_entry` | `entry` | the tree, and the copy |
+
+`create_entry` above takes the `kind` too.
+
+**What a new entry starts as is Rust's.** `kinds` answers `offered`, a login
+first, and `suggested`: for each kind the word the window sends back as
+`create_entry`'s `kind` (`login`, `bankCard`, `wifi`, `identity`, `licence`,
+`recoveryCodes`, `secureNote`, `sshKey`), its name, and `lined`, the fields it
+writes in lines, which the window draws as text areas before anything is in
+them; for each suggestion its name and whether a field made under it is
+hidden. The window holds no list of either and treats the words as opaque: it
+sends back the one that came with what was pressed, and a word it made up is
+refused by Tauri before the command runs, rather than read as the nearest kind.
+The fields themselves, their protection, the tag and the icon arrive with the
+entry that is made (see `docs/vault-core.md`, "Kinds, templates and copies").
+The first offer is what "+ Entry" and New Entry make unasked. Like `settings`
+and `generator`, `kinds` reaches neither the session, the lock nor the disk, so
+it is answered on the thread that asked; the window reads it once a boot,
+beside the settings.
+
+**A copy is made in Rust.** `duplicate_entry` names the entry and nothing else:
+every value, the protected ones included, and every file is copied inside the
+vault, and nothing of either crosses. The copy is a new entry beside the
+original, with " copy" after its title - an untitled entry's copy stays
+untitled - every field under the protection it has, tags, icon, colours,
+custom data and expiry, a file of its own for every file, no versions and every
+other date now. It is not numbered. What was typed into the original and not
+yet written is the original's: drafts and a file waiting on an answer are kept
+by entry id, so a lock writes the typing into the original and the answer
+still goes on it, never on the copy. The window writes the field being typed in
+before it asks, and waits for that write, and for a tag or a field's new name
+the same press left, to arrive (`flush` and `track` in `drafts.ts`), so the
+copy holds what is on the screen. An entry in the recycle bin is refused with
+`refused` - its copy would be a deleted entry nobody deleted - and so is any
+making into the bin or a folder in it: `create_entry`, `create_from_template`
+and the copy ask the question a move asks of where it goes. A vault Coffer will
+not write answers `readOnly`.
+
+**The vault's templates are its templates group's own entries.** A tree marks
+at most one group `isTemplates`: the one `Meta/EntryTemplatesGroup` names, while
+it is there, is not the top of the vault and is not in the bin. The window lists
+that group's own entries after the kinds; `create_from_template` copies one into
+`group` on the terms of a copy, keeping its title, and refuses with `refused`
+any entry the group does not hold itself - one outside it, one in a folder
+inside it, one whose group went to the bin or was erased since the list was
+drawn. A list drawn before a `reload` is answered the same way, from the file
+as it is.
+
+**Making an entry answers with the entry it made.** All three answer
+`{ tree, entry }` (`Made`), the id of what was made in the tree it was made in,
+and the window opens it - unless the reader chose another entry after the
+press, while Rust was making it or while a copy waited for the write before it,
+or the pane has to stay, in which case it waits in the list. No undo is
+offered: deleting it is the way back.
+
 **`add_attachment` and `export_attachment` open their panel in Rust.** The
 bytes of a file never cross in either direction and neither does a path: the
 webview asks, the reader picks, and Rust reads or writes. The name a save panel
@@ -823,7 +886,7 @@ selected and copied was cut out of the new value.
 
 Coffer's own items sit in the bar among AppKit's: Settings… (Cmd+,) and Lock
 Vault (Cmd+L) in the application menu; New Entry (Cmd+N), New Folder
-(Shift+Cmd+N) and Open Vault… (Cmd+O) in File; Find… (Cmd+F), Copy Login
+(Shift+Cmd+N), Duplicate (Cmd+D) and Open Vault… (Cmd+O) in File; Find… (Cmd+F), Copy Login
 (Cmd+B), Copy Password (Shift+Cmd+C) and Move to Recycle Bin (Cmd+Backspace) in
 Edit, under the system's own; Keyboard Shortcuts in Help. `menu.rs` names each
 and gives it its key, and the window knows each by the same word (`COMMANDS` in
@@ -902,12 +965,16 @@ both answered would happen twice. The page's `keydown` answers Escape, Cmd+Z
 (the notice's undo, see above), Cmd+C with nothing selected (the open entry's
 password, as the mockup has it) and Cmd+A with the focus on neither a field nor
 the entry pane (every row the list draws, see `docs/design.md`), and nothing
-else; every other Cmd key is the menu's, and works wherever the focus is. Cmd+B
-copies the open entry's login with the focus in a field too, where the page used
-to leave it to the field: it is a copy, through Rust, and the field is left
-first, as above. A login being changed in its own field is written, and the copy
-waits until every value on its way to Rust has arrived (`flush` in `drafts.ts`)
-before it is asked for: Tauri answers the two side by side, and once a save lets
+else; every other Cmd key is the menu's, and works wherever the focus is.
+Duplicate is offered on the condition the pane's Duplicate is drawn on - an
+entry read, in a vault Coffer writes, out of the bin - and not while rows are
+chosen, when the bar's other verbs act on the choice rather than on the pane.
+Chosen with the focus in a field, it leaves the field first like every other
+item, so the copy holds what was typed. Cmd+B copies the open entry's login with
+the focus in a field too, where the page used to leave it to the field: it is a
+copy, through Rust, and the field is left first, as above. A login being
+changed in its own field is written, and the copy waits until every value on its
+way to Rust has arrived (`flush` in `drafts.ts`) before it is asked for: Tauri answers the two side by side, and once a save lets
 go the session goes to whichever asks first, so a copy sent beside the write
 could put the login as it was on the pasteboard. Copy Login is offered on the
 condition the row's copy button is drawn on - a login Rust holds - so one typed

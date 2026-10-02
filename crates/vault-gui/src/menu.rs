@@ -35,6 +35,7 @@ pub enum Command {
     Lock,
     NewEntry,
     NewFolder,
+    Duplicate,
     OpenVault,
     Find,
     CopyLogin,
@@ -45,11 +46,12 @@ pub enum Command {
 
 impl Command {
     /// Every item, in the order the bar draws them.
-    pub const ALL: [Command; 10] = [
+    pub const ALL: [Command; 11] = [
         Command::Settings,
         Command::Lock,
         Command::NewEntry,
         Command::NewFolder,
+        Command::Duplicate,
         Command::OpenVault,
         Command::Find,
         Command::CopyLogin,
@@ -65,6 +67,7 @@ impl Command {
             Command::Lock => "lock",
             Command::NewEntry => "newEntry",
             Command::NewFolder => "newFolder",
+            Command::Duplicate => "duplicate",
             Command::OpenVault => "openVault",
             Command::Find => "find",
             Command::CopyLogin => "copyLogin",
@@ -85,6 +88,7 @@ impl Command {
             Command::Lock => "Lock Vault",
             Command::NewEntry => "New Entry",
             Command::NewFolder => "New Folder",
+            Command::Duplicate => "Duplicate",
             Command::OpenVault => "Open Vault…",
             Command::Find => "Find…",
             Command::CopyLogin => "Copy Login",
@@ -109,6 +113,7 @@ impl Command {
             Command::Lock => Some("CmdOrCtrl+L"),
             Command::NewEntry => Some("CmdOrCtrl+N"),
             Command::NewFolder => Some("Shift+CmdOrCtrl+N"),
+            Command::Duplicate => Some("CmdOrCtrl+D"),
             Command::OpenVault => Some("CmdOrCtrl+O"),
             Command::Find => Some("CmdOrCtrl+F"),
             Command::CopyLogin => Some("CmdOrCtrl+B"),
@@ -197,6 +202,7 @@ const BAR: &[Column] = &[
         &[
             Item::Coffer(Command::NewEntry),
             Item::Coffer(Command::NewFolder),
+            Item::Coffer(Command::Duplicate),
             Item::Separator,
             Item::Coffer(Command::OpenVault),
             Item::Separator,

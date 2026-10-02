@@ -21,6 +21,7 @@ export const KEYS = {
 	lock: '⌘L',
 	newEntry: '⌘N',
 	newFolder: '⇧⌘N',
+	duplicate: '⌘D',
 	openVault: '⌘O',
 	find: '⌘F',
 	copyLogin: '⌘B',

@@ -12,6 +12,7 @@
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize, Serializer};
 use vault_core::generate;
+use vault_core::kind;
 use vault_core::model::{self, FieldValue, fields::Standard};
 use zeroize::Zeroizing;
 
@@ -533,6 +534,108 @@ pub struct Made {
     pub entry: String,
 }
 
+/// One of the kinds of entry Coffer makes, by the word the window sends back.
+///
+/// The window holds no list of them: it draws what [`Kinds`] offered and sends
+/// back the word that came with each, so a kind it made up is a word serde
+/// refuses rather than one read as the nearest kind there is.
+#[derive(Serialize, Deserialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub enum Kind {
+    Login,
+    BankCard,
+    Wifi,
+    Identity,
+    Licence,
+    RecoveryCodes,
+    SecureNote,
+    SshKey,
+}
+
+impl Kind {
+    fn of(kind: kind::Kind) -> Kind {
+        match kind {
+            kind::Kind::Login => Kind::Login,
+            kind::Kind::BankCard => Kind::BankCard,
+            kind::Kind::Wifi => Kind::Wifi,
+            kind::Kind::Identity => Kind::Identity,
+            kind::Kind::Licence => Kind::Licence,
+            kind::Kind::RecoveryCodes => Kind::RecoveryCodes,
+            kind::Kind::SecureNote => Kind::SecureNote,
+            kind::Kind::SshKey => Kind::SshKey,
+        }
+    }
+
+    /// The kind the engine makes for this word.
+    pub fn wanted(self) -> kind::Kind {
+        match self {
+            Kind::Login => kind::Kind::Login,
+            Kind::BankCard => kind::Kind::BankCard,
+            Kind::Wifi => kind::Kind::Wifi,
+            Kind::Identity => kind::Kind::Identity,
+            Kind::Licence => kind::Kind::Licence,
+            Kind::RecoveryCodes => kind::Kind::RecoveryCodes,
+            Kind::SecureNote => kind::Kind::SecureNote,
+            Kind::SshKey => kind::Kind::SshKey,
+        }
+    }
+}
+
+/// One kind as "+ Entry" offers it: the word to send back, what to call it,
+/// and the fields it writes in lines, which the window draws as text areas
+/// before anything is in them. The rest of what it writes arrives with the
+/// entry it makes.
+#[derive(Serialize)]
+pub struct Offer {
+    pub kind: Kind,
+    pub name: &'static str,
+    pub lined: Vec<&'static str>,
+}
+
+/// A name offered for a field of the reader's own, and whether a field made
+/// under it is hidden.
+#[derive(Serialize)]
+pub struct Suggestion {
+    pub name: &'static str,
+    pub protect: bool,
+}
+
+/// What a new entry can start as, a login first, and the names offered for a
+/// field of the reader's own. The same for every vault and every launch, and
+/// Rust's, so the window holds no copy of either list.
+#[derive(Serialize)]
+pub struct Kinds {
+    pub offered: Vec<Offer>,
+    pub suggested: Vec<Suggestion>,
+}
+
+impl Kinds {
+    pub fn of() -> Kinds {
+        Kinds {
+            offered: kind::Kind::ALL
+                .into_iter()
+                .map(|offered| Offer {
+                    kind: Kind::of(offered),
+                    name: offered.name(),
+                    lined: offered
+                        .slots()
+                        .iter()
+                        .filter(|slot| slot.lines)
+                        .map(|slot| slot.name)
+                        .collect(),
+                })
+                .collect(),
+            suggested: kind::SUGGESTED
+                .into_iter()
+                .map(|slot| Suggestion {
+                    name: slot.name,
+                    protect: slot.protect,
+                })
+                .collect(),
+        }
+    }
+}
+
 /// What a move between folders hands back: the tree as it is now, and every
 /// entry that changed folder with the folder it left, which is what taking the
 /// move back sends again.
@@ -644,6 +747,9 @@ pub struct Group {
     pub id: String,
     pub name: String,
     pub is_recycle_bin: bool,
+    /// The group the vault keeps its entry templates in: what "+ Entry"
+    /// offers to make an entry from is what it holds itself.
+    pub is_templates: bool,
     /// When the group is in the recycle bin, when it went in and where it goes
     /// back to. `null` for the bin itself and for everything outside it.
     pub binned: Option<Binned>,
@@ -659,6 +765,7 @@ impl Group {
             id: project.id.to_string(),
             name: project.name.clone(),
             is_recycle_bin: project.is_recycle_bin,
+            is_templates: project.is_templates,
             binned: project.binned.map(Binned::of),
             deletion: Deletion::of(project.deletion),
             sections: project.sections.iter().map(Group::of).collect(),
@@ -1379,6 +1486,7 @@ mod tests {
             name: name.to_owned(),
             notes: None,
             is_recycle_bin: false,
+            is_templates: false,
             binned: None,
             deletion,
             sections,
@@ -1395,6 +1503,129 @@ mod tests {
         assert_eq!(payload["binned"], serde_json::Value::Null);
         assert_eq!(payload["sections"][0]["deletion"], "bin");
         assert_eq!(payload["sections"][0]["isRecycleBin"], false);
+    }
+
+    /// The group a vault keeps its templates in says so, and no other does:
+    /// the window lists the templates from the one group marked.
+    #[test]
+    fn a_group_says_whether_it_holds_the_templates() {
+        let folder = |name: &str, is_templates, sections| model::Project {
+            id: GroupId::from_uuid(uuid::Uuid::new_v4()),
+            name: name.to_owned(),
+            notes: None,
+            is_recycle_bin: false,
+            is_templates,
+            binned: None,
+            deletion: model::Deletion::Bin,
+            sections,
+            entries: Vec::new(),
+        };
+        let tree = folder(
+            "Root",
+            false,
+            vec![
+                folder("Templates", true, Vec::new()),
+                folder("Personal", false, Vec::new()),
+            ],
+        );
+
+        let payload = serde_json::to_value(Group::of(&tree)).expect("the tree serialises");
+        assert_eq!(payload["isTemplates"], false);
+        assert_eq!(payload["sections"][0]["isTemplates"], true);
+        assert_eq!(payload["sections"][1]["isTemplates"], false);
+    }
+
+    /// Every kind goes to the window under one word and comes back under the
+    /// same word as the same kind. A word the window made up, or one spelled
+    /// another way, is refused rather than read as the nearest kind: an entry
+    /// nobody chose would be made.
+    #[test]
+    fn every_kind_crosses_by_the_name_the_window_sends_back() {
+        let offered = serde_json::to_value(Kinds::of()).expect("the kinds serialise");
+        let words: Vec<&str> = offered["offered"]
+            .as_array()
+            .expect("a list")
+            .iter()
+            .filter_map(|offer| offer["kind"].as_str())
+            .collect();
+        assert_eq!(
+            words,
+            [
+                "login",
+                "bankCard",
+                "wifi",
+                "identity",
+                "licence",
+                "recoveryCodes",
+                "secureNote",
+                "sshKey"
+            ]
+        );
+
+        for made in kind::Kind::ALL {
+            let word = serde_json::to_value(Kind::of(made)).expect("a kind serialises");
+            let read: Kind = serde_json::from_value(word).expect("the word comes back");
+            assert_eq!(read.wanted(), made);
+        }
+
+        for wrong in [
+            "Login",
+            "bank_card",
+            "bankcard",
+            "card",
+            "",
+            " login",
+            "template",
+            "Bank card",
+        ] {
+            assert!(
+                serde_json::from_value::<Kind>(serde_json::json!(wrong)).is_err(),
+                "{wrong:?} was read as a kind"
+            );
+        }
+        assert!(serde_json::from_value::<Kind>(serde_json::json!(0)).is_err());
+        assert!(serde_json::from_value::<Kind>(serde_json::json!(null)).is_err());
+    }
+
+    /// What "+ Entry" makes unasked is a login, the first thing offered.
+    #[test]
+    fn the_first_kind_offered_is_a_login() {
+        let offered = serde_json::to_value(Kinds::of()).expect("the kinds serialise");
+        assert_eq!(offered["offered"][0]["kind"], "login");
+        assert_eq!(offered["offered"][0]["name"], "Login");
+        assert_eq!(offered["offered"][0]["lined"], serde_json::json!([]));
+    }
+
+    /// A kind says which of its fields it writes in lines, and only those; what
+    /// it hides arrives with the entry it makes, and the names offered for a
+    /// field of the reader's own say whether each is hidden.
+    #[test]
+    fn a_kind_offers_the_fields_it_writes_in_lines() {
+        let offered = serde_json::to_value(Kinds::of()).expect("the kinds serialise");
+        let lined = |word: &str| {
+            offered["offered"]
+                .as_array()
+                .and_then(|all| all.iter().find(|offer| offer["kind"] == word))
+                .map(|offer| offer["lined"].clone())
+        };
+        assert_eq!(
+            lined("recoveryCodes"),
+            Some(serde_json::json!(["Recovery codes"]))
+        );
+        assert_eq!(
+            lined("secureNote"),
+            Some(serde_json::json!(["Secret note"]))
+        );
+        assert_eq!(lined("licence"), Some(serde_json::json!(["Licence key"])));
+        assert_eq!(lined("bankCard"), Some(serde_json::json!([])));
+        assert_eq!(
+            offered["suggested"],
+            serde_json::json!([
+                { "name": "PIN", "protect": true },
+                { "name": "Account number", "protect": false },
+                { "name": "Security answer", "protect": true },
+            ])
+        );
     }
 
     #[test]

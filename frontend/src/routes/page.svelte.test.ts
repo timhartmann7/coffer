@@ -1,7 +1,7 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { typed } from '$lib/drafts';
-import { entry, group, row } from '$lib/fixtures';
+import { entry, group, kinds, row } from '$lib/fixtures';
 import { writing } from '$lib/focus.svelte';
 import { applying } from '$lib/menu.svelte';
 import type { Action, Command, Settings, Status } from '$lib/model';
@@ -54,6 +54,7 @@ beforeEach(() => {
 	document.body.appendChild(host);
 	ipc.status.mockResolvedValue(locked);
 	ipc.settings.mockResolvedValue(chosen);
+	ipc.kinds.mockResolvedValue(kinds());
 	ipc.listen.mockResolvedValue(undefined);
 	ipc.menuState.mockResolvedValue(undefined);
 	ipc.snapshots.mockResolvedValue([]);

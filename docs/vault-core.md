@@ -416,7 +416,10 @@ putting back is the way out and says where to; nothing moves into it, because
 deleting is the way in and says first whether it can be undone
 (`InRecycleBin`, `IntoRecycleBin`); and a batch is checked whole before
 anything in it moves, so it moves all or none. A folder the bin sits inside may
-move, and the bin goes with it and is still the bin.
+move, and the bin goes with it and is still the bin. Making an entry asks the
+same question of where it goes (`Vault::destination`), so nothing is made in
+the bin either: of a kind, from a template or as a copy (see "Kinds, templates
+and copies" below).
 
 The checks stand in front of the library because the library makes none of
 them. `EntryMut::move_to` and `GroupMut::move_to` (`db/types/entry.rs:581-599`,
@@ -552,6 +555,118 @@ of it, and asks no spelling of a tag the file already holds; an empty one is
 refused, since no window ever put one on. A tag and its undo are two versions,
 and a save prunes to `HistoryMaxItems` as it does for any edit.
 
+## Kinds, templates and copies
+
+`SPEC.md` draws one entry: a login. A reader keeps a bank card, the Wi-Fi at
+home, a passport and the codes that get them back into an account beside their
+logins, and used to build each one field by field. Coffer now makes an entry of
+a kind, makes one from the templates a vault keeps, and copies one, all in
+[`vault/making.rs`](../crates/vault-core/src/vault/making.rs), and all in the
+format's own vocabulary: string fields, a tag and a built-in icon
+(`SPEC.md`, section 12). Nothing in the file says which kind an entry was made
+as.
+
+**A kind is fields, a tag and an icon.** [`kind.rs`](../crates/vault-core/src/kind.rs)
+holds the list. Each kind writes the five fields every entry has, protected as
+the database asks, and then its own, empty:
+
+| Kind | Fields beside the five (hidden ones marked) | Tag | IconID |
+|---|---|---|---|
+| Login | none | none | 0, the key |
+| Bank card | Cardholder, Number (hidden), Expires, CVV (hidden), PIN (hidden), Bank phone | `card` | 66, Money |
+| Wi-Fi | Network name, Security | `wifi` | 12, IRCommunication |
+| Passport / ID | Full name, Number (hidden), Date of birth, Issued, Expires, Issued by | `id` | 9, Identity |
+| Software licence | Licensed to, Licence key (hidden, in lines), Order number, Purchased | `licence` | 47, Package |
+| Recovery codes | Recovery codes (hidden, in lines) | `recovery` | 52, PaperLocked |
+| Secure note | Secret note (hidden, in lines) | `note` | 44, Note |
+| SSH key | Public key | `ssh` | 29, TerminalEncrypted |
+
+The network's password is a Wi-Fi entry's own Password, and an SSH key's
+passphrase its Password, with the private key a file on the entry
+(`SPEC.md`, section 6). A secure note's secret is a hidden field of its own
+rather than the entry's Notes, which a database that does not protect notes
+sends to the window with the rest of the entry. "In lines" is not in the file:
+the format has no such flag, so it is only how the window draws the field
+before anything is in it. `kind::SUGGESTED` is the three names the window offers
+for a field of the reader's own - PIN, Account number, Security answer - and
+whether each is hidden. The icon numbers are KeePass 2's own `PwIcon`
+numbering. KeePassXC 2.7.12 names the few icon sources its binary still
+carries by the same numbers - `C13_KGPG_Key3`, `C18_Display`,
+`C19_Mail_Generic`, `C26_FileSave` for KeePass's MultiKeys, Monitor, EMail and
+Disk - which is the evidence the two agree; the pictures behind the eight
+numbers above were not seen, and are on the release checklist.
+
+**A login writes its icon now.** `create_entry` used to leave `IconID` out,
+which the library writes only for an icon that is set, and KeePassXC drew the
+key in its place. A login now writes 0, the same key, so an export reads the
+same and the file says it rather than leaving it to the reader.
+
+**What an entry holds is one list.** [`Content`](../crates/vault-core/src/content.rs)
+takes an entry's fields, tags, custom data, auto-type, colours, override URL,
+quality check, expiry and icon out of it, and puts them onto another. A restore
+uses it to put a version back over its entry, and a copy to put an entry onto
+a new one, so the two cannot disagree about what an entry is. It is a list
+written out by hand, as `history::restore`'s was: `id`, `parent`, `icon`,
+`attachments` and `previous_parent_group` are crate-private on the library's
+`Entry` (`db/types/entry.rs:52-97`), so an entry cannot be cloned into the tree
+whole, and nothing outside the crate can destructure one exhaustively. A field
+the library gains is one more line here, and
+`restoring_a_version_brings_back_everything_but_the_files` and
+`a_copy_holds_every_field_with_its_protection` are where it is missed. The
+icon goes through the setters (`set_icon_none`, `set_icon_builtin`,
+`set_icon_custom`, `entry.rs:500-541`) because an entry using a custom icon
+holds a back-reference in it; a custom icon that has gone becomes none.
+Unlike files, custom-icon back-references are rebuilt on load
+(`format/xml_db/mod.rs:161-193`), so a copy naming one is as safe as the
+original. One `put` serves both a tracked edit and a new entry:
+`EntryTrack::as_mut` (`entry.rs:704`) is public and hands back the `EntryMut`
+the restore writes through.
+
+**A copy is a new entry.** `Vault::duplicate_entry` puts the copy in the
+original's folder, at its end, called what it is called with " copy" after it,
+and `Vault::create_from_template` puts one in the folder asked for under the
+template's own title. A new id from `GroupMut::add_entry`, an empty history
+(`Entry::with_id` starts one), and every date the moment it was made
+(`Times::new`) but the expiry, which the reader chose and the copy carries; an
+entry with no expiry date at all gets the one everything Coffer makes gets
+(`dated`). The original writes no version. A title the database protects stays
+protected, and " copy" is put on it inside the box it is kept in. The new name
+is built at its full length at once rather than grown: a string that grows moves
+to a larger allocation and leaves what it held so far behind, unwiped, and here
+that would be the protected title. An empty
+title stays empty: "Untitled" is the window's word for none, and a copy called
+"Untitled copy" would put it into the file. An entry with no title field gets
+none. Copies are not numbered: a title is not a key, and the window opens the
+copy with its name selected to be typed over.
+
+**A copy's files are its own.** [`attachment::copy`](../crates/vault-core/src/attachment.rs)
+puts a copy of every file the entry carries on the new entry through the
+module's own `put`, each a new member of the pool at its end - on an unbroken
+pool `AttachmentId::next_free` is its length. Never a second name for the same
+file: a file two entries name is the one shape the pool can only refuse to move
+(`Refusal::Shared`), so a copy sharing the original's files would pin both for
+good, and neither could lose a file without the other. The bytes are cloned in
+memory, so copying an entry carrying a hundred megabytes holds the session for
+that long and the vault grows by that much; a copy that would take the file past
+the ceiling is refused at the save like any other (`TooLarge`). A source that
+gives one file two names - the fixture's "attachments" entry does - gives the
+copy two files.
+
+**The templates group is the one the file names, while something can be made
+from it.** `Meta/EntryTemplatesGroup` names a group KeePass 2 and MacPass offer
+templates from; the library reads and writes it and does nothing else with it.
+[`templates.rs`](../crates/vault-core/src/templates.rs) says which group counts:
+the one it names, when that group is there, is not the top of the vault, and is
+not the recycle bin or inside it. A nil UUID names none, as KeePass writes it, even
+in a file where some group carries that UUID.
+`Project::is_templates` marks that group in the tree, and
+`create_from_template` refuses an entry the group does not hold itself with
+`NotATemplate`: an entry in a folder inside it is not one (KeePass 2 draws such
+a folder as a list of its own, which Coffer does not), and neither is one whose
+group went to the bin since the window drew its list. The field is cleared when
+the group goes out of the file, as before (`forget_groups`); Coffer never sets
+it.
+
 ## The pool of files, and why removing one is not a removal
 
 Every attachment in a KDBX 4 file lives once, in the inner header, and an entry
@@ -595,8 +710,10 @@ surprising:
   taking one away writes a version, and a restore does not touch them. A version
   written across a change to the pool would name bytes that have moved or gone,
   and a version written on the way *in* would be the surest way to make the file
-  impossible to take off again. What a version records is the entry's fields,
-  tags, notes, colours, icon and expiry date.
+  impossible to take off again. What a version records, and what a restore
+  puts back, is the list in [`content.rs`](../crates/vault-core/src/content.rs):
+  the entry's fields, tags, custom data, auto-type, colours, override URL,
+  quality check, expiry date and icon.
 
 **A file never goes on an entry over one of the same name.** An entry keys its
 files by name, and the library's `EntryMut::add_attachment` drops whatever the

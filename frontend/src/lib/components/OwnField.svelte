@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { tick, untrack } from 'svelte';
-	import { flush, type Place } from '$lib/drafts';
+	import { flush, track, type Place } from '$lib/drafts';
 	import { quoted } from '$lib/format';
 	import { cancels, composing } from '$lib/lines';
 	import { masked, type Field, type Span } from '$lib/model';
@@ -194,8 +194,10 @@
 		retitling = true;
 		let taken = false;
 		try {
-			await flush();
-			taken = await onRename(on, to, typed);
+			// Tracked as one change from the moment the name is left, though it
+			// is sent only once the values before it have landed: a copy of the
+			// entry asked for by the press that left it waits for the new name.
+			taken = await track(flush().then(() => onRename(on, to, typed)));
 		} catch (thrown) {
 			onFailure(thrown);
 		} finally {

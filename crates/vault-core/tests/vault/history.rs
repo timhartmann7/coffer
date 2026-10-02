@@ -518,6 +518,94 @@ fn a_change_to_nothing_but_the_expiry_date_is_still_a_change() {
     );
 }
 
+/// A restore puts back everything a version holds but its files: the fields
+/// with their protection, the tags, custom data, auto-type, both colours, the
+/// override URL, the quality check, the expiry and the icon - a custom one
+/// included, kept in the file rather than dropped for an icon nothing named
+/// while the version was the only thing that did. The files on the entry stay
+/// as they are, the one the version never named included.
+#[test]
+fn restoring_a_version_brings_back_everything_but_the_files() {
+    let directory = tempfile::tempdir().expect("a scratch directory");
+    let path = built(directory.path(), "everything.kdbx", |database| {
+        let id = database.root_mut().add_entry().id();
+        let mut entry = database.entry_mut(id).expect("the entry is there");
+        entry.set_unprotected(fields::TITLE, "subject");
+        entry.set_protected("PIN", "1234");
+        support::furnish(&mut entry, "before");
+        entry.add_attachment("before.txt", Value::protected(b"before".to_vec()));
+        entry.times.last_modification = Some(stamp(0));
+
+        entry.edit_tracking(|entry| {
+            entry.fields.remove("PIN");
+            entry.set_unprotected("Account", "after");
+            entry.tags = vec!["after".to_owned()];
+            entry.custom_data.clear();
+            entry.autotype = None;
+            entry.foreground_color = None;
+            entry.background_color = None;
+            entry.override_url = None;
+            entry.quality_check = true;
+            entry.times.expires = Some(false);
+            entry.times.expiry = None;
+            entry.set_icon_builtin(5);
+        });
+        database
+            .entry_mut(id)
+            .expect("the entry is there")
+            .add_attachment("after.txt", Value::protected(b"after".to_vec()));
+    });
+
+    let wanted = {
+        let file = support::library(&path, BUILT_PASSWORD);
+        let entry = file.iter_all_entries().next().expect("the entry is there");
+        support::holding(&entry.historical(0).expect("the edit kept a version"))
+    };
+    assert!(
+        matches!(wanted.icon, Some(keepass::db::Icon::Custom(_))),
+        "the version lost its icon in the file"
+    );
+
+    let mut vault = open(&path, BUILT_PASSWORD);
+    let id = entry_titled(&vault, "subject").id;
+    vault
+        .restore_version(id, 0)
+        .expect("the version is restored");
+    vault.save().expect("the database saves");
+    drop(vault);
+
+    let file = support::library(&path, BUILT_PASSWORD);
+    let entry = file.iter_all_entries().next().expect("the entry is there");
+    assert_eq!(support::holding(&entry), wanted);
+    assert_eq!(
+        entry.custom_icon().map(|icon| icon.data.clone()),
+        Some(b"before".to_vec()),
+        "the icon the version named is not in the file"
+    );
+
+    let mut files: Vec<(String, Vec<u8>)> = entry
+        .attachments_named()
+        .map(|(name, file)| (name.to_owned(), file.data.get().clone()))
+        .collect();
+    files.sort();
+    assert_eq!(
+        files,
+        vec![
+            ("after.txt".to_owned(), b"after".to_vec()),
+            ("before.txt".to_owned(), b"before".to_vec()),
+        ],
+        "a restore touched the files"
+    );
+    assert_eq!(
+        entry
+            .history
+            .as_ref()
+            .map(|history| history.get_entries().len()),
+        Some(2),
+        "the state the restore replaced was not kept"
+    );
+}
+
 /// The whole reason history is in this application. `SPEC.md` puts it as "I
 /// overwrote a password, saved, and noticed a week later", and attaching a scan
 /// or a certificate to the entry used to be the end of that promise: the bytes

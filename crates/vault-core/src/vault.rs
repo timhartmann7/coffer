@@ -25,10 +25,12 @@ use crate::secret::SecretValue;
 use crate::storage::lock::{Lock, Outcome};
 use crate::storage::watch::{Change, Content, Stamp};
 use crate::storage::{self, Seen, atomic, snapshot, unsaved, watch};
+use crate::templates;
 use crate::text;
 use crate::wipe;
 
 mod batch;
+mod making;
 mod moves;
 
 /// The largest file Coffer will read into memory to try to open.
@@ -398,6 +400,7 @@ impl Vault {
         project_of(
             &self.database,
             &bin,
+            templates::group(&self.database),
             self.database.root(),
             Standing::Outside,
         )
@@ -839,36 +842,6 @@ impl Vault {
             Some(error) => Err(error),
             None => Ok(()),
         }
-    }
-
-    /// Makes an entry in a folder.
-    ///
-    /// The five fields the format names are written empty, protected as the
-    /// database asks for them to be, so that an entry Coffer made looks like an
-    /// entry KeePassXC made and the screen has every row to edit.
-    pub fn create_entry(&mut self, group: GroupId) -> Result<EntryId, VaultError> {
-        self.writable()?;
-        let protection = self.protection();
-
-        let made = {
-            let mut group = self
-                .database
-                .group_mut(group)
-                .ok_or(VaultError::NoSuchGroup)?;
-            let mut entry = group.add_entry();
-            dated(&mut entry.times);
-            for (name, protect) in protection {
-                if protect {
-                    entry.set_protected(name, "");
-                } else {
-                    entry.set_unprotected(name, "");
-                }
-            }
-            entry.id()
-        };
-
-        self.touched();
-        Ok(made)
     }
 
     /// Takes a field off an entry.
@@ -1959,8 +1932,15 @@ fn classify(database: &Database, path: &Path, lock: Option<&Lock>) -> Source {
 ///
 /// Where each group stands is worked out once, on the way down, and handed to
 /// the entries in it: a vault of fifty thousand entries asks the question once
-/// per folder rather than once per entry.
-fn project_of(database: &Database, bin: &Bin, group: GroupRef<'_>, holder: Standing) -> Project {
+/// per folder rather than once per entry. Which group holds the templates is
+/// worked out once for the whole tree, for the same reason.
+fn project_of(
+    database: &Database,
+    bin: &Bin,
+    templates: Option<GroupId>,
+    group: GroupRef<'_>,
+    holder: Standing,
+) -> Project {
     let group_id = group.id();
     let standing = bin.enter(holder, group_id, &group.times);
     let deletion = bin.deletion(standing);
@@ -1970,6 +1950,7 @@ fn project_of(database: &Database, bin: &Bin, group: GroupRef<'_>, holder: Stand
         name: group.name.clone(),
         notes: group.notes.clone(),
         is_recycle_bin: Some(group_id) == bin.id(),
+        is_templates: Some(group_id) == templates,
         binned: bin.binned(
             database,
             holder,
@@ -1979,7 +1960,7 @@ fn project_of(database: &Database, bin: &Bin, group: GroupRef<'_>, holder: Stand
         deletion: bin.group_deletion(group_id, standing),
         sections: group
             .groups()
-            .map(|section| project_of(database, bin, section, standing))
+            .map(|section| project_of(database, bin, templates, section, standing))
             .collect(),
         entries: group
             .entries()

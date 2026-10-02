@@ -9,7 +9,7 @@ use vault_core::model::{EntryId, FieldValue};
 use vault_core::{NewValue, Typing, Vault, VaultError, Written};
 use zeroize::Zeroizing;
 
-use crate::support::{self, BUILT_PASSWORD, built, open};
+use crate::support::{self, BUILT_PASSWORD, built, exported_field, open, reopened};
 
 /// A value that is hard to carry: markup the file escapes, text written right
 /// to left, an override, and lines.
@@ -26,7 +26,7 @@ fn with_fields(directory: &std::path::Path) -> (Vault, EntryId) {
             entry.set_unprotected("Awkward", AWKWARD);
         });
     });
-    let vault = reopened(open(&path, BUILT_PASSWORD));
+    let vault = reopened(open(&path, BUILT_PASSWORD), BUILT_PASSWORD);
     let id = support::entry_titled(&vault, "card").id;
     (vault, id)
 }
@@ -44,28 +44,6 @@ fn held(vault: &Vault, id: EntryId, name: &str) -> Option<(String, bool)> {
     ))
 }
 
-/// The value KeePassXC's export gives a field, and whether it marks it to be
-/// kept protected. Read off the text rather than parsed: the export is the
-/// other implementation's own words, and this asks it two things.
-fn exported_field(xml: &str, name: &str) -> Option<(String, bool)> {
-    let key = format!("<Key>{name}</Key>");
-    let after = xml.get(xml.find(&key)? + key.len()..)?;
-    let opens = after.find("<Value")?;
-    let tag = after.get(opens..opens + after.get(opens..)?.find('>')? + 1)?;
-    let rest = after.get(opens + tag.len()..)?;
-    let value = rest.get(..rest.find("</Value>")?)?;
-    Some((value.to_owned(), tag.contains("ProtectInMemory=\"True\"")))
-}
-
-/// The vault saved, let go of, and opened again from the file: what the next
-/// launch would find.
-fn reopened(mut vault: Vault) -> Vault {
-    vault.save().expect("the database saves");
-    let path = vault.path().to_owned();
-    drop(vault);
-    open(&path, BUILT_PASSWORD)
-}
-
 #[test]
 fn hiding_a_field_keeps_its_value_and_shows_it_again_unchanged() {
     let scratch = tempfile::tempdir().expect("a scratch directory");
@@ -80,13 +58,13 @@ fn hiding_a_field_keeps_its_value_and_shows_it_again_unchanged() {
             .expect("the field is hidden");
         assert_eq!(held(&vault, id, name), Some((before.0.clone(), true)));
 
-        vault = reopened(vault);
+        vault = reopened(vault, BUILT_PASSWORD);
         assert_eq!(held(&vault, id, name), Some((before.0.clone(), true)));
 
         vault
             .set_protection(id, name, false)
             .expect("the field is shown");
-        vault = reopened(vault);
+        vault = reopened(vault, BUILT_PASSWORD);
         assert_eq!(held(&vault, id, name), Some((before.0, false)));
     }
 
@@ -313,7 +291,7 @@ fn renaming_a_field_takes_its_value_and_its_protection_with_it() {
             "a rename kept no version, or more than one"
         );
 
-        vault = reopened(vault);
+        vault = reopened(vault, BUILT_PASSWORD);
         assert_eq!(held(&vault, id, to), Some(before));
     }
 }
@@ -429,7 +407,7 @@ fn two_hundred_fields_renamed_and_hidden_lose_nothing() {
             .expect("the field is hidden");
     }
 
-    let vault = reopened(vault);
+    let vault = reopened(vault, BUILT_PASSWORD);
     for index in 0..200 {
         assert_eq!(
             held(&vault, id, &format!("Recovery code {index}")),

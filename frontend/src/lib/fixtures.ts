@@ -14,6 +14,7 @@ import type {
 	Generated,
 	Generator,
 	Group,
+	Kinds,
 	Version
 } from './model';
 
@@ -46,6 +47,7 @@ export function group(over: Partial<Group> = {}): Group {
 		id: id(),
 		name: 'a group',
 		isRecycleBin: false,
+		isTemplates: false,
 		binned: null,
 		deletion: 'bin',
 		sections: [],
@@ -117,4 +119,25 @@ export function drawing(over: Partial<Generator> = {}): Generator {
 /** A password Rust made, lacking nothing it was asked for. */
 export function generated(value: string, over: Partial<Generated> = {}): Generated {
 	return { value, missing: [], generator: drawing(), ...over };
+}
+
+/** The kinds Rust offers, as `dto::Kinds` builds them. */
+export function kinds(): Kinds {
+	return {
+		offered: [
+			{ kind: 'login', name: 'Login', lined: [] },
+			{ kind: 'bankCard', name: 'Bank card', lined: [] },
+			{ kind: 'wifi', name: 'Wi-Fi', lined: [] },
+			{ kind: 'identity', name: 'Passport / ID', lined: [] },
+			{ kind: 'licence', name: 'Software licence', lined: ['Licence key'] },
+			{ kind: 'recoveryCodes', name: 'Recovery codes', lined: ['Recovery codes'] },
+			{ kind: 'secureNote', name: 'Secure note', lined: ['Secret note'] },
+			{ kind: 'sshKey', name: 'SSH key', lined: [] }
+		],
+		suggested: [
+			{ name: 'PIN', protect: true },
+			{ name: 'Account number', protect: false },
+			{ name: 'Security answer', protect: true }
+		]
+	};
 }

@@ -4,6 +4,7 @@
 use std::os::unix::fs::PermissionsExt;
 
 use keepass::db::fields;
+use vault_core::kind::Kind;
 use vault_core::storage::snapshot;
 use vault_core::{NewValue, VaultError};
 
@@ -468,7 +469,9 @@ fn an_attribute_the_system_writes_is_not_somebody_elses_edit() {
     let path = built(scratch.path(), "attributed.kdbx", |_| {});
     let mut vault = open(&path, BUILT_PASSWORD);
     let root = vault.tree().id;
-    let id = vault.create_entry(root).expect("an entry is made");
+    let id = vault
+        .create_entry(root, Kind::Login)
+        .expect("an entry is made");
 
     vault
         .set_field(id, fields::NOTES, NewValue::Open("first".to_owned()))

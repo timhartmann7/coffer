@@ -126,10 +126,18 @@ pub enum VaultError {
     InRecycleBin,
 
     /// Something was to go into the recycle bin, or a folder inside it, by a
-    /// way other than deleting it. Deleting says before it happens whether it
-    /// can be undone, and nothing else that lands in the bin would.
+    /// way other than deleting it: moved there, or made there, from nothing,
+    /// from a template or as a copy. Deleting says before it happens whether
+    /// it can be undone, and nothing else that lands in the bin would.
     #[error("the recycle bin takes nothing but what is deleted")]
     IntoRecycleBin,
+
+    /// An entry was to be made from one that is not among the templates the
+    /// database keeps: not in the group `Meta/EntryTemplatesGroup` names, in a
+    /// folder inside it, or in a vault whose templates group has gone or been
+    /// deleted since the window drew its list.
+    #[error("that entry is not one of the templates this vault keeps")]
+    NotATemplate,
 
     /// What is open is one of Coffer's own snapshots. It opens like any other
     /// database and is not written back: the next save of the database it was

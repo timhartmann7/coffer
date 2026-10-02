@@ -850,6 +850,7 @@ impl Session {
 mod tests {
     use std::path::{Path, PathBuf};
 
+    use vault_core::kind::Kind;
     use vault_core::model::{Deletion, GroupId, Move, fields};
 
     use super::*;
@@ -1620,6 +1621,112 @@ mod tests {
         assert_eq!(file.entry(key).map(|entry| entry.group), Some(personal));
     }
 
+    /// A copy is a new entry, and what the reader was typing into the one it
+    /// was copied from stays with that one: the lock writes it there and not
+    /// into the copy, which keeps what the entry held when it was copied.
+    #[test]
+    fn typing_in_an_entry_that_was_copied_stays_with_that_entry() {
+        let (_directory, database, session) = holding(RICH);
+        let basic = entry_titled(&session, "basic").id;
+
+        session
+            .draft(
+                basic,
+                fields::URL,
+                words("https://half.example/pa", false),
+                1,
+            )
+            .expect("the draft is heard");
+        let copy = session
+            .with_mut(|vault| vault.duplicate_entry(basic))
+            .expect("the vault is open")
+            .expect("the copy is made");
+
+        assert!(session.lock(Reason::Sleeping));
+        let file = reopened(&database);
+        assert_eq!(
+            value_of(&file, basic, fields::URL).as_deref(),
+            Some("https://half.example/pa"),
+            "what was typed did not reach the entry it was typed into"
+        );
+        assert_eq!(
+            value_of(&file, copy, fields::URL).as_deref(),
+            Some("https://example.com/login?a=1&b=2"),
+            "the copy took what was typed into the original"
+        );
+    }
+
+    /// A file waiting on the reader's answer about one entry is that entry's:
+    /// its copy has none waiting, an answer naming the copy is refused, and the
+    /// question about the original can still be answered.
+    #[test]
+    fn a_file_waiting_on_an_entry_is_not_carried_to_its_copy() {
+        let (_scratch, session) = unlocked(RICH);
+        let key = entry_titled(&session, "ssh key").id;
+
+        let asked = session
+            .offer(key, KEY.to_owned(), Zeroizing::new(b"a new key".to_vec()))
+            .expect("the file is offered");
+        assert!(matches!(asked, Attached::Taken(_)));
+        let copy = session
+            .with_mut(|vault| vault.duplicate_entry(key))
+            .expect("the vault is open")
+            .expect("the copy is made");
+        let copied = files_of(&session, copy);
+        assert_eq!(copied, files_of(&session, key));
+
+        let refused = session
+            .answer(copy, Vault::keep_both)
+            .expect_err("the copy answered for the original's file");
+        assert_eq!(code_of(&refused), "refused");
+        assert_eq!(files_of(&session, copy), copied);
+
+        session
+            .answer(key, Vault::keep_both)
+            .expect("the file is still waiting on the entry it was chosen for");
+        assert!(
+            files_of(&session, key).contains(&(format!("{KEY} 2"), b"a new key".to_vec())),
+            "the answer did not go on"
+        );
+    }
+
+    /// Making a copy is a change like any other to a position read before it,
+    /// and a copy refused - out of the bin - is not.
+    #[test]
+    fn a_copy_moves_the_revision() {
+        let (_scratch, session) = unlocked(RICH);
+        let versioned = entry_titled(&session, "versioned").id;
+        let deleted = entry_titled(&session, "deleted entry").id;
+        let (listed, versions) = session
+            .listing(|vault| vault.versions(versioned))
+            .expect("the vault is open");
+        let oldest = versions.first().expect("the entry has history").index;
+
+        assert!(
+            session
+                .with_mut(|vault| vault.duplicate_entry(deleted))
+                .expect("the vault is open")
+                .is_err()
+        );
+        let (unmoved, _) = session
+            .listing(|vault| vault.versions(versioned))
+            .expect("the vault is open");
+        assert_eq!(unmoved, listed, "a refused copy moved the revision");
+
+        session
+            .with_mut(|vault| vault.duplicate_entry(versioned))
+            .expect("the vault is open")
+            .expect("the copy is made");
+        let (now, _) = session
+            .listing(|vault| vault.versions(versioned))
+            .expect("the vault is open");
+        assert_eq!(now, listed + 1, "a copy is one change");
+        assert_eq!(
+            refusal(session.at_mut(listed, |vault| vault.restore_version(versioned, oldest))),
+            "versionsChanged"
+        );
+    }
+
     /// The case the revision is for. A save brings every entry's history
     /// inside the database's limits, so a position read before it names a
     /// different version after it - and a press made during the save reaches
@@ -1790,6 +1897,44 @@ mod tests {
                 .reveal(EntryId::from_uuid(uuid::Uuid::nil()), fields::PASSWORD)
                 .is_err()
         );
+    }
+
+    /// What a kind hides crosses as nothing from the moment the entry is made,
+    /// the way any protected value does: a card's number, CVV and PIN typed
+    /// into a new entry wait in Rust for a reveal. Its other fields cross as
+    /// the empty text they hold, and `protected` says which is which.
+    #[test]
+    fn a_new_cards_secrets_cross_as_nothing_until_revealed() {
+        let (_scratch, session) = unlocked(RICH);
+        let card = session
+            .with_mut(|vault| vault.create_entry(vault.tree().id, Kind::BankCard))
+            .expect("the session is open")
+            .expect("the card is made");
+        let drawn = serde_json::to_value(crate::dto::Entry::of(
+            &session.entry(card).expect("the entry comes back"),
+        ))
+        .expect("it serialises");
+        let sent = |name: &str| {
+            drawn["fields"]
+                .as_array()
+                .and_then(|all| all.iter().find(|field| field["name"] == name))
+                .map(|field| (field["value"].clone(), field["protected"].clone()))
+        };
+
+        for hidden in ["Number", "CVV", "PIN"] {
+            assert_eq!(
+                sent(hidden),
+                Some((serde_json::Value::Null, serde_json::json!(true))),
+                "{hidden} crossed to the window"
+            );
+        }
+        for open in ["Cardholder", "Expires", "Bank phone"] {
+            assert_eq!(
+                sent(open),
+                Some((serde_json::json!(""), serde_json::json!(false))),
+                "{open}"
+            );
+        }
     }
 
     /// The bin as the window is sent it, from a file KeePassXC wrote: the entry
@@ -2517,7 +2662,7 @@ mod tests {
             let id = session
                 .with_mut(|vault| -> Result<EntryId, VaultError> {
                     let folder = vault.create_group(root, "Keys")?;
-                    vault.create_entry(folder)
+                    vault.create_entry(folder, Kind::Login)
                 })
                 .expect("the session is open")
                 .expect("an entry is made in a folder of its own");
@@ -2861,7 +3006,7 @@ mod tests {
         // drawn with one, and one Coffer did not make may well lack it.
         let made = session
             .with_mut(|vault| {
-                let made = vault.create_entry(vault.tree().id)?;
+                let made = vault.create_entry(vault.tree().id, Kind::Login)?;
                 vault.remove_field(made, fields::NOTES, false)?;
                 vault.save()?;
                 Ok::<_, VaultError>(made)
@@ -3467,7 +3612,7 @@ mod tests {
         let made: Vec<EntryId> = (0..50)
             .map(|_| {
                 session
-                    .with_mut(|vault| vault.create_entry(root))
+                    .with_mut(|vault| vault.create_entry(root, Kind::Login))
                     .expect("the vault is open")
                     .expect("an entry is made")
             })

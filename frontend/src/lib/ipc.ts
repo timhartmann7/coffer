@@ -21,6 +21,7 @@ import type {
 	Generator,
 	Group,
 	History,
+	Kinds,
 	Made,
 	Move,
 	Moved,
@@ -286,9 +287,30 @@ export function leaveRescue(): Promise<Database> {
 	return invoke('leave_rescue');
 }
 
-/** Makes an entry in a folder and answers with the tree it changed. */
-export function createEntry(group: string): Promise<Made> {
-	return invoke('create_entry', { group });
+/** The kinds of entry Coffer makes, a login first, and the names offered for
+ * a field of the reader's own. The same answer every time. */
+export function kinds(): Promise<Kinds> {
+	return invoke('kinds');
+}
+
+/** Makes an entry of a kind - one of the words `kinds` offered - in a folder,
+ * and answers with the tree it changed and the entry. Rust refuses a folder in
+ * the recycle bin with `refused`. */
+export function createEntry(group: string, kind: string): Promise<Made> {
+	return invoke('create_entry', { group, kind });
+}
+
+/** Makes an entry in a folder from one of the vault's templates, every value
+ * and file copied in Rust. Rust refuses with `refused` an entry that is not
+ * one of them any more. */
+export function createFromTemplate(group: string, template: string): Promise<Made> {
+	return invoke('create_from_template', { group, template });
+}
+
+/** Makes a copy of an entry beside it, every value and file copied in Rust,
+ * and answers with the tree and the copy. */
+export function duplicateEntry(entry: string): Promise<Made> {
+	return invoke('duplicate_entry', { entry });
 }
 
 /**

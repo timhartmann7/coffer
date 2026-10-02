@@ -13,6 +13,7 @@ import {
 	rowsOf,
 	searchedEntries,
 	shownEntries,
+	templatesOf,
 	visible
 } from './tree';
 import type { EntryRow } from './model';
@@ -267,5 +268,42 @@ describe('walking the tree', () => {
 		expect(entriesOf(tree)).toHaveLength(1);
 		expect(liveEntries(tree)).toHaveLength(1);
 		expect(pathTo(tree, 'nothing')).toBeNull();
+	});
+});
+
+describe('the vault’s templates', () => {
+	/** Only the entries the templates group holds itself, as a reader looks for
+	 * them; a protected title sorts as an empty one, and nothing else in the
+	 * tree is a template. */
+	it('lists the entries the templates group holds itself, by title', () => {
+		const nested = group({ entries: [row({ title: 'nested' })] });
+		const templates = group({
+			isTemplates: true,
+			entries: [
+				row({ title: 'Card 10' }),
+				row({ title: null }),
+				row({ title: 'card 2' }),
+				row({ title: 'Wi-Fi' })
+			],
+			sections: [nested]
+		});
+		const tree = group({
+			entries: [row({ title: 'not a template' })],
+			sections: [group({ sections: [templates] })]
+		});
+
+		expect(templatesOf(tree).map((each) => each.title)).toEqual([
+			null,
+			'card 2',
+			'Card 10',
+			'Wi-Fi'
+		]);
+		expect(templatesOf(group({ entries: [row()] }))).toEqual([]);
+	});
+
+	it('finds the templates group a hundred levels deep without recursing', () => {
+		let tree = group({ isTemplates: true, entries: [row({ title: 'deep' })] });
+		for (let level = 0; level < 100; level += 1) tree = group({ sections: [tree] });
+		expect(templatesOf(tree).map((each) => each.title)).toEqual(['deep']);
 	});
 });

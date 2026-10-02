@@ -5,7 +5,6 @@
 		asFailure,
 		copy as copyToClipboard,
 		copyVersion,
-		createEntry,
 		createGroup,
 		entry as loadEntry,
 		renameGroup,
@@ -22,6 +21,7 @@
 	import { held } from '$lib/holding';
 	import { copying, typing } from '$lib/keys';
 	import { cancels, composing } from '$lib/lines';
+	import { Making } from '$lib/making';
 	import { answer } from '$lib/menu.svelte';
 	import { Moves } from '$lib/moves';
 	import { COPIED, Notices } from '$lib/notices.svelte';
@@ -39,6 +39,8 @@
 		type Field,
 		type Group,
 		type History,
+		type Kinds,
+		type Offer,
 		type Position,
 		type Span
 	} from '$lib/model';
@@ -55,7 +57,8 @@
 		recycleBin,
 		rowOf,
 		searchedEntries,
-		shownEntries
+		shownEntries,
+		templatesOf
 	} from '$lib/tree';
 	import BinFolders from './BinFolders.svelte';
 	import Confirm from './Confirm.svelte';
@@ -67,6 +70,7 @@
 	import FolderPicker from './FolderPicker.svelte';
 	import Icon from './Icon.svelte';
 	import InBin from './InBin.svelte';
+	import NewEntry from './NewEntry.svelte';
 	import Opening from './Opening.svelte';
 	import SelectionBar from './SelectionBar.svelte';
 	import Toast from './Toast.svelte';
@@ -75,6 +79,7 @@
 	let {
 		database,
 		root,
+		kinds,
 		readOnly,
 		settings,
 		onSettings,
@@ -82,6 +87,9 @@
 	}: {
 		database: Database;
 		root: Group;
+		/** What a new entry can start as, a login first, and the names offered
+		 * for a field of the reader's own: Rust's (`ipc.kinds`). */
+		kinds: Kinds;
 		/** A snapshot, or a format Coffer reads and does not write. Nothing on
 		 * the screen offers a change it would only be refused. */
 		readOnly: boolean;
@@ -134,6 +142,10 @@
 		entry: Entry | null;
 		/** Its previous versions, once Rust has listed them. */
 		history: History | null;
+		/** Set when the entry was just made in this window and opened for it:
+		 * its name takes the focus, and the fields its kind writes in lines are
+		 * drawn in lines. */
+		arrived: { lined: readonly string[] } | null;
 	};
 
 	let pane = $state.raw<Pane | null>(null);
@@ -234,9 +246,15 @@
 	/** Whether "+ Entry" asks where the new entry goes: in "All entries", which
 	 * is no one place, of a vault with folders. */
 	const asking = $derived(group === null && foldered);
-	/** Whether "+ Entry"'s list of folders is open. */
-	let choosing = $state(false);
+	/** What a new entry is to be: one of the kinds, or a copy of one of the
+	 * vault's templates. */
+	type Wanted = { offer: Offer } | { template: string };
+	/** What "+ Entry" is making while its list of folders asks where, and
+	 * `null` while that list is closed. */
+	let choosing = $state<Wanted | null>(null);
 	let newEntryButton = $state<HTMLButtonElement>();
+	/** The vault's templates, which "+ Entry" lists after the kinds. */
+	const templates = $derived(templatesOf(root));
 	/**
 	 * The folder the last entry made in this window went into: what "+ Entry"
 	 * in "All entries" offers first, so that filing ten logins into one folder
@@ -319,7 +337,7 @@
 		pane = null;
 		selection.only(null);
 		query = '';
-		choosing = false;
+		choosing = null;
 		naming = false;
 		renaming = false;
 		emptying = false;
@@ -335,10 +353,10 @@
 	 * entry already in the pane reads it again where it stands, with nothing
 	 * taken off the screen in the meantime.
 	 */
-	async function open(row: EntryRow) {
+	async function open(row: EntryRow, arrived: Pane['arrived'] = null) {
 		if (showing !== row.id) {
 			if (held()) return;
-			pane = { id: row.id, row, entry: null, history: null };
+			pane = { id: row.id, row, entry: null, history: null, arrived };
 		}
 		await read(row.id);
 		await list(row.id);
@@ -480,57 +498,100 @@
 		await file.persist();
 	}
 
+	/** Making entries, and opening each one made with its name ready to type.
+	 * What is made is chosen on its own: the reader asked for it. */
+	const making = new Making({
+		showing: () => showing,
+		held,
+		drawn: (tree) => {
+			onTree(tree);
+			file.changedAt = new Date();
+		},
+		open: async (row, lined) => {
+			selection.only(row.id);
+			await open(row, { lined });
+		},
+		persist: () => file.persist(),
+		failed
+	});
+
 	/**
-	 * "+ Entry", the empty list's "Add an entry", and New Entry in the menu bar.
+	 * "+ Entry" and each kind in its list, the empty vault's kinds, the empty
+	 * folder's "Add an entry", and New Entry in the menu bar: a login unless a
+	 * kind was chosen.
 	 *
 	 * In "All entries" of a vault with folders it asks where first, with the
 	 * list on the folder the last entry went into, so Return makes it there.
 	 * Anywhere else it is made where the list is: the folder shown, or the top
 	 * of the vault for "Not in a folder".
 	 */
-	function newEntry() {
+	function newEntry(offer: Offer = kinds.offered[0]) {
+		start({ offer });
+	}
+
+	/** A template chosen from "+ Entry"'s list, which asks where the way a
+	 * kind does. */
+	function fromTemplate(template: EntryRow) {
+		start({ template: template.id });
+	}
+
+	function start(wanted: Wanted) {
 		if (held()) return;
-		if (asking) choosing = true;
-		else void makeIn(inside);
+		if (asking) choosing = wanted;
+		else void makeIn(inside, wanted);
 	}
 
 	/**
-	 * Makes an entry in a folder and opens it.
+	 * Makes an entry in a folder and opens it (see `making.ts`).
 	 *
 	 * Asks `held` again: the list closes when the focus leaves it, and a reader
 	 * who went back into a Change field in between has typing to answer for
-	 * first. Opened only when the pane is where it was when the button was
-	 * pressed: an entry the reader chose while Rust was making this one is the
-	 * later choice, and the new entry waits in the list rather than taking the
-	 * pane from it. And only when the pane may go: typing into a Change field
-	 * started while Rust was making it keeps the pane, and the new entry is
-	 * neither opened nor chosen - chosen without the pane, it would be a choice
-	 * of one the reader never made, with a bar to delete it.
+	 * first. The folder is the one "+ Entry" offers first next time, once the
+	 * entry is made there.
 	 */
-	async function makeIn(into: string) {
-		choosing = false;
+	async function makeIn(into: string, wanted: Wanted) {
+		choosing = null;
 		if (held()) return;
-		const at = showing;
-		try {
-			const made = await createEntry(into);
-			filed = into;
-			onTree(made.tree);
-			file.changedAt = new Date();
-			const row = rowOf(made.tree, made.entry);
-			if (row && showing === at && !held()) {
-				selection.only(row.id);
-				await open(row);
-			}
-			await file.persist();
-		} catch (thrown) {
-			failed(thrown);
-		}
+		const made =
+			'offer' in wanted
+				? await making.kind(wanted.offer, into)
+				: await making.template(wanted.template, into);
+		if (made) filed = into;
+	}
+
+	/**
+	 * Makes a copy of the entry in the pane beside it, and opens the copy with
+	 * its name ready to type: the header's Duplicate, and Duplicate in the menu
+	 * bar. Not of an entry in the bin or in a vault Coffer will not write, and
+	 * not while the pane has to stay: the copy would take it. The copy is an
+	 * entry made like any other, and its folder is the one "+ Entry" offers
+	 * first next time.
+	 */
+	async function duplicate() {
+		if (!opened || untouchable(opened, readOnly) || held()) return;
+		const into = opened.group;
+		if (await making.copy(opened.id)) filed = into;
 	}
 
 	/** Whether the list and the pane are the reader's to act on: nothing is over
 	 * them. The settings make them inert, and the conflict dialog asks its
 	 * question first. */
 	const free = $derived(settings === undefined && file.conflict === null);
+
+	// Duplicate in the menu bar, on the condition the pane's Duplicate is drawn
+	// on: an entry read, in a vault Coffer writes, out of the bin. And not while
+	// rows are chosen: the bar's other verbs then act on the choice, and a copy
+	// of the pane's entry - which may not be one of them - would make one entry
+	// nobody chose and let go of the rows that were. The pane's own pill names
+	// its entry, and stays.
+	$effect(() =>
+		answer({
+			duplicate: {
+				run: () => void duplicate(),
+				when: () => free && !selecting && opened !== null && !untouchable(opened, readOnly)
+			}
+		})
+	);
 
 	/** Opens the settings, or closes them again: the status bar's button, and
 	 * Settings… in the menu bar. Not over a pane that has to stay. */
@@ -1231,44 +1292,37 @@
 					</kbd>
 				</span>
 				{#if changeable}
-					<!-- The list hangs from the button, in one box with it: a press on
-					     the button while the list is open closes it. That press keeps
-					     the focus in the list's filter, as the line above an entry's
-					     title does: WebKit gives a pressed button no focus, so the
-					     filter would lose it to nothing, the list would close on the
-					     press, and the click would open it again. With the list shut
-					     the press is an ordinary one, and a value being typed into the
-					     pane is left, and written, before the new entry takes it. -->
-					<span class="relative shrink-0">
-						<button
-							bind:this={newEntryButton}
-							type="button"
-							onmousedown={(event) => {
-								if (choosing) event.preventDefault();
-							}}
-							onclick={() => (choosing ? (choosing = false) : newEntry())}
-							aria-haspopup={asking ? 'listbox' : undefined}
-							aria-expanded={asking ? choosing : undefined}
-							class="flex h-9 shrink-0 items-center gap-2 rounded-full border border-hairline px-4 text-small text-txt2 transition-colors hover:border-txt4 hover:text-txt active:bg-raised"
-						>
-							<Icon name="plus" class="h-4 w-4" /> Entry
-						</button>
-						{#if choosing}
-							<FolderPicker
-								{root}
-								heading="Put it in"
-								label="Find the folder for the new entry"
-								current={null}
-								chosen={filed ?? root.id}
-								class="top-full right-0 w-[292px]"
-								onPick={(into) => void makeIn(into)}
-								onClose={(escaped) => {
-									choosing = false;
-									if (escaped) newEntryButton?.focus();
-								}}
-							/>
-						{/if}
-					</span>
+					<!-- The list of folders hangs from the button, in one box with it,
+					     so the focus moving between them is not the focus leaving. -->
+					<NewEntry
+						offered={kinds.offered}
+						{templates}
+						{asking}
+						choosing={choosing !== null}
+						bind:main={newEntryButton}
+						onMake={newEntry}
+						onTemplate={fromTemplate}
+						onDismiss={() => (choosing = null)}
+					>
+						{#snippet question()}
+							{#if choosing}
+								{@const wanted = choosing}
+								<FolderPicker
+									{root}
+									heading="Put it in"
+									label="Find the folder for the new entry"
+									current={null}
+									chosen={filed ?? root.id}
+									class="top-full right-0 w-[292px]"
+									onPick={(into) => void makeIn(into, wanted)}
+									onClose={(escaped) => {
+										choosing = null;
+										if (escaped) newEntryButton?.focus();
+									}}
+								/>
+							{/if}
+						{/snippet}
+					</NewEntry>
 				{/if}
 			</div>
 
@@ -1314,13 +1368,24 @@
 				>
 					{#snippet action()}
 						{#if !readOnly}
-							<button
-								type="button"
-								onclick={newEntry}
-								class="h-9 rounded-full border border-hairline px-5 text-small text-txt transition-colors hover:border-txt3"
+							<!-- Every kind at once, the password's pills, where the
+							     first entry of a vault is made: a card or the Wi-Fi
+							     is often what somebody keeps first. -->
+							<div
+								role="group"
+								aria-label="Add an entry"
+								class="flex max-w-[46ch] flex-wrap justify-center gap-2"
 							>
-								Add an entry
-							</button>
+								{#each kinds.offered as offer (offer.kind)}
+									<button
+										type="button"
+										onclick={() => newEntry(offer)}
+										class="flex h-7 items-center rounded-full border border-hairline px-3 text-fine text-txt2 transition hover:border-txt3 hover:text-txt active:bg-raised"
+									>
+										{offer.name}
+									</button>
+								{/each}
+							</div>
 						{/if}
 					{/snippet}
 				</Empty>
@@ -1360,7 +1425,7 @@
 						{#if !readOnly}
 							<button
 								type="button"
-								onclick={newEntry}
+								onclick={() => newEntry()}
 								class="h-9 rounded-full border border-hairline px-5 text-small text-txt transition-colors hover:border-txt3"
 							>
 								Add an entry
@@ -1421,10 +1486,14 @@
 							history={pane.history}
 							{now}
 							{readOnly}
+							made={pane.arrived !== null}
+							lined={pane.arrived?.lined}
+							suggested={kinds.suggested}
 							onCopy={copy}
 							onChanged={changed}
 							onVersions={versionsChanged}
 							onClose={dismiss}
+							onDuplicate={() => void duplicate()}
 							onDelete={removeEntry}
 							onPutBack={putBack}
 							onMove={moveEntry}

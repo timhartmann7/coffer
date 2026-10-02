@@ -200,6 +200,7 @@ impl From<VaultError> for Failure {
             | VaultError::NotInRecycleBin
             | VaultError::InRecycleBin
             | VaultError::IntoRecycleBin
+            | VaultError::NotATemplate
             | VaultError::NoSuchPart
             | VaultError::CopyOntoItself
             | VaultError::NotACopy
@@ -277,6 +278,7 @@ mod tests {
             (VaultError::NotInRecycleBin, "refused"),
             (VaultError::InRecycleBin, "refused"),
             (VaultError::IntoRecycleBin, "refused"),
+            (VaultError::NotATemplate, "refused"),
             (VaultError::NoSuchPart, "refused"),
             (VaultError::NotACopy, "refused"),
             (VaultError::NothingToGenerateFrom, "refused"),

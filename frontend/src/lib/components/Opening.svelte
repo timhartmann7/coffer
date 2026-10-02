@@ -57,6 +57,7 @@
 		{path}
 		place={untouchable(row, readOnly) ? undefined : where}
 		masked={row.title === null}
+		duplicable={!untouchable(row, readOnly)}
 		{onClose}
 	>
 		<Bare>

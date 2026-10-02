@@ -68,3 +68,27 @@ it('draws the line above the title as the entry will, with nothing on it to pres
 		unmount(plain);
 	}
 });
+
+/**
+ * The entry being read has its Duplicate drawn where the read one will, and
+ * it cannot be pressed: nothing of the entry is known yet. Without it, the
+ * name beside it would narrow the moment the entry arrived. Where the read
+ * entry offers no copy - a vault Coffer will not write, the bin - none is
+ * drawn.
+ */
+it('draws Duplicate where the entry will, and lets nothing press it', () => {
+	const waiting = draw({});
+	const copy = [...host.querySelectorAll('header button')].find(
+		(each) => each.textContent?.trim() === 'Duplicate'
+	);
+	expect(copy).toBeInstanceOf(HTMLButtonElement);
+	expect((copy as HTMLButtonElement).disabled).toBe(true);
+	unmount(waiting);
+
+	const binned = row({ group: work.id, binned: { since: null, within: null, from: work.id } });
+	for (const over of [{ readOnly: true }, { row: binned }]) {
+		const plain = draw(over);
+		expect(host.textContent, JSON.stringify(over)).not.toContain('Duplicate');
+		unmount(plain);
+	}
+});

@@ -13,6 +13,7 @@
 	import { lockByHand } from '$lib/locking';
 	import {
 		chooseDatabase,
+		kinds as loadKinds,
 		leaveRescue,
 		listen,
 		promoteRescue,
@@ -29,6 +30,7 @@
 		Database,
 		Found,
 		Group,
+		Kinds,
 		OnDisk,
 		Rescued,
 		Settings as Chosen,
@@ -44,6 +46,9 @@
 	let readOnly = $state(false);
 	let ready = $state(false);
 	let chosen = $state<Chosen | null>(null);
+	/** What a new entry can start as. Rust's, the same for every vault, and
+	 * asked for once a boot like the settings. */
+	let kinds = $state<Kinds | null>(null);
 	let showing = $state<'vault' | 'settings' | 'create'>('vault');
 	let reason = $state<string | null>(null);
 	/** The copy a lock left beside the vault, when there is one. Rust's answer
@@ -88,6 +93,7 @@
 				reason = opening.lockedBy;
 				heard(opening);
 				chosen = await loadSettings();
+				kinds = await loadKinds();
 				if (opening.unlocked) await opened();
 			} finally {
 				// Whatever went wrong, the unlock screen is where it can be said
@@ -317,7 +323,7 @@
 					onOpen={(picked) => void pointAt(picked)}
 					onChoose={choose}
 				/>
-			{:else if root && database}
+			{:else if root && database && kinds}
 				{#if copy}
 					<InCopy {copy} onPromote={promote} onBack={back} />
 				{/if}
@@ -327,6 +333,7 @@
 				<Vault
 					{database}
 					{root}
+					{kinds}
 					{readOnly}
 					settings={showing === 'settings' ? settingsScreen : undefined}
 					onSettings={toggleSettings}

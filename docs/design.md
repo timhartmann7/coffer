@@ -239,16 +239,46 @@ then scrolling, where Return starts a line and Cmd+Return finishes. A field of
 the reader's own is one from the start, one line tall and scrolling sideways
 until it has a second, so that a paste keeps its breaks.
 
-**The header is the way out of the pane, and nothing else.** The mockup's
+**The header is the way out of the pane, and to a copy of it.** The mockup's
 header carries one button and it is the trash. Escape had always closed the pane
 and nothing else did, and a close put beside that trash - sixteen pixels away,
 the same size, the same grey - was a press meant for one landing on the other.
-So the header carries the close alone, and deleting is a labelled action at the
-foot of the pane, after the versions, where no press aimed at anything else
-lands: the trash and "Move to Recycle Bin" in a plain `h-9` pill in `txt3`,
-taking `dangerwash` and `danger` under the pointer the way every trash in the
-window does. A deletion that would be final - a vault that keeps no bin - reads
-"Delete forever…" and asks first.
+So deleting is a labelled action at the foot of the pane, after the versions,
+where no press aimed at anything else lands: the trash and "Move to Recycle Bin"
+in a plain `h-9` pill in `txt3`, taking `dangerwash` and `danger` under the
+pointer the way every trash in the window does. A deletion that would be final -
+a vault that keeps no bin - reads "Delete forever…" and asks first. Beside the
+close stands "Duplicate", in words, as the password's bordered `h-7` pill in
+`fine` `txt2`, with "Duplicate · ⌘D" under the pointer the way the list's copy
+buttons name their keys. A copy may sit where a deletion may not: a press meant
+for the close that lands on it loses nothing, and what it made is put away like
+any other entry. It is drawn only for an entry Coffer can write and that is not
+in the bin, and an entry still being read draws it greyed - `txt4`, the hairline
+kept under the pointer, the not-allowed cursor - so the name beside it does not
+narrow when the entry arrives.
+
+**An entry just made opens with its name selected.** A kind, a template or a
+copy is made, opened, and its title takes the focus with all of it selected, so
+the first key types its name: "Gmail copy" is there to be typed over, and an
+empty one to be typed into. Only when the focus is nowhere: a reader who went
+on to type somewhere while Rust was making it keeps typing there. A name the
+database protects is drawn as the mask and takes nothing. No notice says a copy
+was made: the copy in the pane says it.
+
+**The step that names a new field suggests names.** Under the name and its two
+pills, a line: "Suggested" in the mono label, and a pill for each of PIN,
+Account number and Security answer - the generator's toggle pill, `meta` mono
+`txt3`, with the sprite's `plus` in `txt4` at the check's size - for those the
+entry does not have and whose name starts with what is typed, in either case.
+A press makes the field there and then, hidden as the suggestion says, and its
+value takes the focus; the line goes when nothing is left to suggest. The pills
+take no focus from the name, so pressing one is not leaving it.
+
+**A field an entry's kind writes in lines is a text area from the start.** A
+licence key, recovery codes and a secure note's secret are made empty, and an
+empty value has no line break to say it is in lines, so the fields the kind
+names open four lines tall, the way a field named with "Multi-line" does, for as
+long as the entry is open.
 
 **An entry is in the pane the moment its row is pressed.** Rust answers one
 command at a time, and a save holds it for the second a key derivation takes, so
@@ -507,7 +537,45 @@ list as "Put it in" under the button, on the folder the last entry this window
 made went into, so Return makes it there - and on the top of the vault when this
 window has made none. A lock forgets it, as it forgets everything of the vault
 (`docs/ipc.md`). In a folder, in "Not in a folder", and in a vault with no
-folders, the entry is made there with no question.
+folders, the entry is made there with no question. A kind or a template chosen
+from the button's own list asks the same way (see "Making an entry").
+
+## Making an entry
+
+The mockup draws "+ Entry" as one pill that makes a login. A reader keeps cards,
+networks, passports and codes as well, and Coffer makes each with the fields it
+needs (`docs/vault-core.md`, "Kinds, templates and copies").
+
+**"+ Entry" is split in two.** The mockup's pill, its hairline and `h-9` kept,
+holds two buttons: "+ Entry", which makes a login as it always did, and after a
+hairline the sprite's `chev-d` in `txt4` at the settings chip's size, read out
+as "Other kinds of entry". Each half takes the press on its own,
+`active:bg-raised` on its own side of the pill.
+
+**The chevron opens a list of every kind, and then the vault's templates.** The
+settings chip's list: `bg-raised` behind a hairline, `rounded-sm`, arriving on
+the pop under the pill's right edge, a line per kind in `fine` `txt2`,
+`surface2` and `txt` under the pointer and on the line the keys are on. In a
+vault whose file names a templates group, a hairline and a heading - "Templates
+in this vault" in the mono label, `txt4` - and a line for each template, its
+title isolated, the mask for a title the database protects and "Untitled" in
+`txt4` for none, cut at thirty-four characters, the width of an empty state's
+sentence. The list scrolls past 420 pixels, a height the mockup already draws
+(the window behind its conflict dialog), so a vault with a hundred templates
+does not run it off the window. Opening it puts the focus on its first line -
+the arrows on the chevron open it on the first or the last - the arrows step
+through it and round, Escape closes it with the focus back on the chevron and
+goes no further, from a line or from the chevron, a second press on the chevron
+closes it with the focus there, and the focus leaving the control closes it. A
+line chosen makes that kind or that template, asking where first in "All
+entries" as "+ Entry" does.
+
+**An empty vault offers every kind at once.** In place of "Add an entry" under
+"This vault has nothing in it yet", one pill per kind, the password's `h-7` pill
+in `fine` `txt2`, wrapping at forty-six characters, the width of the empty
+state's title above them, and centred: the first thing somebody keeps is as
+often a card or the Wi-Fi as a login. An empty folder keeps its one "Add an
+entry", which makes a login; a vault Coffer will not write offers neither.
 
 ## A vault that is already there
 
@@ -669,6 +737,16 @@ are chosen it acts on them rather than on the open entry, and only when every
 one of them goes to the bin; a choice holding one that would go for good is
 deleted from its bar, which asks.
 
+**Duplicate is offered while a field is being written.** Cmd+D means nothing to
+a text field on a Mac, so the item stays when the focus is in one; chosen there,
+the field is left first, which writes it, and the copy holds what was typed - a
+tag or a field's name being typed included. It is grey with no entry read, for
+an entry in the bin and in a vault Coffer will not write, where the pane draws
+no Duplicate either. It is grey while rows are chosen too: Move to Recycle Bin
+then acts on the choice, and a copy of the pane's entry - which need not be one
+of the rows - would be one entry nobody chose, made over a choice it let go of.
+The pane's own pill names its entry, and stays.
+
 ## Motion
 
 The mockup is a still picture and names no duration. The window has three, and
@@ -679,8 +757,8 @@ nothing defines a fourth:
 - **a fade**, 130ms, for something already the size it is that only had to
   appear: a pane, a dialog's veil, an empty state;
 - **a pop**, 120ms, for a list that belongs to the control under it, growing out
-  of that control's edge. The dropdown on the settings screen and the folder
-  list are the two.
+  of that control's edge. The dropdown on the settings screen, the folder list
+  and the list of kinds under "+ Entry" are the three.
 
 None is longer than a fifth of a second, and every one is silenced by reduced
 motion — which is the whole difference between them and the two drains above.

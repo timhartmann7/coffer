@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use keepass::config::KdfConfig;
 use vault_core::kdf::{MEMORY_BYTES, PARALLELISM, Work};
+use vault_core::kind::Kind;
 use vault_core::{LockPolicy, MasterKey, Recipe, Vault, VaultError};
 
 use crate::support::{fixture, open, password};
@@ -461,7 +462,9 @@ fn a_vault_that_was_made_takes_a_change_and_keeps_it() {
     let folder = made
         .create_group(root, "Clients")
         .expect("the folder is made");
-    let entry = made.create_entry(folder).expect("the entry is made");
+    let entry = made
+        .create_entry(folder, Kind::Login)
+        .expect("the entry is made");
     made.set_field(
         entry,
         keepass::db::fields::PASSWORD,
@@ -492,7 +495,8 @@ fn everything_coffer_makes_carries_its_own_dates() {
     let folder = made
         .create_group(root, "Clients")
         .expect("the folder is made");
-    made.create_entry(folder).expect("the entry is made");
+    made.create_entry(folder, Kind::Login)
+        .expect("the entry is made");
     made.save().expect("the vault saves");
     drop(made);
 
@@ -550,7 +554,9 @@ fn keepassxc_reads_a_vault_coffer_made_from_nothing() {
     let folder = made
         .create_group(root, "Clients")
         .expect("the folder is made");
-    let entry = made.create_entry(folder).expect("the entry is made");
+    let entry = made
+        .create_entry(folder, Kind::Login)
+        .expect("the entry is made");
     made.set_field(
         entry,
         keepass::db::fields::TITLE,

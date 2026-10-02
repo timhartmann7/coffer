@@ -1,9 +1,9 @@
 import { createRawSnippet, flushSync, mount as draw, tick, unmount as release } from 'svelte';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { drawing, entry, field, generated, group, row, version } from '$lib/fixtures';
+import { drawing, entry, field, generated, group, kinds, row, version } from '$lib/fixtures';
 import { focused } from '$lib/focus.svelte';
 import { applying, run } from '$lib/menu.svelte';
-import type { EntryRow, Group, Version } from '$lib/model';
+import type { Entry, EntryRow, Group, Version } from '$lib/model';
 import { reactive } from '$lib/props.svelte';
 import type { Stubbed } from '$lib/stubbed';
 import Vault from './Vault.svelte';
@@ -98,6 +98,7 @@ function open(
 		props: {
 			database,
 			root,
+			kinds: kinds(),
 			readOnly: false,
 			onSettings: vi.fn(),
 			onTree: vi.fn(),
@@ -581,7 +582,14 @@ it('names the field a copy took, from a row, the open entry, a version or a sele
 
 	const component = mount(Vault, {
 		target: host,
-		props: { database, root: tree, readOnly: false, onSettings: vi.fn(), onTree: vi.fn() }
+		props: {
+			database,
+			root: tree,
+			kinds: kinds(),
+			readOnly: false,
+			onSettings: vi.fn(),
+			onTree: vi.fn()
+		}
 	});
 	try {
 		flushSync();
@@ -784,7 +792,7 @@ it('takes the version on disk when that is what the reader chose', async () => {
 		?.click();
 	flushSync();
 	inPicker('Enter');
-	expect(ipc.createEntry).toHaveBeenCalledWith(root.id);
+	expect(ipc.createEntry).toHaveBeenCalledWith(root.id, 'login');
 	await vi.waitFor(() => expect(host.textContent).toContain('The file changed'));
 	flushSync();
 
@@ -824,7 +832,7 @@ it('keeps this version and writes over the file when asked to', async () => {
 		?.click();
 	flushSync();
 	inPicker('Enter');
-	expect(ipc.createEntry).toHaveBeenCalledWith(root.id);
+	expect(ipc.createEntry).toHaveBeenCalledWith(root.id, 'login');
 	await vi.waitFor(() => expect(host.textContent).toContain('The file changed'));
 	flushSync();
 
@@ -860,7 +868,7 @@ it('asks what to do when the vault file is gone, rather than only reporting it',
 		?.click();
 	flushSync();
 	inPicker('Enter');
-	expect(ipc.createEntry).toHaveBeenCalledWith(root.id);
+	expect(ipc.createEntry).toHaveBeenCalledWith(root.id, 'login');
 	await vi.waitFor(() => expect(host.textContent).toContain('not there any more'));
 	flushSync();
 
@@ -898,7 +906,7 @@ it('keeps the work elsewhere when the vault file is gone', async () => {
 		?.click();
 	flushSync();
 	inPicker('Enter');
-	expect(ipc.createEntry).toHaveBeenCalledWith(root.id);
+	expect(ipc.createEntry).toHaveBeenCalledWith(root.id, 'login');
 	await vi.waitFor(() => expect(host.textContent).toContain('not there any more'));
 	flushSync();
 
@@ -2020,7 +2028,7 @@ function mounted(tree: typeof root, readOnly = false) {
 	const onSettings = vi.fn();
 	const component = mount(Vault, {
 		target: host,
-		props: { database, root: tree, readOnly, onSettings, onTree }
+		props: { database, root: tree, kinds: kinds(), readOnly, onSettings, onTree }
 	});
 	flushSync();
 	return { component, onTree, onSettings };
@@ -3958,6 +3966,16 @@ it('keeps the pane and asks when a new password typed there would go with it', a
 			],
 			['a folder', () => pressed('All entries')],
 			['+ Entry', () => exactly('Entry').click()],
+			[
+				'a kind from + Entry',
+				() => {
+					named('Other kinds of entry').click();
+					flushSync();
+					menuItem('Bank card').click();
+				}
+			],
+			['Duplicate', () => exactly('Duplicate').click()],
+			['Duplicate from the menu', () => run('duplicate')],
 			['the bin', () => pressed('Move to Recycle Bin', pane() ?? host)],
 			[
 				'the settings',
@@ -3979,6 +3997,7 @@ it('keeps the pane and asks when a new password typed there would go with it', a
 		}
 		expect(ipc.entry).not.toHaveBeenCalledWith(drive.id);
 		expect(ipc.createEntry).not.toHaveBeenCalled();
+		expect(ipc.duplicateEntry).not.toHaveBeenCalled();
 		expect(ipc.deleteEntries).not.toHaveBeenCalled();
 		expect(onSettings).not.toHaveBeenCalled();
 		expect(ipc.setField).not.toHaveBeenCalled();
@@ -4249,6 +4268,7 @@ it('leaves every key the menu owns to the menu, so none of them happens twice', 
 		['l', false],
 		[',', false],
 		['o', false],
+		['d', false],
 		['C', true],
 		['c', true],
 		['Backspace', false]
@@ -4268,6 +4288,7 @@ it('leaves every key the menu owns to the menu, so none of them happens twice', 
 
 	expect(ipc.copy).not.toHaveBeenCalled();
 	expect(ipc.createEntry).not.toHaveBeenCalled();
+	expect(ipc.duplicateEntry).not.toHaveBeenCalled();
 	expect(ipc.createGroup).not.toHaveBeenCalled();
 	expect(ipc.deleteEntries).not.toHaveBeenCalled();
 	expect(ipc.entry).toHaveBeenCalledTimes(asked);
@@ -4293,7 +4314,7 @@ it('makes an entry from the menu only where the + Entry button is drawn', async 
 	expect(document.activeElement).toBe(picker());
 	expect(ipc.createEntry).not.toHaveBeenCalled();
 	inPicker('Enter');
-	await vi.waitFor(() => expect(ipc.createEntry).toHaveBeenCalledWith(root.id));
+	await vi.waitFor(() => expect(ipc.createEntry).toHaveBeenCalledWith(root.id, 'login'));
 
 	pressed('Recycle Bin');
 	flushSync();
@@ -4629,6 +4650,7 @@ function following(tree: Group, readOnly = false) {
 	const props = reactive({
 		database,
 		root: tree,
+		kinds: kinds(),
 		readOnly,
 		onSettings: vi.fn(),
 		onTree: (next: Group) => {
@@ -5329,7 +5351,7 @@ it('asks where a new entry goes from All entries, and Return makes it at the top
 
 		inPicker('Enter');
 		await settled();
-		expect(ipc.createEntry).toHaveBeenCalledWith(vault.id);
+		expect(ipc.createEntry).toHaveBeenCalledWith(vault.id, 'login');
 		expect(host.querySelector('input[role="combobox"]')).toBeNull();
 
 		// Pressed again while it is open, the button closes it, and nothing is
@@ -5358,7 +5380,7 @@ it('offers the folder the last new entry went into first', async () => {
 		inPicker('ArrowDown');
 		inPicker('Enter');
 		await settled();
-		expect(ipc.createEntry).toHaveBeenLastCalledWith(work.id);
+		expect(ipc.createEntry).toHaveBeenLastCalledWith(work.id, 'login');
 
 		plus().click();
 		flushSync();
@@ -5366,7 +5388,7 @@ it('offers the folder the last new entry went into first', async () => {
 		expect(active && document.getElementById(active)?.textContent).toContain('Work');
 		inPicker('Enter');
 		await settled();
-		expect(ipc.createEntry).toHaveBeenLastCalledWith(work.id);
+		expect(ipc.createEntry).toHaveBeenLastCalledWith(work.id, 'login');
 		expect(ipc.createEntry).toHaveBeenCalledTimes(2);
 
 		// Escape closes the list, makes nothing, and leaves the pane alone.
@@ -5395,13 +5417,13 @@ it('makes the entry where it is asked when a folder is shown, with no question',
 		flushSync();
 		expect(host.querySelector('input[role="combobox"]')).toBeNull();
 		await settled();
-		expect(ipc.createEntry).toHaveBeenCalledWith(work.id);
+		expect(ipc.createEntry).toHaveBeenCalledWith(work.id, 'login');
 
 		pressed('Not in a folder');
 		flushSync();
 		plus().click();
 		await settled();
-		expect(ipc.createEntry).toHaveBeenLastCalledWith(vault.id);
+		expect(ipc.createEntry).toHaveBeenLastCalledWith(vault.id, 'login');
 	} finally {
 		await unmount(component);
 		vi.useRealTimers();
@@ -5421,7 +5443,7 @@ it('makes the entry at the top with no question in a vault with no folders', asy
 		flushSync();
 		expect(host.querySelector('input[role="combobox"]')).toBeNull();
 		await settled();
-		expect(ipc.createEntry).toHaveBeenCalledWith(tree.id);
+		expect(ipc.createEntry).toHaveBeenCalledWith(tree.id, 'login');
 	} finally {
 		await unmount(component);
 		vi.useRealTimers();
@@ -6958,6 +6980,607 @@ it('drops a second Put back while the first is on its way', async () => {
 		expect(ipc.save).toHaveBeenCalledTimes(1);
 	} finally {
 		ipc.putBackEntries.mockReset();
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** The chevron beside "+ Entry", which lists the other kinds and the vault's
+ * templates. */
+const chevron = () => named('Other kinds of entry');
+
+/** A line of that list, by what it says. */
+function menuItem(label: string): HTMLButtonElement {
+	const found = [...host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
+		(each) => each.textContent?.trim() === label
+	);
+	if (!found) throw new Error(`the list has no ${label}`);
+	return found;
+}
+
+/** Whether the field holds the focus with every character of it selected,
+ * so that the first key replaces it. */
+function selectedWhole(field: HTMLInputElement | null): boolean {
+	return (
+		field !== null &&
+		document.activeElement === field &&
+		field.selectionStart === 0 &&
+		field.selectionEnd === field.value.length
+	);
+}
+
+/** A vault with one folder, and what Rust answers once an entry is made in it. */
+function oneFolder() {
+	const folder = group({ name: 'Work' });
+	const tree = group({ name: 'Root', sections: [folder] });
+	const made = row({ title: '', username: '', group: folder.id });
+	const grown = group({ ...tree, sections: [group({ ...folder, entries: [made] })] });
+	ipc.entry.mockImplementation((id: string) =>
+		Promise.resolve(
+			entry({
+				id,
+				group: folder.id,
+				fields: [
+					field({ name: 'Title', kind: 'title', value: '', empty: true }),
+					field({ name: 'Licence key', kind: 'custom', value: null, protected: true }),
+					field({ name: 'Licensed to', kind: 'custom', value: '' })
+				]
+			})
+		)
+	);
+	return { folder, tree, made, grown };
+}
+
+/** A kind chosen from the list is made in the folder being shown, opened, and
+ * its name takes the focus to be typed. A field the kind writes in lines is a
+ * text area before anything is in it. */
+it('makes the kind chosen from "+ Entry" in the folder shown, ready to be named', async () => {
+	const { folder, tree, made, grown } = oneFolder();
+	ipc.createEntry.mockResolvedValue({ tree: grown, entry: made.id });
+	const { component } = following(tree);
+	try {
+		pressed('Work');
+		flushSync();
+		chevron().click();
+		await settled();
+		expect(chevron().getAttribute('aria-expanded')).toBe('true');
+		menuItem('Software licence').click();
+		await settled();
+
+		expect(ipc.createEntry).toHaveBeenCalledWith(folder.id, 'licence');
+		expect(host.querySelector('[role="menu"]'), 'the list stayed open').toBeNull();
+		expect(selectedWhole(titleField()), 'the name did not take the focus').toBe(true);
+		expect(host.querySelector('textarea[aria-label="Licence key"]')?.getAttribute('rows')).toBe(
+			'4'
+		);
+		expect(host.querySelector('textarea[aria-label="Licensed to"]')?.getAttribute('rows')).toBe(
+			'1'
+		);
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Two presses during the second a save holds Rust make one entry. */
+it('makes one entry for a second press while the first is on its way', async () => {
+	const { tree, made, grown } = oneFolder();
+	const making = Promise.withResolvers<{ tree: Group; entry: string }>();
+	ipc.createEntry.mockReturnValue(making.promise);
+	const { component } = following(tree);
+	try {
+		pressed('Work');
+		flushSync();
+		plus().click();
+		chevron().click();
+		await settled();
+		menuItem('Bank card').click();
+		await settled();
+		expect(ipc.createEntry).toHaveBeenCalledTimes(1);
+
+		making.resolve({ tree: grown, entry: made.id });
+		await settled();
+		expect(ipc.createEntry).toHaveBeenCalledTimes(1);
+	} finally {
+		ipc.createEntry.mockReset();
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A vault with nothing in it offers every kind at once, and makes the one
+ * pressed at the top of the vault. A vault Coffer will not write offers none. */
+it('offers every kind in an empty vault, and makes the one pressed', async () => {
+	const empty = group({ name: 'Root' });
+	const made = row({ title: '', group: empty.id });
+	ipc.createEntry.mockResolvedValue({ tree: group({ ...empty, entries: [made] }), entry: made.id });
+	ipc.entry.mockResolvedValue(entry({ id: made.id, group: empty.id }));
+	for (const readOnly of [true, false]) {
+		const { component } = following(empty, readOnly);
+		try {
+			const chips = host.querySelector('[role="group"][aria-label="Add an entry"]');
+			if (readOnly) {
+				expect(chips, 'a read-only vault offered a kind').toBeNull();
+				continue;
+			}
+			expect(
+				[...(chips?.querySelectorAll('button') ?? [])].map((each) => each.textContent?.trim())
+			).toEqual(kinds().offered.map((offer) => offer.name));
+			pressed('Wi-Fi', chips ?? host);
+			await settled();
+			expect(ipc.createEntry).toHaveBeenCalledWith(empty.id, 'wifi');
+		} finally {
+			await unmount(component);
+			vi.useRealTimers();
+		}
+	}
+});
+
+/** A vault with its own templates lists them after the kinds, and one chosen
+ * in "All entries" asks where first, as a kind does. It is made by Rust from
+ * the template's id, with every value and file copied there. */
+it('makes an entry from one of the vault’s templates, asking where in All entries', async () => {
+	const template = row({ title: 'Card template' });
+	const hidden = row({ title: null });
+	const templates = group({ name: 'Templates', isTemplates: true, entries: [template, hidden] });
+	const folder = group({ name: 'Work' });
+	const tree = group({ name: 'Root', sections: [templates, folder] });
+	const made = row({ title: 'Card template', group: folder.id });
+	ipc.createFromTemplate.mockResolvedValue({
+		tree: group({ ...tree, sections: [templates, group({ ...folder, entries: [made] })] }),
+		entry: made.id
+	});
+	ipc.entry.mockResolvedValue(titled(made.id, 'Card template', { group: folder.id }));
+	const { component } = following(tree);
+	try {
+		chevron().click();
+		await settled();
+		const menu = host.querySelector('[role="menu"]');
+		expect(menu?.textContent).toContain('Templates in this vault');
+		expect(
+			named('A template whose name is hidden', menu ?? host).querySelector('svg'),
+			'a protected name was not drawn as the mask'
+		).not.toBeNull();
+
+		menuItem('Card template').click();
+		await settled();
+		expect(reads()).toContain('Put it in');
+		expect(ipc.createFromTemplate).not.toHaveBeenCalled();
+		typeInPicker('Work');
+		inPicker('Enter');
+		await settled();
+
+		expect(ipc.createFromTemplate).toHaveBeenCalledWith(folder.id, template.id);
+		expect(ipc.createEntry).not.toHaveBeenCalled();
+		expect(titleField()?.value).toBe('Card template');
+		expect(selectedWhole(titleField()), 'the name did not take the focus').toBe(true);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A vault keeping one template, with a "Work" folder holding one entry. */
+function templating() {
+	const template = row({ title: 'Card template' });
+	const templates = group({ name: 'Templates', isTemplates: true, entries: [template] });
+	const kept = row({ title: 'Kept login' });
+	const folder = group({ name: 'Work', entries: [] });
+	const filled = group({ ...folder, entries: [{ ...kept, group: folder.id }] });
+	const tree = group({ name: 'Root', sections: [templates, filled] });
+	return { template, templates, kept: { ...kept, group: folder.id }, folder: filled, tree };
+}
+
+/** A template chosen while a folder is shown is made there with no question,
+ * the way a kind is: the folder is where the list is. */
+it('makes an entry from a template in the folder shown without asking where', async () => {
+	const { template, templates, folder, tree } = templating();
+	const made = row({ title: 'Card template', group: folder.id });
+	ipc.createFromTemplate.mockResolvedValue({
+		tree: group({ ...tree, sections: [templates, group({ ...folder, entries: [made] })] }),
+		entry: made.id
+	});
+	ipc.entry.mockResolvedValue(titled(made.id, 'Card template', { group: folder.id }));
+	const { component } = following(tree);
+	try {
+		pressed('Work', host.querySelector('aside') ?? host);
+		flushSync();
+		chevron().click();
+		await settled();
+		menuItem('Card template').click();
+		await settled();
+
+		expect(host.querySelector('input[role="combobox"]'), 'it asked where').toBeNull();
+		expect(ipc.createFromTemplate).toHaveBeenCalledWith(folder.id, template.id);
+		expect(ipc.createEntry).not.toHaveBeenCalled();
+		expect(titleField()?.value).toBe('Card template');
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A template that is no longer one when it is chosen - its folder went to the
+ * bin, or the file was read again, after the list was drawn - is refused by
+ * Rust, said in Rust's words, and nothing else happens: the entry being read
+ * stays, and nothing is written. */
+it('says why a template was refused and leaves the pane', async () => {
+	const { template, folder, kept, tree } = templating();
+	ipc.createFromTemplate.mockRejectedValue({
+		code: 'refused',
+		message: 'that entry is not one of the templates this vault keeps'
+	});
+	ipc.entry.mockResolvedValue(titled(kept.id, 'Kept login', { group: folder.id }));
+	const { component, props } = following(tree);
+	try {
+		pressed('Work', host.querySelector('aside') ?? host);
+		flushSync();
+		pressed('Kept login');
+		await settled();
+		chevron().click();
+		await settled();
+		menuItem('Card template').click();
+		await settled();
+
+		expect(ipc.createFromTemplate).toHaveBeenCalledWith(folder.id, template.id);
+		expect(notice()).toContain('that entry is not one of the templates this vault keeps');
+		expect(titleField()?.value).toBe('Kept login');
+		expect(props.root).toEqual(tree);
+		expect(ipc.save).not.toHaveBeenCalled();
+	} finally {
+		ipc.createFromTemplate.mockReset();
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A vault with two logins, the first open, and what Rust answers for a copy
+ * of it. */
+function copying() {
+	const { gmail, drive, tree } = twoLogins();
+	const copy = row({ title: 'Gmail copy', username: gmail.username });
+	const grown = group({ ...tree, entries: [gmail, copy, drive] });
+	ipc.entry.mockImplementation((id: string) =>
+		Promise.resolve(id === copy.id ? readOf(copy) : id === gmail.id ? readOf(gmail) : readOf(drive))
+	);
+	return { gmail, drive, tree, copy, grown };
+}
+
+/** Duplicate makes a copy beside the entry and opens it with its name
+ * selected: "Gmail copy" is there to be typed over. */
+it('opens a copy of the entry with its name selected', async () => {
+	const { gmail, tree, copy, grown } = copying();
+	ipc.duplicateEntry.mockResolvedValue({ tree: grown, entry: copy.id });
+	const { component, props } = following(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		exactly('Duplicate').click();
+		await settled();
+
+		expect(ipc.duplicateEntry).toHaveBeenCalledWith(gmail.id);
+		expect(props.root).toEqual(grown);
+		expect(titleField()?.value).toBe('Gmail copy');
+		expect(selectedWhole(titleField())).toBe(true);
+		expect(ipc.save).toHaveBeenCalledTimes(1);
+		expect(notice(), 'a copy is said in a notice as well as in the pane').toBe('');
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** What is being typed into the entry is part of it: the copy is asked for
+ * once the field is written and the write has arrived, from the pill and from
+ * the menu bar alike. The press on the pill leaves the field, as WebKit's does;
+ * the menu bar's item leaves it on its own. Tauri answers the two side by
+ * side, and a copy that got there first held the login as it was. */
+it('copies the entry once what is being typed into it has been written', async () => {
+	const { gmail, tree, copy, grown } = copying();
+	ipc.duplicateEntry.mockResolvedValue({ tree: grown, entry: copy.id });
+	for (const [how, copied] of [
+		[
+			'the pill',
+			(field: HTMLElement | null) => {
+				field?.blur();
+				exactly('Duplicate').click();
+			}
+		],
+		['the menu', () => run('duplicate')]
+	] as const) {
+		const writing = Promise.withResolvers<Entry>();
+		ipc.setField.mockReturnValue(writing.promise);
+		const { component } = following(tree);
+		try {
+			pressed('Gmail');
+			await settled();
+			const login = host.querySelector<HTMLInputElement>('input[aria-label="Login"]');
+			login?.focus();
+			if (login) login.value = 'me@work.example';
+			login?.dispatchEvent(new Event('input', { bubbles: true }));
+
+			copied(login);
+			await settled();
+			expect(ipc.setField, how).toHaveBeenCalledWith(
+				gmail.id,
+				'UserName',
+				'me@work.example',
+				false,
+				expect.any(Number)
+			);
+			expect(ipc.duplicateEntry, `${how}: copied before the login arrived`).not.toHaveBeenCalled();
+
+			writing.resolve(readOf(gmail));
+			await settled();
+			expect(ipc.duplicateEntry, how).toHaveBeenCalledTimes(1);
+		} finally {
+			ipc.setField.mockReset();
+			ipc.duplicateEntry.mockClear();
+			await unmount(component);
+			vi.useRealTimers();
+		}
+	}
+});
+
+/** A tag and a field's new name are written when they are left, like a value,
+ * and the copy waits for them the same way: chosen from the menu bar with the
+ * focus in either, it holds what was typed there. */
+it('copies the entry once a tag or a field name being typed has been written', async () => {
+	const { gmail, tree, copy, grown } = copying();
+	const owned = entry({
+		id: gmail.id,
+		group: gmail.group,
+		fields: [
+			field({ name: 'Title', kind: 'title', value: 'Gmail', empty: false }),
+			field({ name: 'Recovery', kind: 'custom', value: 'phone', empty: false })
+		]
+	});
+	ipc.entry.mockImplementation((id: string) =>
+		Promise.resolve(id === gmail.id ? owned : readOf(copy))
+	);
+	ipc.duplicateEntry.mockResolvedValue({ tree: grown, entry: copy.id });
+	for (const [what, typed] of [
+		[
+			'a tag',
+			async () => {
+				exactly('+ tag').click();
+				flushSync();
+				await settled();
+				const tag = host.querySelector<HTMLInputElement>('input[aria-label="A new tag"]');
+				expect(document.activeElement).toBe(tag);
+				if (tag) tag.value = 'work';
+				return ipc.setTags;
+			}
+		],
+		[
+			'a field’s name',
+			async () => {
+				named('Rename Recovery').click();
+				flushSync();
+				await settled();
+				const name = host.querySelector<HTMLInputElement>(
+					'input[aria-label="New name for Recovery"]'
+				);
+				expect(document.activeElement).toBe(name);
+				if (name) name.value = 'Recovery phone';
+				return ipc.renameField;
+			}
+		]
+	] as const) {
+		const writing = Promise.withResolvers<Entry>();
+		ipc.setTags.mockReturnValue(writing.promise);
+		ipc.renameField.mockReturnValue(writing.promise);
+		const { component } = following(tree);
+		try {
+			pressed('Gmail');
+			await settled();
+			const sent = await typed();
+
+			run('duplicate');
+			await settled();
+			expect(sent, what).toHaveBeenCalledTimes(1);
+			expect(ipc.duplicateEntry, `${what}: copied before it arrived`).not.toHaveBeenCalled();
+
+			writing.resolve(owned);
+			await settled();
+			expect(ipc.duplicateEntry, what).toHaveBeenCalledTimes(1);
+		} finally {
+			ipc.setTags.mockReset();
+			ipc.renameField.mockReset();
+			ipc.duplicateEntry.mockClear();
+			await unmount(component);
+			vi.useRealTimers();
+		}
+	}
+});
+
+/** A copy Rust answers after the reader chose another entry is in the list
+ * and in the file, and the pane stays with the later choice. */
+it('leaves the pane on an entry chosen while a copy was being made', async () => {
+	const { drive, tree, copy, grown } = copying();
+	const copying_ = Promise.withResolvers<{ tree: Group; entry: string }>();
+	ipc.duplicateEntry.mockReturnValue(copying_.promise);
+	const { component } = following(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		exactly('Duplicate').click();
+		exactly('Duplicate').click();
+		await settled();
+		pressed('Google Drive');
+		await settled();
+
+		copying_.resolve({ tree: grown, entry: copy.id });
+		await settled();
+		expect(ipc.duplicateEntry, 'a second press made a second copy').toHaveBeenCalledTimes(1);
+		expect(titleField()?.value).toBe(drive.title);
+		expect(ipc.entry).not.toHaveBeenCalledWith(copy.id);
+		expect(listRow('Gmail copy')).toBeDefined();
+	} finally {
+		ipc.duplicateEntry.mockReset();
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** The same for an entry chosen while the copy waited for what was typed
+ * into the original to arrive: the pane is taken as it was at the press, and
+ * a second press during the wait makes no second copy. */
+it('leaves the pane on an entry chosen while the copy waited for a write', async () => {
+	const { gmail, drive, tree, copy, grown } = copying();
+	const writing = Promise.withResolvers<Entry>();
+	ipc.setField.mockReturnValue(writing.promise);
+	// From the copy on, the vault holds it, and the window reading the tree
+	// again after the write - as it does - reads it there.
+	ipc.duplicateEntry.mockImplementation(() => {
+		ipc.tree.mockResolvedValue(grown);
+		return Promise.resolve({ tree: grown, entry: copy.id });
+	});
+	const { component } = following(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		const login = host.querySelector<HTMLInputElement>('input[aria-label="Login"]');
+		login?.focus();
+		if (login) login.value = 'me@work.example';
+		login?.dispatchEvent(new Event('input', { bubbles: true }));
+		run('duplicate');
+		run('duplicate');
+		await settled();
+		expect(ipc.setField).toHaveBeenCalledTimes(1);
+		expect(ipc.duplicateEntry).not.toHaveBeenCalled();
+
+		pressed('Google Drive');
+		await settled();
+		expect(titleField()?.value).toBe(drive.title);
+
+		writing.resolve(readOf(gmail));
+		await settled();
+		expect(ipc.duplicateEntry, 'a second press made a second copy').toHaveBeenCalledTimes(1);
+		expect(ipc.duplicateEntry).toHaveBeenCalledWith(gmail.id);
+		expect(titleField()?.value, 'the copy took the pane from the later choice').toBe(drive.title);
+		expect(ipc.entry).not.toHaveBeenCalledWith(copy.id);
+		expect(listRow('Gmail copy')).toBeDefined();
+		expect(ipc.save).toHaveBeenCalled();
+	} finally {
+		ipc.setField.mockReset();
+		ipc.duplicateEntry.mockReset();
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** A refusal is said in Rust's own words, and nothing else happens. */
+it('says why a copy was refused', async () => {
+	const { tree } = copying();
+	ipc.duplicateEntry.mockRejectedValue({
+		code: 'refused',
+		message: 'the recycle bin takes nothing but what is deleted'
+	});
+	const { component } = following(tree);
+	try {
+		pressed('Gmail');
+		await settled();
+		exactly('Duplicate').click();
+		await settled();
+		expect(notice()).toContain('the recycle bin takes nothing but what is deleted');
+		expect(titleField()?.value).toBe('Gmail');
+		expect(ipc.save).not.toHaveBeenCalled();
+	} finally {
+		ipc.duplicateEntry.mockReset();
+		await unmount(component);
+		vi.useRealTimers();
+	}
+});
+
+/** Duplicate in the menu bar is offered on the condition the pill is drawn
+ * on: an entry read, in a vault Coffer writes, out of the bin. */
+it('offers a copy only of an entry that can be copied', async () => {
+	const { tree } = copying();
+	const { component } = following(tree);
+	try {
+		expect(applying(), 'a copy of nothing was offered').not.toContain('duplicate');
+		pressed('Gmail');
+		await settled();
+		expect(applying()).toContain('duplicate');
+		expect(exactly('Duplicate').disabled).toBe(false);
+
+		// Rows chosen: the menu bar's verbs act on the choice, and the entry in
+		// the pane need not be one of it. The pane's own pill names its entry.
+		choose('Google Drive');
+		expect(applying(), 'a copy of the pane was offered over a choice').not.toContain('duplicate');
+		run('duplicate');
+		await settled();
+		expect(ipc.duplicateEntry).not.toHaveBeenCalled();
+		expect(exactly('Duplicate').disabled).toBe(false);
+	} finally {
+		await unmount(component);
+		vi.useRealTimers();
+	}
+
+	const readOnly = following(tree, true);
+	try {
+		pressed('Gmail');
+		await settled();
+		expect(applying(), 'offered in a vault Coffer will not write').not.toContain('duplicate');
+		expect(() => exactly('Duplicate')).toThrow();
+		expect(host.querySelector('[aria-label="Other kinds of entry"]')).toBeNull();
+		run('duplicate');
+		await settled();
+		expect(ipc.duplicateEntry).not.toHaveBeenCalled();
+	} finally {
+		await unmount(readOnly.component);
+		vi.useRealTimers();
+	}
+
+	const binned = following(vault);
+	try {
+		pressed('Recycle Bin');
+		flushSync();
+		ipc.entry.mockResolvedValue(
+			titled(shelved.thrown.id, 'thrown away', {
+				group: shelved.bin.id,
+				binned: shelved.thrown.binned,
+				deletion: 'forever'
+			})
+		);
+		pressed('thrown away');
+		await settled();
+		expect(applying(), 'a copy out of the bin was offered').not.toContain('duplicate');
+		expect(() => exactly('Duplicate')).toThrow();
+	} finally {
+		await unmount(binned.component);
+		vi.useRealTimers();
+	}
+});
+
+/** A copy is an entry made in this window like any other, and "+ Entry" in
+ * "All entries" offers the folder it went into first. */
+it('offers the folder a copy went into first, as for any entry made', async () => {
+	const copy = row({ title: 'Postgres copy', group: work.id });
+	const grown = group({
+		...vault,
+		sections: [group({ ...work, entries: [inWork, copy] }), ...vault.sections.slice(1)]
+	});
+	ipc.duplicateEntry.mockResolvedValue({ tree: grown, entry: copy.id });
+	ipc.entry.mockImplementation((id: string) =>
+		Promise.resolve(titled(id, id === copy.id ? 'Postgres copy' : 'Postgres', { group: work.id }))
+	);
+	const { component } = following(vault);
+	try {
+		pressed('Postgres');
+		await settled();
+		exactly('Duplicate').click();
+		await settled();
+		expect(titleField()?.value).toBe('Postgres copy');
+
+		plus().click();
+		flushSync();
+		const active = picker().getAttribute('aria-activedescendant');
+		expect(active && document.getElementById(active)?.textContent).toContain('Work');
+	} finally {
 		await unmount(component);
 		vi.useRealTimers();
 	}

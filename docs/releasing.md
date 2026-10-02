@@ -86,7 +86,7 @@ list is in the spec.
   through Coffer's own copy. This file is where this check lives: the spec's
   list does not carry it.
 - Every key of Coffer's items in the menu bar does its thing once: Cmd+N makes
-  one entry, Cmd+F puts the focus in the search field, Cmd+B and Shift+Cmd+C copy
+  one entry, Cmd+D one copy, Cmd+F puts the focus in the search field, Cmd+B and Shift+Cmd+C copy
   once with one notice, Cmd+L locks, Cmd+, opens the settings, Shift+Cmd+N opens
   one folder name. Cmd+C with nothing selected still copies the password, and
   Cmd+Z still takes back a removal. The page's keys are answered before the menu
@@ -143,6 +143,28 @@ list is in the spec.
   in its filter, Return moves the entry, ⌘Z takes it back, and VoiceOver reads
   the line that is chosen. In "All entries", "+ Entry" and Cmd+N open "Put it
   in" on the folder the last new entry went into.
+- "+ Entry"'s chevron: a press, and Down and Up on it with the keyboard, open
+  the list of kinds with the focus on a line; the arrows go round it, Escape
+  closes it with the focus back on the chevron and leaves the search and the
+  pane alone - from a line, and from the chevron after Shift+Tab - a second
+  press on the chevron closes it rather than flickering it shut and open again,
+  and a press anywhere else closes it. Each kind made in a folder
+  opens with its name selected, and in KeePassXC it draws the icon
+  `docs/vault-core.md` names for it - the key, Money, IRCommunication,
+  Identity, Package, PaperLocked, Note, TerminalEncrypted - carries its tag,
+  and shows the fields that kind hides as hidden. A vault whose templates group
+  KeePass 2 or MacPass named lists its templates after the kinds, and an entry
+  made from one opens in KeePassXC with the template's files.
+- Duplicate, from the pill and with Cmd+D: with the focus in the login and a
+  word typed a moment before, the copy holds the word, and so does the
+  original - which is the check that WebKit hands Cmd+D on from a focused text
+  field to the menu rather than keeping it. A tag typed into the tag field, or
+  a new name into a field's name, and Cmd+D pressed there: the copy carries the
+  tag or the name. Cmd+D is grey with no entry open, in the bin, in a read-only
+  vault, and with rows chosen by Cmd-click. A copy of an entry with a file and a
+  custom icon opens in KeePassXC beside the original, with the file and the
+  icon and no history, and removing the copy's file in KeePassXC leaves the
+  original's.
 - Cmd+W and the red button, with a vault open and a value typed a moment before:
   the window goes, Coffer stays in the Dock, the lock file beside the vault is
   gone, the Dock icon brings back the unlock screen where the window was, and
